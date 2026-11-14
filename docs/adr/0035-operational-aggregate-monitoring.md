@@ -116,3 +116,192 @@ bypass (neither `rolsuper` nor `rolbypassrls`), discovery returns zero rows and 
 silently; rotating to another owner that keeps the bypass is safe. Any later change to the function owner or its RLS capability must
 be reviewed against this paragraph, and an alert on "reminders due but none claimed" is the
 monitoring that would catch it (not built; tracked with backlog N8).
+
+## Amendment 2 (8 Nov 2026, owner ruling OWN-85 / OD-47): operator work lists
+
+The decision and Amendment 1 stand. Rekoda's operations team must be able to find failed work across
+businesses (a dead payment or billing job, a renewal Rekoda could not take payment for) without
+knowing the business first, so the policy now distinguishes four classes. None weakens tenant
+isolation, and this amendment is not permission for any later feature to read across tenants.
+
+1. **Aggregate operational queries** (the original decision).
+2. **ID-only scheduling discovery** (Amendment 1).
+3. **Approved operator work lists** (this amendment): a narrowly scoped, read-only, cross-tenant
+   discovery of the records an operator must work.
+4. **Ordinary tenant-scoped access**: everything else, through `withBusiness()` only.
+
+**Approved operator work lists, and nothing else:**
+
+| Workflow                                             | Function (migration)                                                                                                                               | Returns (fixed columns)                                                                                                                                                                                              |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Dead payment and billing jobs                        | `dead_job_ops_queue`, `dead_job_find_for_ops` (0194)                                                                                               | job id, business id, kind, event id, Rekoda reference, status, failure category, fixed summary, attempts, death count, timestamps, recovery state; the queue also the current charge or intent status and plan state |
+| The job behind an event                              | `dead_job_open_for_event` (0194)                                                                                                                   | a job id                                                                                                                                                                                                             |
+| The worker's own passes                              | `dead_job_is_recovering`, `dead_job_has_record` (0194)                                                                                             | a boolean                                                                                                                                                                                                            |
+| Blocked renewals                                     | `blocked_renewals_ops` (0195)                                                                                                                      | Rekoda reference, business id, plan, amount, block reason and time, the business's current plan and paid-to date                                                                                                     |
+| Blocked renewals, close pass (worker only, no route) | `blocked_renewals_close_batch` (0199), and the close cursor's `renewal_block_close_claim` / `_advance` / `_finish` / `_release` / `_status` (0199) | the same columns as `blocked_renewals_ops` plus the exact block time in microseconds; the cursor functions read and write only the single cursor row (a position, counts, a lease) and return booleans or counts     |
+
+**Rules for every work list:**
+
+1. It is a dedicated `SECURITY DEFINER` function with a pinned `search_path`, `EXECUTE` granted to
+   `rekoda_worker` only (revoked from `PUBLIC` and `rekoda_app`). There is no cross-tenant RLS policy
+   on `dead_job_exceptions` or any new table, and no general-purpose cross-tenant repository method.
+2. It returns a fixed column set and is bounded (at most 200 rows). It never returns or logs a
+   customer or supplier identity, phone, message content, payload, error text, payment credential or
+   secret, and it is not a business search.
+3. It is reached only from an operator route that enforces `ops:read` (or the worker's own pass). It
+   is read-only.
+4. **Reading authorises nothing.** Every recovery, resolution or other mutation of the work-list
+   records runs under `withBusiness()` for the record's own business (the one pre-existing exception
+   is the generic `external_events` exception resolve, `POST /v1/ops/exceptions/:id/resolve`, which
+   runs on the worker credential under the older `worker_reads_the_estate` policy of migration 0130
+   and is listed under residual privilege below), enforces its own operator scope (`ops:payment`,
+   `ops:staging`), validates the target and its business association, and writes an audit event with
+   the operator, target, action, reason and outcome.
+5. Business-facing endpoints stay tenant-scoped. A new cross-tenant read needs its own review and
+   its own line here.
+
+The close-pass functions (0199, added 11 Nov 2026 under owner direction OWN-88) follow the same rules: worker-only, pinned path, bounded, read-only for tenant data; the cursor table they write holds no tenant data, has forced RLS with no policy and no grant to any application role.
+
+Tests (`packages/db/src/ops/operator-work-lists.integration.test.ts`) pin the grants, the
+`SECURITY DEFINER` and `search_path` settings, the exact column sets, the bound, that the table
+returns nothing to an unpinned worker, and that the application role cannot call any of them.
+
+**Residual privilege (unchanged, recorded).** The worker credential still holds migration 0004's
+table grants and `ops_read_businesses`, and the generic event-resolve write above, and the older cross-tenant reads (`worker_resolve` on
+`subscription_charges` and `payment_intents`, the events exception queue) predate this amendment.
+Narrowing them remains the least-privilege follow-up. The functions read tables under
+`FORCE ROW LEVEL SECURITY` and so, like the discovery functions of Amendment 1, depend on their owner
+bypassing RLS (the migrating role); a change to that owner must be reviewed against this paragraph.
+
+## Amendment 3 (11 Nov 2026, owner review of PR #432, OWN-89): the event estate is a read; the generic resolve follows rule 4
+
+Status: accepted with PR #432 (not merged at the time of writing). Amendment 2 recorded the generic
+`external_events` exception resolve as the one exception to its rule 4. The owner asked for that
+privilege to be assessed as a security issue in its own right. Findings, on the code at `a11e786`:
+
+- `worker_reads_the_estate` (0130) was described as a read but created with no `FOR` clause and no
+  `WITH CHECK`, so with 0004's table grants the worker credential could INSERT, UPDATE and DELETE
+  any business's `external_events` rows on every column with no pin (re-point an event to another
+  business, rewrite its payload or reservations, stamp it resolved).
+- `POST /v1/ops/exceptions/:id/resolve` (`ops:payment`) used that write: no pin, no check that the
+  row was an exception, no audit row.
+
+That is broader than the approved model (discovery is cross-tenant and read-only; mutation is
+tenant-scoped, validated and audited) and is a tenant-isolation and unauthorised-mutation risk for a
+compromised worker credential, so it was treated as a merge blocker and closed (migration 0204):
+
+1. `worker_reads_the_estate` is `FOR SELECT` only. The worker keeps UPDATE of `processed_at` and
+   `error` on rows that are still unattributed (`worker_marks_unattributed_ingress`, USING and
+   WITH CHECK both `business_id IS NULL`), attributes an event only through
+   `attribute_external_event(event, business)` (worker-only `SECURITY DEFINER`, pinned search_path,
+   write-once from NULL to an existing business), and has no INSERT, DELETE or other column UPDATE.
+2. The generic resolve now follows rule 4 with no exception: the target is read on the worker
+   credential and must be an open exception (flagged, or never processed); the write runs on the
+   application credential under `withBusiness()` for the event's own business (re-checked by RLS),
+   and an `exception_resolved` audit event is written there in the same transaction. An unattributed
+   event belongs to no business: it is resolved on the application credential, which reaches only
+   unattributed rows without a pin (0130's `app_records_unattributed_ingress`), and the event's own
+   `resolved_by`, `resolved_at` and `resolution` are its record (there is no tenant to own an audit
+   row).
+
+Residual (recorded, unchanged by this amendment): `app.business_id` is an ordinary setting, so the
+worker credential can still pin a business and write that business's `processed_at`/`error` through
+the tenant policy; the older SELECT-only `worker_resolve` reads on `subscription_charges` and
+`payment_intents`; and 0004's blanket grants on other tables (the OD-33-F1 follow-up). Tests:
+`packages/db/src/ops/external-events-worker-write.integration.test.ts`; the staging pre-start smoke
+checks the policy command and the column grants.
+
+## Amendment 4 (11 Nov 2026, owner closeout instruction for PR #432, OWN-90): the worker writes only what its jobs make
+
+Status: accepted with PR #432 (not merged at the time of writing). It closes the residual
+Amendment 3 recorded. Assessed on the code at `51f800f`:
+
+- 0004's blanket grants were still in force. The worker credential could write almost every table,
+  and every future one through default privileges, including column INSERT on the append-only books.
+  Because the pin is caller-settable, that reached any business: identity (sessions, users,
+  memberships), the migration ledger, the merchant's books, explicit entitlements and other
+  businesses' jobs.
+- Through the tenant policy, the worker could still mark another business's attributed event
+  processed, or clear its flag. That hides a payment from both the handler and the operators'
+  flagged list.
+- `retention_delete_business` took its cutoff from the caller. With the worker credential, any
+  warned trial or expired business that had never paid could be erased early.
+
+Migration 0210 closes all three:
+
+1. Every worker INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES and TRIGGER, at table and column level,
+   is revoked, default privileges included. Only the writes its jobs make are granted back:
+   - queue UPDATE;
+   - outbox UPDATE;
+   - webhook deliveries INSERT and UPDATE, and the endpoint health columns;
+   - object-deletion UPDATE and DELETE;
+   - stranger replies;
+   - usage counters (webhook-delivery metering, a dead job's reserved meters);
+   - the dead-job record with its audit row and merchant exception;
+   - the two event columns.
+
+   Discovery stays cross-tenant and read-only (rule 2, Amendment 1).
+
+2. A trigger limits the worker's event writes:
+   - on an attributed event, it may only add the dead-job flag (`error` from none to a value, with
+     `processed_at` left empty);
+   - on an unattributed event, it may mark it processed once, with a reason for a Paystack event, so
+     an unmatched payment stays in the flagged list.
+3. The retention deletion applies its own policy (ended at least 90 days ago, warned at least 30
+   days ago, core `RETENTION`) whatever cutoff it is given. Its unchecked body runs for no runtime
+   role, and no runtime role can backdate a retention notice.
+4. No runtime role writes `rekoda_migrations` or `business_entitlements`.
+
+After the independent review of the delta, migration 0212 narrows two of these writes further:
+
+- the queue and outbox writes are limited to their coordination columns, so the worker cannot
+  rewrite what a job runs or for whom;
+- webhook deliveries are queued only through `webhook_queue_delivery(outbox event, endpoint)`, which
+  copies the outbox fact for an active endpoint of the same business, so the worker cannot queue a
+  forged, signed webhook.
+
+Residual: the worker still updates the coordination columns of any business's job row, because it
+coordinates the queue (ADR 0022). The table owner and the infrastructure administrator are an administrative trust boundary,
+exempt from every guard. That is not the same class as a runtime role.
+
+Tests:
+
+- `packages/db/src/tenancy/worker-least-privilege.integration.test.ts`;
+- the pre-start smoke (`scripts/deploy-staging.sh`, `deploy-smoke-sql.integration.test.ts`), which
+  checks the worker's exact write set and has a tampering case for each rule.
+
+## Amendment 5 (12 Nov 2026, owner instruction for PR #432, OWN-91): settlement and operator plan changes are separate processes; the meter is written through functions; the administrator boundary is stated
+
+Status: accepted with PR #432 (not merged at the time of writing). It records the trust boundaries
+after migrations 0213 to 0221. Nothing here widens a cross-tenant read: the three classes of
+Amendment 1 and the rules of Amendments 2 to 4 are unchanged.
+
+1. **Two more principals run in their own processes.** `rekoda_settlement` is held only by the
+   settlement process and `rekoda_billing_operator` only by the operator process. A production API
+   or worker refuses to start if handed either credential, and each privileged process refuses any
+   credential or key that belongs to another. Neither role is a member of `rekoda_app` or of the
+   other (0211, 0217), and each holds an exact, tested grant list with no default privilege.
+2. **The queue is split by job kind, by policy.** `rekoda_settlement` reads and writes only
+   `billing.process` and `billing.apply_no_charge` jobs, whichever tenant it pins. `rekoda_worker`
+   keeps its cross-tenant claim (class 2 of Amendment 1) for every other kind, and for those two
+   may only requeue a dead job or record its death. The settlement claim is the same class of
+   access as the worker's: coordination columns of jobs, never tenant records.
+3. **The operator process verifies identity itself.** It accepts only tokens for its own audience
+   alone (`OPERATOR_BILLING_OIDC_AUDIENCE`, never alongside another), which must differ from the API's, so the API is not an
+   authority for plan changes and no secret is shared between them (ADR 0034 is otherwise
+   unchanged: identities, scopes, the audited subject).
+4. **Usage counters are written only by `rekoda_usage_writer`'s functions** (0216, 0218): reserve,
+   refund of a held reservation whose job has not finished (a finished job closes its event's
+   reservations, by trigger, and since 0220 the application cannot rewrite, delete or park that
+   job row), and the credit of one paid pack charge. Amendment 4's grant of
+   `usage_counters` to the worker is withdrawn; the worker calls the same functions.
+5. **The database administrator is outside these controls.** The table owner, the PostgreSQL
+   superuser, and anyone who can read the host's `.env` or `secrets/` can do anything the roles
+   above cannot. That is an administrative trust boundary, a different class from an application
+   role, and it is controlled operationally (host access, secret file permissions, off-box backups,
+   the deploy record), not by anything in this ADR. The integration harness's fixture functions
+   are the only other exemption; the boot checks and the pre-start smoke refuse a deployed
+   database that carries one.
+6. **What an application credential can still do** is recorded in the OD-51 row of
+   `docs/REKODA_LAUNCH_READINESS.md`: decide what is metered going forward, and withhold or remove
+   a queued job under a tenant pin (a denial, never a settlement).

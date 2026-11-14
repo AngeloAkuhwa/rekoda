@@ -13,9 +13,15 @@
 // The job queue and its handlers, end to end. Split by concern across jobs*.integration.test.ts; the shared setup is in
 // jobs.fixtures.ts.
 import { describe, expect, it } from 'vitest';
-import { billingRepo, createDb, sql, usageRepo, withBusiness } from '@rekoda/db';
+import { createDb, sql, usageRepo, withBusiness } from '@rekoda/db';
 import { allowanceFor, replies, usagePeriod } from '@rekoda/core';
-import { storedEventId } from '@rekoda/db/testing';
+import {
+  storedEventId,
+  setPlanForTest,
+  settlementDb,
+  creditBonusForTest,
+  applicationDb,
+} from '@rekoda/db/testing';
 import { buildRunner } from './jobs.module.js';
 import { sealPayload } from '../privacy/payload-vault.js';
 import {
@@ -292,7 +298,7 @@ describe('the chat surface enforces roles', () => {
   it('refuses an Integrate-only or lapsed accountant on the plan first, costing nothing (G-57)', async () => {
     const integrate = await seedBusiness('Role Gate Integrate Ltd', '+2348140010033');
     await memberOf(integrate, '+2348140010034', 'accountant');
-    await billingRepo.setPlan(appDb, {
+    await setPlanForTest(appDb, {
       businessId: integrate,
       plan: 'integrate',
       expiresAt: null,
@@ -306,7 +312,7 @@ describe('the chat surface enforces roles', () => {
 
     const lapsed = await seedBusiness('Role Gate Lapsed Ltd', '+2348140010035');
     await memberOf(lapsed, '+2348140010036', 'accountant');
-    await billingRepo.setPlan(appDb, {
+    await setPlanForTest(appDb, {
       businessId: lapsed,
       plan: 'trial',
       expiresAt: new Date(Date.now() - 1_000),
@@ -325,8 +331,11 @@ describe('the chat surface enforces roles', () => {
     await memberOf(businessId, '+2348140010048', 'accountant');
     const allowance = allowanceFor('trial', 'AI_ACTIONS');
     const bought = 100;
-    await withBusiness(appDb, businessId, async (tx) => {
-      await usageRepo.creditBonus(tx, businessId, usagePeriod(new Date()), 'AI_ACTIONS', bought);
+    await withBusiness(settlementDb(), businessId, (tx) =>
+      creditBonusForTest(tx, businessId, usagePeriod(new Date()), 'AI_ACTIONS', bought),
+    );
+    /* Consumption is the application's (0216): settlement credits packs and reserves nothing. */
+    await withBusiness(applicationDb(), businessId, async (tx) => {
       await usageRepo.consumeUnit(
         tx,
         businessId,
@@ -340,7 +349,7 @@ describe('the chat surface enforces roles', () => {
 
     expect(
       await saysOverChat(businessId, '+2348140010048', 'how much did we sell this month?'),
-    ).toBe(replies.allowanceExhausted(allowance + bought).text);
+    ).toBe(replies.allowanceExhausted(allowance + bought, 'AI_ACTIONS', 'trial').text);
     expect(stubTransport.requests).toHaveLength(0);
   });
 
@@ -362,9 +371,16 @@ describe('the chat surface enforces roles', () => {
     );
     stubTransport.replyWith(A_SALES_QUESTION);
 
-    expect(
-      await saysOverChat(businessId, '+2348140010038', 'how much did we sell this month?'),
-    ).toBe(replies.allowanceExhausted(allowance).text);
+    /* A trial's allowance is one budget for its 14 days (G-109): the refusal says so, never
+     * "this month". */
+    const said = await saysOverChat(
+      businessId,
+      '+2348140010038',
+      'how much did we sell this month?',
+    );
+    expect(said).toBe(replies.allowanceExhausted(allowance, 'AI_ACTIONS', 'trial').text);
+    expect(said).not.toMatch(/month/);
+    expect(said).toMatch(/free trial/);
     expect(stubTransport.requests).toHaveLength(0);
     expect((await footprint(businessId)).ai_actions).toBe(allowance);
   });

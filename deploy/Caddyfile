@@ -65,7 +65,20 @@
 	request_body {
 		max_size 4MB
 	}
-	# Everything on this host is the API: /health, /v1, the public /api/v1,
+	# Plan changes are the operator service's alone (OD-51): the API does not
+	# hold the credential and does not serve these paths. The operator service
+	# verifies the caller's token itself; nothing here vouches for anyone.
+	@operator_plane path /v1/businesses/plan /v1/businesses/plan/*
+	handle @operator_plane {
+		request_body {
+			max_size 16KB
+		}
+		reverse_proxy operator:3002 {
+			import client_address
+			header_up -X-Rekoda-Client-IP
+		}
+	}
+	# Everything else on this host is the API: /health, /v1, the public /api/v1,
 	# and the Meta and Paystack webhooks, whose signatures the API verifies
 	# over the exact bytes Caddy forwards.
 	reverse_proxy api:3001 {

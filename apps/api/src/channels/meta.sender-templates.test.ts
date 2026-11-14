@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { MetaSender, NoSenderConfigured } from './meta.sender.js';
-import { useGraphServer } from './meta.sender.fixtures.js';
+import { syntheticTemplates, useGraphServer } from './meta.sender.fixtures.js';
 import { SendFailed } from './sender.js';
 import { TEMPLATE_SLOTS } from './template-slots.js';
 
@@ -23,24 +23,7 @@ const sender = (
     document?: string | null;
     trial?: string | null;
   } = {},
-) =>
-  new MetaSender(
-    'TOKEN123',
-    'PNID',
-    'v21.0',
-    2_000,
-    opts.otp === undefined ? 'rekoda_otp' : opts.otp,
-    'en',
-    opts.billing === undefined ? 'rekoda_billing' : opts.billing,
-    'en',
-    opts.retention === undefined ? 'rekoda_retention' : opts.retention,
-    'en',
-    opts.document === undefined ? 'rekoda_document' : opts.document,
-    'en',
-    opts.trial === undefined ? 'rekoda_trial' : opts.trial,
-    'en',
-    graph.baseUrl,
-  );
+) => new MetaSender('TOKEN123', 'PNID', 'v21.0', 2_000, syntheticTemplates(opts), graph.baseUrl);
 
 const bodyOf = (index = 0): Record<string, unknown> =>
   JSON.parse(graph.requests[index]!.text) as Record<string, unknown>;
@@ -57,7 +40,7 @@ describe('the utility templates', () => {
     expect(bodyOf()).toMatchObject({
       type: 'template',
       template: {
-        name: 'rekoda_billing',
+        name: 'acme_grace_notice_v2',
         components: [
           {
             type: 'body',
@@ -94,7 +77,7 @@ describe('the utility templates', () => {
 
     expect(bodyOf()).toMatchObject({
       template: {
-        name: 'rekoda_retention',
+        name: 'acme_erasure_warning_v2',
         components: [
           {
             type: 'body',
@@ -118,7 +101,7 @@ describe('the utility templates', () => {
 
     expect(bodyOf()).toMatchObject({
       template: {
-        name: 'rekoda_trial',
+        name: 'acme_trial_reminder_v2',
         components: [
           {
             type: 'body',
@@ -260,7 +243,7 @@ describe('the utility templates', () => {
       type: 'template',
       to: '2348031234567',
       template: {
-        name: 'rekoda_document',
+        name: 'acme_document_ready_v2',
         components: [
           {
             type: 'body',
@@ -320,24 +303,16 @@ describe('the utility templates', () => {
 /* OD-41(b): the five slots on the wire. Each test sends through the name and language the
  * environment configured, with the parameters `TEMPLATE_SLOTS` declares, in that order. */
 describe('the five template slots (OD-41(b))', () => {
-  const named = () =>
-    new MetaSender(
-      'TOKEN123',
-      'PNID',
-      'v21.0',
-      2_000,
-      'rekoda_login_otp',
-      'en_GB',
-      'rekoda_billing_grace_notice',
-      'en',
-      'rekoda_retention_notice',
-      'fr',
-      'rekoda_document_ready',
-      'en_US',
-      'rekoda_trial_ending',
-      'en',
-      graph.baseUrl,
-    );
+  /* Arbitrary names and languages, one per slot (OWN-93): none is a name the repository knows,
+   * and four of the five languages are not English, so a default could not pass for them. */
+  const CONFIGURED = {
+    otp: { name: 'shop_login_code_2027', locale: 'en_GB' },
+    billing: { name: 'grace_period_heads_up', locale: 'ha' },
+    retention: { name: 'account_cleanup_warning', locale: 'fr' },
+    document: { name: 'paperwork_ready_v7', locale: 'en_US' },
+    trial: { name: 'my_custom_trial_template', locale: 'pt_BR' },
+  } as const;
+  const named = () => new MetaSender('TOKEN123', 'PNID', 'v21.0', 2_000, CONFIGURED, graph.baseUrl);
 
   const templateOf = (index = 0) =>
     bodyOf(index)['template'] as {
@@ -369,12 +344,11 @@ describe('the five template slots (OD-41(b))', () => {
     };
     const daysLeft = ['', '5', '30', '', '7'];
     const endsOn = ['', '12/11/2026', '', '', '14/11/2026'];
-    const locales = ['en_GB', 'en', 'fr', 'en_US', 'en'];
 
     TEMPLATE_SLOTS.forEach((slot, i) => {
       const t = templateOf(i);
-      expect(t.name).toBe(slot.agreedName);
-      expect(t.language.code).toBe(locales[i]);
+      expect(t.name).toBe(CONFIGURED[slot.slot].name);
+      expect(t.language.code).toBe(CONFIGURED[slot.slot].locale);
       const body = t.components.find((c) => c.type === 'body')!;
       expect(body.parameters.map((p) => p.type)).toEqual(slot.body.map(() => 'text'));
       expect(body.parameters.map((p) => p.text)).toEqual(
@@ -427,16 +401,13 @@ describe('the five template slots (OD-41(b))', () => {
       'PNID',
       'v21.0',
       2_000,
-      null,
-      'en',
-      null,
-      'en',
-      null,
-      'en',
-      null,
-      'en',
-      null,
-      'en',
+      syntheticTemplates({
+        otp: null,
+        billing: null,
+        retention: null,
+        document: null,
+        trial: null,
+      }),
       graph.baseUrl,
     );
     for (const attempt of [

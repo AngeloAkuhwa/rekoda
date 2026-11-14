@@ -15,9 +15,10 @@ import {
 } from './http/client-address.js';
 import { MONO_API, PAYSTACK_API, nonPublicReason } from './endpoints.js';
 import {
-  DEFAULT_TEMPLATE_LOCALE,
   billingPageUrl,
+  configuredTemplates,
   templateConfigProblems,
+  type MetaTemplates,
 } from './channels/template-slots.js';
 
 export interface ApiConfig {
@@ -126,6 +127,21 @@ export interface ApiConfig {
    * worker.
    */
   workerDatabaseUrl: string | null;
+  /**
+   * `rekoda_settlement` credentials (OD-37, migration 0202): the only role that may record a
+   * payment on a Rekoda charge, credit pack units or run the provider plan writer. Held by the
+   * WORKER alone (OD-51, migration 0209): it settles `billing.process` jobs, applies zero-priced
+   * upgrades and opens renewals. An API process (REKODA_WORKER not 1) holds none; a production API
+   * given one refuses to start. Never falls back to DATABASE_URL.
+   */
+  settlementDatabaseUrl: string | null;
+  /**
+   * `rekoda_billing_operator` credentials (0202): the only role that may run the operator plan
+   * writer (`POST /v1/businesses/plan`). Required in an API process; a worker process
+   * (REKODA_WORKER=1) needs none, and the production worker service is not given one. Without it
+   * the route answers 503 rather than falling back to the application credential.
+   */
+  operatorDatabaseUrl: string | null;
   /** Whether this process polls the queue as well as serving requests. */
   workerEnabled: boolean;
   /** Concurrent job lanes per worker process. SKIP LOCKED makes N lanes safe. */
@@ -369,6 +385,15 @@ export interface ApiConfig {
    */
   paystackPlatformConfirmed: boolean;
   /**
+   * G-119 / OWN-77: the staging test-business tools (`/v1/ops/staging/*`, one-shot send faults).
+   * `REKODA_STAGING_TOOLS=1` only in the staging host's `.env`, never in a compose file. Parsed
+   * fail-closed (anything but 0 or 1 refuses to boot), and refused at boot with anything but a
+   * TEST Paystack key or with the §47 confirmation set. `NODE_ENV` is not the discriminator:
+   * staging and production both run production builds. The database adds its own fence (the
+   * staging marker, migration 0197).
+   */
+  stagingTools: boolean;
+  /**
    * Authenticates bank-feed calls to Mono (ADR 0012, fix-plan 4 G5). Empty
    * means the feed door does not exist on this deployment: the bank page
    * says so and the CSV upload carries reconciliation alone, which is how
@@ -391,41 +416,16 @@ export interface ApiConfig {
   metaPhoneNumberId: string;
   metaGraphVersion: string;
   /**
-   * The Meta-approved AUTHENTICATION template that carries a sign-in code.
-   *
-   * Null means sign-in cannot deliver anything, which is the honest state
-   * before a WABA has an approved template: a free-form text to a phone that
-   * has never messaged the business number is rejected by Meta, so there is
-   * no working fallback to quietly take instead.
+   * The Meta templates of the five slots (OD-41(b)), each the exact name and language the
+   * environment gives (`META_<SLOT>_TEMPLATE` and `..._LOCALE`; OWN-93: no name and no language is
+   * assumed by the code). Null where a slot is not configured, which is the honest state before a
+   * template is approved: the sender refuses that message as not sent rather than sending
+   * free-form text Meta would reject (131047). For each slot: sign-in cannot deliver a code; the
+   * grace sweep records reminders and delivers none; the retention sweep warns nobody and so
+   * deletes nobody; a document outside the 24-hour window is not announced; the trial sweep sends
+   * nothing.
    */
-  metaOtpTemplate: string | null;
-  metaOtpTemplateLocale: string;
-  /**
-   * The Meta-approved UTILITY template that carries a grace reminder.
-   *
-   * Null means the grace sweep records reminders and delivers none, which is
-   * the honest state before the template is approved. The dashboard still
-   * shows the merchant where they stand; a free-form text to a phone that has
-   * not messaged the business number in days would simply be rejected.
-   */
-  metaBillingTemplate: string | null;
-  metaBillingTemplateLocale: string;
-  /**
-   * The Meta-approved UTILITY template that warns about deletion.
-   *
-   * Null means the retention sweep warns nobody and therefore deletes
-   * nothing: a schedule that promises notice cannot delete an account it
-   * failed to notify, so the absence of a template stops the sweep rather
-   * than being routed around.
-   */
-  metaRetentionTemplate: string | null;
-  metaRetentionTemplateLocale: string;
-  /** Approved UTILITY template for "your document is ready" (G-67). Null: no fallback outside the window. */
-  metaDocumentTemplate: string | null;
-  metaDocumentTemplateLocale: string;
-  /** Approved UTILITY template for trial reminders (G-109, OWN-56). Null: the trial sweep sends nothing. */
-  metaTrialTemplate: string | null;
-  metaTrialTemplateLocale: string;
+  metaTemplates: MetaTemplates;
   /**
    * USD micros per in-window service reply. Zero today — Meta does not charge
    * for them yet — and chargeable from 1 October 2026, at which point this is
@@ -906,6 +906,22 @@ function nonNegativeInteger(env: NodeJS.ProcessEnv, name: string, fallback: numb
   );
 }
 
+/**
+ * G-119 / OWN-77: the staging tools exist only on a deployment whose money is never real. A live
+ * Paystack key, an unrecognised or missing one, or the §47 confirmation set beside the flag refuses
+ * to boot rather than run the tools next to real payments.
+ */
+function stagingToolsFlag(env: NodeJS.ProcessEnv): boolean {
+  if (!zeroOrOneFlag(env, 'REKODA_STAGING_TOOLS')) return false;
+  if (!/^sk_test_\S+$/.test(env['PAYSTACK_SECRET_KEY'] ?? '')) {
+    throw new Error('REKODA_STAGING_TOOLS=1 needs a Paystack TEST key (sk_test_...)');
+  }
+  if (env['REKODA_PAYSTACK_PLATFORM_CONFIRMED'] === '1') {
+    throw new Error('REKODA_STAGING_TOOLS=1 cannot run with REKODA_PAYSTACK_PLATFORM_CONFIRMED=1');
+  }
+  return true;
+}
+
 /** Absent or `0` is off, `1` is on; anything else refuses to boot rather than quietly selling nothing. */
 function zeroOrOneFlag(env: NodeJS.ProcessEnv, name: string): boolean {
   const raw = env[name];
@@ -1338,7 +1354,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   }
   /* A template name or language Meta cannot have approved is refused at boot, everywhere: every
    * send through it would be rejected, which reads like an approval problem rather than a typo
-   * (OD-41(b)). The value is never echoed. */
+   * (OD-41(b)). So is a template set without its language: the code assumes none (OWN-93). The
+   * value is never echoed. */
   const templateProblem = templateConfigProblems(env)[0];
   if (templateProblem) {
     throw new ConfigError(`${templateProblem.env} ${templateProblem.problem}`);
@@ -1359,6 +1376,40 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   const workerEnabled = env['REKODA_WORKER'] === '1';
   if (workerEnabled && !env['WORKER_DATABASE_URL']) {
     throw new ConfigError('REKODA_WORKER=1 requires WORKER_DATABASE_URL (the rekoda_worker role)');
+  }
+  /* OD-51 (migrations 0202, 0217): settlement and operator plan changes run under their own
+   * database principals, each in its OWN process (`settlement-main.ts`, `operator-main.ts`). The
+   * API and the worker hold neither credential in production: a process that reads provider data
+   * or serves the public must not be able to record a payment or give a business a plan, so a
+   * production API or worker handed either one refuses to start (the name is given, never the
+   * value). Outside production a single process may be given them and then plays those parts too
+   * (`pnpm dev`, the integration suites, the end-to-end stack). */
+  const givenSettlementUrl = env['SETTLEMENT_DATABASE_URL'] || null;
+  const givenOperatorUrl = env['OPERATOR_DATABASE_URL'] || null;
+  if (isProductionEnv(env)) {
+    const role = workerEnabled ? 'a worker process' : 'an API process';
+    if (givenSettlementUrl) {
+      throw new ConfigError(
+        `SETTLEMENT_DATABASE_URL must not be set for ${role}: only the dedicated settlement process holds the settlement credential (OD-51)`,
+      );
+    }
+    if (givenOperatorUrl) {
+      throw new ConfigError(
+        `OPERATOR_DATABASE_URL must not be set for ${role}: only the dedicated operator process holds the billing-operator credential (OD-51)`,
+      );
+    }
+  }
+  /* Outside production: a process that runs jobs may run the settlement jobs too, and a process
+   * given the operator credential serves the operator plan routes itself. An API-only process has
+   * no job runner, so it never opens the settlement credential. */
+  const settlementDatabaseUrl = workerEnabled ? givenSettlementUrl : null;
+  for (const key of ['SETTLEMENT_DATABASE_URL', 'OPERATOR_DATABASE_URL'] as const) {
+    const value = env[key];
+    if (value && (value === env['DATABASE_URL'] || value === env['WORKER_DATABASE_URL'])) {
+      throw new ConfigError(
+        `${key} must be its own credential, not DATABASE_URL or WORKER_DATABASE_URL`,
+      );
+    }
   }
 
   return {
@@ -1419,6 +1470,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
      * the runner BYPASSRLS. Absent means absent.
      */
     workerDatabaseUrl: env['WORKER_DATABASE_URL'] ?? null,
+    settlementDatabaseUrl,
+    /* Empty reads as absent: the production worker service blanks it (docker-compose.prod.yml),
+     * because a process that never serves the operator route should not hold the credential. */
+    operatorDatabaseUrl: givenOperatorUrl,
     workerEnabled,
     /**
      * Four lanes by default: enough that one slow model call does not stall
@@ -1517,22 +1572,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     paystackSecretKey: env['PAYSTACK_SECRET_KEY'] ?? '',
     paystackBaseUrl: providerBaseUrl(env, 'PAYSTACK_BASE_URL', PAYSTACK_API, isProduction),
     paystackPlatformConfirmed: env['REKODA_PAYSTACK_PLATFORM_CONFIRMED'] === '1',
+    stagingTools: stagingToolsFlag(env),
     monoSecretKey: env['MONO_SECRET_KEY'] ?? '',
     monoBaseUrl: providerBaseUrl(env, 'MONO_BASE_URL', MONO_API, isProduction),
     connectionKey: optionalHexKey(env, 'CONNECTION_KEY'),
     metaAccessToken: env['META_ACCESS_TOKEN'] ?? '',
     metaPhoneNumberId: env['META_PHONE_NUMBER_ID'] ?? '',
     metaGraphVersion: env['META_GRAPH_VERSION'] ?? 'v21.0',
-    metaOtpTemplate: env['META_OTP_TEMPLATE'] || null,
-    metaOtpTemplateLocale: env['META_OTP_TEMPLATE_LOCALE'] || DEFAULT_TEMPLATE_LOCALE,
-    metaBillingTemplate: env['META_BILLING_TEMPLATE'] || null,
-    metaBillingTemplateLocale: env['META_BILLING_TEMPLATE_LOCALE'] || DEFAULT_TEMPLATE_LOCALE,
-    metaRetentionTemplate: env['META_RETENTION_TEMPLATE'] || null,
-    metaRetentionTemplateLocale: env['META_RETENTION_TEMPLATE_LOCALE'] || DEFAULT_TEMPLATE_LOCALE,
-    metaDocumentTemplate: env['META_DOCUMENT_TEMPLATE'] || null,
-    metaDocumentTemplateLocale: env['META_DOCUMENT_TEMPLATE_LOCALE'] || DEFAULT_TEMPLATE_LOCALE,
-    metaTrialTemplate: env['META_TRIAL_TEMPLATE'] || null,
-    metaTrialTemplateLocale: env['META_TRIAL_TEMPLATE_LOCALE'] || DEFAULT_TEMPLATE_LOCALE,
+    metaTemplates: configuredTemplates(env),
     metaServiceReplyCostMicros: nonNegativeInteger(env, 'META_SERVICE_REPLY_COST_MICROS', 0),
     metaWabaRegisteredInNigeria: env['META_WABA_REGISTERED_IN_NIGERIA'] !== 'false',
     planCatalogueReads: env['REKODA_PLAN_CATALOGUE_READS'] !== '0',

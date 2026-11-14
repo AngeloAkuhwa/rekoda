@@ -25,7 +25,16 @@ import {
   billingQuoteResponse,
 } from '@rekoda/contracts';
 import { createDb, sql, subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import {
+  applyFixtureCycle,
+  migrate,
+  requireUrls,
+  truncateAll,
+  type Urls,
+  settlementDb,
+  startGraceForTest,
+  applicationDb,
+} from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { sweepRenewals } from './renewal-sweep.js';
 import { applySettledCharge, BillingService } from './billing.service.js';
@@ -106,7 +115,7 @@ async function onboard(phone: string) {
 /** Put a business on a paid cycle, as a settled first purchase would. */
 async function putOnPlan(businessId: string, plan: string, cycleStart: Date, renewsAt: Date) {
   await withBusiness(db, businessId, (tx) =>
-    subscriptionsRepo.applyCycle(tx, businessId, {
+    applyFixtureCycle(tx, businessId, {
       plan,
       cycleStartedAt: cycleStart,
       renewsAt,
@@ -276,7 +285,7 @@ describe('a charge the provider confirmed', () => {
     const { businessId, auth } = await onboard('+2348177100008');
     const now = new Date('2026-08-15T10:00:00Z');
 
-    await withBusiness(db, businessId, (tx) =>
+    await withBusiness(applicationDb(), businessId, (tx) =>
       subscriptionsRepo.openCharge(tx, {
         businessId,
         kind: 'first_purchase',
@@ -288,7 +297,7 @@ describe('a charge the provider confirmed', () => {
       }),
     );
 
-    const applied = await withBusiness(db, businessId, (tx) =>
+    const applied = await withBusiness(settlementDb(), businessId, (tx) =>
       applySettledCharge(tx, {
         businessId,
         reference: 'RKD-SUB-20260815-AAAAAA',
@@ -305,7 +314,7 @@ describe('a charge the provider confirmed', () => {
     expect(overview.charges[0]?.status).toBe('paid');
 
     // The provider delivering the webhook twice must not extend the cycle.
-    const replay = await withBusiness(db, businessId, (tx) =>
+    const replay = await withBusiness(settlementDb(), businessId, (tx) =>
       applySettledCharge(tx, {
         businessId,
         reference: 'RKD-SUB-20260815-AAAAAA',
@@ -323,7 +332,7 @@ describe('a charge the provider confirmed', () => {
     const now = new Date();
     await putOnPlan(businessId, 'chat', now, new Date(now.getTime() + 30 * 86_400_000));
 
-    await withBusiness(db, businessId, (tx) =>
+    await withBusiness(applicationDb(), businessId, (tx) =>
       subscriptionsRepo.openCharge(tx, {
         businessId,
         kind: 'add_on',
@@ -332,7 +341,7 @@ describe('a charge the provider confirmed', () => {
         reference: 'RKD-PACK-20260815-BBBBBB',
       }),
     );
-    await withBusiness(db, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       applySettledCharge(tx, {
         businessId,
         reference: 'RKD-PACK-20260815-BBBBBB',
@@ -359,18 +368,23 @@ describe('the cycle a payment starts', () => {
     reference: string,
     when: Date,
   ) {
-    await withBusiness(db, businessId, (tx) =>
-      subscriptionsRepo.openCharge(tx, {
+    await withBusiness(applicationDb(), businessId, async (tx) => {
+      /* As the sweep opens it: a renewal's period starts at the current paid-to date (0206). */
+      const start =
+        kind === 'renewal'
+          ? ((await subscriptionsRepo.subscriptionFor(tx, businessId))?.planExpiresAt ?? when)
+          : when;
+      return subscriptionsRepo.openCharge(tx, {
         businessId,
         kind,
         plan,
         amountK: PLAN_PRICES_K[plan as 'chat'],
         reference,
-        periodStart: when,
-        periodEnd: new Date(when.getTime() + 30 * 86_400_000),
-      }),
-    );
-    await withBusiness(db, businessId, (tx) =>
+        periodStart: start,
+        periodEnd: new Date(start.getTime() + 30 * 86_400_000),
+      });
+    });
+    await withBusiness(settlementDb(), businessId, (tx) =>
       applySettledCharge(tx, { businessId, reference, providerReference: 'ps_x', when, config }),
     );
     return withBusiness(db, businessId, (tx) => subscriptionsRepo.subscriptionFor(tx, businessId));
@@ -387,7 +401,7 @@ describe('the cycle a payment starts', () => {
       new Date('2026-07-03T09:00:00Z'),
     );
     await withBusiness(db, businessId, async (tx) => {
-      await subscriptionsRepo.markRenewalFailed(tx, businessId, new Date('2026-07-03T09:00:00Z'));
+      await startGraceForTest(tx, businessId, new Date('2026-07-03T09:00:00Z'));
       await subscriptionsRepo.expireSubscription(tx, businessId, 'system:grace-sweep', 'grace');
     });
 

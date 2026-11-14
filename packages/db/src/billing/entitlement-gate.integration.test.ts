@@ -13,7 +13,14 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db } from '../client.js';
 import { entitlementsRepo, identity, usageRepo } from '../index.js';
-import { migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
+import {
+  migrate,
+  requireUrls,
+  truncateAll,
+  type Urls,
+  setPlanAsOwner,
+  ownerDb as grantDb,
+} from '../testing.js';
 
 let urls: Urls;
 let db: Db;
@@ -42,9 +49,7 @@ async function seedOn(plan: string, phone: string): Promise<string> {
   });
   /* Pinned: `businesses` carries RLS, so an unpinned UPDATE matches no row
    * and silently leaves every business on `trial`. */
-  await withBusiness(db, business.id, (tx) =>
-    tx.execute(sql`UPDATE businesses SET plan = ${plan} WHERE id = ${business.id}::uuid`),
-  );
+  await setPlanAsOwner(urls, business.id, { plan });
   return business.id;
 }
 
@@ -117,7 +122,7 @@ describe('an explicit grant on top of the plan', () => {
     const businessId = await seedOn('chat', '+2348090300040');
     expect(await gate(businessId, 'REKODA_INTEGRATE')).not.toBeNull();
 
-    await withBusiness(db, businessId, (tx) =>
+    await withBusiness(grantDb(), businessId, (tx) =>
       entitlementsRepo.grant(tx, {
         businessId,
         entitlementKey: 'REKODA_INTEGRATE',
@@ -136,7 +141,7 @@ describe('an explicit grant on top of the plan', () => {
    */
   it('is not taken away by what the plan implies', async () => {
     const businessId = await seedOn('integrate', '+2348090300041');
-    await withBusiness(db, businessId, (tx) =>
+    await withBusiness(grantDb(), businessId, (tx) =>
       entitlementsRepo.grant(tx, {
         businessId,
         entitlementKey: 'REKODA_CHAT',
@@ -149,7 +154,7 @@ describe('an explicit grant on top of the plan', () => {
 
   it('stops applying once revoked', async () => {
     const businessId = await seedOn('chat', '+2348090300042');
-    await withBusiness(db, businessId, (tx) =>
+    await withBusiness(grantDb(), businessId, (tx) =>
       entitlementsRepo.grant(tx, {
         businessId,
         entitlementKey: 'REKODA_INTEGRATE',
@@ -157,7 +162,7 @@ describe('an explicit grant on top of the plan', () => {
         grantedBy: 'user:support',
       }),
     );
-    await withBusiness(db, businessId, (tx) =>
+    await withBusiness(grantDb(), businessId, (tx) =>
       entitlementsRepo.revoke(tx, businessId, 'REKODA_INTEGRATE'),
     );
     expect(await gate(businessId, 'REKODA_INTEGRATE')).not.toBeNull();

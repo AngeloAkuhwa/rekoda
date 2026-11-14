@@ -62,11 +62,27 @@ const VIEWS: Record<State, PaymentRecordView> = {
   },
 };
 
-/** Why a confirmed payment was not applied, in words that invent no event the merchant did not cause. */
-const NOT_APPLIED_WHY: Record<NonNullable<BillingPaymentRecord['notAppliedReason']>, string> = {
+/**
+ * Why a confirmed payment was not applied, in words that invent no event the merchant did not cause.
+ * A reason that mentions a review has a second wording for after the review, so a reviewed record
+ * never also says the review is still going on.
+ */
+const NOT_APPLIED_WHY: Record<
+  NonNullable<BillingPaymentRecord['notAppliedReason']>,
+  string | { pending: string; reviewed: string }
+> = {
   plan_changed: 'It was not applied because your plan changed after this payment was started.',
   period_ended: 'It was not applied because your billing period had already ended when it arrived.',
-  under_review: 'It was not applied and is being reviewed.',
+  paid_twice: {
+    pending:
+      'It was not applied because this top-up had already been paid for. No extra units were added, and our team is reviewing this second payment.',
+    reviewed:
+      'It was not applied because this top-up had already been paid for. No extra units were added.',
+  },
+  under_review: {
+    pending: 'It was not applied and is being reviewed.',
+    reviewed: 'It was not applied.',
+  },
 };
 
 type ViewInput = Pick<
@@ -86,7 +102,13 @@ export function paymentRecordView(record: ViewInput): PaymentRecordView {
   }
   const view = VIEWS[record.state];
   let summary = view.summary;
-  const why = record.notAppliedReason ? NOT_APPLIED_WHY[record.notAppliedReason] : null;
+  const reason = record.notAppliedReason ? NOT_APPLIED_WHY[record.notAppliedReason] : null;
+  const why =
+    reason === null || typeof reason === 'string'
+      ? reason
+      : record.reconciled
+        ? reason.reviewed
+        : reason.pending;
   if (record.state === 'paid_not_applied') {
     if (why) summary = summary.replace('but it was not applied to your plan.', `but ${lower(why)}`);
     if (record.reconciled)
@@ -112,3 +134,62 @@ const lower = (sentence: string): string => sentence.charAt(0).toLowerCase() + s
 /** The sentence under every record: factual, and neither a tax invoice nor a tax receipt. */
 export const PAYMENT_RECORD_NOTICE =
   'This is a record of a payment to Rekoda. It is not a VAT invoice, tax invoice or tax receipt.';
+
+type TimesInput = Pick<
+  BillingPaymentRecord,
+  | 'kind'
+  | 'state'
+  | 'noCharge'
+  | 'providerPaidAt'
+  | 'paidAt'
+  | 'providerSettledAt'
+  | 'unitsCreditedAt'
+  | 'failedAt'
+>;
+
+/**
+ * The record's timeline (OD-40), in order: each row only when its time exists, and each a
+ * distinct fact, never one time standing in for another. Lagos formatting stays with the page.
+ */
+export function paymentRecordTimes(record: TimesInput): Array<{ label: string; iso: string }> {
+  const rows: Array<{ label: string; iso: string }> = [];
+  if (record.providerPaidAt && !record.noCharge) {
+    rows.push({ label: 'Paid at Paystack on', iso: record.providerPaidAt });
+  }
+  if (record.paidAt) {
+    rows.push({
+      label: record.noCharge ? 'Applied on' : 'Payment recorded by Rekoda on',
+      iso: record.paidAt,
+    });
+  }
+  if (record.providerSettledAt && !record.noCharge) {
+    rows.push({ label: 'Settled by Paystack on', iso: record.providerSettledAt });
+  }
+  if (record.kind === 'add_on' && record.unitsCreditedAt) {
+    rows.push({ label: 'Units added on', iso: record.unitsCreditedAt });
+  }
+  if (record.failedAt && record.state === 'failed') {
+    rows.push({ label: 'Reported failed on', iso: record.failedAt });
+  }
+  return rows;
+}
+
+/** Lagos, so a merchant reads the date and time they would write on a form. */
+export function lagosDateTime(iso: string): string {
+  return new Date(iso).toLocaleString('en-GB', {
+    timeZone: 'Africa/Lagos',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+/** The timeline as the page shows it: each label with its Lagos date and time. */
+export function paymentRecordTimeline(record: TimesInput): Array<{ label: string; shown: string }> {
+  return paymentRecordTimes(record).map((row) => ({
+    label: row.label,
+    shown: `${lagosDateTime(row.iso)} (Lagos time)`,
+  }));
+}

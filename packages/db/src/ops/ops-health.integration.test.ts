@@ -11,11 +11,25 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db } from '../client.js';
 import { events, identity, jobsRepo } from '../index.js';
-import { migrate, requireUrls, storedEventId, truncateAll, type Urls } from '../testing.js';
+import {
+  migrate,
+  ownerDb,
+  requireUrls,
+  storedEventId,
+  truncateAll,
+  type Urls,
+} from '../testing.js';
 
 let urls: Urls;
 let appDb: Db;
 let workerDb: Db;
+
+/** The operator's generic resolve: found on the worker credential, written on the application
+ * credential under the event's own business (migration 0204). True when it resolved. */
+const operatorResolve = (id: string, resolution: string, actor: string): Promise<boolean> =>
+  events
+    .resolveExceptionAsOperator(appDb, workerDb, id, resolution, actor)
+    .then((outcome) => outcome === 'resolved');
 let closeApp: () => Promise<void>;
 let closeWorker: () => Promise<void>;
 
@@ -131,7 +145,8 @@ describe('queue health', () => {
     await withBusiness(appDb, ada, (tx) =>
       jobsRepo.enqueue(tx, { businessId: ada, kind: 'inbound.message', delayMs: 3_600_000 }),
     );
-    await workerDb.execute(
+    /* created_at is not a queue-progress column the worker may write (0212): staged as the owner. */
+    await ownerDb().execute(
       sql`UPDATE jobs SET created_at = now() - interval '3 hours', updated_at = now()`,
     );
 
@@ -146,7 +161,7 @@ describe('queue health', () => {
     await withBusiness(appDb, ada, (tx) =>
       jobsRepo.enqueue(tx, { businessId: ada, kind: 'inbound.message' }),
     );
-    await workerDb.execute(
+    await ownerDb().execute(
       sql`UPDATE jobs SET state = 'running', created_at = now() - interval '5 hours'`,
     );
 
@@ -208,21 +223,21 @@ describe('event health', () => {
   it('counts an unprocessed event as stale only after 10 minutes (G-26 review)', async () => {
     // A burst still being processed is not a backlog; an event that has sat
     // unprocessed is.
-    await events.recordEvent(workerDb, {
+    await events.recordEvent(appDb, {
       provider: 'paystack',
       eventType: 'charge.success',
       externalId: 'evt.fresh',
       payload: { sealed: true },
       businessId: null,
     });
-    await events.recordEvent(workerDb, {
+    await events.recordEvent(appDb, {
       provider: 'paystack',
       eventType: 'charge.success',
       externalId: 'evt.stale',
       payload: { sealed: true },
       businessId: null,
     });
-    await workerDb.execute(sql`
+    await appDb.execute(sql`
       UPDATE external_events SET created_at = now() - interval '11 minutes'
       WHERE external_id = 'evt.stale'
     `);
@@ -234,7 +249,7 @@ describe('event health', () => {
   });
 
   it('separates unprocessed from flagged, per provider', async () => {
-    const waiting = await events.recordEvent(workerDb, {
+    const waiting = await events.recordEvent(appDb, {
       provider: 'meta',
       eventType: 'message.text',
       externalId: 'wamid.waiting',
@@ -242,7 +257,7 @@ describe('event health', () => {
       businessId: null,
     });
     const flagged = storedEventId(
-      await events.recordEvent(workerDb, {
+      await events.recordEvent(appDb, {
         provider: 'meta',
         eventType: 'message.text',
         externalId: 'wamid.flagged',
@@ -250,7 +265,7 @@ describe('event health', () => {
         businessId: null,
       }),
     );
-    await events.recordEvent(workerDb, {
+    await events.recordEvent(appDb, {
       provider: 'paystack',
       eventType: 'charge.success',
       externalId: 'evt.other',
@@ -280,8 +295,8 @@ describe('event health', () => {
       businessId: null,
     };
 
-    const first = await events.recordEvent(workerDb, delivery);
-    const second = await events.recordEvent(workerDb, delivery);
+    const first = await events.recordEvent(appDb, delivery);
+    const second = await events.recordEvent(appDb, delivery);
 
     expect(first.isNew).toBe(true);
     /* Exactly this, key for key. The duplicate branch used to follow the
@@ -294,7 +309,7 @@ describe('event health', () => {
 
   it('does not count a clean processed event as flagged', async () => {
     const clean = storedEventId(
-      await events.recordEvent(workerDb, {
+      await events.recordEvent(appDb, {
         provider: 'meta',
         eventType: 'message.text',
         externalId: 'wamid.clean',
@@ -319,7 +334,7 @@ describe('event health', () => {
 describe('the exception queue an operator works', () => {
   async function record(externalId: string, provider: 'meta' | 'paystack' = 'paystack') {
     return storedEventId(
-      await events.recordEvent(workerDb, {
+      await events.recordEvent(appDb, {
         provider,
         eventType: 'charge.success',
         externalId,
@@ -352,9 +367,7 @@ describe('the exception queue an operator works', () => {
     const flagged = await record('evt.worked');
     await events.markProcessed(workerDb, flagged, 'foreign_reference');
 
-    expect(await events.resolveEvent(workerDb, flagged, 'not our merchant', 'operator:ada')).toBe(
-      true,
-    );
+    expect(await operatorResolve(flagged, 'not our merchant', 'operator:ada')).toBe(true);
 
     const queue = await events.exceptionQueue(workerDb);
     expect(queue.flagged).toHaveLength(0);
@@ -376,7 +389,7 @@ describe('the exception queue an operator works', () => {
 
   it('stamps a stuck event processed, so no sweep keeps picking it up', async () => {
     const stuck = await record('evt.abandoned');
-    await events.resolveEvent(workerDb, stuck, 'reference was never ours', 'operator:ada');
+    await operatorResolve(stuck, 'reference was never ours', 'operator:ada');
 
     const queue = await events.exceptionQueue(workerDb);
     expect(queue.stuck).toHaveLength(0);
@@ -388,8 +401,8 @@ describe('the exception queue an operator works', () => {
     await events.markProcessed(workerDb, flagged, 'unknown_reference');
 
     const outcomes = await Promise.all([
-      events.resolveEvent(workerDb, flagged, 'first decision', 'operator:ada'),
-      events.resolveEvent(workerDb, flagged, 'second decision', 'operator:bola'),
+      operatorResolve(flagged, 'first decision', 'operator:ada'),
+      operatorResolve(flagged, 'second decision', 'operator:bola'),
     ]);
     expect(outcomes.filter(Boolean)).toHaveLength(1);
 
@@ -402,12 +415,7 @@ describe('the exception queue an operator works', () => {
 
   it('answers false for an id that is not open', async () => {
     expect(
-      await events.resolveEvent(
-        workerDb,
-        '00000000-0000-0000-0000-000000000000',
-        'nothing here',
-        'operator:ada',
-      ),
+      await operatorResolve('00000000-0000-0000-0000-000000000000', 'nothing here', 'operator:ada'),
     ).toBe(false);
   });
 
@@ -421,7 +429,7 @@ describe('the exception queue an operator works', () => {
     await events.markProcessed(workerDb, flagged, 'unknown_reference');
     expect((await events.eventHealth(workerDb, 'meta')).flagged).toBe(1);
 
-    await events.resolveEvent(workerDb, flagged, 'handled by hand', 'operator:ada');
+    await operatorResolve(flagged, 'handled by hand', 'operator:ada');
     expect((await events.eventHealth(workerDb, 'meta')).flagged).toBe(0);
   });
 });

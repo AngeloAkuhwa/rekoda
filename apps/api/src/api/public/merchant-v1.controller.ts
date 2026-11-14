@@ -194,6 +194,15 @@ export class MerchantV1Controller {
     const fingerprint = publicSaleInput(parsed.data, caller, request.api!.applicationId);
 
     return withBusiness(this.db, businessId, async (tx) => {
+      /* A customer id is the caller's input, so it is checked against THIS business before any
+       * claim or booking: another business's customer and a customer that does not exist are the
+       * same 400, and nothing is written for either. */
+      if (
+        parsed.data.customerId &&
+        !(await merchantApiRepo.customerBelongsToBusiness(tx, businessId, parsed.data.customerId))
+      ) {
+        throw new BadRequestException('unknown customerId');
+      }
       const run = await this.commandBus.run(
         tx,
         {

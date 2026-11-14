@@ -7,8 +7,8 @@
  * merchant's forwarding — run the identical work.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { billingRepo, createDb, identity, sql, withBusiness, type Db } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import { createDb, identity, sql, withBusiness, type Db } from '@rekoda/db';
+import { migrate, requireUrls, truncateAll, type Urls, setPlanForTest } from '@rekoda/db/testing';
 import { CommandBus } from './command-bus.service.js';
 import { RiskPolicyService } from '../risk/risk-policy.service.js';
 import { placeOrderWork, type PlaceOrderCmdInput } from './order-commands.js';
@@ -46,7 +46,7 @@ async function seedBusiness(entitle = true, phone = '+2348160000001'): Promise<s
   });
   /* A trial holds both halves; `chat` is the plan that does NOT sell
    * automatic order capture, which is what the refusal test needs. */
-  await billingRepo.setPlan(appDb, {
+  await setPlanForTest(appDb, {
     businessId: business.id,
     plan: entitle ? 'integrate' : 'chat',
     expiresAt: null,

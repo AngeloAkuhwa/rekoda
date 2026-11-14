@@ -12,8 +12,12 @@ Every command runs from the checkout (`/opt/rekoda`) as the deploy user. The
 examples use one alias:
 
 ```bash
-alias dc='docker compose -f docker-compose.prod.yml'
+alias dc='docker compose --env-file .env -f docker-compose.prod.yml'
 ```
+
+`--env-file .env` names the checkout's `.env` as compose's only settings file: without it an
+exported `COMPOSE_ENV_FILES` would replace `.env`. `scripts/deploy-staging.sh` defines `dc` the
+same way.
 
 ## What runs, and who holds which credential
 
@@ -23,17 +27,21 @@ alias dc='docker compose -f docker-compose.prod.yml'
 | `web`        | `rekoda-web:<release>` | `next start`, with the site's public values baked in at build                                                                                |
 | `api`        | `rekoda-app:<release>` | The API, `REKODA_WORKER=0`                                                                                                                   |
 | `worker`     | `rekoda-app:<release>` | The same image, `REKODA_WORKER=1`: the job runner and the sweeps                                                                             |
+| `operator`   | `rekoda-app:<release>` | `node dist/operator-main.js` (OD-51): the operator plan routes, and the only holder of the billing-operator credential                       |
+| `settlement` | `rekoda-app:<release>` | `node dist/settlement-main.js` (OD-51): the two settlement job kinds, and the only holder of the settlement credential                       |
 | `postgres`   | `postgres:16-alpine`   | The database, on the `pgdata` volume, on a network with no route in or out and no published port                                             |
 | `migrate`    | `rekoda-app:<release>` | A one-off, never started by `up`: `dc run --rm -T migrate` (migrations, then the runtime passwords)                                          |
 | `edge-check` | `rekoda-app:<release>` | A one-shot `up` runs before Caddy (`node dist/edge-check.js`): exits 0 when `REKODA_EDGE_PROXIES` is safe, 1 when it refuses it (G-74, G-75) |
 
-| Credential                                     | Lives in                          | Reaches                                                                                                         |
-| ---------------------------------------------- | --------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| PostgreSQL owner (superuser, migrations)       | `secrets/postgres_owner_password` | `postgres` and the `migrate` job. Never `api`, `worker` or `web`                                                |
-| `rekoda_app` (RLS-bound)                       | `DATABASE_URL` in `.env`          | `api`, `worker`; `migrate`, which loads all of `.env` to set the role's password from it                        |
-| `rekoda_worker` (claims jobs across tenants)   | `WORKER_DATABASE_URL` in `.env`   | `worker`, and `api` (it routes a message on a merchant's own WhatsApp number to its tenant); `migrate` as above |
-| Application secrets (`VAULT_KEY` and the rest) | `.env`                            | `api`, `worker`, and the `migrate` job (the same image, run on demand)                                          |
-| Anything at all                                | nowhere else                      | `web` receives only `NODE_ENV`, `REKODA_API_URL` and `REKODA_WEB_URL`                                           |
+| Credential                                     | Lives in                            | Reaches                                                                                                                                                                                                                                                                                                                                                                                 |
+| ---------------------------------------------- | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| PostgreSQL owner (superuser, migrations)       | `secrets/postgres_owner_password`   | `postgres` and the `migrate` job. Never `api`, `worker` or `web`                                                                                                                                                                                                                                                                                                                        |
+| `rekoda_app` (RLS-bound)                       | `DATABASE_URL` in `.env`            | `api`, `worker`; `migrate`, which loads all of `.env` to set the role's password from it                                                                                                                                                                                                                                                                                                |
+| `rekoda_worker` (claims jobs across tenants)   | `WORKER_DATABASE_URL` in `.env`     | `worker`, and `api` (it routes a message on a merchant's own WhatsApp number to its tenant); `migrate` as above                                                                                                                                                                                                                                                                         |
+| `rekoda_settlement` (OD-37, 0202; OD-51, 0217) | `SETTLEMENT_DATABASE_URL` in `.env` | `settlement` only: compose passes it to that service by name and blanks it for `api` and `worker`, and a production api or worker given it refuses to start; `migrate` as above. The only non-owner role that may mark a charge paid, credit pack units, hold an add-on or apply a paid plan. Since 0217 it no longer acts as `rekoda_app`: it holds exactly the grants settlement uses |
+| `rekoda_billing_operator` (OD-37, 0202; OD-51) | `OPERATOR_DATABASE_URL` in `.env`   | `operator` only: compose passes it to that service by name and blanks it for `api` and `worker`, and a production api or worker given it refuses to start; `migrate` as above. The only role that may run the operator plan writers; since 0211 it holds nothing else (reads `businesses` and `plan_versions`, writes the subscription columns)                                         |
+| Application secrets (`VAULT_KEY` and the rest) | `.env`                              | `api`, `worker`, and the `migrate` job (the same image, run on demand). `settlement` receives `VAULT_KEY` and `PAYSTACK_SECRET_KEY` only; `operator` receives none of them                                                                                                                                                                                                              |
+| Anything at all                                | nowhere else                        | `web` receives only `NODE_ENV`, `REKODA_API_URL` and `REKODA_WEB_URL`                                                                                                                                                                                                                                                                                                                   |
 
 The compose file sets some values itself, whatever `.env` says:
 `NODE_ENV=production` everywhere, `PORT`, `REKODA_WORKER`, the API's
@@ -176,6 +184,9 @@ sed -i 's/^REKODA_RELEASE=.*/REKODA_RELEASE=vX.Y.Z/' .env
 dc build --build-arg REKODA_COMMIT=$(git rev-parse --short HEAD) api   # build BEFORE touching anything live
 dc build --build-arg REKODA_COMMIT=$(git rev-parse --short HEAD) web   # one image at a time: never both at once
 # First PRODUCTION deploy carrying migrations 0175-0178 (G-109): run `dc stop api worker` here first
+# Every deploy carrying 0196 or 0200 (PR B, plan-field boundary, OD-48): run `dc stop api worker` here first, and see "Deploy a release carrying 0196"
+# Every deploy carrying 0216, 0217, 0218, 0220, 0221, 0222 or 0223 (OD-51): run `dc stop api worker operator settlement` here first, and see "Deploy a release carrying 0213 to 0223"
+# ...and after migrate, run the step-8 pre-start database smoke (SMOKE_0196_SQL) as the owner: do not `dc up` unless it prints t
 dc run --rm -T migrate                                             # expand-only migrations, as the owner
 dc up -d --wait                                                    # recreates api, worker and web on the new images
 dc exec caddy caddy reload --config /etc/caddy/Caddyfile            # apply a changed Caddyfile (validated first)
@@ -302,6 +313,9 @@ holding either is a credential at rest. Do not switch one on.
 
 ## Safe restart
 
+- **After a failed deploy of a release carrying 0196 or 0200 do not restart or start the api or worker
+  from the previous release's containers** (`dc start` / `dc restart` would): they are the old code
+  and are refused by the plan-field guard. Fix forward ("Deploy a release carrying 0196").
 - **One service:** `dc restart api` (or `worker`, `web`, `caddy`). Meta and
   Paystack retry a webhook that meets a restart. A stopping worker finishes
   the jobs it holds first (it is given 150 seconds, the api 30), so a restart
@@ -361,6 +375,115 @@ runs against the newer schema. A migration that must itself be reverted is a
 restore from backup, and **there is no backup mechanism yet** (G-02 in
 `docs/REKODA_LAUNCH_READINESS.md`; `backup-restore.md` describes the plan).
 
+**PR B (0193 to 0200).** 0193 (charge provider times), 0194 (`dead_job_exceptions` and its
+worker-only list functions), 0195 (blocked renewals), 0197 (staging tools), 0198 (one column and a third,
+optional argument on `blocked_renewals_ops`) and 0199 (the durable blocked-renewal close cursor: the
+`renewal_block_close_cursor` table and its worker-only functions) are additive; a normal
+roll back keeps them and the older code ignores them. 0200 (the plan writers, OD-37) is not additive:
+it is treated exactly like 0196 below. Their rows are payment evidence and operator
+records: never drop them by hand. Dead payment and billing jobs from before 0194 (or from an old
+worker) are enrolled by the worker's reclaim pass (`jobsRepo.enrolUnrecordedDeaths`), so none is
+left without its merchant notice and operator item.
+
+**0196 is a deliberate compatibility break (owner ruling OD-48, OWN-86): do not roll back past it.**
+0200 (same release, OD-37/OWN-88) replaces the general plan writer `subscription_write_plan` with
+`subscription_apply_paid_charge` and `subscription_operator_set_plan`; a release that still calls the
+removed writer cannot run against it, so everything said here of 0196 applies to 0200 as well.
+Its trigger refuses a direct write of `businesses.plan` / `plan_expires_at`, and every older release
+writes those columns directly, so an older api or worker started against a database that holds 0196
+would have plan changes, renewals and lapses refused (`42501`). Therefore:
+
+- The previous release is **not** a rollback target once 0196 is applied. Do not restart it against
+  that database, and do not remove the guard (`DROP TRIGGER ...`) as a shortcut: the guard is a
+  security control, and no down migration exists or will be written.
+- A failed deploy after 0196 is **fixed forward**: correct the cause and redeploy the new release.
+- If the new release cannot be made to start safely, stop: leave api and worker stopped, record what
+  you saw, and escalate to the owner. The only database rollback is a restore from backup, and there
+  is no backup mechanism yet (G-02); a restore also needs the `rekoda_plan_writer` role
+  (`scripts/restore-drill.sh` creates it). That is an owner decision, never an operator reflex.
+  A restore brings back a database the previous release wrote, so the previous release comes back
+  with it, and before anything starts: stop every writing process, restore, check out the previous
+  commit and set its `REKODA_RELEASE` in `.env`, and only then `dc up -d --wait` (the staging
+  sequence for PR #432 is `docs/runbooks/staging-first-deploy-pr-b.md`, §8, "Rollback").
+- If migration 0196 itself fails, its own transaction rolls back and the database stays as it was.
+  Confirm that **in the database, not only the ledger** before deciding anything: the
+  guard exists if `SELECT 1 FROM pg_trigger WHERE tgname = 'businesses_plan_fields_guard'` returns a
+  row, and 0200 is present if `SELECT to_regprocedure('public.subscription_apply_paid_charge(uuid,text,timestamptz)')`
+  is not null (a process killed between a migration and its `rekoda_migrations` row leaves it applied and
+  unrecorded). Either present means applied; 0196 and 0200 are safe to re-run, so the cure is to correct the
+  cause and fix forward as below (migrate again, then the pre-start smoke, then start), which is
+  also all the script prints. Once migrate has been entered, restarting the previous release is not part of any printed procedure;
+  if you believe it is needed, escalate to the owner first.
+- **By-hand fix-forward** after a failed or interrupted deploy of a release carrying 0196 or 0200 (the
+  automatic staging workflow refuses to run while `/health` is down, so do not wait for it): from
+  `/opt/rekoda`, whose checkout and `.env` are already at the new release, first `dc stop api worker`
+  and confirm `dc ps --status running --services` lists neither (a run killed before its own stop
+  may have left the previous release serving), then correct the cause of the failure, then run
+  `dc run --rm -T migrate`, run the pre-start database smoke of step 8 below (the 0196 and 0200 ledger rows, the
+  enabled update and insert guard triggers, the three plan writers at their exact signatures,
+  `SECURITY DEFINER`, owned by `rekoda_plan_writer`, with the pinned search_path and no PUBLIC
+  execute (and no worker execute of the operator writer), the applied-once trigger on
+  `subscription_charges`, the removed general writer and the test-only
+  fixture writer absent, and neither runtime role a member of the writer role; the script prints the exact query; do not start anything unless it returns `t`), `dc up -d --wait --wait-timeout 300`, reload Caddy,
+  check `/health` names the new release, then remove `.git/rekoda-deploy-staging.state`. Never
+  `dc start api worker` or `git checkout` the previous release: the stopped containers are the old
+  release.
+- 0196 refuses to run if `rekoda_app` or `rekoda_worker` is a member of `rekoda_plan_writer`
+  (directly or through another role): `REVOKE` the membership as the owner, then migrate again.
+
+### Deploy a release carrying 0196
+
+Production and any host not deployed by `scripts/deploy-staging.sh` follow this sequence by hand;
+`deploy-staging.sh` does steps 3 to 9 and 11's `/health` check itself, in this order, and cannot be
+told to skip any of them: whenever the commit carries 0196 or 0200 and the running commit does not, it stops
+the api and worker, checks with `docker compose ps` that neither is running (and refuses to migrate
+otherwise), migrates, then runs the **pre-start database smoke** of steps 6 and 8 as the owner
+(`dc exec -T postgres psql`): the 0196 and 0200 ledger rows, the enabled update and insert guard
+triggers on `businesses`, the three plan writers (exact signature, `SECURITY DEFINER`, owned by
+`rekoda_plan_writer`, pinned search_path, no PUBLIC execute, no worker execute of the operator
+writer), the applied-once trigger on `subscription_charges`, the absence of the removed general writer and of the test-only fixture writer,
+and neither `rekoda_app` nor `rekoda_worker` a member of the writer role. If that query
+fails or cannot run, the script stops **before** `dc up`, with the api and worker still stopped, and
+prints the fix-forward steps; only when it passes does it start the new release and require `/health`
+to name it. Step 10 (a real plan change) and the page and worker-log checks of step 11 need the
+running application and stay manual: on staging they are part of the owner's staging acceptance,
+after the script finishes. Step 2 is the operator's before starting the workflow.
+
+1. Confirm the target host, the running release and the release to deploy.
+2. Confirm the backup and recovery arrangements you rely on exist (G-02: today there are none for
+   production; on staging, say so and accept the risk before continuing).
+3. `dc stop api worker`, so the previous release can no longer write plan fields.
+4. Confirm both have stopped: `dc ps --status running --services` lists neither `api` nor `worker`.
+5. `dc run --rm -T migrate` (applies 0193 to 0200 in order, as the owner).
+6. Verify it succeeded: the command exits 0 and `rekoda_migrations` (or the migrate output) lists
+   `0196_plan_fields_guard` and `0200_plan_writer_boundary`.
+7. The new release's images are already built (build before anything live changes).
+8. Smoke the database before anything starts, as the owner, with the **one query** the script uses:
+   `SMOKE_0196_SQL` in `scripts/deploy-staging.sh` (a failed deploy also prints it, ready to paste
+   as `dc exec -T postgres psql -U rekoda_owner -d rekoda -v ON_ERROR_STOP=1 -tA -c "..."`). It
+   prints a single value: **`t` passes; anything else (`f`, an error, no output) fails.** It is `t`
+   only when all of these hold: the `0196_plan_fields_guard` and `0200_plan_writer_boundary` rows
+   are in `rekoda_migrations`; the triggers `businesses_plan_fields_guard` and
+   `businesses_plan_fields_insert_guard` exist on `businesses` and are enabled (`tgenabled` `O` or
+   `A`); `public.subscription_apply_paid_charge(uuid,text,timestamptz)`,
+   `public.subscription_operator_set_plan(uuid,text,timestamptz,text)` and
+   `public.subscription_expire_plan(uuid,text,text)` each exist at that exact signature, are
+   `SECURITY DEFINER` and are owned by `rekoda_plan_writer`;
+   `public.subscription_write_plan(uuid,text,timestamptz)` (removed by 0200) and
+   `public.test_fixture_set_plan(uuid,text,timestamptz)` (a test-harness-only writer) do **not**
+   exist; neither `rekoda_app` nor `rekoda_worker` is a member of `rekoda_plan_writer`; each of the
+   three writers has `search_path=pg_catalog, public, pg_temp` pinned; PUBLIC cannot execute any of
+   them and `rekoda_worker` cannot execute the operator writer; and the trigger
+   `subscription_charges_applied_once_guard` exists on `subscription_charges` and is enabled; and
+   `rekoda_plan_writer` owns exactly four functions, the three writers and 0197's `staging_move_date`. If it does not print `t`, do not run step 9:
+   fix forward or escalate (above). On staging the script runs this same query itself.
+9. `dc up -d --wait` recreates api, worker and web on the new images (the worker and api start here).
+10. Confirm the new application can change a plan through the sanctioned functions: on staging, the
+    acceptance steps that move a plan; on production, the first renewal or lapse after the deploy is
+    watched in the logs (no `42501`).
+11. Verify `/health` names the release and `ok`, billing and subscription pages load, and the worker
+    log shows its sweeps running without errors.
+
 Migrations 0191 and 0192 are additive and keep data on a manual revert. 0191's
 `email_address_erasures` holds erasure receipts: keep the table, or export its
 rows to the audit records before dropping it. Migration 0192 (`reminder_reply_notices`)
@@ -395,6 +518,299 @@ row count in the deploy notes. Receipt jobs still pending are left to the newer 
 which applies them as it does any receipt. Not recovered: a customer's reply that the
 older release handled is not told to the business afterwards, because the older release
 records no notice for it (the same as before PR A).
+
+### Deploy a release carrying 0202 to 0206 (OD-37 principals, plan durations, event privilege)
+
+Migrations 0202 to 0206 are compatibility breaks like 0196 and 0200 (the previous release settles and
+opens charges on `rekoda_app`, calls the four-argument operator writer and attributes events with a
+direct worker UPDATE, and writes the cycle columns on `rekoda_app`, all refused afterwards), so the
+"Deploy a release carrying 0196" sequence applies unchanged, and `deploy-staging.sh` lists all five. It also refuses, before stopping anything,
+a release carrying 0202 when `.env` lacks either credential or names the wrong role. Two
+things come first, because without them the new release refuses to start (no fallback to
+`DATABASE_URL`, by design):
+
+1. **Add the two credentials to `.env` before the deploy**, each with its own password (never one
+   already used by another role):
+   ```bash
+   openssl rand -hex 32   # once for each
+   # .env:
+   SETTLEMENT_DATABASE_URL=postgres://rekoda_settlement:<password>@postgres:5432/rekoda
+   OPERATOR_DATABASE_URL=postgres://rekoda_billing_operator:<password>@postgres:5432/rekoda
+   ```
+   The migrate job creates both roles (0202) and then sets their passwords from these URLs
+   (`provision.js`); it refuses a URL naming another role, a shared password, or a missing URL
+   before changing anything. Nothing else reads them: never put them in a compose file, a log, an
+   issue or a chat.
+2. **Run the deploy as for 0196** (api and worker stopped, migrate, pre-start smoke, then `up`).
+   The pre-start smoke now also checks, in the database: the 0202 to 0206 ledger rows; that only
+   `rekoda_settlement` may insert a charge; the
+   settlement, pack-credit and cycle-input guard triggers; that the provider writer is 0206's (it
+   binds an upgrade or a renewal to the charge's frozen period); that no runtime role can create in
+   schema `public`; that `rekoda_plan_writer` owns exactly the four
+   expected writer functions, by signature, each with exactly its EXECUTE grantees (provider writer:
+   `rekoda_settlement`; operator writer: `rekoda_billing_operator`; expiry writer: `rekoda_app`,
+   `rekoda_worker`; staging date move: `rekoda_app`); the principals' roles and that no runtime role
+   can become another; and that the worker's `external_events` access is SELECT plus `processed_at`/`error` (on
+   unattributed rows without a pin, and on a pinned business's rows through the ordinary tenant
+   policy) and the attribution function.
+3. After 0206 a renewal or upgrade charge opened for a cycle that has since moved (or opened with no
+   period, before the period was recorded) is not applied when paid: the payment stays `paid` and
+   goes to the operator queue as `subscription_decided_after_charge`, as any stale charge does.
+4. On boot, the api and worker refuse to start if the database holds the test-only fixture writer, or if the settlement or operator connection does not log
+   in as exactly its role, cannot run its own writer, can run the other's, or can become the worker
+   or the plan writer, and if the general credentials can run either reserved writer.
+
+Rotating either password: as in "Rotate a database password", with the variable added to step 1 and
+`dc up -d --wait --force-recreate api worker`.
+
+**Existing rows the duration rules would not accept** (0203 and 0207 do not rewrite them; OD-49).
+Use the release preflight in the next section, not a hand-written query.
+
+### Deploy a release carrying 0207 to 0212 (standard operator periods, release preflight, settlement off the API, worker least privilege, operator principal, review fixes)
+
+0207 and 0209 to 0212 are compatibility breaks like 0196 to 0206: the previous release passes
+operator end dates that 0207 refuses, and opens charges and holds credentials in ways 0209 to 0211
+change. Deploy with the api and worker stopped. `scripts/deploy-staging.sh` lists them and enforces
+the order. 0208 only adds owner-only functions.
+
+Superseded in part by the section after this one: since 0217 the settlement credential belongs
+to the `settlement` service and the operator credential to the `operator` service, not to the
+worker or the api. Step 1 below describes the release that carried 0209.
+
+1. **The settlement credential moves to the worker only (OD-51, 0209).** `.env` keeps
+   `SETTLEMENT_DATABASE_URL`: the worker and the migrate job need it. `docker-compose.prod.yml`
+   blanks it for the `api` service, and a production api process given it refuses to start
+   ("SETTLEMENT_DATABASE_URL must not be set for an API process"). Do not add it back to the api.
+   The production worker listens on loopback only.
+
+   Keep `REKODA_PLAN_CATALOGUE_READS` the same for the api and the worker. From 0215 this is
+   enforced: a process whose setting differs from the pricing source in force refuses to start.
+   Never change the variable on its own; follow "Pricing source" below.
+
+2. `dc run --rm -T migrate`, as before, then the pre-start smoke. The smoke now also checks:
+   - the trial-start, retention-notice and worker-event guards;
+   - the charge guard that lets the application open only a pristine pending charge;
+   - the worker's exact write set;
+   - that no runtime role writes the migration ledger or entitlement grants;
+   - that the operator does not act as `rekoda_app`.
+3. **Release preflight (OD-49), read-only, as the owner, before `up`:**
+
+   ```sh
+   dc run --rm -T migrate sh /repo/deploy/migrate.sh preflight-subscriptions
+   ```
+
+   It prints one JSON report (business ids, plans, reason codes and dates; no names or phones):
+   - exit `0` PASS: no ACTIVE subscription breaks the duration rules (inactive historical rows are
+     listed and do not block);
+   - exit `1` FAIL: at least one active subscription breaks them;
+   - exit `2` could not run: no owner URL, migration 0208 missing, or a role that row-level security
+     would blind.
+
+   Do not continue a release on `1` or `2` without the owner.
+
+4. **Correcting an active row (only on the owner's decision, one business at a time).** Never by
+   hand-written UPDATE. As the owner, inside a transaction, with the owner's written reason:
+
+   ```sql
+   BEGIN;
+   SELECT rekoda_private.correct_subscription_period(
+     '<business id>', '<corrected end, ISO 8601>', 'operator:<who>', '<the owner''s reason>');
+   COMMIT;
+   ```
+
+   The function refuses:
+   - an inactive or already-valid record;
+   - an end that still breaks the rules, or is not in the future;
+   - a missing operator actor, or a reason shorter than 10 characters.
+
+   It never changes the plan. It writes `subscription_period_corrected` to `audit_events` with the
+   original and corrected values and the reason. To end a plan instead, use the operator route with
+   `expired`. Re-run the preflight afterwards.
+
+   A row with no cycle start (`paid_no_cycle_start`), or one whose start is in the future, cannot
+   be corrected this way. Move it with the operator route: `expired`, then a standard period.
+   For `trial_starts_in_future` post `expired` only: the record becomes inactive and passes, and a
+   new trial would again run from the future start (only the owner may change `trial_started_at`,
+   and only on the owner's written decision). `paid_cycle_starts_in_future` clears with `expired`
+   followed by the paid plan, which the writer starts now.
+
+5. **Operator plan changes (OD-50, 0207).** `POST /v1/businesses/plan` takes `expiresAt: null` for
+   a paid plan or a trial: the database writer sets exactly one standard period (one Lagos calendar
+   month or twelve; a trial runs to its own start plus 14 days). A date is refused with 400. To end
+   a plan early, post `expired` (now, or a time not in the future). A re-post of the plan and
+   interval already in force changes nothing.
+
+Rollback past these migrations is a backup restore (G-02), as for 0196 to 0206 (OWN-86).
+
+### Deploy a release carrying 0213 to 0223 (support-review upgrade, pack purchase identity, pricing source, usage meter boundary, settlement and operator processes, reservation closure)
+
+0216, 0217, 0218, 0220 and 0221 are compatibility breaks: the previous release writes `usage_counters`
+directly, which no runtime role may do afterwards, and settles charges in the worker on a role
+0217 narrows. Deploy with every writing process stopped; `scripts/deploy-staging.sh` lists them,
+stops `api`, `worker`, `operator` and `settlement`, and enforces the order. 0213 to 0215 and 0219
+are additive and ship in the same stopped release. Rollback past 0216 is a backup restore (G-02).
+
+This release starts two more services. Before deploying:
+
+1. **Give the operator process its own token audience (OD-51).** Add to `.env`:
+
+   ```sh
+   OPERATOR_BILLING_OIDC_AUDIENCE=<an audience your identity provider issues for plan changes only>
+   ```
+
+   It must differ from `OPERATOR_OIDC_AUDIENCE`: a token the API accepts must not change a plan.
+   `OPERATOR_OIDC_ISSUER` and `OPERATOR_OIDC_JWKS_URL` are shared with the API. The compose file
+   requires all three, `VAULT_KEY`, `SETTLEMENT_DATABASE_URL` and `OPERATOR_DATABASE_URL`, and
+   refuses every command while one is missing; the staging deploy checks them first, before
+   anything is changed. Operators who change plans need a token for the new audience carrying
+   `ops:billing`.
+
+2. **No new connection string, and nothing else moves in `.env`.** It still holds
+   `SETTLEMENT_DATABASE_URL` and `OPERATOR_DATABASE_URL` (the `migrate` job sets those roles'
+   passwords from them). The compose file hands each to its own service by name and blanks both
+   for `api` and `worker`. The `operator` and `settlement` services never load `.env`: each
+   receives a short named list (`scripts/check-deploy.mjs`, `PRIVILEGED`). A value exported in the
+   deploy shell would override `.env` for those two services, so run compose from a clean shell
+   (no exported key, no `COMPOSE_ENV_FILES`) with the `dc` alias above.
+
+3. `dc run --rm -T migrate`, then the pre-start smoke. The smoke now also checks that:
+   - the support-review resolution (0213) runs for the billing operator only, and the request for
+     the application only;
+   - no runtime role writes a usage counter or the reservation ledger;
+   - `rekoda_usage_writer` is NOLOGIN, has no members and owns exactly the usage functions;
+   - a pack's credit time is written by `usage_credit_pack` alone;
+   - the settlement role is not a member of `rekoda_app` and holds exactly its listed grants
+     (0217);
+   - the queue is split by job kind between the worker and settlement (three policies on `jobs`);
+   - a finished job closes its event's usage reservations (the trigger of 0218 is present and
+     enabled, and the refund function refuses a closed reservation);
+   - the support-review resolution refuses after a later merchant schedule (0219);
+   - the application cannot delete a job or rewrite its payload, kind or business, its job state
+     moves are guarded, and the grace clock starts only after the cycle ended (0220);
+   - the operator holds no UPDATE on `businesses` but `updated_at`, and its writer records the
+     whole cycle (0221);
+   - `usage_reserve` spends against the database's own ceiling (`usage_entitlement`) on the meter
+     row the database chooses, `usage_refund` refuses an unbound reservation older than fifteen
+     minutes, and the job and event guards apply to any role inheriting `rekoda_app` or
+     `rekoda_worker` (0222);
+   - settlement sees and settles only the Paystack events its own `billing.process` jobs name and
+     touches only `billing.process` dead-job records (two RESTRICTIVE policies), a settlement job is
+     enqueued with its full retry budget, and every application requeue of a dead job is due now
+     with exactly one more attempt (0223);
+   - a pack charge credits exactly the unit, quantity and meter row it bought, derived in the
+     database, for an amount that is its price; settlement moves a status only out of pending and
+     cannot put a set-aside paid charge back (0224);
+   - the ledger carries the tags 0213 to 0224.
+
+4. 0223 is not a compatibility break either: it narrows only the settlement process this release
+   introduces, and an application write no release makes. It ships in the same stopped window.
+   Nor is 0224: it keeps `usage_credit_pack`'s signature and grants and refuses only a credit
+   that differs from what the charge bought, which this release's settlement never asks for, and
+   it stops settlement clearing a paid charge's set-aside, which no release does.
+
+   Two checks before the window, both read-only:
+   - `PAYSTACK_SECRET_KEY` is set in `.env` (a test key on staging). The settlement process boots
+     without it, reports `/health` ok, and every subscription payment job then fails verify until it
+     dies into the dead-job queue (independent review of `75a8002`, recorded MINOR). On staging,
+     `deploy-staging.sh` now refuses a key that is not `sk_test_...` before building anything, and
+     `scripts/staging-readonly-check.sh` asks the running settlement container for its own key;
+     production has no such script, so check it by hand there.
+   - List Rekoda charges still `pending` (`SELECT reference, kind, created_at FROM
+subscription_charges WHERE status = 'pending'`). A charge opened before 0209 has no `priced_at`
+     and is re-priced at its `created_at`; one whose opening fell either side of Lagos midnight or a
+     catalogue version boundary can be set aside as `price_not_verified` when it is paid. Set aside,
+     never lost: note the list so such a payment is recognised and handled with the duplicate and
+     unapplied-charge procedure.
+
+5. 0222 is not a compatibility break on its own (the previous PR B release reads `usage_reserve`'s
+   results by name and is metered by the stricter ceiling), but it ships with 0216 to 0221 and is
+   applied in the same stopped window. After it, the meter ceiling is ALWAYS the plan catalogue's
+   (the version a business is pinned to, or the one in force), whatever `REKODA_PLAN_CATALOGUE_READS`
+   says: the constants rollback (next section) governs prices, and a catalogue that sells less than
+   the compiled table meters at the catalogue's figure. Check `allowance_versions` before switching
+   to `constants`.
+
+6. 0216 creates the role `rekoda_usage_writer` (NOLOGIN). A restore into an empty cluster needs it
+   first; `scripts/restore-drill.sh` creates it.
+
+7. 0215 seeds the pricing source as `catalogue`. If this deployment runs
+   `REKODA_PLAN_CATALOGUE_READS=0`, the api, worker and settlement processes refuse to start until
+   the source is switched (next section). Staging runs the default and needs nothing.
+
+8. `dc up -d --wait --wait-timeout 300` starts `operator` and `settlement` with the rest. Check:
+   - `dc logs settlement` says `[settlement] job runner started`;
+   - `dc logs operator` says `identity: verified tokens`;
+   - `POST https://<api host>/v1/businesses/plan` with no token answers 401 (the operator process
+     answered; Caddy routes `/v1/businesses/plan` and `/v1/businesses/plan/*` there, and the API
+     itself answers 404 for both).
+
+9. **A support-reviewed upgrade (OD-50, 0213, 0219).** A mid-cycle upgrade sent to support review
+   (OWN-33, OWN-34) is resolved by an operator with a token for the billing audience:
+
+   ```sh
+   curl -sS -X POST https://<api host>/v1/businesses/plan/support-review \
+     -H "authorization: Bearer <operator token>" -H 'content-type: application/json' \
+     -d '{"businessId":"<business id>","plan":"<the plan the merchant asked for>","reason":"<why>"}'
+   ```
+
+   The plan moves and the paid-through date stays exactly as it is. It takes no date; a date or
+   any other extra field is refused with 400. It is refused for a trial, an expired plan, a period
+   that has ended, a plan other than the one the merchant requested, a subscription that changed
+   after the request, and when the merchant scheduled a cancellation or a downgrade after asking
+   (their later decision stands). A repeat returns the first result. `POST /v1/businesses/plan`
+   keeps its standard periods (0207) for every other operator change.
+
+**If settlement is down,** paid charges wait as `billing.process` jobs and nothing is lost: the
+worker cannot claim them (the database refuses it), and they run when `settlement` is back.
+**If the operator process is down,** plan changes answer 502 from Caddy; nothing else is affected. Caddy does not wait for it, so a deploy whose operator will not start (a wrong role, an audience equal to the API's) reports the deploy failed (`up --wait` fails) while the site, the API and the webhooks keep serving: fix the operator's configuration and run `up` again.
+
+**Before checking out this release,** add the new `.env` values first: compose refuses every command (`dc ps` and `dc logs` included) while a name the file requires is missing.
+
+**To roll back past this release,** stop the two new services first (`dc stop operator settlement`): the previous compose file does not know them, so `up` alone leaves them running.
+
+**The database administrator is trusted (OD-51.5).** The PostgreSQL owner, anyone holding
+`secrets/postgres_owner_password`, anyone who can read `.env`, and anyone with a shell on the host
+can read and change everything: no role separation above constrains them. The controls there are
+the host's access list, the file permissions, off-box backups and the record of who deployed.
+
+### Pricing source
+
+Where prices come from (the plan catalogue, or the figures compiled into the release) is one row in
+the database (`billing_pricing_source`, 0215), not each process's own setting. Every api, worker
+and settlement process compares `REKODA_PLAN_CATALOGUE_READS` with that row at start (1 is `catalogue`, 0 is
+`constants`) and refuses to start on a difference. A running process that differs can open no
+charge. Each charge records the source it was priced from, and settlement re-prices it from that
+source.
+
+Show the source in force (changes nothing):
+
+```sh
+dc run --rm -T migrate sh /repo/deploy/migrate.sh pricing-source show
+```
+
+Switch it, for example to the compiled figures while a catalogue migration is repaired. The order
+matters:
+
+1. Stop the api, the worker and settlement (`dc stop api worker settlement`). Switching while
+   they run makes every new plan, pack and renewal charge fail until they restart.
+2. Switch the row, as the owner, with who and why (both are kept in
+   `billing_pricing_source_history`):
+
+   ```sh
+   dc run --rm -T migrate sh /repo/deploy/migrate.sh pricing-source set constants "<who>" "<why>"
+   ```
+
+3. Set `REKODA_PLAN_CATALOGUE_READS` in `.env` to match (0 for `constants`, 1 for `catalogue`).
+4. Start the three (`dc up -d --wait --wait-timeout 300`). All must run the release that ran step 2: for `constants` the
+   row records that release's compiled figures, and a process carrying different figures refuses
+   to start.
+
+Changing `.env` alone, without step 2, stops all three at boot. Switch back the same way with
+`set catalogue`.
+
+Known limit: a charge opened on `constants` and still unpaid when a release with different compiled
+figures is deployed is set aside at settlement as `price_not_verified` (an operator reconciles it).
+Deploy such a release with no pending plan or pack charge.
 
 ## Disk space and image retention (staging)
 
@@ -435,7 +851,76 @@ stopped a checkout part-way and left tracked files empty.
   (`git checkout -- <files>` once space is free and the evidence is kept), then
   follow "An interrupted staging deploy" for the marker.
 
+### Docker cleanup by hand (staging)
+
+For a staging host short of disk outside a deploy (the deploy cleans its own release images; see above). Run as the
+deploy user in `/opt/rekoda`, with `dc` as elsewhere in this runbook. Never during a deploy: check first that
+`.git/rekoda-deploy-staging.state` does not exist and no Deploy staging run is in progress.
+
+**Never, in routine cleanup:** `docker volume rm` or `docker volume prune` (the database is the `pgdata` volume, the
+certificates `caddy_data`), `docker system prune` (with or without `-a` or `--volumes`), `dc down -v`, and
+`docker image prune` (plain dangling images may be a retagged rollback). Never remove `postgres`, `caddy` or `node`
+base images by hand.
+
+1. **Inspect (record the output):**
+
+   ```bash
+   df -h /opt/rekoda /var/lib/docker
+   docker system df
+   docker image ls --format '{{.Repository}}:{{.Tag}} {{.ID}} {{.CreatedSince}} {{.Size}}' | sort
+   docker ps -a --format '{{.Names}} {{.Image}} {{.Status}}'
+   docker builder du | tail -n 3
+   ```
+
+2. **What must stay:** the running release (`sed -n 's/^REKODA_RELEASE=//p' .env`), the rollback release
+   (`cat .git/rekoda-deploy-staging.rollback`), and every image any container uses, running or stopped:
+
+   ```bash
+   CURRENT=$(sed -n 's/^REKODA_RELEASE=//p' .env)
+   ROLLBACK=$(cat .git/rekoda-deploy-staging.rollback 2>/dev/null || true)
+   IN_USE=$(docker ps -a --format '{{.Image}}' | sort -u)
+   echo "keep: $CURRENT $ROLLBACK"; echo "$IN_USE"
+   ```
+
+3. **Build cache** (safe; the next build is slower): `docker builder prune -f --filter until=168h` (older than a week).
+   If still short: `docker builder prune -f`.
+
+4. **Superseded staging release tags only** (prints each before removing; skips the kept and in-use ones):
+
+   ```bash
+   [ -n "$CURRENT" ] && [ -n "$ROLLBACK" ] || { echo 'release or rollback unknown: remove no release image'; false; } &&
+   for img in $(docker image ls --format '{{.Repository}}:{{.Tag}}' | grep -E '^rekoda-(app|web):staging-[0-9a-f]{7,40}$'); do
+     tag=${img#*:}
+     [ "$tag" = "$CURRENT" ] || [ "$tag" = "$ROLLBACK" ] && continue
+     printf '%s\n' "$IN_USE" | grep -qxF "$img" && continue
+     echo "remove $img"; docker image rm "$img"
+   done
+   ```
+
+   If `.git/rekoda-deploy-staging.rollback` is missing or empty, this step removes nothing: without a recorded
+   rollback the previous release cannot be told apart, so keep every release and free space with step 3 only.
+   `docker image rm` refuses an image a container still uses; that refusal is correct, leave it.
+
+5. **Stopped containers that are not part of the stack** (left by a manual `docker run`): list with
+   `docker ps -a --filter status=exited --format '{{.Names}} {{.Image}} {{.Label "com.docker.compose.project"}}'` and
+   remove only those whose project label is not `rekoda-prod`, by name: `docker rm <name>`. Never remove the exited
+   `edge-check` or a `migrate` container of `rekoda-prod` by hand.
+
+6. **Verify (record the output):**
+
+   ```bash
+   df -h /opt/rekoda /var/lib/docker          # at least 8 GiB free on each before a deploy
+   docker system df
+   docker image ls 'rekoda-*'                  # the running and rollback releases are still listed
+   docker volume ls                            # rekoda-prod_pgdata, rekoda-prod_caddy_data, rekoda-prod_caddy_config unchanged
+   dc ps                                       # every service as before
+   curl -fsS https://staging-api.myrekoda.com/health
+   ```
+
 ## An interrupted staging deploy
+
+Run the commands below from a clean login shell, never one where a key or URL was exported: compose reads `${NAME}`
+from the shell before `.env`, and only `scripts/deploy-staging.sh` clears those names itself.
 
 `scripts/deploy-staging.sh` changes the checkout and the `REKODA_RELEASE` line
 of `.env` **before** it builds, so a run stopped there leaves them naming a
@@ -489,8 +974,10 @@ hand, from `/opt/rekoda` as the deploy user, only if **every** check agrees:
    `sed -i 's/^REKODA_RELEASE=.*/REKODA_RELEASE=<running release>/' .env`.
    No `down -v`, no prune, no `reset --hard`, no migration rollback. Migrations
    are expand-only, so a migration that ran before the kill stays and the running
-   release works against it. For a `live` marker, then remove
-   `.git/rekoda-deploy-staging.state`.
+   release works against it. **Except 0196 and 0200 (OWN-86):** if the interrupted release
+   carries either, the running release does NOT work against a database that holds it. Do not
+   run this step; fix forward as "Deploy a release carrying 0196" says. For a `live`
+   marker, then remove `.git/rekoda-deploy-staging.state`.
 5. Re-run step 1; checkout, `.env` and `/health` must now agree. Then start the
    manual "Deploy staging" workflow from `main` (blank `sha` deploys its tip).
 
@@ -621,6 +1108,13 @@ production anyway.
 
 ### Staging deploys itself; production never does
 
+**Where staging's settings live (owner decision, 14 Nov 2026).** Every staging application setting (database
+URLs, keys, Paystack, Meta, Resend, OIDC, flags) is entered by hand on the host, in `/opt/rekoda/.env` (and the
+backup settings in `/etc/rekoda/backup.env`). None of it is stored in GitHub. The GitHub `staging` environment
+holds only what the workflow needs to reach the host (`STAGING_HOST`, `STAGING_USER`, `STAGING_SSH_PRIVATE_KEY`,
+`STAGING_KNOWN_HOSTS`); `scripts/check-staging-deploy.mjs` fails CI if the workflow reads any other secret. The
+first staging deploy of PR B follows `docs/runbooks/staging-first-deploy-pr-b.md`.
+
 Staging follows `main`. When the CI workflow succeeds on a push to `main`,
 `.github/workflows/deploy-staging.yml` connects to the staging host over SSH
 and runs `scripts/deploy-staging.sh <sha>` there, for the exact commit CI
@@ -655,7 +1149,13 @@ the host-local ones `.dockerignore` keeps out of every image (`.env` and
 `backups/`, a top-level `*.log`), because the build context is the checkout
 and anything else would be built into staging without CI having seen it,
 refuse a host whose `.env` does not name `https://staging-api.myrekoda.com` as
-`REKODA_API_PUBLIC_URL`, refuse unless `/health` answers `status` ok,
+`REKODA_API_PUBLIC_URL`, refuse a host whose `.env` `PAYSTACK_SECRET_KEY` is not a Paystack TEST key
+(`sk_test_...`; missing, empty, live or malformed are refused, the key is never printed) or that sets
+`REKODA_PAYSTACK_PLATFORM_CONFIRMED=1` (OWN-70; the settlement process would otherwise start healthy with no
+key), refuse any non-comment line mentioning either Paystack name other than one plain `NAME=` line (compose
+also reads `export`, indents, a YAML-style `NAME: value` and a statement right after a closing quote), require
+the key to be `sk_test_` and letters and digits only and the §47 flag to be absent, empty or `0`, clear from its own shell every name the compose file interpolates (except
+`REKODA_RELEASE`, which it pins) so `.env` is the only source, refuse unless `/health` answers `status` ok,
 `database` up, the `REKODA_RELEASE` in `.env`, and a commit of at least
 seven characters that the checked-out commit starts with (the running
 release is the one a failure's rollback would name, not merely what the
@@ -669,7 +1169,10 @@ back" says), check out the commit
 (detached), change only the `REKODA_RELEASE` line of `.env`, build the api
 image and then the web image (`dc build ... api`, `dc build ... web`, never
 both at once, and refused below `MIN_MEM_KB` of available memory, 1 GiB by
-default, raised with `REKODA_DEPLOY_MIN_MEM_KB`), `dc run --rm -T migrate`, `dc up -d --wait --wait-timeout 300`, reload the
+default, raised with `REKODA_DEPLOY_MIN_MEM_KB`), `dc run --rm -T migrate` (preceded by `dc stop api worker`, a check that both stopped, and
+the refusal to migrate while either runs, whenever the commit carries a compatibility-breaking migration,
+today 0196 and 0200; OWN-86), for those the pre-start database smoke (ledger rows, guard triggers,
+plan writers, absent general and fixture writers, role boundary; a failure stops before `up`), `dc up -d --wait --wait-timeout 300`, reload the
 Caddyfile, confirm the edge network, and require
 `https://staging-api.myrekoda.com/health` to answer `status` ok, `database`
 up, and this release and commit. It ends with `dc ps`, then removes
@@ -682,15 +1185,34 @@ takes away one of the properties above.
 What a failure leaves:
 
 - **Before migrate** (a refused check, a failed fetch or build): nothing
-  live changed. The script puts the checkout and `REKODA_RELEASE` back to the
-  running release, so the host is as it was.
+  live changed. While the deploy is still being prepared the script puts the checkout and
+  `REKODA_RELEASE` back to the running release, so the host is as it was; once it is live it only
+  prints the commands for you to run. **Exception (0196 and 0200):** if stopping
+  the api and worker fails or cannot be proved, nothing was migrated but their
+  stopped state is unverified; the script says so. Check `dc ps`. Confirm
+  first that the guard trigger `businesses_plan_fields_guard` is absent in the database and that
+  `subscription_write_plan(uuid,text,timestamptz)` still exists; if so, the previous release is
+  still compatible with it. Then run the commands the script printed (it prints them; it does not run them): they put the
+  checkout and `.env` back to the previous release (`git checkout <previous sha>`, the `sed` line,
+  `dc up -d --wait`, the Caddy reload), which also starts the stopped api and worker. Do not leave
+  the checkout at the new release with the old containers running. This is the only case where the
+  previous release may be started; once migrate was entered, never.
 - **At or after migrate:** the stack may be part-way to the new release.
   The script prints the exact rollback commands (the previous commit and
   release) and `dc ps -a`, and exits non-zero. Read `dc logs <service>` on the
   host; the workflow log never holds container logs. Then roll forward with a
   fixed commit, or roll back as "Roll back" says, with the previous commit in
   place of `vPREVIOUS` and `staging-<its short sha>` as the release. Those
-  images are still on the host.
+  images are still on the host. **Exception (OWN-86): for a release carrying
+  0196 or 0200, once migrate has been entered the script prints no rollback commands.**
+  Migrations commit one file at a time, so 0196 or 0200 may already be applied, and the
+  previous release must never be restarted against a database that holds it.
+  Check the database, not only `rekoda_migrations` (the guard trigger and the 0200 writer, as
+  "Deploy a release carrying 0196" says), fix forward, and escalate if unsure.
+  If the **pre-start database smoke** failed, migrate finished but nothing was
+  started: the api and worker are still stopped. Correct the cause, run
+  `dc run --rm -T migrate`, run the smoke query the script printed again, and
+  run `dc up` only when it returns `t`.
 
 Two deployments never overlap: the workflow runs one at a time and waits
 rather than cancelling, and the script holds a lock
@@ -755,6 +1277,19 @@ only says a dependency failed, and the line is in `dc logs edge-check`:
   three plus `R2_BUCKET` (G-40);
   `REKODA_RELEASE` and `REKODA_COMMIT` must be short tokens;
   each `REKODA_COMMAND_*` must be unset, `1` or `0` (OD-4).
+- **Operator and settlement (OD-51):** each requires its own database
+  credential and must connect as its own role (`rekoda_billing_operator`,
+  `rekoda_settlement`), which must not be SUPERUSER, BYPASSRLS or a member
+  of another runtime role; each refuses, by name, any credential or key that
+  belongs to another process (`DATABASE_URL`, `WORKER_DATABASE_URL`, the
+  other privileged URL, the OTP pepper, provider keys and the rest); the
+  operator needs `OPERATOR_OIDC_ISSUER`, `OPERATOR_OIDC_JWKS_URL` and an
+  `OPERATOR_BILLING_OIDC_AUDIENCE` different from the API's; settlement
+  needs `VAULT_KEY`, refuses `PAYSTACK_BASE_URL`, and checks its
+  `REKODA_PLAN_CATALOGUE_READS` against the pricing source in force.
+  The api and the worker refuse `SETTLEMENT_DATABASE_URL` and
+  `OPERATOR_DATABASE_URL`. Lines are in `dc logs operator` and
+  `dc logs settlement`.
 - **The edge** (`edge-check`, before caddy starts): `REKODA_EDGE_PROXIES`
   must not trust effectively the whole internet (G-74), nor name
   `private_ranges` or any range holding the edge network's gateway,

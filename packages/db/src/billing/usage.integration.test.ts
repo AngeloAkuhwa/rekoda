@@ -13,8 +13,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db } from '../client.js';
 import { billingRepo, events, identity, usageRepo } from '../index.js';
-import { migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
-import { USAGE_UNITS, allowanceFor } from '@rekoda/core';
+import { migrate, requireUrls, truncateAll, type Urls, setPlanAsOwner } from '../testing.js';
+import { creditBonusForTest, setPlanForTest, settlementDb, operatorDb } from '../testing.js';
+import { USAGE_UNITS, allowanceFor, usagePeriod } from '@rekoda/core';
 
 let urls: Urls;
 let db: Db;
@@ -44,13 +45,12 @@ async function seedBusiness(): Promise<string> {
   return business.id;
 }
 
-const PERIOD = '2026-08';
+/* The month in use now: since 0222 the database meters a paid unit on the current Lagos month. */
+const PERIOD = usagePeriod(new Date());
 
 /** Put a business on a plan directly, as a settled charge would. */
 async function setPlanOnRow(businessId: string, plan: string) {
-  await withBusiness(db, businessId, (tx) =>
-    tx.execute(sql`UPDATE businesses SET plan = ${plan} WHERE id = ${businessId}::uuid`),
-  );
+  await setPlanAsOwner(urls, businessId, { plan });
 }
 
 const consume = (businessId: string, allowance: number, n = 1) =>
@@ -89,12 +89,9 @@ describe('the atomic gate', () => {
     expect(await consume(businessId, 2)).toBe(true);
     expect(await consume(businessId, 2)).toBe(false); // exhausted at plan allowance
 
-    // What the M4 billing event will do after a VERIFIED top-up payment.
-    await withBusiness(db, businessId, (tx) =>
-      tx.execute(sql`
-        UPDATE usage_counters SET bonus = 3
-        WHERE business_id = ${businessId}::uuid AND period = ${PERIOD} AND unit = 'AI_ACTIONS'
-      `),
+    // What the M4 billing event will do after a VERIFIED top-up payment (settlement only, OD-37).
+    await withBusiness(settlementDb(), businessId, (tx) =>
+      creditBonusForTest(tx, businessId, PERIOD, 'AI_ACTIONS', 3),
     );
 
     expect(await consume(businessId, 2)).toBe(true); // doorway reopened
@@ -106,50 +103,66 @@ describe('the atomic gate', () => {
   it('refunds floor at zero and give back exactly what was taken', async () => {
     const businessId = await seedBusiness();
     await setPlanOnRow(businessId, 'chat');
-    await consume(businessId, 5);
-    await consume(businessId, 5);
+    const reserve = () =>
+      withBusiness(db, businessId, (tx) =>
+        usageRepo.reserveUnit(tx, businessId, PERIOD, 'AI_ACTIONS', 5),
+      );
+    const refund = (meter: usageRepo.MeterRow, n?: number) =>
+      withBusiness(db, businessId, (tx) =>
+        usageRepo.refundUnit(tx, businessId, meter, 'AI_ACTIONS', n),
+      );
+    const first = await reserve();
+    const second = await reserve();
 
-    await withBusiness(db, businessId, (tx) =>
-      usageRepo.refundUnit(tx, businessId, usageRepo.monthMeter(PERIOD), 'AI_ACTIONS'),
-    );
+    expect(await refund(first.meter)).toBe(1);
     const [row] = await withBusiness(db, businessId, (tx) =>
       usageRepo.usageFor(tx, businessId, PERIOD),
     );
     expect(row?.used).toBe(1);
 
-    // Refunding more than was ever taken cannot mint credit.
-    await withBusiness(db, businessId, (tx) =>
-      usageRepo.refundUnit(tx, businessId, usageRepo.monthMeter(PERIOD), 'AI_ACTIONS', 99),
-    );
+    // Refunding more than was ever taken cannot mint credit: a reservation already returned gives
+    // nothing more, and the other gives back the one unit it spent however many are asked for
+    // (OD-51.4, migration 0216). A row name with no reservation returns nothing at all.
+    expect(await refund(first.meter, 99)).toBe(0);
+    expect(await refund(usageRepo.monthMeter(PERIOD), 99)).toBe(0);
+    expect(await refund(second.meter, 99)).toBe(1);
+    expect(await refund(second.meter, 99)).toBe(0);
     const [floored] = await withBusiness(db, businessId, (tx) =>
       usageRepo.usageFor(tx, businessId, PERIOD),
     );
     expect(floored?.used).toBe(0);
   });
 
-  it('keeps months separate — a new period is a fresh meter', async () => {
+  it('keeps months separate, and no label opens a fresh meter early (0222)', async () => {
     const businessId = await seedBusiness();
     await setPlanOnRow(businessId, 'chat');
     expect(await consume(businessId, 1)).toBe(true);
     expect(await consume(businessId, 1)).toBe(false);
 
-    const nextMonth = await withBusiness(db, businessId, (tx) =>
-      usageRepo.consumeUnit(tx, businessId, '2026-09', 'AI_ACTIONS', 1),
+    /* A month that has not started is not a fresh allowance: the database meters the spend on
+     * the current month, which is spent. (Before 0222 any label was a new counter row.) */
+    const laterLabel = await withBusiness(db, businessId, (tx) =>
+      usageRepo.consumeUnit(tx, businessId, '2099-09', 'AI_ACTIONS', 1),
     );
-    expect(nextMonth).toBe(true);
+    expect(laterLabel).toBe(false);
+    /* Months are separate rows: usage on an earlier month's row does not count against this one. */
+    const other = await seedBusiness();
+    await setPlanOnRow(other, 'chat');
+    const owner = createDb(urls.owner, { max: 1 });
+    try {
+      await owner.db.execute(sql`INSERT INTO usage_counters (business_id, period, unit, used)
+                                 VALUES (${other}::uuid, '2020-01', 'AI_ACTIONS', 400)`);
+    } finally {
+      await owner.close();
+    }
+    expect(await consume(other, 1)).toBe(true);
   });
 });
 
 describe('the trial clock (docs/pricing-model.md)', () => {
   /** Move a business's plan and expiry directly, as an operator or time would. */
   async function setPlanRow(businessId: string, plan: string, expiresAt: Date | null) {
-    await withBusiness(db, businessId, (tx) =>
-      tx.execute(sql`
-        UPDATE businesses
-        SET plan = ${plan}, plan_expires_at = ${expiresAt ? expiresAt.toISOString() : null}::timestamptz
-        WHERE id = ${businessId}::uuid
-      `),
-    );
+    await setPlanAsOwner(urls, businessId, { plan, planExpiresAt: expiresAt });
   }
 
   const planOf = (businessId: string, now?: Date) =>
@@ -201,12 +214,14 @@ describe('the trial clock (docs/pricing-model.md)', () => {
 describe('plan changes and upgrade requests', () => {
   it('moves a business onto a plan and records who did it', async () => {
     const businessId = await seedBusiness();
-    const expiresAt = new Date(Date.now() + 365 * 86_400_000);
 
-    const changed = await billingRepo.setPlan(db, {
+    // The real operator path: the billing-operator principal and an annual plan, which runs its
+    // standard twelve months from now (OD-37, OD-50).
+    const changed = await billingRepo.setPlan(operatorDb(), {
       businessId,
       plan: 'chat',
-      expiresAt,
+      expiresAt: null,
+      billingInterval: 'annual',
       actor: 'operator:angelo',
     });
     expect(changed).toBe(true);
@@ -227,7 +242,7 @@ describe('plan changes and upgrade requests', () => {
   });
 
   it('answers false for a business that does not exist, changing nothing', async () => {
-    const changed = await billingRepo.setPlan(db, {
+    const changed = await billingRepo.setPlan(operatorDb(), {
       businessId: '2b0f9b6a-0000-4000-8000-000000000000',
       plan: 'complete',
       expiresAt: null,
@@ -272,6 +287,9 @@ describe('spending an amount, not a tally', () => {
 
   beforeEach(async () => {
     businessId = await seedBusiness();
+    /* Complete sells 120 minutes (7,200 seconds): room for every allowance below, which since 0222
+     * can only lower the database's own ceiling. */
+    await setPlanOnRow(businessId, 'complete');
   });
 
   const spend = (allowance: number, n: number) =>
@@ -334,19 +352,48 @@ describe('the metered vocabulary (spec 4.2)', () => {
     businessId = await seedBusiness();
   });
 
+  /* Through `usage_reserve`, the only way a runtime role writes a counter since migration 0216
+   * (OD-51.4): the function inserts the unit name it is given, so the CHECK is what refuses a
+   * name outside the vocabulary. The table owner's direct write meets the same CHECK. */
   const write = (unit: string) =>
     withBusiness(db, businessId, (tx) =>
       tx.execute(sql`
-        INSERT INTO usage_counters (business_id, period, unit, used)
-        VALUES (${businessId}::uuid, ${PERIOD}, ${unit}, 1)
+        SELECT * FROM usage_reserve(${businessId}::uuid, ${PERIOD}, ${unit}, 5, 1, false)
       `),
     );
+  const truncateUnit = async (unit: string) => {
+    const owner = createDb(urls.owner, { max: 1 });
+    try {
+      await owner.db.execute(sql`DELETE FROM usage_counters
+                                 WHERE business_id = ${businessId}::uuid AND unit = ${unit}`);
+    } finally {
+      await owner.close();
+    }
+  };
+  const writeAsOwner = async (unit: string) => {
+    const owner = createDb(urls.owner, { max: 1 });
+    try {
+      await owner.db.execute(sql`
+        INSERT INTO usage_counters (business_id, period, unit, used)
+        VALUES (${businessId}::uuid, ${PERIOD}, ${unit}, 1)`);
+    } finally {
+      await owner.close();
+    }
+  };
 
   it('holds every one of the canonical seventeen', async () => {
     expect(USAGE_UNITS).toHaveLength(17);
+    /* Every canonical name is accepted by the function (granted or refused by the business's own
+     * ceiling since 0222, never an error), and the column holds every one of them. */
     for (const unit of USAGE_UNITS) {
-      await expect(write(unit), `${unit} is writable`).resolves.toBeDefined();
+      await expect(write(unit), `${unit} is accepted`).resolves.toBeDefined();
     }
+    await Promise.all(
+      [...USAGE_UNITS].map(async (unit) => {
+        await truncateUnit(unit);
+        await writeAsOwner(unit);
+      }),
+    );
     const rows = await withBusiness(db, businessId, (tx) =>
       tx.execute<{ n: number }>(
         sql`SELECT count(*)::int AS n FROM usage_counters WHERE business_id = ${businessId}::uuid`,
@@ -358,12 +405,14 @@ describe('the metered vocabulary (spec 4.2)', () => {
   it.each(['messages', 'voice_seconds', 'documents', 'documents_understood', 'orders'])(
     'refuses the retired name %s',
     async (retired) => {
-      await expect(write(retired)).rejects.toThrow();
+      await expect(write(retired)).rejects.toMatchObject({ cause: { code: '23514' } });
+      await expect(writeAsOwner(retired)).rejects.toMatchObject({ cause: { code: '23514' } });
     },
   );
 
   it('refuses a name nobody has ever metered', async () => {
-    await expect(write('TOKENS')).rejects.toThrow();
+    await expect(write('TOKENS')).rejects.toMatchObject({ cause: { code: '23514' } });
+    await expect(writeAsOwner('TOKENS')).rejects.toMatchObject({ cause: { code: '23514' } });
   });
 
   /**

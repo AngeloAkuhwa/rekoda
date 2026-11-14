@@ -18,6 +18,7 @@ import { customersRepo, identity, issueRepo } from '../index.js';
 import { migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
 import { decryptFacet, encryptFacet, matchKeyFor, normaliseFacet } from '@rekoda/core/vault';
 import { generateCustomerToken } from '@rekoda/core/privacy';
+import { createCustomerRetrying } from './customer.fixtures.js';
 
 const VAULT_KEY = 'a'.repeat(64);
 const MATCH_KEY = 'c'.repeat(64);
@@ -179,20 +180,15 @@ describe('erasure', () => {
  */
 describe('linking two customers', () => {
   /** A bare customer holding one facet, as the gateway mints one. */
-  async function mintCustomer(businessId: string, facet: 'phone' | 'email', value: string) {
-    return customersRepo.createCustomerWithIdentities(
-      db,
-      businessId,
-      generateCustomerToken(random),
-      [
-        {
-          facet,
-          ciphertext: encryptFacet(value, VAULT_KEY),
-          matchKey: matchKeyFor(businessId, facet, normaliseFacet(facet, value), MATCH_KEY),
-        },
-      ],
-    );
-  }
+  /* Retries a token collision, as production does (customer.fixtures.ts). */
+  const mintCustomer = (businessId: string, facet: 'phone' | 'email', value: string) =>
+    createCustomerRetrying(db, businessId, [
+      {
+        facet,
+        ciphertext: encryptFacet(value, VAULT_KEY),
+        matchKey: matchKeyFor(businessId, facet, normaliseFacet(facet, value), MATCH_KEY),
+      },
+    ]);
 
   const link = (businessId: string, survivorId: string, orphanId: string) =>
     withBusiness(db, businessId, (tx) =>

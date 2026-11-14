@@ -1,6 +1,7 @@
 /**
- * WhatsApp template settings at boot (OD-41(b)). A name or language Meta cannot have approved is
- * refused everywhere, without echoing the value; in production a grace or trial template needs an
+ * WhatsApp template settings at boot (OD-41(b), OWN-93). The configured name and language are used
+ * exactly as given, with no default for either; a template set without its language, or a name or
+ * language Meta cannot have approved, is refused everywhere, without echoing the value; in production a grace or trial template needs an
  * https billing page to link to. Unset slots do not stop a boot (the sender refuses those messages
  * as not sent, and the read-only staging check reports them).
  */
@@ -20,54 +21,86 @@ const PROD = {
   REKODA_TRUSTED_WEB: '172.30.10.11',
 } as NodeJS.ProcessEnv;
 
+/* Synthetic settings (OWN-93): arbitrary names and languages, never the owner's real templates. */
 const ALL_FIVE = {
-  META_OTP_TEMPLATE: 'rekoda_login_otp',
-  META_BILLING_TEMPLATE: 'rekoda_billing_grace_notice',
-  META_RETENTION_TEMPLATE: 'rekoda_retention_notice',
-  META_DOCUMENT_TEMPLATE: 'rekoda_document_ready',
-  META_TRIAL_TEMPLATE: 'rekoda_trial_ending',
-  META_TRIAL_TEMPLATE_LOCALE: 'en',
+  META_OTP_TEMPLATE: 'shop_login_code_2027',
+  META_OTP_TEMPLATE_LOCALE: 'en_US',
+  META_BILLING_TEMPLATE: 'grace_period_heads_up',
+  META_BILLING_TEMPLATE_LOCALE: 'ha',
+  META_RETENTION_TEMPLATE: 'account_cleanup_warning',
+  META_RETENTION_TEMPLATE_LOCALE: 'fr',
+  META_DOCUMENT_TEMPLATE: 'paperwork_ready_v7',
+  META_DOCUMENT_TEMPLATE_LOCALE: 'en',
+  META_TRIAL_TEMPLATE: 'my_custom_trial_template',
+  META_TRIAL_TEMPLATE_LOCALE: 'pt_BR',
 };
 
 describe('template names and languages', () => {
-  it('loads the five agreed templates with their languages', () => {
-    const config = loadConfig({ ...BASE, ...ALL_FIVE, META_OTP_TEMPLATE_LOCALE: 'en_US' });
-    expect(config.metaOtpTemplate).toBe('rekoda_login_otp');
-    expect(config.metaOtpTemplateLocale).toBe('en_US');
-    expect(config.metaBillingTemplate).toBe('rekoda_billing_grace_notice');
-    expect(config.metaRetentionTemplate).toBe('rekoda_retention_notice');
-    expect(config.metaDocumentTemplate).toBe('rekoda_document_ready');
-    expect(config.metaTrialTemplate).toBe('rekoda_trial_ending');
-    expect(config.metaTrialTemplateLocale).toBe('en');
-    // An unset language is English, as before.
-    expect(config.metaBillingTemplateLocale).toBe('en');
-  });
-
-  it('treats an empty language as unset: en, as a copied .env.example has it', () => {
-    const config = loadConfig({
-      ...BASE,
-      META_TRIAL_TEMPLATE_LOCALE: '',
-      META_OTP_TEMPLATE_LOCALE: '',
+  it('loads each slot with exactly the configured name and language', () => {
+    const config = loadConfig({ ...BASE, ...ALL_FIVE });
+    expect(config.metaTemplates).toEqual({
+      otp: { name: 'shop_login_code_2027', locale: 'en_US' },
+      billing: { name: 'grace_period_heads_up', locale: 'ha' },
+      retention: { name: 'account_cleanup_warning', locale: 'fr' },
+      document: { name: 'paperwork_ready_v7', locale: 'en' },
+      trial: { name: 'my_custom_trial_template', locale: 'pt_BR' },
     });
-    expect(config.metaTrialTemplateLocale).toBe('en');
-    expect(config.metaOtpTemplateLocale).toBe('en');
   });
 
-  it('boots with every slot unset (the sender refuses those messages, it never sends free text)', () => {
-    const config = loadConfig({ ...BASE });
-    expect(config.metaTrialTemplate).toBeNull();
-    expect(config.metaBillingTemplate).toBeNull();
+  it('boots with every slot unset or empty, and configures none (no default name or language)', () => {
+    for (const env of [
+      { ...BASE },
+      {
+        ...BASE,
+        META_TRIAL_TEMPLATE: '',
+        META_TRIAL_TEMPLATE_LOCALE: '',
+        META_OTP_TEMPLATE: '',
+        META_OTP_TEMPLATE_LOCALE: '',
+      },
+    ]) {
+      expect(loadConfig(env).metaTemplates).toEqual({
+        otp: null,
+        billing: null,
+        retention: null,
+        document: null,
+        trial: null,
+      });
+    }
   });
 
   it.each([
-    ['META_TRIAL_TEMPLATE', 'Rekoda Trial Ending'],
-    ['META_BILLING_TEMPLATE', 'rekoda-billing'],
-    ['META_DOCUMENT_TEMPLATE', 'rekoda_document_ready '],
-    ['META_OTP_TEMPLATE', 'rekoda_login_otp;drop'],
+    'META_OTP_TEMPLATE',
+    'META_BILLING_TEMPLATE',
+    'META_RETENTION_TEMPLATE',
+    'META_DOCUMENT_TEMPLATE',
+    'META_TRIAL_TEMPLATE',
+  ])('refuses %s without its language instead of assuming one', (key) => {
+    const env = { ...BASE, ...ALL_FIVE } as NodeJS.ProcessEnv;
+    delete env[`${key}_LOCALE`];
+    expect(() => loadConfig(env)).toThrow(
+      new RegExp(`^${key}_LOCALE must be set when ${key} is set`),
+    );
+    expect(() => loadConfig({ ...env, [`${key}_LOCALE`]: '' })).toThrow(
+      new RegExp(`^${key}_LOCALE must be set`),
+    );
+  });
+
+  it('boots with a language set for an unset template (inert; the staging check reports it)', () => {
+    expect(
+      loadConfig({ ...BASE, META_RETENTION_TEMPLATE_LOCALE: 'fr' }).metaTemplates.retention,
+    ).toBeNull();
+  });
+
+  it.each([
+    ['META_TRIAL_TEMPLATE', 'Trial Ending Soon'],
+    ['META_BILLING_TEMPLATE', 'grace-notice'],
+    ['META_DOCUMENT_TEMPLATE', 'paperwork_ready '],
+    ['META_OTP_TEMPLATE', 'signin_code;drop'],
   ])('refuses a malformed %s and does not echo it', (key, value) => {
-    expect(() => loadConfig({ ...BASE, [key]: value })).toThrow(new RegExp(`^${key} must be`));
+    const env = { ...BASE, [key]: value, [`${key}_LOCALE`]: 'en' };
+    expect(() => loadConfig(env)).toThrow(new RegExp(`^${key} must be`));
     try {
-      loadConfig({ ...BASE, [key]: value });
+      loadConfig(env);
     } catch (e) {
       expect(String(e)).not.toContain(value);
     }
@@ -87,7 +120,11 @@ describe('the billing link in the grace and trial templates', () => {
   it('in production, refuses a trial or billing template with no https REKODA_WEB_URL', () => {
     for (const key of ['META_TRIAL_TEMPLATE', 'META_BILLING_TEMPLATE']) {
       for (const web of [undefined, 'http://staging.myrekoda.com', 'not a url']) {
-        const env = { ...PROD, [key]: 'rekoda_trial_ending' } as NodeJS.ProcessEnv;
+        const env = {
+          ...PROD,
+          [key]: 'any_template',
+          [`${key}_LOCALE`]: 'en',
+        } as NodeJS.ProcessEnv;
         if (web !== undefined) env['REKODA_WEB_URL'] = web;
         expect(() => loadConfig(env)).toThrow(/REKODA_WEB_URL is not an https:\/\/ origin/);
       }
@@ -97,14 +134,22 @@ describe('the billing link in the grace and trial templates', () => {
   it('in production, boots with both templates and the staging origin', () => {
     const config = loadConfig({
       ...PROD,
-      META_TRIAL_TEMPLATE: 'rekoda_trial_ending',
-      META_BILLING_TEMPLATE: 'rekoda_billing_grace_notice',
-      REKODA_WEB_URL: 'https://staging.myrekoda.com',
+      META_TRIAL_TEMPLATE: 'any_trial_template',
+      META_TRIAL_TEMPLATE_LOCALE: 'en',
+      META_BILLING_TEMPLATE: 'any_grace_template',
+      META_BILLING_TEMPLATE_LOCALE: 'en',
+      REKODA_WEB_URL: 'https://app.example.test',
     });
-    expect(config.webUrl).toBe('https://staging.myrekoda.com');
+    expect(config.webUrl).toBe('https://app.example.test');
   });
 
   it('outside production, boots without an origin (the sender refuses those notices as not sent)', () => {
-    expect(() => loadConfig({ ...BASE, META_TRIAL_TEMPLATE: 'rekoda_trial_ending' })).not.toThrow();
+    expect(() =>
+      loadConfig({
+        ...BASE,
+        META_TRIAL_TEMPLATE: 'any_trial_template',
+        META_TRIAL_TEMPLATE_LOCALE: 'en',
+      }),
+    ).not.toThrow();
   });
 });

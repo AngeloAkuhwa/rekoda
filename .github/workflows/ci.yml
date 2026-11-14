@@ -89,7 +89,7 @@ jobs:
       # images run as non-root and are built from no secret (G-01).
       - name: Deployment files keep their shape
         if: steps.ws.outputs.present == 'true'
-        run: node --test scripts/check-deploy.test.mjs && node scripts/check-deploy.mjs
+        run: node --test scripts/check-deploy.test.mjs scripts/check-deploy-privileged.test.mjs && node scripts/check-deploy.mjs
       # The vendored design skills (.claude/skills, SOURCES.md) stay what was
       # reviewed: each folder hashes to its recorded value and no ignore rule
       # drops part of one, as `data/` once did to Impeccable's font index.
@@ -116,7 +116,7 @@ jobs:
         run: |
           bash -n scripts/deploy-staging.sh
           bash -n scripts/staging-readonly-check.sh
-          node --test scripts/check-staging-deploy.test.mjs scripts/deploy-staging-interrupt.test.mjs scripts/staging-readonly-check.test.mjs scripts/staging-readonly-check.services.test.mjs scripts/staging-readonly-check.templates.test.mjs && node scripts/check-staging-deploy.mjs
+          node --test scripts/check-staging-deploy.test.mjs scripts/check-staging-deploy.tools.test.mjs scripts/deploy-staging-interrupt.test.mjs scripts/deploy-staging-compat.test.mjs scripts/deploy-staging-envfile.test.mjs scripts/staging-readonly-check.test.mjs scripts/staging-readonly-check.services.test.mjs scripts/staging-readonly-check.templates.test.mjs && node scripts/check-staging-deploy.mjs
       # One Node version, and an LTS. `.nvmrc` is the source of truth; this
       # checks engines, every @types/node, AND the version actually running,
       # because a project can be consistent in four files and still be tested
@@ -300,6 +300,11 @@ jobs:
       # running both roles through one connection string would make that
       # assertion pass for the wrong reason (ADR 0022).
       WORKER_DATABASE_URL: postgres://rekoda_worker@127.0.0.1:5432/rekoda
+      # OD-37 (migration 0202): the settlement and billing-operator principals, each its own
+      # connection string, so a test that settles or changes a plan through the general credential
+      # fails for the right reason.
+      SETTLEMENT_DATABASE_URL: postgres://rekoda_settlement@127.0.0.1:5432/rekoda
+      OPERATOR_DATABASE_URL: postgres://rekoda_billing_operator@127.0.0.1:5432/rekoda
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7

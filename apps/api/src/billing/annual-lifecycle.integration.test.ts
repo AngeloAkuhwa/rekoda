@@ -28,12 +28,14 @@ import {
   type Db,
 } from '@rekoda/db';
 import {
+  applyFixtureCycle,
   migrate,
   requireUrls,
   resetPlanCatalogue,
   truncateAll,
   type Urls,
 } from '@rekoda/db/testing';
+import { settlementDb } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { sweepRenewals } from './renewal-sweep.js';
 import { sweepGracePeriods } from './grace-sweep.js';
@@ -154,7 +156,7 @@ const chargesOf = async (businessId: string) =>
 
 /** Settle a charge the way the webhook job does. */
 const pay = (businessId: string, reference: string, when: Date) =>
-  withBusiness(db, businessId, (tx) =>
+  withBusiness(settlementDb(), businessId, (tx) =>
     applySettledCharge(tx, {
       businessId,
       reference,
@@ -173,7 +175,7 @@ async function putOnPlan(
 ) {
   const anchor = new Date(start.getTime() + 3_600_000).getUTCDate();
   await withBusiness(db, businessId, async (tx) => {
-    await subscriptionsRepo.applyCycle(tx, businessId, {
+    await applyFixtureCycle(tx, businessId, {
       plan,
       cycleStartedAt: start,
       renewsAt: addInterval(start, interval, anchor),
@@ -345,7 +347,7 @@ describe('a yearly renewal nobody pays', () => {
 describe('money returned on a yearly charge', () => {
   async function paidYear() {
     const { businessId } = await onboard();
-    const now = new Date('2026-11-02T09:00:00Z');
+    const now = new Date(); // priced now: the database bounds a charge's pricing time to its opening (0209)
     const answer = await billing().changePlan(businessId, 'chat', now, 'annual');
     if (answer.state !== 'payment_required') throw new Error(`got ${answer.state}`);
     await pay(businessId, answer.reference, now);

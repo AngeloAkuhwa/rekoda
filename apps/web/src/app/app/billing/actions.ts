@@ -34,6 +34,9 @@ async function confirmPlanChangeUnguarded(formData: FormData): Promise<void> {
     redirect(`/app/billing?done=${formData.get('undo') ? 'undone' : 'scheduled'}`);
   }
   if (answer.state === 'applied') redirect('/app/billing?done=applied');
+  /* A zero-priced upgrade is switched on by Rekoda's settlement worker (OD-51); it normally lands
+   * within seconds, and the page says so rather than claiming it already has. */
+  if (answer.state === 'processing') redirect('/app/billing?done=processing');
   if (answer.state === 'payment_required') {
     redirect(`/app/billing?pay=${encodeURIComponent(answer.reference)}`);
   }

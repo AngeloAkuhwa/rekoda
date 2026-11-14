@@ -29,6 +29,7 @@ import {
   useMetaWebhookHarness,
   workerDb,
 } from './meta-webhook.fixtures.js';
+import { setPlanForTest } from '@rekoda/db/testing';
 
 useMetaWebhookHarness();
 
@@ -328,7 +329,7 @@ describe('the trial clock and the upgrade door', () => {
 
   /** Age the trial past its date, as the full trial length would. */
   async function expireTrial(businessId: string) {
-    await billingRepo.setPlan(db, {
+    await setPlanForTest(db, {
       businessId,
       plan: 'trial',
       expiresAt: new Date(Date.now() - 1_000),
@@ -380,7 +381,7 @@ describe('the trial clock and the upgrade door', () => {
     const business = await seedMerchant('+2348031234567', 'Ada Fashion');
     await expireTrial(business.id);
 
-    await billingRepo.setPlan(db, {
+    await setPlanForTest(db, {
       businessId: business.id,
       plan: 'chat',
       expiresAt: new Date(Date.now() + 31 * 86_400_000),

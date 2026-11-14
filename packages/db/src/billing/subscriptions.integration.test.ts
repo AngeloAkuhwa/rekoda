@@ -16,9 +16,20 @@
 // subscriptions-sweeps.integration.test.ts.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
+import { usagePeriod } from '@rekoda/core';
 import { createDb, withBusiness, type Db, type TenantDb } from '../client.js';
 import { identity, subscriptionsRepo, usageRepo } from '../index.js';
-import { migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
+import {
+  applyFixtureCycle,
+  migrate,
+  requireUrls,
+  truncateAll,
+  type Urls,
+  setPlanAsOwner,
+  creditBonusForTest,
+  startGraceForTest,
+} from '../testing.js';
+import { settlementDb } from '../testing.js';
 
 let urls: Urls;
 let appDb: Db;
@@ -85,12 +96,15 @@ const RENEWS_AT = new Date('2026-09-01T00:00:00Z');
 
 const inTenant = <T>(businessId: string, fn: (tx: TenantDb) => Promise<T>): Promise<T> =>
   withBusiness(appDb, businessId, fn);
+/** Settlement work (a payment recorded, pack units credited) runs only as `rekoda_settlement` (OD-37). */
+const inSettlement = <T>(businessId: string, fn: (tx: TenantDb) => Promise<T>): Promise<T> =>
+  withBusiness(settlementDb(), businessId, fn);
 
 describe('the cycle on a business row', () => {
   it('writes plan, dates and anchor as one fact', async () => {
     const businessId = await seedBusiness();
     await inTenant(businessId, (tx) =>
-      subscriptionsRepo.applyCycle(tx, businessId, {
+      applyFixtureCycle(tx, businessId, {
         plan: 'chat',
         cycleStartedAt: CYCLE_START,
         renewsAt: RENEWS_AT,
@@ -111,7 +125,7 @@ describe('the cycle on a business row', () => {
   it('clears the grace clock when a cycle is paid for', async () => {
     const businessId = await seedBusiness();
     await inTenant(businessId, (tx) =>
-      subscriptionsRepo.applyCycle(tx, businessId, {
+      applyFixtureCycle(tx, businessId, {
         plan: 'chat',
         cycleStartedAt: CYCLE_START,
         renewsAt: RENEWS_AT,
@@ -119,7 +133,7 @@ describe('the cycle on a business row', () => {
       }),
     );
     await inTenant(businessId, (tx) =>
-      subscriptionsRepo.markRenewalFailed(tx, businessId, new Date('2026-09-01T02:00:00Z')),
+      startGraceForTest(tx, businessId, new Date('2026-09-01T02:00:00Z')),
     );
     expect(
       (await inTenant(businessId, (tx) => subscriptionsRepo.subscriptionFor(tx, businessId)))
@@ -127,7 +141,7 @@ describe('the cycle on a business row', () => {
     ).not.toBeNull();
 
     await inTenant(businessId, (tx) =>
-      subscriptionsRepo.applyCycle(tx, businessId, {
+      applyFixtureCycle(tx, businessId, {
         plan: 'chat',
         cycleStartedAt: RENEWS_AT,
         renewsAt: new Date('2026-10-01T00:00:00Z'),
@@ -145,10 +159,10 @@ describe('the cycle on a business row', () => {
   it('runs the grace clock from the FIRST failure, not the latest retry', async () => {
     const businessId = await seedBusiness();
     const first = new Date('2026-09-01T02:00:00Z');
-    await inTenant(businessId, (tx) => subscriptionsRepo.markRenewalFailed(tx, businessId, first));
+    await inTenant(businessId, (tx) => startGraceForTest(tx, businessId, first));
     // A card retried daily must not push the deadline forward a day at a time.
     await inTenant(businessId, (tx) =>
-      subscriptionsRepo.markRenewalFailed(tx, businessId, new Date('2026-09-04T02:00:00Z')),
+      startGraceForTest(tx, businessId, new Date('2026-09-04T02:00:00Z')),
     );
 
     const sub = await inTenant(businessId, (tx) =>
@@ -160,7 +174,7 @@ describe('the cycle on a business row', () => {
   it('parks a downgrade until the next renewal without moving anything else', async () => {
     const businessId = await seedBusiness();
     await inTenant(businessId, (tx) =>
-      subscriptionsRepo.applyCycle(tx, businessId, {
+      applyFixtureCycle(tx, businessId, {
         plan: 'complete',
         cycleStartedAt: CYCLE_START,
         renewsAt: RENEWS_AT,
@@ -237,7 +251,7 @@ describe('charges', () => {
     await charge(businessId, 'RK-SUB-1');
 
     const settle = () =>
-      inTenant(businessId, (tx) =>
+      inSettlement(businessId, (tx) =>
         subscriptionsRepo.settleCharge(tx, {
           reference: 'RK-SUB-1',
           status: 'paid',
@@ -257,7 +271,7 @@ describe('charges', () => {
   it('records a failure with its reason, and will not then settle as paid', async () => {
     const businessId = await seedBusiness();
     await charge(businessId, 'RK-SUB-1');
-    const failed = await inTenant(businessId, (tx) =>
+    const failed = await inSettlement(businessId, (tx) =>
       subscriptionsRepo.settleCharge(tx, {
         reference: 'RK-SUB-1',
         status: 'failed',
@@ -267,7 +281,7 @@ describe('charges', () => {
     );
     expect(failed?.status).toBe('failed');
 
-    const late = await inTenant(businessId, (tx) =>
+    const late = await inSettlement(businessId, (tx) =>
       subscriptionsRepo.settleCharge(tx, {
         reference: 'RK-SUB-1',
         status: 'paid',
@@ -281,7 +295,7 @@ describe('charges', () => {
   it('accumulates partial refunds and only then reads as refunded', async () => {
     const businessId = await seedBusiness();
     await charge(businessId, 'RK-SUB-1');
-    await inTenant(businessId, (tx) =>
+    await inSettlement(businessId, (tx) =>
       subscriptionsRepo.settleCharge(tx, {
         reference: 'RK-SUB-1',
         status: 'paid',
@@ -345,16 +359,16 @@ describe('an add-on pack', () => {
     expect(await consume(1)).toBe(true);
     expect(await consume(1)).toBe(false);
 
-    await inTenant(businessId, (tx) =>
-      usageRepo.creditBonus(tx, businessId, PERIOD, 'AI_ACTIONS', 2),
+    await inSettlement(businessId, (tx) =>
+      creditBonusForTest(tx, businessId, PERIOD, 'AI_ACTIONS', 2),
     );
     expect(await consume(1)).toBe(true);
     expect(await consume(1)).toBe(true);
     expect(await consume(1)).toBe(false);
 
     // A second pack adds to the first rather than replacing it.
-    await inTenant(businessId, (tx) =>
-      usageRepo.creditBonus(tx, businessId, PERIOD, 'AI_ACTIONS', 2),
+    await inSettlement(businessId, (tx) =>
+      creditBonusForTest(tx, businessId, PERIOD, 'AI_ACTIONS', 2),
     );
     const [row] = await inTenant(businessId, (tx) => usageRepo.usageFor(tx, businessId, PERIOD));
     expect(row?.bonus).toBe(4);
@@ -364,19 +378,23 @@ describe('an add-on pack', () => {
   it('does not roll over into the next month', async () => {
     const businessId = await seedBusiness();
     // A paid plan meters by calendar month; a trial meters one row for its 14 days.
-    await inTenant(businessId, (tx) =>
-      tx.execute(sql`UPDATE businesses SET plan = 'chat' WHERE id = ${businessId}::uuid`),
-    );
-    await inTenant(businessId, (tx) =>
-      usageRepo.creditBonus(tx, businessId, PERIOD, 'AI_ACTIONS', 5),
-    );
+    await setPlanAsOwner(urls, businessId, { plan: 'chat' });
+    // A pack credited to an earlier month stays on that month's row (ADR 0024). Since 0222 the
+    // database meters a paid unit on the current month whatever label is asked, so the earlier
+    // month's pack is written as the owner, as it stands once that month has ended.
+    const owner = createDb(urls.owner, { max: 1 });
+    try {
+      await owner.db.execute(sql`INSERT INTO usage_counters (business_id, period, unit, bonus)
+                                 VALUES (${businessId}::uuid, '2020-01', 'AI_ACTIONS', 5)`);
+    } finally {
+      await owner.close();
+    }
 
-    // September is a fresh meter with a fresh ceiling: the pack was bought for
-    // August and August is where it stays (ADR 0024).
-    const september = await inTenant(businessId, (tx) =>
-      usageRepo.consumeUnit(tx, businessId, '2026-09', 'AI_ACTIONS', 0),
+    // This month is a fresh meter with a fresh ceiling: the earlier pack does not carry over.
+    const thisMonth = await inTenant(businessId, (tx) =>
+      usageRepo.consumeUnit(tx, businessId, usagePeriod(new Date()), 'AI_ACTIONS', 0),
     );
-    expect(september).toBe(false);
+    expect(thisMonth).toBe(false);
   });
 });
 
@@ -393,7 +411,7 @@ describe('recording a refund', () => {
         periodEnd: RENEWS_AT,
       }),
     );
-    await inTenant(businessId, (tx) =>
+    await inSettlement(businessId, (tx) =>
       subscriptionsRepo.settleCharge(tx, { reference, status: 'paid', when: CYCLE_START }),
     );
   }

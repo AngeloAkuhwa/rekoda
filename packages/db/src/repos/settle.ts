@@ -24,6 +24,7 @@
  * are books that overstate what the merchant may keep.
  */
 import { and, desc, eq, inArray, sql, isNull } from 'drizzle-orm';
+import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import {
   postProviderPayment,
   postReceivablePayment,
@@ -780,6 +781,15 @@ export interface Payments {
   count: number;
 }
 
+/**
+ * The business this transaction is pinned to, as a SQL predicate. These two readers are called on
+ * the application's tenant transaction, where row-level security already limits them; the
+ * predicate makes the SQL itself business-scoped, so the readers stay safe on any connection that
+ * does not enforce RLS and return nothing when no business is pinned.
+ */
+const pinnedBusiness = (column: AnyPgColumn) =>
+  sql`${column} = nullif(current_setting('app.business_id', true), '')::uuid`;
+
 export async function paymentsFor(tx: TenantDb, limit = 100): Promise<Payments> {
   const rows = await tx
     .select({
@@ -795,9 +805,13 @@ export async function paymentsFor(tx: TenantDb, limit = 100): Promise<Payments> 
       settledAt: payments.settledAt,
     })
     .from(payments)
+    .where(pinnedBusiness(payments.businessId))
     .orderBy(desc(payments.createdAt))
     .limit(limit);
-  const counted = await tx.select({ n: sql<number>`count(*)::int` }).from(payments);
+  const counted = await tx
+    .select({ n: sql<number>`count(*)::int` })
+    .from(payments)
+    .where(pinnedBusiness(payments.businessId));
   return { rows, count: counted[0]?.n ?? 0 };
 }
 
@@ -896,6 +910,7 @@ export async function reconciliationsFor(
    */
   const limit = options.limit ?? 200;
   const conditions = [
+    pinnedBusiness(reconciliations.businessId),
     options.status ? eq(reconciliations.status, options.status) : undefined,
     options.unresolvedOnly ? isNull(reconciliations.resolvedAt) : undefined,
   ].filter((c): c is NonNullable<typeof c> => c !== undefined);

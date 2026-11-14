@@ -6,6 +6,38 @@
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { afterAll, beforeAll, beforeEach } from 'vitest';
+import type { MetaTemplates, TemplateSlotId } from './template-slots.js';
+
+/**
+ * Synthetic template settings for the sender suites (OWN-93): made-up names and a language that is
+ * not English, so a test can only pass if the sender sends exactly what it was configured with.
+ * They are never the names of the owner's real templates. `null` for a slot leaves it unconfigured.
+ */
+export const SYNTHETIC_TEMPLATE_NAMES: Readonly<Record<TemplateSlotId, string>> = {
+  otp: 'acme_signin_code_v2',
+  billing: 'acme_grace_notice_v2',
+  retention: 'acme_erasure_warning_v2',
+  document: 'acme_document_ready_v2',
+  trial: 'acme_trial_reminder_v2',
+};
+export const SYNTHETIC_LOCALE = 'yo';
+
+export function syntheticTemplates(
+  opts: Partial<Record<TemplateSlotId, string | null>> = {},
+  locale: string = SYNTHETIC_LOCALE,
+): MetaTemplates {
+  const pick = (slot: TemplateSlotId) => {
+    const name = opts[slot] === undefined ? SYNTHETIC_TEMPLATE_NAMES[slot] : opts[slot];
+    return name === null ? null : { name, locale };
+  };
+  return {
+    otp: pick('otp'),
+    billing: pick('billing'),
+    retention: pick('retention'),
+    document: pick('document'),
+    trial: pick('trial'),
+  };
+}
 
 export interface RecordedRequest {
   method: string;

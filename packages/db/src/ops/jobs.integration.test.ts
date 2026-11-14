@@ -16,7 +16,10 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, createLockClient, withBusiness, type Db, type LockClient } from '../client.js';
 import { identity, jobsRepo } from '../index.js';
-import { migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
+import { migrate, ownerDb, requireUrls, truncateAll, type Urls } from '../testing.js';
+
+/* A stalled lease is staged as the owner: since 0220 the application may change a job's lease
+ * only as it finishes or requeues the job. */
 
 let urls: Urls;
 let appDb: Db;
@@ -215,7 +218,7 @@ describe('a worker that dies mid-job', () => {
     expect(await jobsRepo.claimNext(workerDb, 'worker-2')).toBeNull();
 
     // Age the lock rather than waiting five minutes for it.
-    await withBusiness(appDb, businessId, (tx) =>
+    await withBusiness(ownerDb(), businessId, (tx) =>
       tx.execute(
         sql`UPDATE jobs SET locked_at = now() - interval '10 minutes' WHERE id = ${job!.id}::uuid`,
       ),
@@ -244,7 +247,7 @@ describe('a worker that dies mid-job', () => {
     ] as const) {
       const job = await jobsRepo.claimNext(workerDb, worker);
       expect(job?.attempts).toBe(attempt);
-      await withBusiness(appDb, businessId, (tx) =>
+      await withBusiness(ownerDb(), businessId, (tx) =>
         tx.execute(
           sql`UPDATE jobs SET locked_at = now() - interval '10 minutes' WHERE id = ${job!.id}::uuid`,
         ),
@@ -277,7 +280,7 @@ describe('a worker that dies mid-job', () => {
     expect(failed?.failureCategory).toBe('handler_error');
     for (const worker of ['worker-2', 'worker-3']) {
       const job = await jobsRepo.claimNext(workerDb, worker);
-      await withBusiness(appDb, businessId, (tx) =>
+      await withBusiness(ownerDb(), businessId, (tx) =>
         tx.execute(
           sql`UPDATE jobs SET locked_at = now() - interval '10 minutes' WHERE id = ${job!.id}::uuid`,
         ),
@@ -322,7 +325,12 @@ describe('the queue is inside the tenancy perimeter, not beside it', () => {
      * and every other test in this file is describing a system we no longer
      * have.
      */
-    expect(await jobsRepo.claimNext(appDb, 'the-api')).toBeNull();
+    /* Since 0220 the claim's own write is refused outright (the application may not set
+     * `attempts`); before, the policy left it nothing to see. Either way: no job. */
+    const claimed = await jobsRepo
+      .claimNext(appDb, 'the-api')
+      .catch((error: { cause?: { message?: string } }) => String(error.cause?.message));
+    expect(claimed === null || /permission denied/.test(String(claimed))).toBe(true);
 
     // …and the worker, holding the right credential, gets it immediately.
     expect(await jobsRepo.claimNext(workerDb, 'the-worker')).not.toBeNull();
@@ -482,6 +490,8 @@ describe('queue order is a promise, not a hope (H7a)', () => {
     const failure = await enqueue(businessId, { kind: 'delivery.status' });
     const yes = await enqueue(businessId);
     if (!failure || !yes) throw new Error('both jobs should have enqueued');
+    /* The receipt is claimed, as a worker would: the application finishes only a running job. */
+    expect((await jobsRepo.claimNext(workerDb, 'lane-a'))?.id).toBe(failure.id);
 
     await withBusiness(appDb, businessId, async (tx) => {
       // Default: same kind only, as before.

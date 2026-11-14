@@ -28,6 +28,23 @@ export interface OpsSnapshot {
   } | null;
   meta: EventCounts | null;
   paystack: EventCounts | null;
+  /**
+   * Rekoda's own billing: open renewals raised while their payment could not be taken (OWN-70).
+   * Absent or null when the process cannot see it.
+   */
+  billing?: {
+    blockedRenewals: number;
+    /**
+     * Blocks the last blocked-renewal close pass could not close (migration 0199 cursor). Absent
+     * when unknown.
+     */
+    blockCloseFailed?: number;
+    /**
+     * A close pass's lease expired without a finish or a release (a pass died or could not
+     * reach the database to record its end), now or within the last 24 hours. Absent when unknown.
+     */
+    blockCloseStalled?: boolean;
+  } | null;
 }
 
 export interface EventCounts {
@@ -115,6 +132,36 @@ export function evaluateOpsAlerts(
         summary: `${paystack.unprocessedStale} Paystack event(s) have waited more than 10 minutes unprocessed (limit ${limits.unprocessedEvents})`,
       });
     }
+  }
+
+  /* A renewal nobody can pay is revenue lost and a merchant heading for read-only (OWN-70). */
+  if (snapshot.billing && snapshot.billing.blockedRenewals > 0) {
+    alerts.push({
+      key: 'billing.renewals_blocked',
+      severity: 'critical',
+      summary: `${snapshot.billing.blockedRenewals} renewal(s) were raised while Rekoda cannot take the payment (live key unconfirmed or not configured); see the operator exception queue`,
+    });
+  }
+
+  /* The close pass after the gate opened is failing on some blocks: they stay open and their
+   * merchants cannot pay. Active while the latest pass reported any failure (OWN-70, 0199). */
+  if (snapshot.billing && (snapshot.billing.blockCloseFailed ?? 0) > 0) {
+    alerts.push({
+      key: 'billing.renewal_block_close_failing',
+      severity: 'critical',
+      summary: `${snapshot.billing.blockCloseFailed} blocked renewal(s) could not be closed by the close pass (the worst of the last pass, the cycle under way and the last complete cycle); see the worker log (renewal_block_close_failed)`,
+    });
+  }
+
+  /* A close pass stopped without recording its end (it died, or the database refused the lease
+   * release). Its unsaved batch is replayed by the next pass; until then, say so (OWN-88, 0199). */
+  if (snapshot.billing?.blockCloseStalled) {
+    alerts.push({
+      key: 'billing.renewal_block_close_stalled',
+      severity: 'critical',
+      summary:
+        'a blocked-renewal close pass stopped without recording its end (now or in the last 24 hours); see the worker log (renewal_block_close_release_failed, renewal_block_close_pass)',
+    });
   }
 
   if (meta) {

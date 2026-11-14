@@ -24,6 +24,8 @@ test('a broken web tier, an unhealthy or missing service, or a failed job can ne
       'api|running|healthy|0',
       'worker|running|healthy|0',
       'web|running|healthy|0',
+      'settlement|running|healthy|0',
+      'operator|running|healthy|0',
       'caddy|running||0',
       'migrate|exited||0',
       'edge-check|exited||0',
@@ -53,6 +55,16 @@ test('a broken web tier, an unhealthy or missing service, or a failed job can ne
       /service worker\s+running, unhealthy\n/,
     ],
     [{ services: svc({ caddy: 'gone' }) }, /service caddy\s+MISSING\n/],
+    /* OD-51: paid charges are applied only by settlement and plan changes served only by operator. */
+    [{ services: svc({ settlement: 'gone' }) }, /service settlement\s+MISSING\n/],
+    [
+      { services: svc({ settlement: 'settlement|restarting||1' }) },
+      /service settlement\s+restarting\n/,
+    ],
+    [
+      { services: svc({ operator: 'operator|running|unhealthy|0' }) },
+      /service operator\s+running, unhealthy\n/,
+    ],
     [
       { services: svc({ worker: 'worker|running||0' }) },
       /service worker\s+running, no health result\n/,
@@ -106,7 +118,7 @@ test('the healthy services and jobs read as expected and are not flagged', () =>
   const h = healthy();
   try {
     const out = h.go(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
-    for (const s of ['postgres', 'api', 'worker', 'web'])
+    for (const s of ['postgres', 'api', 'worker', 'web', 'settlement', 'operator'])
       assert.match(out, new RegExp(`service ${s}\\s+running, healthy\\n`));
     assert.match(out, /service caddy\s+running\n/);
     assert.match(out, /job migrate\s+exited \(0\)\n/);
@@ -457,5 +469,57 @@ test('REKODA_SUPPORT_EMAIL is reported per container and never flagged: it is no
     assert.doesNotMatch(r.stdout, /support@staging\.invalid/);
   } finally {
     h.done();
+  }
+});
+
+test('the settlement process is asked for its own Paystack key: a missing, live or unreadable one needs attention, and the key is never printed', () => {
+  /* Built at run time so no key-shaped literal sits in the source (secret scan). */
+  const testKey = ['sk', 'test', 'q'.repeat(16)].join('_');
+  const liveKey = ['sk', 'live', 'z'.repeat(16)].join('_');
+  const apiEnv = { ...SLOTS, PAYSTACK_SECRET_KEY: testKey, REKODA_EMAIL_PROVIDER: 'resend' };
+  const cases = [
+    [
+      { settlementEnv: {} },
+      /PAYSTACK_SECRET_KEY \(settlement\)\s+UNSET \(the settlement process starts without a key and every subscription payment then fails verify\)\n/,
+    ],
+    [
+      { settlementEnv: { PAYSTACK_SECRET_KEY: liveKey } },
+      /PAYSTACK_SECRET_KEY \(settlement\)\s+SET \(NOT-A-TEST-KEY: a live key; staging must run an sk_test_ key\)\n/,
+    ],
+    [
+      { settlementQueryFails: true },
+      /PAYSTACK_SECRET_KEY \(settlement\)\s+unknown \(cannot exec into the settlement container\)\n/,
+    ],
+  ];
+  for (const [over, line] of cases) {
+    const h = healthy({
+      env: apiEnv,
+      workerEnv: { ...SLOTS, REKODA_EMAIL_PROVIDER: 'resend' },
+      ...over,
+    });
+    try {
+      const r = h.run2(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+      assert.match(r.stdout, line);
+      assert.match(attention(r.stdout), /PAYSTACK_SECRET_KEY \(settlement\)/);
+      assert.match(
+        r.stdout,
+        /PAYSTACK_SECRET_KEY\s+SET \(TEST-KEY\)\n/,
+        'the api line is unchanged',
+      );
+      assert.equal(r.status, 1, r.stdout);
+      assert.doesNotMatch(r.stdout + r.stderr, /qqqqqqqq|zzzzzzzz/, 'a key is never printed');
+    } finally {
+      h.done();
+    }
+  }
+  const ok = healthy({ env: apiEnv, workerEnv: { ...SLOTS, REKODA_EMAIL_PROVIDER: 'resend' } });
+  try {
+    const r = ok.run2(undefined, { EXPECT_SHA: ok.sha.slice(0, 7) });
+    assert.match(r.stdout, /PAYSTACK_SECRET_KEY \(settlement\)\s+SET \(TEST-KEY\)\n/);
+    assert.doesNotMatch(attention(r.stdout), /PAYSTACK_SECRET_KEY \(settlement\)/);
+    assert.equal(r.status, 0, r.stdout);
+    assert.doesNotMatch(r.stdout + r.stderr, /qqqqqqqq/);
+  } finally {
+    ok.done();
   }
 });

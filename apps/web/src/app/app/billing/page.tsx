@@ -38,6 +38,7 @@ import {
   pendingCharge,
   trialCopy,
   trialDaysLeft,
+  billingProcessingCopy,
 } from '@/lib/billing-pay-copy';
 import { EmailForm } from './EmailForm';
 import { PayForms } from './PayForms';
@@ -228,6 +229,20 @@ export default async function BillingPage({
       {params.done === 'applied' ? (
         <div className="rk-attention-strip" role="status">
           Done. Your new plan is on now. Nothing was charged and your renewal date has not changed.
+        </div>
+      ) : null}
+
+      {/* Not beside a processing problem: the two would say opposite things. */}
+      {params.done === 'processing' && !overview.processingIssue ? (
+        <div className="rk-attention-strip" role="status">
+          We are switching your plan on now. Nothing was charged and your renewal date stays the
+          same. Refresh this page in a moment to see your new plan.
+        </div>
+      ) : null}
+
+      {overview.processingIssue ? (
+        <div className="rk-attention-strip" role="status" data-billing-processing>
+          {billingProcessingCopy(overview.processingIssue, owner)}
         </div>
       ) : null}
 

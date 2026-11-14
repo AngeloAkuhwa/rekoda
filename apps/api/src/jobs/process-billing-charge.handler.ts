@@ -238,6 +238,9 @@ export function processBillingChargeHandler(deps: ProcessBillingChargeDeps): Job
       reference,
       providerReference: t.providerTransactionId,
       paidAmountK: judgement.amountK,
+      /* OD-40: the time the VERIFY response gives, never the webhook body's claim nor when
+       * the event arrived. Missing or unreadable stays null rather than being guessed. */
+      providerPaidAt: instantOf(t.paidAtIso),
       when: new Date(),
       config: deps.config,
     });
@@ -323,6 +326,42 @@ export function processBillingChargeHandler(deps: ProcessBillingChargeDeps): Job
       log.log(`business ${businessId}: subscription charge ${charge.kind} applied`);
     }
   };
+}
+
+/**
+ * A provider timestamp as an instant, or null. Only a full ISO 8601 date-time with a zone
+ * (`Z` or an offset) is accepted: a bare date or a zoneless time would be read in the
+ * server's zone, which is a guess about when the payment happened.
+ */
+export function instantOf(iso: string | null | undefined): Date | null {
+  if (typeof iso !== 'string') return null;
+  const m =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z|([+-])(\d{2}):?(\d{2}))$/i.exec(
+      iso,
+    );
+  if (!m) return null;
+  const [year, month, day, hour, minute, second] = [m[1], m[2], m[3], m[4], m[5], m[6] ?? '0'].map(
+    Number,
+  ) as [number, number, number, number, number, number];
+  /* Every component must be a real calendar value: Date would silently roll 30 February into March. */
+  const civil = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  if (
+    civil.getUTCFullYear() !== year ||
+    civil.getUTCMonth() !== month - 1 ||
+    civil.getUTCDate() !== day ||
+    civil.getUTCHours() !== hour ||
+    civil.getUTCMinutes() !== minute ||
+    civil.getUTCSeconds() !== second
+  ) {
+    return null;
+  }
+  /* An offset is at most ±14:00 (UTC+14 is the furthest zone): +14:01 to +14:59 are invalid too. */
+  if (m[8] !== undefined) {
+    const offsetMinutes = Number(m[9]) * 60 + Number(m[10]);
+    if (Number(m[10]) > 59 || offsetMinutes > 14 * 60) return null;
+  }
+  const at = new Date(iso);
+  return Number.isNaN(at.getTime()) ? null : at;
 }
 
 function eventKindOf(payload: unknown, vaultKey: string, externalId: string): string | null {

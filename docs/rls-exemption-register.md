@@ -162,6 +162,26 @@ An event with no `business_id` belongs to nobody yet, so letting the ingress
 store and dedupe one is not letting it read another tenant's event. The moment
 the attribution pump sets `business_id`, the row leaves that view for good.
 
+**Corrected 11 Nov 2026 (migration 0204, OWN-89, ADR 0035 Amendment 3).** The
+`worker_reads_the_estate` policy above had no `FOR` clause, so despite its name
+it let the worker credential write every business's events (INSERT, UPDATE and
+DELETE on every column, no pin), and the generic operator resolve used that.
+Since 0204 the worker's policies on this table are:
+
+```sql
+CREATE POLICY worker_reads_the_estate ON external_events
+  FOR SELECT TO rekoda_worker USING (true);
+CREATE POLICY worker_marks_unattributed_ingress ON external_events
+  FOR UPDATE TO rekoda_worker USING (business_id IS NULL);
+-- grants: SELECT, UPDATE (processed_at, error); no INSERT, no DELETE.
+-- attribution only through attribute_external_event(event, business):
+--   worker-only SECURITY DEFINER, write-once from NULL to an existing business.
+```
+
+The generic resolve runs on the application credential under the event's own
+business pin and writes an `exception_resolved` audit row
+(`external-events-worker-write.integration.test.ts`).
+
 ### The question this register asked, answered
 
 > **which credential do the operator exception-queue reads actually run on?**
@@ -198,3 +218,33 @@ naming: the reason, the lookup key, the credential, the standing control.
 "It seemed like a lot of work" is not a reason. "The row must outlive its tenant"
 and "the row is resolved before the tenant is known" are the two that have been
 accepted so far, and both are structural.
+
+## Operator work lists added by PR B (#432, 8 Nov 2026)
+
+Not RLS exemptions (every table below has FORCE RLS and the canonical tenant policy; `subscription_charges` and `payment_intents` additionally keep their older `worker_resolve` policy, residual under ADR 0035 Amendment 2); recorded here
+because each gives `rekoda_worker` a cross-tenant read for an operator queue (approved as ADR 0035 Amendment 2, OWN-85: fixed-column worker-only definer functions, no table policy), the same shape as the
+event exception queue and the unapplied-charge queue above, and ADR 0035 read literally covers only
+aggregates. Owner rulings OWN-73, OWN-76 (an operator item naming the business, job and reference)
+and OWN-70 (blocked renewals listed for an operator) require these rows.
+
+| Table / read                                                                                                                                                                                                                                                                                                 | Credential                       | What it returns                                                                                                                                                                | Route                                                                                                              |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| `dead_job_exceptions` via `deadJobsRepo.opsQueue` (`dead_job_ops_queue`, definer function, 0194; no table policy)                                                                                                                                                                                            | `rekoda_worker` EXECUTE          | job id, business id, kind, event id, Rekoda reference, status, category, fixed summary, current charge or intent status and plan state                                         | `GET /v1/ops/exceptions` (`ops:read`)                                                                              |
+| `subscription_charges` via `subscriptionsRepo.blockedRenewals` (`blocked_renewals_ops`, definer function, 0195; a third optional argument and the `blocked_close_failed_at` ordering column in 0198, same fixed columns and 200-row limit) and `blockedRenewalCount` (existing `worker_resolve`, count only) | `rekoda_worker` EXECUTE / SELECT | reference, business id, plan, amount, block reason, current plan and renewal date; the alert reads the count only                                                              | `GET /v1/ops/exceptions` (`ops:read`); alert pass                                                                  |
+| `jobs` + `external_events` via `jobsRepo.enrolUnrecordedDeaths` (cutover enrolment)                                                                                                                                                                                                                          | `rekoda_worker`                  | reads dead `payment.process` / `billing.process` jobs' payload event id across tenants, then writes each record under that job's own pinned tenant; never returned to a caller | worker reclaim pass (no route)                                                                                     |
+| `dead_job_exceptions` via `deadJobsRepo.findForOps` / `openJobForEvent`, and the checks in `jobsRepo.reclaimStalled` and `enrolUnrecordedDeaths` (`dead_job_find_for_ops`, `dead_job_open_for_event`, `dead_job_is_recovering`, `dead_job_has_record`, 0194)                                                 | `rekoda_worker` EXECUTE          | one record looked up by job or event id; the reclaim reads only whether a recovery is in flight                                                                                | `POST /v1/ops/dead-jobs/:jobId/recover`, `…/resolve` and the generic event resolve (`ops:payment`); worker reclaim |
+
+| `subscription_charges` via `subscriptionsRepo.blockedRenewalsCloseBatch` (`blocked_renewals_close_batch`, definer function, 0199; keyset order after the durable cursor, same fixed columns as `blocked_renewals_ops` plus `blocked_at_us`, 200-row limit) | `rekoda_worker` EXECUTE | reference, business id, plan, amount, block reason and time, current plan and renewal date | renewal sweep's close pass (no route) |
+
+`renewal_block_close_cursor` (0199) is not an exemption either: it has no `business_id` (it holds one
+row: a keyset position, i.e. a block time and a charge reference, pass counters and a lease), RLS is
+enabled and forced with **no** policy, and neither application role holds any grant on it. It is
+read and written only by the worker-only definer functions `renewal_block_close_claim`, `_advance`,
+`_finish`, `_release` and `_status`, which validate their inputs and change nothing but that row.
+
+No payload, error text, name or phone number is returned. Writes stay tenant-pinned.
+
+`billing_pricing_source` and `billing_pricing_source_history` (0215) are not exemptions either: they
+are platform configuration with no `business_id` (the one pricing source in force, and its previous
+values). The runtime roles can only read `billing_pricing_source` and hold no grant on the history;
+only the table owner writes either, through `rekoda_private.set_pricing_source`.

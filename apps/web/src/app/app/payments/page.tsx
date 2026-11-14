@@ -305,6 +305,10 @@ function describeException(reason: string | null): string {
       return 'A payment arrived in the wrong currency';
     case 'verify_not_found':
       return 'A payment alert the provider could not confirm';
+    case 'payment_processing_stopped':
+      /* OWN-73: a payment job died. Nothing is claimed about the money or about what the books
+       * hold: a later confirmation may already have recorded it while this notice is open. */
+      return 'A payment alert Rekoda could not finish checking. Our team is looking into it';
     default:
       return 'A payment that needs review';
   }

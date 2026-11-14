@@ -237,13 +237,11 @@ test('pruning the previous images', () => {
   expectProblem(problems(edit), /removes tagged images, and with them the rollback/);
 });
 
-test('a second compose file', () => {
-  const edit = edited(
-    'script',
-    'dc() { docker compose -f docker-compose.prod.yml "$@"; }',
-    'dc() { docker compose -f docker-compose.prod.yml -f override.yml "$@"; }',
-  );
-  expectProblem(problems(edit), /calls compose directly/);
+test('a second compose file, or compose without the explicit .env (COMPOSE_ENV_FILES wins)', () => {
+  const dc = 'dc() { docker compose --env-file .env -f docker-compose.prod.yml "$@"; }';
+  const why = /calls compose directly; use dc, which names \.env/;
+  for (const bad of [dc.replace('"$@"', '-f x.yml "$@"'), dc.replace('--env-file .env ', '')])
+    expectProblem(problems(edited('script', dc, bad)), why);
 });
 
 test('appending to .env', () => {

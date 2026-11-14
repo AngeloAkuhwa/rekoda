@@ -24,8 +24,10 @@ import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose';
  * What an operator may do, not merely that they exist.
  *
  * A valid operator token must not automatically carry estate-wide refund,
- * privacy-deletion and billing authority at once. These are the five things
+ * privacy-deletion and billing authority at once. These are the six things
  * the plane can currently do, and a token says which of them it is for.
+ * `ops:staging` (G-119, OWN-77) moves a staging test business's dates and arms
+ * one-shot send faults; it exists only where the staging tools are switched on.
  */
 export const OPERATOR_SCOPES = [
   'ops:read',
@@ -33,6 +35,7 @@ export const OPERATOR_SCOPES = [
   'ops:privacy',
   'ops:billing',
   'ops:security',
+  'ops:staging',
 ] as const;
 export type OperatorScope = (typeof OPERATOR_SCOPES)[number];
 
@@ -48,6 +51,12 @@ export interface OperatorAuthConfig {
   jwksUrl: string;
   /** Where the scopes live. Providers disagree; the claim name is theirs. */
   scopeClaim: string;
+  /**
+   * Accept only a token minted for this audience ALONE (the operator process, OD-51.1). A token
+   * whose `aud` also names another application, the API's operator audience above all, is
+   * refused: it is a token that application can see and replay.
+   */
+  exclusiveAudience?: boolean;
 }
 
 /** A caller the verifier could not turn into an identity. */
@@ -77,7 +86,13 @@ export function operatorVerifier(config: OperatorAuthConfig): {
         ({ payload } = await jwtVerify(token, keys, {
           issuer: config.issuer,
           audience: config.audience,
+          /* jose enforces `exp` only when the token carries one. A token with no expiry is a
+           * credential that never dies, which an operator plane must not accept. */
+          requiredClaims: ['exp'],
         }));
+        if (config.exclusiveAudience && Array.isArray(payload.aud) && payload.aud.length !== 1) {
+          throw new Error('more than one audience');
+        }
       } catch {
         /* One refusal for every cause. A caller learning WHICH check failed
          * learns whether they have the right issuer, the right audience or

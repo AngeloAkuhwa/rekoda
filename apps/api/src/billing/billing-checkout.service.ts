@@ -51,7 +51,8 @@ import { subscriptionsRepo, withBusiness, type Db, type TenantDb } from '@rekoda
 import { CONFIG, type ApiConfig } from '../config.js';
 import { chargeGate } from './paystack-key.js';
 import { DB } from '../db/db.module.js';
-import { isCustomCycle } from './billing.service.js';
+import { expectedChargeTerms, isCustomCycle } from './billing.service.js';
+import { termsOfCharge } from './plan-terms.js';
 import { PAYMENT_PROVIDER, type PaymentProviderPort } from '../payments/provider.port.js';
 
 /** A sealed billing email belongs to one business: a blob copied onto another row fails to open. */
@@ -669,6 +670,24 @@ export class BillingCheckoutService {
       return 'superseded';
     }
     if (charge.amountK <= 0) return 'nothing_to_pay';
+
+    /* A renewal buys the cycle that starts at the paid-to date it was raised against, and settlement
+     * applies it only then (0206). Once that date has moved without a plan decision (today only the
+     * staging date tool can do that; every other writer records a decision, which `decidedSince`
+     * already catches), a payment would be taken and set aside, so no link is handed out. Checked
+     * here, in the transaction that hands the link out, so the blocked-renewal job's earlier check
+     * cannot race it and the merchant's own checkout is held to it too. */
+    if (charge.kind === 'renewal') {
+      const subscription = await subscriptionsRepo.subscriptionFor(tx, businessId);
+      if (
+        !charge.periodStart ||
+        !subscription?.planExpiresAt ||
+        subscription.planExpiresAt.getTime() !== charge.periodStart.getTime()
+      ) {
+        return 'superseded';
+      }
+    }
+
     /* An upgrade is priced against the rest of the cycle it was opened in, and
      * settlement refuses to apply it once that cycle has ended or when the
      * cycle is not a provider-bought standard month (OWN-29, OWN-33): the money
@@ -677,6 +696,20 @@ export class BillingCheckoutService {
       const subscription = await subscriptionsRepo.subscriptionFor(tx, businessId);
       if (subscription?.planExpiresAt && subscription.planExpiresAt <= now) return 'cycle_ended';
       if (!subscription || isCustomCycle(subscription)) return 'support_review';
+    }
+    /* OD-51: the application credential can open a pending charge, so a planted one could carry
+     * any price. Nobody is invited to pay a charge whose kind and amount are not what Rekoda's own
+     * pricing says (settlement would set the payment aside anyway). */
+    const expected = await expectedChargeTerms(
+      tx,
+      /* From the source the charge recorded (OD-51.6), as settlement will. */
+      termsOfCharge(this.config, charge),
+      businessId,
+      charge,
+      await subscriptionsRepo.subscriptionFor(tx, businessId),
+    );
+    if (!expected || expected.kind !== charge.kind || expected.amountK !== charge.amountK) {
+      return 'superseded';
     }
     return null;
   }

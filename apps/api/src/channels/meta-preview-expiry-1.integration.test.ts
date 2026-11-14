@@ -247,10 +247,12 @@ describe('a preview has a time limit (G-23)', () => {
       await ownerDb.execute(sql`
         CREATE OR REPLACE FUNCTION g23_close_window() RETURNS trigger AS $$
         BEGIN
-          UPDATE command_drafts SET expires_at = clock_timestamp() - interval '1 day'
+          UPDATE public.command_drafts SET expires_at = clock_timestamp() - interval '1 day'
            WHERE business_id = NEW.business_id AND state = 'pending';
           RETURN NEW;
-        END $$ LANGUAGE plpgsql`);
+        END $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp`);
+      /* SECURITY DEFINER: the counter is written inside usage_reserve since migration 0216
+       * (OD-51.4), as a role with no rights on drafts; the test's trigger acts as its owner. */
       await ownerDb.execute(sql`
         CREATE TRIGGER g23_close_window AFTER INSERT OR UPDATE ON usage_counters
           FOR EACH ROW WHEN (NEW.unit = 'DOCUMENT_GENERATION' AND NEW.used > 0)

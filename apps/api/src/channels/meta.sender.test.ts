@@ -16,6 +16,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { MetaSender, NoSenderConfigured } from './meta.sender.js';
+import { syntheticTemplates } from './meta.sender.fixtures.js';
 import { SendFailed } from './sender.js';
 
 interface Recorded {
@@ -74,24 +75,7 @@ const sender = (
     document?: string | null;
     trial?: string | null;
   } = {},
-) =>
-  new MetaSender(
-    'TOKEN123',
-    'PNID',
-    'v21.0',
-    2_000,
-    opts.otp === undefined ? 'rekoda_otp' : opts.otp,
-    'en',
-    opts.billing === undefined ? 'rekoda_billing' : opts.billing,
-    'en',
-    opts.retention === undefined ? 'rekoda_retention' : opts.retention,
-    'en',
-    opts.document === undefined ? 'rekoda_document' : opts.document,
-    'en',
-    opts.trial === undefined ? 'rekoda_trial' : opts.trial,
-    'en',
-    baseUrl,
-  );
+) => new MetaSender('TOKEN123', 'PNID', 'v21.0', 2_000, syntheticTemplates(opts), baseUrl);
 
 /** The billing page `{{3}}` of the grace and trial templates (OD-41(b)). */
 const LINK = 'https://staging.myrekoda.com/app/billing';
@@ -178,8 +162,8 @@ describe('the authentication template', () => {
     expect(bodyOf()).toMatchObject({
       type: 'template',
       template: {
-        name: 'rekoda_otp',
-        language: { code: 'en' },
+        name: 'acme_signin_code_v2',
+        language: { code: 'yo' },
         components: [
           { type: 'body', parameters: [{ type: 'text', text: '482913' }] },
           {

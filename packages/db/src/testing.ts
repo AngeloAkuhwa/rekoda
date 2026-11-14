@@ -15,11 +15,14 @@
  */
 import postgres from 'postgres';
 import { encryptFacet } from '@rekoda/core/vault';
+import { pricingConstantsFingerprint } from '@rekoda/core';
 import { sql as drizzleSql } from 'drizzle-orm';
 import { applyMigrations } from './migrate.js';
-import { withBusiness, type Db } from './client.js';
-import { setPlan } from './repos/billing.js';
-import { setBillingEmailSealed } from './repos/subscriptions.js';
+import { createDb, withBusiness, type Db } from './client.js';
+import { setPlanAsFixture, type PlanChange } from './repos/billing.js';
+import { setBillingEmailSealed, writeCycle, type CycleInput } from './repos/subscriptions.js';
+import type { TenantDb } from './client.js';
+import { meterRowFor, type UsageUnit } from './repos/usage.js';
 
 export interface Urls {
   /** Owner — DDL and fixture teardown. */
@@ -34,6 +37,13 @@ export interface Urls {
    * claims to.
    */
   worker: string;
+  /**
+   * `rekoda_settlement` (OD-37, migration 0202) - the only non-owner role that may record a payment
+   * on a charge, credit pack units, hold an add-on, or run the provider plan writer.
+   */
+  settlement: string;
+  /** `rekoda_billing_operator` (0202) - the only role that may run the operator plan writer. */
+  operator: string;
 }
 
 /**
@@ -47,18 +57,224 @@ export function requireUrls(): Urls {
   const owner = process.env['DATABASE_URL'];
   const app = process.env['APP_DATABASE_URL'];
   const worker = process.env['WORKER_DATABASE_URL'];
-  if (!owner || !app || !worker) {
+  const settlement = process.env['SETTLEMENT_DATABASE_URL'];
+  const operator = process.env['OPERATOR_DATABASE_URL'];
+  if (!owner || !app || !worker || !settlement || !operator) {
     throw new Error(
-      'Integration tests need DATABASE_URL (owner), APP_DATABASE_URL (rekoda_app) ' +
-        'and WORKER_DATABASE_URL (rekoda_worker). ' +
+      'Integration tests need DATABASE_URL (owner), APP_DATABASE_URL (rekoda_app), ' +
+        'WORKER_DATABASE_URL (rekoda_worker), SETTLEMENT_DATABASE_URL (rekoda_settlement) ' +
+        'and OPERATOR_DATABASE_URL (rekoda_billing_operator). ' +
         'Start one with: docker compose -f docker-compose.dev.yml up -d',
     );
   }
-  return { owner, app, worker };
+  return { owner, app, worker, settlement, operator };
+}
+
+const principalPools = new Map<string, { db: Db; close: () => Promise<void> }>();
+
+/**
+ * A pool for one of the OD-37 principals (migration 0202): `settlement` (`rekoda_settlement`, the
+ * only role that may record a payment on a charge, credit pack units, hold an add-on or apply a paid
+ * plan) or `operator` (`rekoda_billing_operator`, the only role that may run the operator plan
+ * writer). Cached per URL for the test file and closed by `closePrincipalPools`, which each
+ * integration config's setup file calls after every file.
+ */
+export function principalDb(urls: Urls, which: 'settlement' | 'operator' | 'owner' | 'app'): Db {
+  const url = urls[which];
+  let pool = principalPools.get(url);
+  if (!pool) {
+    pool = createDb(url, { max: 4 });
+    principalPools.set(url, pool);
+  }
+  return pool.db;
+}
+
+/** `principalDb(requireUrls(), 'settlement')`: the settlement pool for a fixture. */
+export const settlementDb = (): Db => principalDb(requireUrls(), 'settlement');
+/**
+ * The application pool for a fixture that opens a pending charge: the application opens charges
+ * (0209), and settlement, which only settles them, opens none (0217).
+ */
+export const applicationDb = (): Db => principalDb(requireUrls(), 'app');
+/** `principalDb(requireUrls(), 'operator')`: the billing-operator pool for a fixture. */
+export const operatorDb = (): Db => principalDb(requireUrls(), 'operator');
+/**
+ * The table owner's pool, for fixtures that stage what only the owner may write: an explicit
+ * entitlement grant (no runtime role writes `business_entitlements`, migration 0210).
+ */
+export const ownerDb = (): Db =>
+  principalDb({ ...requireUrls(), owner: OWNER_URL_AT_LOAD ?? requireUrls().owner }, 'owner');
+
+/* Captured when this module loads (the integration setup imports it before any test runs): several
+ * API suites point DATABASE_URL at the application role before booting the app, and the owner pool
+ * must stay the owner. */
+const OWNER_URL_AT_LOAD = process.env['DATABASE_URL'];
+
+export async function closePrincipalPools(): Promise<void> {
+  const pools = [...principalPools.values()];
+  principalPools.clear();
+  await Promise.all(pools.map((p) => p.close()));
+}
+
+/**
+ * Re-run, by hand, migration `fromTag` and EVERY migration after it, in ledger order, as the
+ * owner. For a test that proves a migration's backfill: re-running one file alone would put back
+ * a function a later migration re-created, and every later test in the run would see the older
+ * rule. The migration runner never does that; neither may a test.
+ */
+export async function rerunMigrationsFrom(urls: Urls, fromTag: string): Promise<void> {
+  const { readFile } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const { MIGRATIONS_DIR } = await import('./migrate.js');
+  const journal = JSON.parse(
+    await readFile(join(MIGRATIONS_DIR, 'meta', '_journal.json'), 'utf8'),
+  ) as { entries: Array<{ idx: number; tag: string }> };
+  const ordered = [...journal.entries].sort((a, b) => a.idx - b.idx);
+  const start = ordered.findIndex((entry) => entry.tag === fromTag);
+  if (start < 0) throw new Error(`rerunMigrationsFrom: no migration ${fromTag}`);
+  const owner = postgres(urls.owner, { max: 1, onnotice: () => {} });
+  try {
+    for (const entry of ordered.slice(start)) {
+      await owner.unsafe(await readFile(join(MIGRATIONS_DIR, `${entry.tag}.sql`), 'utf8')).simple();
+    }
+  } finally {
+    await owner.end();
+  }
 }
 
 export async function migrate(urls: Urls): Promise<void> {
   await applyMigrations(urls.owner);
+  await installTestFixtureWriter(urls.owner);
+}
+
+/**
+ * A plan writer for TEST FIXTURES ONLY (OD-37, migration 0200).
+ *
+ * Production plan changes go through `subscription_apply_paid_charge` (a paid charge) or
+ * `subscription_operator_set_plan` (validated operator input). Dozens of suites need a business on a
+ * paid cycle without staging a charge for it, often with dates in the past to drive a sweep, which
+ * those writers rightly refuse. This function is created by the test harness, never by a migration:
+ * a production database does not have it (the staging deploy's pre-start smoke checks that), so
+ * nothing outside a test can call it.
+ */
+async function installTestFixtureWriter(ownerUrl: string): Promise<void> {
+  const client = postgres(ownerUrl, { max: 1, onnotice: () => {} });
+  try {
+    /* Every suite starts on the seeded pricing source (0215): one that ran on the constant path
+     * (`setPricingSource`) must not leave the next suite's processes refusing to boot. */
+    await client.unsafe(`
+      DELETE FROM billing_pricing_source_history;
+      UPDATE billing_pricing_source SET mode = 'catalogue', constants_fingerprint = NULL,
+        set_by = 'migration:0215', reason = 'seeded with the default source'
+      WHERE mode <> 'catalogue' OR set_by <> 'migration:0215';
+    `);
+    await client.unsafe(`
+      CREATE OR REPLACE FUNCTION public.test_fixture_set_plan(
+        p_business uuid, p_plan text, p_expires timestamptz
+      ) RETURNS void
+      LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+      BEGIN
+        UPDATE public.businesses SET plan = p_plan, plan_expires_at = p_expires WHERE id = p_business;
+      END $$;
+      ALTER FUNCTION public.test_fixture_set_plan(uuid, text, timestamptz) OWNER TO rekoda_plan_writer;
+      REVOKE ALL ON FUNCTION public.test_fixture_set_plan(uuid, text, timestamptz) FROM PUBLIC;
+      GRANT EXECUTE ON FUNCTION public.test_fixture_set_plan(uuid, text, timestamptz)
+        TO rekoda_app, rekoda_worker;
+
+      -- A grace-clock writer for TEST FIXTURES ONLY (OD-51.2, migration 0217). Production starts
+      -- the clock through subscription_start_grace, which needs an ended paid cycle with a renewal
+      -- open and a time from that cycle's end to now. Suites that drive the grace sweep need a
+      -- clock at a chosen time without staging the renewal; this sets it, once, like the real one.
+      CREATE OR REPLACE FUNCTION public.test_fixture_start_grace(
+        p_business uuid, p_failed_at timestamptz
+      ) RETURNS void
+      LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+      BEGIN
+        UPDATE public.businesses SET payment_failed_at = p_failed_at, updated_at = now()
+        WHERE id = p_business AND payment_failed_at IS NULL;
+      END $$;
+      ALTER FUNCTION public.test_fixture_start_grace(uuid, timestamptz) OWNER TO rekoda_plan_writer;
+      REVOKE ALL ON FUNCTION public.test_fixture_start_grace(uuid, timestamptz) FROM PUBLIC;
+      GRANT EXECUTE ON FUNCTION public.test_fixture_start_grace(uuid, timestamptz)
+        TO rekoda_app, rekoda_worker, rekoda_settlement;
+
+      -- A pack-credit writer for TEST FIXTURES ONLY (OD-51.4, migration 0216). Production raises a
+      -- ceiling only through usage_credit_pack, for a paid pack charge. Suites that need a business
+      -- with bought capacity, without staging a charge and its payment, use this; it is owned by
+      -- the usage writer (the role the pack-credit guard accepts) and, like the fixture plan
+      -- writer, never exists in a deployed database (the boot check and the staging smoke refuse
+      -- one that has it).
+      CREATE OR REPLACE FUNCTION public.test_fixture_credit_bonus(
+        p_business uuid, p_period text, p_unit text, p_n integer
+      ) RETURNS void
+      LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+      BEGIN
+        INSERT INTO public.usage_counters AS u (business_id, period, unit, bonus)
+        VALUES (p_business, p_period::char(7), p_unit, p_n)
+        ON CONFLICT (business_id, period, unit) DO UPDATE
+          SET bonus = u.bonus + p_n, updated_at = now();
+      END $$;
+      ALTER FUNCTION public.test_fixture_credit_bonus(uuid, text, text, integer)
+        OWNER TO rekoda_usage_writer;
+      REVOKE ALL ON FUNCTION public.test_fixture_credit_bonus(uuid, text, text, integer) FROM PUBLIC;
+      GRANT EXECUTE ON FUNCTION public.test_fixture_credit_bonus(uuid, text, text, integer)
+        TO rekoda_app, rekoda_worker, rekoda_settlement;
+    `);
+  } finally {
+    await client.end();
+  }
+}
+
+/**
+ * Start a business's grace clock at a chosen time for a test (see `installTestFixtureWriter`),
+ * once, as the production function does. `tx` is any tenant-pinned transaction of a runtime pool.
+ */
+export async function startGraceForTest(
+  tx: TenantDb,
+  businessId: string,
+  when: Date,
+): Promise<void> {
+  await tx.execute(drizzleSql`
+    SELECT test_fixture_start_grace(${businessId}::uuid, ${when.toISOString()}::timestamptz)
+  `);
+}
+
+/**
+ * Give a business bought capacity for a test, without a pack charge (see
+ * `installTestFixtureWriter`): `n` units of `unit` on the meter row the business spends that unit
+ * on now. `tx` is any tenant-pinned transaction of a runtime pool.
+ */
+export async function creditBonusForTest(
+  tx: TenantDb,
+  businessId: string,
+  period: string,
+  unit: UsageUnit,
+  n: number,
+): Promise<void> {
+  const row = await meterRowFor(tx, businessId, period, unit);
+  await tx.execute(drizzleSql`
+    SELECT test_fixture_credit_bonus(${businessId}::uuid, ${row}::text, ${unit}::text, ${n}::int)
+  `);
+}
+
+/**
+ * A test fixture's plan move: the same state an operator move writes (G-62 cycle rules, origin
+ * `operator` for a paid plan), written through the harness-only fixture writer with none of the
+ * production duration rules or the operator principal, so a suite can stage an open-ended paid
+ * plan or a trial that ended long ago. `db` is the application pool. Suites that test the operator
+ * path itself call `billingRepo.setPlan` with the billing-operator pool instead.
+ */
+export async function setPlanForTest(db: Db, change: PlanChange): Promise<boolean> {
+  return setPlanAsFixture(db, change);
+}
+
+/** Put a business on a paid cycle for a test, without a charge (see `installTestFixtureWriter`). */
+export async function applyFixtureCycle(
+  tx: TenantDb,
+  businessId: string,
+  cycle: CycleInput,
+): Promise<void> {
+  await writeCycle(tx, businessId, cycle, { kind: 'fixture' });
 }
 
 /**
@@ -83,6 +299,8 @@ const SEEDED_TABLES = [
   'usage_packs',
   'provider_capabilities',
   'provider_cost_schedules',
+  /* The pricing source in force (0215): one seeded row, put back to `catalogue` by `truncateAll`. */
+  'billing_pricing_source',
 ] as const;
 
 /**
@@ -123,9 +341,34 @@ export async function truncateAll(urls: Urls): Promise<void> {
     `;
     if (rows.length === 0) return;
     const deletes = rows.map((r) => `DELETE FROM "${r.tablename}";`).join('\n');
+    /* The pricing source goes back to the seeded default, so a suite that ran on the constant path
+     * (`setPricingSource`) cannot leave the next one there. */
     await sql.unsafe(
-      `SET session_replication_role = replica;\n${deletes}\nSET session_replication_role = origin;`,
+      `SET session_replication_role = replica;\n${deletes}\n` +
+        `UPDATE billing_pricing_source SET mode = 'catalogue', constants_fingerprint = NULL, ` +
+        `set_by = 'migration:0215', reason = 'seeded with the default source' ` +
+        `WHERE mode <> 'catalogue' OR set_by <> 'migration:0215';\n` +
+        `SET session_replication_role = origin;`,
     );
+  } finally {
+    await sql.end();
+  }
+}
+
+/**
+ * Switch the pricing source in force for a test (OD-51.6, migration 0215), as the owner, through
+ * the same function a deployment uses. `truncateAll` puts it back to `catalogue`, so a suite that
+ * prices from the compiled constants calls this after it in `beforeEach`.
+ */
+export async function setPricingSource(
+  urls: Urls,
+  mode: 'catalogue' | 'constants',
+  constantsFingerprint: string = pricingConstantsFingerprint(),
+): Promise<void> {
+  const sql = postgres(urls.owner, { max: 1, onnotice: () => {} });
+  try {
+    await sql`SELECT rekoda_private.set_pricing_source(
+      ${mode}, ${mode === 'constants' ? constantsFingerprint : null}, 'test:harness', 'test fixture')`;
   } finally {
     await sql.end();
   }
@@ -231,7 +474,12 @@ export async function readyToRemind(
   businessId: string,
   address = 'accounts@adaeze.example.ng',
 ): Promise<void> {
-  await setPlan(db, { businessId, plan: 'complete', expiresAt: null, actor: 'test' });
+  await setPlanForTest(db, {
+    businessId,
+    plan: 'complete',
+    expiresAt: null,
+    actor: 'operator:test',
+  });
   await withBusiness(db, businessId, async (tx) => {
     await setBillingEmailSealed(
       tx,
@@ -334,4 +582,35 @@ export async function agePaymentIntents(
 export function storedEventId(recorded: { isNew: true; id: string } | { isNew: false }): string {
   if (!recorded.isNew) throw new Error('fixture recorded a duplicate event');
   return recorded.id;
+}
+
+/**
+ * OD-37 (migration 0196): put a business on a plan and/or a paid-to date directly, AS THE OWNER.
+ *
+ * The plan fields change only through the subscription writers; the table owner is the one
+ * exemption (migrations and an administrator's repair), and this helper is a test using it. A
+ * fixture that needs a business "on Complete" without walking a paid cycle calls this; the
+ * application and worker roles cannot do it, and production code never does. A field left out
+ * keeps its value.
+ */
+export async function setPlanAsOwner(
+  urls: Urls,
+  businessId: string,
+  fields: { plan?: string; planExpiresAt?: Date | null },
+): Promise<void> {
+  const sql = postgres(urls.owner, { max: 1, onnotice: () => {} });
+  try {
+    const expires =
+      fields.planExpiresAt === undefined
+        ? sql`plan_expires_at`
+        : sql`${fields.planExpiresAt ? fields.planExpiresAt.toISOString() : null}::timestamptz`;
+    await sql`
+      UPDATE businesses
+      SET plan = COALESCE(${fields.plan ?? null}::text, plan), plan_expires_at = ${expires},
+          updated_at = now()
+      WHERE id = ${businessId}::uuid
+    `;
+  } finally {
+    await sql.end();
+  }
 }

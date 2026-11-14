@@ -6,7 +6,7 @@
  * the service itself in billing/billing-email-verification.integration.test.ts.
  */
 import { describe, expect, it } from 'vitest';
-import { billingRepo, identity, sql, subscriptionsRepo, withBusiness } from '@rekoda/db';
+import { identity, sql, subscriptionsRepo, withBusiness } from '@rekoda/db';
 import { buildRunner } from '../jobs/jobs.module.js';
 import { MockEmailSender } from '../email/email.port.js';
 import { BillingEmailService } from '../billing/billing-email.service.js';
@@ -20,6 +20,7 @@ import {
   useMetaWebhookHarness,
   workerDb,
 } from './meta-webhook.fixtures.js';
+import { setPlanForTest } from '@rekoda/db/testing';
 
 useMetaWebhookHarness();
 
@@ -33,11 +34,11 @@ async function seedOwner(name = 'Adaeze Fabrics') {
     businessType: null,
     ownerUserId: user.id,
   });
-  await billingRepo.setPlan(db, {
+  await setPlanForTest(db, {
     businessId: business.id,
     plan: 'complete',
     expiresAt: null,
-    actor: 'test',
+    actor: 'operator:test',
   });
   return business.id;
 }

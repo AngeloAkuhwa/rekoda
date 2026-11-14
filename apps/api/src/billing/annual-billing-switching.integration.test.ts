@@ -17,7 +17,6 @@ import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { addInterval, annualPriceK, PLAN_PRICES_K } from '@rekoda/core';
 import {
-  billingRepo,
   createDb,
   planCatalogueRepo,
   sql,
@@ -26,12 +25,14 @@ import {
   type Db,
 } from '@rekoda/db';
 import {
+  applyFixtureCycle,
   migrate,
   requireUrls,
   resetPlanCatalogue,
   truncateAll,
   type Urls,
 } from '@rekoda/db/testing';
+import { setPlanForTest, settlementDb } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { sweepRenewals } from './renewal-sweep.js';
 import { applySettledCharge, BillingService } from './billing.service.js';
@@ -142,7 +143,7 @@ const chargesOf = async (businessId: string) =>
 
 /** Settle a charge the way the webhook job does. */
 const pay = (businessId: string, reference: string, when: Date) =>
-  withBusiness(db, businessId, (tx) =>
+  withBusiness(settlementDb(), businessId, (tx) =>
     applySettledCharge(tx, {
       businessId,
       reference,
@@ -161,7 +162,7 @@ async function putOnPlan(
 ) {
   const anchor = new Date(start.getTime() + 3_600_000).getUTCDate();
   await withBusiness(db, businessId, async (tx) => {
-    await subscriptionsRepo.applyCycle(tx, businessId, {
+    await applyFixtureCycle(tx, businessId, {
       plan,
       cycleStartedAt: start,
       renewsAt: addInterval(start, interval, anchor),
@@ -403,7 +404,7 @@ describe('changing plan inside an annual cycle', () => {
     await putOnPlan(businessId, 'chat', 'annual', start);
     const before = await subOf(businessId);
 
-    await billingRepo.setPlan(db, {
+    await setPlanForTest(db, {
       businessId,
       plan: 'chat',
       expiresAt: before!.planExpiresAt!,
@@ -421,7 +422,7 @@ describe('changing plan inside an annual cycle', () => {
     await putOnPlan(businessId, 'chat', 'annual', new Date());
     await billing().switchInterval(businessId, 'monthly');
 
-    await billingRepo.setPlan(db, {
+    await setPlanForTest(db, {
       businessId,
       plan: 'integrate',
       expiresAt: new Date(Date.now() + 30 * DAY),

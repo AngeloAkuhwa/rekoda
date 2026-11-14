@@ -8,7 +8,12 @@ import { trialNoticeGate } from './trial-notice-sweep.js';
 
 describe('the trial sweep gate the worker uses', () => {
   it('is closed when the template is set but there is no billing page to link to', () => {
-    expect(trialNoticeGate({ metaTrialTemplate: 'rekoda_trial_ending', webUrl: null })).toEqual({
+    expect(
+      trialNoticeGate({
+        metaTemplates: { trial: { name: 'any_trial_template', locale: 'en' } },
+        webUrl: null,
+      }),
+    ).toEqual({
       templateConfigured: false,
       billingUrl: null,
     });
@@ -16,19 +21,19 @@ describe('the trial sweep gate the worker uses', () => {
 
   it('is closed when there is a billing page but no template', () => {
     expect(
-      trialNoticeGate({ metaTrialTemplate: null, webUrl: 'https://staging.myrekoda.com' }),
+      trialNoticeGate({ metaTemplates: { trial: null }, webUrl: 'https://app.example.test' }),
     ).toMatchObject({ templateConfigured: false });
   });
 
   it('is open with both, and hands the sweep the billing page', () => {
     expect(
       trialNoticeGate({
-        metaTrialTemplate: 'rekoda_trial_ending',
-        webUrl: 'https://staging.myrekoda.com',
+        metaTemplates: { trial: { name: 'any_trial_template', locale: 'en' } },
+        webUrl: 'https://app.example.test',
       }),
     ).toEqual({
       templateConfigured: true,
-      billingUrl: 'https://staging.myrekoda.com/app/billing',
+      billingUrl: 'https://app.example.test/app/billing',
     });
   });
 });

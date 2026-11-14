@@ -160,3 +160,45 @@ describe('planAlertDelivery (G-26)', () => {
     expect(back.send).toEqual([dead]);
   });
 });
+
+describe('blocked renewals (OWN-70)', () => {
+  it('pages while any renewal Rekoda cannot take the payment for is open, and not otherwise', () => {
+    expect(keys({ ...healthy, billing: { blockedRenewals: 0 } })).not.toContain(
+      'billing.renewals_blocked',
+    );
+    expect(keys({ ...healthy, billing: null })).not.toContain('billing.renewals_blocked');
+    const alerts = evaluateOpsAlerts({ ...healthy, billing: { blockedRenewals: 2 } });
+    expect(alerts.find((a) => a.key === 'billing.renewals_blocked')).toMatchObject({
+      severity: 'critical',
+    });
+  });
+});
+
+describe('blocked renewals the close pass could not close (OWN-70, 0199)', () => {
+  it('is active while the last close pass reported failures, and clears when it reports none', () => {
+    const failing = { ...healthy, billing: { blockedRenewals: 3, blockCloseFailed: 3 } };
+    // Evaluated again on every alert pass: the condition stays active as long as the count does.
+    for (let pass = 0; pass < 3; pass += 1) {
+      expect(
+        evaluateOpsAlerts(failing).find((a) => a.key === 'billing.renewal_block_close_failing'),
+      ).toMatchObject({ severity: 'critical' });
+    }
+    expect(
+      keys({ ...healthy, billing: { blockedRenewals: 0, blockCloseFailed: 0 } }),
+    ).not.toContain('billing.renewal_block_close_failing');
+    expect(keys({ ...healthy, billing: { blockedRenewals: 1 } })).not.toContain(
+      'billing.renewal_block_close_failing',
+    );
+  });
+  it('reports a pass that stopped without recording its end, and only that', () => {
+    expect(
+      evaluateOpsAlerts({
+        ...healthy,
+        billing: { blockedRenewals: 0, blockCloseStalled: true },
+      }).find((a) => a.key === 'billing.renewal_block_close_stalled'),
+    ).toMatchObject({ severity: 'critical' });
+    expect(
+      keys({ ...healthy, billing: { blockedRenewals: 0, blockCloseStalled: false } }),
+    ).not.toContain('billing.renewal_block_close_stalled');
+  });
+});

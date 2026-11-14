@@ -5,7 +5,12 @@ import type { BillingPaymentRecord } from '@rekoda/contracts';
 import { Money } from '@/components/ui/Money';
 import { heldBy } from '@/lib/capabilities';
 import { PLAN_NAMES } from '@/lib/plans';
-import { PAYMENT_RECORD_NOTICE, paymentRecordView } from '@/lib/payment-record-copy';
+import {
+  lagosDateTime,
+  PAYMENT_RECORD_NOTICE,
+  paymentRecordTimeline,
+  paymentRecordView,
+} from '@/lib/payment-record-copy';
 import { billingPayment } from '@/server/api';
 import { requireSessionWithToken } from '@/server/guards';
 import { AppNav } from '../../../AppNav';
@@ -24,18 +29,6 @@ const KIND_LABELS: Record<BillingPaymentRecord['kind'], string> = {
   add_on: 'Usage pack',
   seat: 'Extra seat',
 };
-
-/** Lagos, so a merchant reads the date and time they would write on a form. */
-function lagosDateTime(iso: string): string {
-  return new Date(iso).toLocaleString('en-GB', {
-    timeZone: 'Africa/Lagos',
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
 
 function lagosDate(iso: string): string {
   return new Date(iso).toLocaleDateString('en-GB', {
@@ -136,18 +129,12 @@ export default async function PaymentRecordPage({
                   : 'Not confirmed'}
             </dd>
           </div>
-          {record.paidAt ? (
-            <div>
-              <dt>{record.noCharge ? 'Applied on' : 'Payment recorded on'}</dt>
-              <dd>{lagosDateTime(record.paidAt)} (Lagos time)</dd>
+          {paymentRecordTimeline(record).map((row) => (
+            <div key={row.label}>
+              <dt>{row.label}</dt>
+              <dd>{row.shown}</dd>
             </div>
-          ) : null}
-          {record.failedAt && record.state === 'failed' ? (
-            <div>
-              <dt>Reported failed on</dt>
-              <dd>{lagosDateTime(record.failedAt)} (Lagos time)</dd>
-            </div>
-          ) : null}
+          ))}
           {record.refundedAmountK > 0 ? (
             <div>
               <dt>Returned to you</dt>

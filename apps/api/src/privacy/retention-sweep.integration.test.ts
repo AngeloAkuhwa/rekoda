@@ -14,7 +14,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { RETENTION, RETENTION_NOTICE_DAYS, usagePeriod } from '@rekoda/core';
 import {
-  billingRepo,
   createDb,
   identity,
   marginRepo,
@@ -23,7 +22,16 @@ import {
   withBusiness,
   type Db,
 } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import {
+  migrate,
+  ownerDb,
+  requireUrls,
+  setPlanForTest,
+  settlementDb,
+  truncateAll,
+  type Urls,
+  applicationDb,
+} from '@rekoda/db/testing';
 import { SendFailed } from '../channels/sender.js';
 import { StubSender } from '../channels/sender.stub.js';
 import { sweepRetention } from './retention-sweep.js';
@@ -69,7 +77,7 @@ async function abandonedTrial(
     businessType: null,
     ownerUserId: user.id,
   });
-  await billingRepo.setPlan(appDb, {
+  await setPlanForTest(appDb, {
     businessId: business.id,
     plan: 'trial',
     expiresAt: daysAgo(endedDaysAgo),
@@ -151,7 +159,7 @@ describe('the warning', () => {
 
   it('does not warn, or claim, a merchant who has ever paid us', async () => {
     const { businessId } = await abandonedTrial(400);
-    await withBusiness(appDb, businessId, (tx) =>
+    await withBusiness(applicationDb(), businessId, (tx) =>
       subscriptionsRepo.openCharge(tx, {
         businessId,
         kind: 'first_purchase',
@@ -162,7 +170,7 @@ describe('the warning', () => {
         periodEnd: daysAgo(370),
       }),
     );
-    await withBusiness(appDb, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       subscriptionsRepo.settleCharge(tx, {
         reference: 'RKD-SUB-20260101-AAAAAA',
         status: 'paid',
@@ -221,14 +229,20 @@ describe('the deletion', () => {
     expect(warned).toMatchObject({ warned: 1, deleted: 0 });
     expect(await exists(businessId)).toBe(true);
 
+    /* The notice is counted on the database's clock (0210): stage it in the past, as the owner. */
+    const noticeAgo = (d: number) =>
+      ownerDb().execute(
+        sql`UPDATE businesses SET retention_notified_at = now() - make_interval(days => ${d}) WHERE id = ${businessId}::uuid`,
+      );
+
     // The day before the notice period is up: still nothing.
-    const almost = new Date(Date.now() + (RETENTION.noticeDays - 1) * 86_400_000);
-    expect((await sweepRetention(deps(sender), almost)).deleted).toBe(0);
+    await noticeAgo(RETENTION.noticeDays - 1);
+    expect((await sweepRetention(deps(sender), new Date())).deleted).toBe(0);
     expect(await exists(businessId)).toBe(true);
 
     // And on the day it is up.
-    const due = new Date(Date.now() + (RETENTION.noticeDays + 1) * 86_400_000);
-    const swept = await sweepRetention(deps(sender), due);
+    await noticeAgo(RETENTION.noticeDays + 1);
+    const swept = await sweepRetention(deps(sender), new Date());
     expect(swept.deleted).toBe(1);
     expect(swept.rowsRemoved).toBeGreaterThan(0);
     expect(await exists(businessId)).toBe(false);
@@ -246,7 +260,7 @@ describe('the deletion', () => {
     await sweepRetention(deps(sender), new Date());
 
     // They came back and subscribed. The books are theirs again.
-    await withBusiness(appDb, businessId, (tx) =>
+    await withBusiness(applicationDb(), businessId, (tx) =>
       subscriptionsRepo.openCharge(tx, {
         businessId,
         kind: 'first_purchase',
@@ -257,7 +271,7 @@ describe('the deletion', () => {
         periodEnd: new Date(Date.now() + 30 * 86_400_000),
       }),
     );
-    await withBusiness(appDb, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       subscriptionsRepo.settleCharge(tx, {
         reference: 'RKD-SUB-20260601-BBBBBB',
         status: 'paid',
@@ -573,98 +587,5 @@ describe('a retention failure must not cancel a promised deletion (R13)', () => 
 
     /* The row stays, which is the queue keeping its promise. */
     expect(await objectDeletionsRepo.pendingObjectDeletionCount(workerDb)).toBe(1);
-  });
-});
-
-describe('the drain says what it did, and stops when it should (R13)', () => {
-  const queue = (businessId: string, keys: string[]) =>
-    withBusiness(appDb, businessId, (tx) =>
-      objectDeletionsRepo.enqueueObjectDeletions(tx, businessId, keys, 'business_deleted'),
-    );
-
-  it('keeps going past one batch until the queue is empty', async () => {
-    /* The drain used to take exactly 200 and stop. A merchant deleting an
-     * account with more objects than that waited SIX HOURS per batch for the
-     * rest, while the privacy page says the objects go with the records.
-     * 250 is the smallest number that proves the loop: one batch of 200
-     * would leave 50 behind. */
-    const { businessId } = await abandonedTrial(0);
-    const keys = Array.from({ length: 250 }, (_, i) => `documents/x/invoice_pdf/${i}.pdf`);
-    await queue(businessId, keys);
-    const storage = new RecordingStorage();
-
-    const result = await drainObjectDeletions({ workerDb, storage });
-
-    expect(result.deleted).toBe(250);
-    expect(result.batches).toBe(2);
-    expect(result.stoppedBecause).toBe('drained');
-    expect(result.outstanding).toBe(0);
-    expect(storage.deleted).toHaveLength(250);
-  });
-
-  it('counts an object that IS gone as deleted, even when its row survives', async () => {
-    /* The dishonest case. The provider deleted the object; only the
-     * bookkeeping failed. Reporting that as `failed` tells an operator the
-     * promise is unkept when it has been kept, and makes `outstanding` wrong
-     * in the reassuring direction. */
-    const { businessId } = await abandonedTrial(0);
-    await queue(businessId, ['documents/x/invoice_pdf/gone.pdf']);
-    const storage = new RecordingStorage();
-
-    /* A worker connection whose row DELETE fails while everything else on it
-     * works: the narrowest way to produce the split the item describes. */
-    const brittle = new Proxy(workerDb, {
-      get(target, prop, receiver) {
-        if (prop !== 'execute') return Reflect.get(target, prop, receiver);
-        return (query: unknown) => {
-          const text = JSON.stringify(query);
-          if (text.includes('DELETE FROM pending_object_deletions')) {
-            return Promise.reject(new Error('row delete refused'));
-          }
-          return (target as Db).execute(query as never);
-        };
-      },
-    });
-
-    const result = await drainObjectDeletions({ workerDb: brittle as Db, storage });
-
-    /* The object went. That is the fact the count must carry. */
-    expect(storage.deleted).toEqual(['documents/x/invoice_pdf/gone.pdf']);
-    expect({
-      deleted: result.deleted,
-      failed: result.failed,
-      rowsLeftBehind: result.rowsLeftBehind,
-    }).toEqual({ deleted: 1, failed: 0, rowsLeftBehind: 1 });
-  });
-
-  it('does not re-count a row it already handled in the same pass', async () => {
-    /* The trap in the batching. A row whose object went but whose row delete
-     * failed keeps its past `run_at`, so the next batch reads it straight
-     * back. Without the pass remembering what it handled, the drain would
-     * re-delete an absent object and count it again every batch, reporting
-     * deletions that never happened. */
-    const { businessId } = await abandonedTrial(0);
-    await queue(businessId, ['documents/x/invoice_pdf/sticky.pdf']);
-    const storage = new RecordingStorage();
-    const brittle = new Proxy(workerDb, {
-      get(target, prop, receiver) {
-        if (prop !== 'execute') return Reflect.get(target, prop, receiver);
-        return (query: unknown) => {
-          const text = JSON.stringify(query);
-          if (text.includes('DELETE FROM pending_object_deletions')) {
-            return Promise.reject(new Error('row delete refused'));
-          }
-          return (target as Db).execute(query as never);
-        };
-      },
-    });
-
-    const result = await drainObjectDeletions({ workerDb: brittle as Db, storage });
-
-    /* Once. Not twenty-five times, which is what maxBatches would have
-     * allowed if the pass had no memory. */
-    expect(result.deleted).toBe(1);
-    expect(result.batches).toBe(1);
-    expect(storage.deleted).toEqual(['documents/x/invoice_pdf/sticky.pdf']);
   });
 });

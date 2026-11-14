@@ -1,3 +1,4 @@
+import { openPricedCharge } from './priced-charge.fixtures.js';
 /**
  * A payment for an OLD subscription decision never overwrites a NEWER one
  * (G-104, G-112).
@@ -13,16 +14,18 @@
 // The stale charge suite. Split by concern; the rest of this suite is in stale-
 // charge.integration.test.ts.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { createDb, identity, sql, subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
 import {
-  billingRepo,
-  createDb,
-  identity,
-  sql,
-  subscriptionsRepo,
-  withBusiness,
-  type Db,
-} from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+  applyFixtureCycle,
+  migrate,
+  requireUrls,
+  truncateAll,
+  type Urls,
+  settlementDb,
+  setPricingSource,
+  applicationDb,
+} from '@rekoda/db/testing';
+import { setPlanForTest } from '@rekoda/db/testing';
 import { applySettledCharge, BillingService } from './billing.service.js';
 import { sweepRenewals } from './renewal-sweep.js';
 
@@ -50,9 +53,16 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await truncateAll(urls);
+  /* This suite prices from the compiled constants; the database is told so (OD-51.6, 0215). */
+  await setPricingSource(urls, 'constants');
 });
 
-const config = { planCatalogueReads: false };
+/* A test key: renewals are payable, so none is recorded as blocked (OWN-70). */
+const config = {
+  planCatalogueReads: false,
+  paystackSecretKey: 'sk_test_x',
+  paystackPlatformConfirmed: false,
+};
 const renewsAt = new Date(Date.now() + 20 * 86_400_000);
 
 let seq = 0;
@@ -68,12 +78,12 @@ async function seedBusiness(): Promise<string> {
 }
 
 const operator = (businessId: string, plan: string, expiresAt: Date | null = renewsAt) =>
-  billingRepo.setPlan(appDb, { businessId, plan, expiresAt, actor: 'operator:test-g104' });
+  setPlanForTest(appDb, { businessId, plan, expiresAt, actor: 'operator:test-g104' });
 
 /** A standard monthly cycle ending at `renewsAt` (OWN-33: other spans are never prorated). */
 const standardCycle = (businessId: string, plan: string) =>
   withBusiness(appDb, businessId, (tx) =>
-    subscriptionsRepo.applyCycle(tx, businessId, {
+    applyFixtureCycle(tx, businessId, {
       plan,
       cycleStartedAt: new Date(renewsAt.getTime() - 30 * 86_400_000),
       renewsAt,
@@ -87,19 +97,29 @@ const open = (
   reference: string,
   plan: string | null,
 ) =>
-  withBusiness(appDb, businessId, (tx) =>
-    subscriptionsRepo.openCharge(tx, {
+  withBusiness(applicationDb(), businessId, async (tx) => {
+    /* The period production records on opening (0206 binds settlement to it): a renewal buys the
+     * cycle that starts at the current paid-to date, an upgrade the rest of the cycle ending there. */
+    const paidTo = (await subscriptionsRepo.subscriptionFor(tx, businessId))?.planExpiresAt;
+    const period =
+      paidTo && kind === 'renewal'
+        ? { periodStart: paidTo, periodEnd: new Date(paidTo.getTime() + 30 * 86_400_000) }
+        : paidTo && kind === 'upgrade'
+          ? { periodStart: new Date(paidTo.getTime() - 30 * 86_400_000), periodEnd: paidTo }
+          : {};
+    return openPricedCharge(tx, config, {
       businessId,
       kind,
       ...(plan ? { plan } : {}),
       ...(kind === 'add_on' ? { packId: 'messages_100' } : {}),
-      amountK: 990_000,
+      /* At the honest price: settlement re-prices every charge (OD-51, 0209). */
       reference,
-    }),
-  );
+      ...period,
+    });
+  });
 
 const settle = (businessId: string, reference: string) =>
-  withBusiness(appDb, businessId, (tx) =>
+  withBusiness(settlementDb(), businessId, (tx) =>
     applySettledCharge(tx, {
       businessId,
       reference,
@@ -208,7 +228,7 @@ describe('a paid but unapplied charge is an operator exception (OD-30)', () => {
       businessId,
       kind: 'renewal',
       plan: 'complete',
-      amountK: 990_000,
+      /* At the honest price: settlement re-prices every charge (OD-51, 0209). */
       reason: 'subscription_decided_after_charge',
       currentPlan: 'chat',
     });
@@ -366,7 +386,7 @@ describe('a grace business whose renewal went stale is given a payable one (G-10
     await operator(businessId, 'complete', new Date(Date.now() - 3_600_000));
     expect((await sweep()).raised).toBe(1);
     // The provider reports the attempt dead: the charge is closed `failed`, and it still holds the cycle.
-    await withBusiness(appDb, businessId, async (tx) => {
+    await withBusiness(settlementDb(), businessId, async (tx) => {
       const rows = await tx.execute<{ reference: string }>(sql`
         SELECT reference FROM subscription_charges
         WHERE business_id = ${businessId}::uuid AND kind = 'renewal'`);

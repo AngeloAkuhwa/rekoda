@@ -74,6 +74,12 @@ export const subscriptionCharges = pgTable(
     /** The Paystack checkout this charge was initialised with (migration 0172, G-102); null until the merchant starts paying. */
     checkoutUrl: text('checkout_url'),
     checkoutStartedAt: timestamp('checkout_started_at', { withTimezone: true }),
+    /** OD-40 (migration 0193): Paystack's verified `paid_at` for the settling payment; null when verify gave none. */
+    providerPaidAt: timestamp('provider_paid_at', { withTimezone: true }),
+    /** OD-40: Paystack's confirmed settlement time; null until verified settlement evidence exists (nothing writes it yet). */
+    providerSettledAt: timestamp('provider_settled_at', { withTimezone: true }),
+    /** OD-40: database time of the transaction that credited a pack's units; null for a plan charge. */
+    unitsCreditedAt: timestamp('units_credited_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },

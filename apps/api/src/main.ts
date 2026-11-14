@@ -5,11 +5,13 @@ import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { AppModule } from './app.module.js';
-import { DB, WORKER_DB } from './db/db.module.js';
+import { DB, OPERATOR_DB, SETTLEMENT_DB, WORKER_DB } from './db/db.module.js';
 import { bootChecks, isEntrypoint, type Db } from '@rekoda/db';
-import { MAX_IMAGE_BYTES } from '@rekoda/core';
+import { assertStagingMarkerNotLive } from './health/staging-boot-check.js';
+import { MAX_IMAGE_BYTES, pricingConstantsFingerprint } from '@rekoda/core';
+import { pricingSourceOf } from './billing/plan-terms.js';
 import { publicApi } from '@rekoda/contracts';
-import { CONFIG, loadConfig, trustedProxies, type ApiConfig } from './config.js';
+import { CONFIG, isProductionEnv, loadConfig, trustedProxies, type ApiConfig } from './config.js';
 import { clientAddress, rateLimitKey } from './http/client-address.js';
 import { isRateLimitExempt } from './http/rate-limit-exempt.js';
 
@@ -93,8 +95,39 @@ export async function createApp(): Promise<NestFastifyApplication> {
   await bootChecks.assertRoleCannotBypassRls(db, 'application');
   const workerDb = app.get<Db | null>(WORKER_DB);
   if (workerDb) await bootChecks.assertRoleCannotBypassRls(workerDb, 'worker');
+  await bootChecks.assertRoleCannotAssumePlanWriter(db, 'application');
+  if (workerDb) await bootChecks.assertRoleCannotAssumePlanWriter(workerDb, 'worker');
+  /* OD-37 (0202): the payment and operator plan writers belong to their own principals. The
+   * general credentials must hold neither; each reserved connection must be exactly its role. */
+  await bootChecks.assertRoleHoldsNoReservedWriter(db, 'application');
+  if (workerDb) await bootChecks.assertRoleHoldsNoReservedWriter(workerDb, 'worker');
+  /* OD-51: null in production, where the dedicated settlement and operator processes are the
+   * only holders (the configuration refuses either credential here). A development process given
+   * one is still held to its exact principal. */
+  const settlementDb = app.get<Db | null>(SETTLEMENT_DB);
+  if (settlementDb) {
+    await bootChecks.assertDatabasePrincipal(settlementDb, 'settlement', 'rekoda_settlement');
+  }
+  const operatorDb = app.get<Db | null>(OPERATOR_DB);
+  if (operatorDb) {
+    await bootChecks.assertDatabasePrincipal(operatorDb, 'operator', 'rekoda_billing_operator');
+  }
+  /* OD-51.6 (0215): this process prices from the source the database says is in force, and on the
+   * constant path carries the same compiled figures, or it does not start. The same check runs in
+   * every process that prices or settles a charge. */
+  await bootChecks.assertPricingSource(db, config.workerEnabled ? 'worker' : 'api', {
+    mode: pricingSourceOf(config),
+    constantsFingerprint: pricingConstantsFingerprint(),
+  });
   await bootChecks.assertKeyUnchanged(db, 'VAULT_KEY', config.vaultKey);
   await bootChecks.assertKeyUnchanged(db, 'MATCH_KEY', config.matchKey);
+  await assertStagingMarkerNotLive(db, config.paystackSecretKey);
+  /* OD-37 (0206): the test harness's fixture plan writer is also the cycle-input guard's test-only
+   * exemption, so a served database must not have it. Checked under production hardening (any
+   * NODE_ENV set to something other than development or test; unset counts as development, and the
+   * deployed images set production); the integration suites boot against test databases. The
+   * pre-start smoke refuses the writer on every staging deploy whatever NODE_ENV says. */
+  if (isProductionEnv(process.env)) await bootChecks.assertNoTestFixtureWriter(db);
 
   /**
    * Product photos, and nothing else.
@@ -249,6 +282,10 @@ if (isEntrypoint(import.meta.url, process.argv[1])) {
   // one-line startup error instead of a stack trace inside a DI factory.
   const config = loadConfig();
   const app = await createApp();
-  await app.listen({ port: config.port, host: '0.0.0.0' });
-  new Logger('bootstrap').log(`Rekoda API listening on :${config.port}`);
+  /* OD-51: a production worker holds the settlement credential and serves no one but its own
+   * health check (run inside its container), so it listens on loopback only: nothing on the db
+   * network, the API included, can reach it. The API listens for Caddy as before. */
+  const host = config.workerEnabled && isProductionEnv(process.env) ? '127.0.0.1' : '0.0.0.0';
+  await app.listen({ port: config.port, host });
+  new Logger('bootstrap').log(`Rekoda API listening on ${host}:${config.port}`);
 }

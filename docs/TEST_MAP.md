@@ -86,6 +86,7 @@ change a feature and want to know what to run.
 | unit        | `packages/core/src/margin.test.ts`                                        |
 | unit        | `packages/core/src/payment-record.test.ts`                                |
 | unit        | `packages/db/src/billing/plan-expiry-files.test.ts`                       |
+| unit        | `packages/db/src/billing/plan-expiry-files.patterns.test.ts`              |
 
 ### Payments, settlement, bank and reconciliation
 
@@ -118,6 +119,7 @@ change a feature and want to know what to run.
 | integration | `apps/api/src/payments/settlement-sweep.integration.test.ts`                  |
 | integration | `apps/api/src/payments/storefront-transfer.integration.test.ts`               |
 | integration | `apps/api/src/reports/overpayment-bus.integration.test.ts`                    |
+| integration | `apps/api/src/webhooks/webhook-delivery-meter.integration.test.ts`            |
 | integration | `apps/api/src/webhooks/webhooks.integration.test.ts`                          |
 | integration | `packages/db/src/bank/bank-fingerprint.integration.test.ts`                   |
 | integration | `packages/db/src/bank/bank-payment-references.integration.test.ts`            |

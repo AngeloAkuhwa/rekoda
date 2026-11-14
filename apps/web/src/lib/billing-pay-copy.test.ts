@@ -1,6 +1,8 @@
 import type { BillingChargeView } from '@rekoda/contracts';
 import { describe, expect, it } from 'vitest';
 import {
+  BILLING_PROCESSING_STRIP,
+  billingProcessingCopy,
   lapsedPlanCopy,
   checkoutInputProblem,
   checkoutRefusalCopy,
@@ -364,5 +366,38 @@ describe('the lapsed-plan banner says what actually ended (SUB-05)', () => {
         );
       }
     }
+  });
+});
+
+describe('billingProcessingCopy (OWN-76)', () => {
+  const since = '2026-11-08T10:00:00.000Z';
+  const all = [true, false].flatMap((recovering) =>
+    [true, false].map((owner) => billingProcessingCopy({ since, recovering }, owner)),
+  );
+  it('never claims an outcome: no failure, no success, no promised plan change, no confirmation', () => {
+    for (const text of all) {
+      expect(text).not.toMatch(/fail|did not go through|declined|received your payment/i);
+      expect(text).not.toMatch(/plan will|will be updated|confirmed|extended|activated/i);
+      expect(text).toMatch(/Your records are safe/);
+      expect(text).toMatch(/result will show on this page/);
+    }
+  });
+  it('never tells the owner to stop paying outright, which could let a renewal lapse', () => {
+    for (const text of all) expect(text).not.toMatch(/do not pay|don't pay/i);
+    expect(billingProcessingCopy({ since, recovering: false }, true)).toMatch(
+      /message us on WhatsApp before paying again/,
+    );
+  });
+  it('says the team is processing it again once an operator has started a recovery', () => {
+    expect(billingProcessingCopy({ since, recovering: true }, true)).toMatch(/processing .* again/);
+  });
+  it('asks nothing of a member who is not the owner', () => {
+    expect(billingProcessingCopy({ since, recovering: false }, false)).not.toMatch(
+      /\bpay(ing)?\b/i,
+    );
+  });
+  it('the dashboard strip points to billing and claims nothing about money', () => {
+    expect(BILLING_PROCESSING_STRIP).toMatch(/See billing/);
+    expect(BILLING_PROCESSING_STRIP).not.toMatch(/fail|paid|declined/i);
   });
 });

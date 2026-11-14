@@ -15,8 +15,8 @@
 import { randomBytes } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { createDb, sql, withBusiness } from '@rekoda/db';
-import { replies } from '@rekoda/core';
-import { storedEventId } from '@rekoda/db/testing';
+import { replies, usagePeriod } from '@rekoda/core';
+import { storedEventId, setPlanAsOwner } from '@rekoda/db/testing';
 import { buildRunner } from './jobs.module.js';
 import { ProviderUnreachable } from '../ai/transport.js';
 import { sealPayload } from '../privacy/payload-vault.js';
@@ -126,9 +126,7 @@ describe('the chat surface enforces roles', () => {
   it('refunds the original month once when a retry crosses the month boundary (G-57)', async () => {
     const businessId = await seedBusiness('Role Gate Month Ltd', '+2348140010047');
     /* A paid plan meters by calendar month, which is what this test is about. */
-    await withBusiness(appDb, businessId, (tx) =>
-      tx.execute(sql`UPDATE businesses SET plan = 'complete' WHERE id = ${businessId}::uuid`),
-    );
+    await setPlanAsOwner(urls, businessId, { plan: 'complete' });
     await memberOf(businessId, '+2348140010048', 'accountant');
     const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
     const used = async (period: string) => {
@@ -138,11 +136,15 @@ describe('the chat surface enforces roles', () => {
       return Number(row?.used ?? 0);
     };
     try {
-      /* Other messages already used units in both months. */
+      /* The row the database meters this paid business on now (0222: the database, not the
+       * caller's clock, chooses it), and another month's row that must never move. Other
+       * messages already used units on both. */
+      const spentRow = usagePeriod(new Date());
+      const otherRow = '2020-01';
       await ownerDb.execute(sql`
         INSERT INTO usage_counters (business_id, period, unit, used)
-        VALUES (${businessId}::uuid, '2026-09', 'AI_ACTIONS', 1),
-               (${businessId}::uuid, '2026-10', 'AI_ACTIONS', 2)`);
+        VALUES (${businessId}::uuid, ${spentRow}, 'AI_ACTIONS', 1),
+               (${businessId}::uuid, ${otherRow}, 'AI_ACTIONS', 2)`);
       /* The first reply fails once, so the job really retries. */
       await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS g57_month_once`);
       await ownerDb.execute(sql`
@@ -206,7 +208,7 @@ describe('the chat surface enforces roles', () => {
       /* Attempt 1, still September: takes the unit, then its reply fails. */
       vi.setSystemTime(new Date('2026-09-30T22:59:50Z'));
       await buildRunner(workerDb, appDb, deps).runOnce();
-      expect(await used('2026-09')).toBe(2);
+      expect(await used(spentRow)).toBe(2);
       /* The retry, after midnight: now October in Lagos. */
       vi.setSystemTime(new Date('2026-09-30T23:00:30Z'));
       await ownerDb.execute(sql`
@@ -219,10 +221,11 @@ describe('the chat surface enforces roles', () => {
          ORDER BY created_at DESC LIMIT 1`);
       expect(job).toMatchObject({ state: 'done', attempts: 2 });
       expect(stubSender.sent[stubSender.sent.length - 1]?.text).toBe(replies.viewOnlyRole().text);
-      /* September's unit back, once; October untouched. */
-      expect({ september: await used('2026-09'), october: await used('2026-10') }).toEqual({
-        september: 1,
-        october: 2,
+      /* The unit goes back to the row its reservation recorded, once, whatever month the retry's
+       * clock reads; the other row is untouched. */
+      expect({ spent: await used(spentRow), other: await used(otherRow) }).toEqual({
+        spent: 1,
+        other: 2,
       });
     } finally {
       vi.useRealTimers();

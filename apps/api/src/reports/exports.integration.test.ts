@@ -16,7 +16,7 @@ import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { usagePeriod } from '@rekoda/core';
-import { billingRepo, createDb, usageRepo, withBusiness, type Db } from '@rekoda/db';
+import { createDb, usageRepo, withBusiness, type Db } from '@rekoda/db';
 import {
   migrate,
   requireUrls,
@@ -24,6 +24,7 @@ import {
   truncateAll,
   type Urls,
 } from '@rekoda/db/testing';
+import { setPlanForTest } from '@rekoda/db/testing';
 import { meterAllowance } from '../billing/plan-terms.js';
 
 let urls: Urls;
@@ -97,7 +98,7 @@ async function signUp(
 }
 
 async function onPlan(businessId: string, plan: string): Promise<void> {
-  await billingRepo.setPlan(db, { businessId, plan, expiresAt: null, actor: 'operator:test' });
+  await setPlanForTest(db, { businessId, plan, expiresAt: null, actor: 'operator:test' });
 }
 
 async function used(businessId: string): Promise<number> {
@@ -165,6 +166,21 @@ describe('a generated file costs a unit', () => {
 
     /* And the refusal consumed nothing: the counter sits exactly at the
      * allowance, not one past it. */
+    expect(await used(shop.businessId)).toBe(allowance);
+  });
+
+  it('refuses a trial past its downloads in words about the trial, never "this month"', async () => {
+    const shop = await signUp('+2348194000004', 'Trial Spent Co');
+    const allowance = await spendDownTo(shop.businessId, 'trial', 0);
+    expect(allowance).toBeGreaterThan(0);
+
+    const refused = await get('/v1/reports/invoices.csv', shop.auth);
+    expect(refused.statusCode).toBe(429);
+    /* A trial's allowance is one budget for its 14 days (G-109), not a month's. */
+    const said = (refused.json() as { message: string }).message;
+    expect(said).not.toContain('month');
+    expect(said).toContain('free trial');
+    expect(said).toContain('never counts against this');
     expect(await used(shop.businessId)).toBe(allowance);
   });
 

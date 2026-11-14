@@ -87,18 +87,47 @@ export type CreateBusinessRequest = z.infer<typeof createBusinessRequest>;
 /**
  * An operator moving a business onto a plan (docs/pricing-model.md).
  *
- * `expiresAt` is explicit rather than derived: a month, a year and a
- * never-expires arrangement are all real, and guessing which one an
- * operator meant is how a paying merchant gets cut off.
+ * Rekoda's plan durations are enforced (owner review of PR #432, migration 0203): a paid plan is
+ * monthly (ends within one calendar month) or annual (within twelve), never open-ended; a trial
+ * ends within 14 days of the business's own trial start; `expired` ends at or before now. With
+ * `expiresAt` null the rule's own date is used (exactly one period from now, the business's trial
+ * end, or now). `billingInterval` applies to a paid plan only (monthly when absent). It is the
+ * interval the business is on afterwards: re-posting an annual subscriber without it moves them
+ * to monthly, and any interval change starts a new operator-defined cycle (no automatic proration).
  */
 export const setPlanRequest = z.object({
   businessId: z.string().uuid(),
   plan: z.enum(['trial', 'expired', 'chat', 'integrate', 'complete']),
   expiresAt: z.iso.datetime().nullable(),
+  billingInterval: z.enum(['monthly', 'annual']).optional(),
   /* No `actor`. The operator plane verifies an identity and audits its
    * subject; a caller cannot name themselves (ADR 0034). */
 });
 export type SetPlanRequest = z.infer<typeof setPlanRequest>;
+
+/**
+ * An operator resolving a merchant's support-reviewed upgrade (OD-50, migration 0213).
+ *
+ * The plan moves; the paid-through date stays exactly what the merchant already paid for. There
+ * is NO date field and the object is strict: a body that carries one (`expiresAt` or anything
+ * else) is refused, never ignored. It applies only where the merchant's own upgrade request went
+ * to support review; every other assignment is `setPlanRequest`, which runs a standard period.
+ */
+export const resolvePlanReviewRequest = z.strictObject({
+  businessId: z.string().uuid(),
+  plan: z.enum(['chat', 'integrate', 'complete']),
+  reason: z.string().trim().min(1).max(500),
+});
+export type ResolvePlanReviewRequest = z.infer<typeof resolvePlanReviewRequest>;
+
+export const resolvePlanReviewResponse = z.object({
+  plan: z.string(),
+  previousPlan: z.string(),
+  /** The paid-through date kept, unchanged by the resolution. */
+  paidThrough: z.string(),
+  changed: z.boolean(),
+});
+export type ResolvePlanReviewResponse = z.infer<typeof resolvePlanReviewResponse>;
 
 export const sessionResponse = z.object({
   sessionToken: z.string(),

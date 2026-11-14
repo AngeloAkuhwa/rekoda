@@ -115,25 +115,50 @@ export async function subscriptionFor(
 export async function applyCycle(
   tx: TenantDb,
   businessId: string,
-  cycle: {
-    plan: string;
-    cycleStartedAt: Date;
-    renewsAt: Date;
-    anchorDay: number;
-    /** The plan the NEXT renewal moves to. Null clears a scheduled downgrade. */
-    pendingPlan?: string | null;
-    /** The interval this cycle was bought on; absent keeps monthly. A switch waiting for renewal is cleared. */
-    billingInterval?: BillingInterval;
+  cycle: CycleInput & {
     /**
-     * An upgrade keeps the cycle it lands in, so an interval switch already scheduled for the
-     * NEXT renewal must survive it. A renewal or a first purchase starts a new cycle and clears it.
+     * The paid charge this cycle is bought with (OD-37, migration 0200). The database takes the
+     * plan from that charge and refuses a charge that is not paid, not a plan charge, or already
+     * applied, so `plan` here must be the charge's plan.
      */
-    keepPendingInterval?: boolean;
-    /** Leaves this interval waiting for the next renewal (a cycle bought on another interval than the one chosen). */
-    nextInterval?: BillingInterval | null;
+    chargeReference: string;
   },
 ): Promise<void> {
+  await writeCycle(tx, businessId, cycle, { kind: 'charge', reference: cycle.chargeReference });
+}
+
+/** A paid cycle, as `applyCycle` and the test fixture writer describe it. */
+export interface CycleInput {
+  plan: string;
+  cycleStartedAt: Date;
+  renewsAt: Date;
+  anchorDay: number;
+  /** The plan the NEXT renewal moves to. Null clears a scheduled downgrade. */
+  pendingPlan?: string | null;
+  /** The interval this cycle was bought on; absent keeps monthly. A switch waiting for renewal is cleared. */
+  billingInterval?: BillingInterval;
+  /**
+   * An upgrade keeps the cycle it lands in, so an interval switch already scheduled for the
+   * NEXT renewal must survive it. A renewal or a first purchase starts a new cycle and clears it.
+   */
+  keepPendingInterval?: boolean;
+  /** Leaves this interval waiting for the next renewal (a cycle bought on another interval than the one chosen). */
+  nextInterval?: BillingInterval | null;
+}
+
+/**
+ * Write a paid cycle under the given authority. Production code calls `applyCycle` (a paid
+ * charge); the `fixture` authority exists only for test databases (`@rekoda/db/testing`), whose
+ * harness installs the function it needs; a production database has no such function.
+ */
+export async function writeCycle(
+  tx: TenantDb,
+  businessId: string,
+  cycle: CycleInput,
+  authority: PlanWriteAuthority,
+): Promise<void> {
   await writeSubscriptionState(tx, businessId, {
+    authority,
     billingInterval: cycle.billingInterval ?? 'monthly',
     keepPendingInterval: cycle.keepPendingInterval ?? false,
     ...(cycle.nextInterval !== undefined ? { nextInterval: cycle.nextInterval } : {}),
@@ -147,8 +172,22 @@ export async function applyCycle(
   });
 }
 
+/**
+ * Who may move a business's plan fields (OD-37, migration 0200), each mapped to its own database
+ * writer: a paid charge (`subscription_apply_paid_charge`, the plan comes from the charge), an
+ * operator (`subscription_operator_set_plan`: validated plan, interval, date and `operator:` actor, audited by the writer, billing-operator credential only, 0202/0203), or a
+ * test fixture (a function only the test harness installs).
+ */
+export type PlanWriteAuthority =
+  | { kind: 'charge'; reference: string }
+  /* The interval a paid operator plan is sold on (null for trial and expired): the writer checks
+   * the end against it (migration 0203). */
+  | { kind: 'operator'; actor: string; billingInterval: BillingInterval | null }
+  | { kind: 'fixture' };
+
 /** What a business's subscription columns say, written as one fact. */
 export interface SubscriptionState {
+  authority: PlanWriteAuthority;
   plan: string;
   /**
    * A paid plan (a cycle or an operator arrangement) or not (trial, expired).
@@ -191,8 +230,33 @@ export interface SubscriptionState {
 export async function writeSubscriptionState(
   tx: TenantDb,
   businessId: string,
-  state: SubscriptionState,
-): Promise<void> {
+  given: SubscriptionState,
+): Promise<'written' | 'unchanged'> {
+  const state = given;
+  /* OD-50 (0207): the operator writer computes a paid plan's or a trial's end itself (Rekoda's
+   * standard period from the database clock) and returns it with the cycle start it used, so the
+   * rest of the cycle is recorded from the database's own values. Re-posting the plan and interval
+   * the business is already on changes nothing. */
+  if (given.authority.kind === 'operator') {
+    const a = given.authority;
+    const asked = given.planExpiresAt
+      ? sql`${given.planExpiresAt.toISOString()}::timestamptz`
+      : sql`NULL`;
+    const rows = await tx.execute<{
+      cycle_start: string | null;
+      expires_at: string | null;
+      changed: boolean;
+    }>(sql`
+      SELECT cycle_start, expires_at, changed FROM subscription_operator_set_plan(
+        ${businessId}::uuid, ${given.plan}, ${asked}, ${a.billingInterval}, ${a.actor})
+    `);
+    const row = [...rows][0];
+    if (!row) throw new Error('subscription_operator_set_plan returned nothing');
+    if (!row.changed) return 'unchanged';
+    /* Since 0221 the writer records the whole cycle itself, from its own values, and the operator
+     * credential holds no column it could write here. */
+    return 'written';
+  }
   const startStamp = (state.cycleStartedAt ?? new Date()).toISOString();
   const cycleStarted = state.cycleStartedAt ? sql`${startStamp}::timestamptz` : sql`NULL`;
   const expires = state.planExpiresAt
@@ -217,11 +281,27 @@ export async function writeSubscriptionState(
            LIMIT 1))
       END`
     : sql`plan_version_id`;
+  /* OD-37 (migrations 0196, 0200): `plan` and `plan_expires_at` are written only by a database
+   * function owned by `rekoda_plan_writer`, chosen by the authority; the trigger refuses them from
+   * anywhere else. The rest of the cycle is written beside it, in this same transaction, so the
+   * state still lands as one fact. */
+  const a = state.authority;
+  if (a.kind === 'charge') {
+    /* The plan comes from the charge in the database; one that disagrees is a caller bug. */
+    const rows = await tx.execute<{ plan: string }>(sql`
+      SELECT subscription_apply_paid_charge(${businessId}::uuid, ${a.reference}, ${expires}) AS plan
+    `);
+    if ([...rows][0]?.plan !== state.plan) {
+      throw new Error(`charge ${a.reference} buys a different plan than the cycle being applied`);
+    }
+  } else {
+    await tx.execute(sql`
+      SELECT test_fixture_set_plan(${businessId}::uuid, ${state.plan}, ${expires})
+    `);
+  }
   await tx.execute(sql`
     UPDATE businesses SET
-      plan = ${state.plan},
       plan_version_id = ${pin},
-      plan_expires_at = ${expires},
       cycle_started_at = ${cycleStarted},
       renewal_anchor_day = ${state.anchorDay},
       pending_plan = ${state.pendingPlan},
@@ -252,6 +332,60 @@ export async function writeSubscriptionState(
       updated_at = now()
     WHERE id = ${businessId}::uuid
   `);
+  return 'written';
+}
+
+/**
+ * Record that the merchant asked for an upgrade the product sends to support review (OD-50,
+ * migration 0213). The database function checks the facts itself (an active paid plan with a
+ * future paid-through date, a dearer paid target) and freezes the plan and paid-through date the
+ * request was made against; asking again for the same upgrade returns the same review. Returns
+ * null when the database refuses the request (nothing to review), which changes nothing.
+ */
+export async function requestPlanReview(
+  tx: TenantDb,
+  businessId: string,
+  plan: string,
+): Promise<string | null> {
+  try {
+    /* A savepoint: a refusal must not abort the caller's transaction. */
+    return await tx.transaction(async (sp) => {
+      const rows = await sp.execute<{ id: string }>(
+        sql`SELECT subscription_request_plan_review(${businessId}::uuid, ${plan}) AS id`,
+      );
+      return [...rows][0]?.id ?? null;
+    });
+  } catch (error) {
+    const cause = (error as { cause?: { code?: string } }).cause;
+    if (cause?.code === '22023') return null;
+    throw error;
+  }
+}
+
+/** The business's open support review, if any (the merchant's billing page reads it). */
+export async function openPlanReview(
+  tx: TenantDb,
+  businessId: string,
+): Promise<{ id: string; fromPlan: string; toPlan: string; paidThrough: Date } | null> {
+  const rows = await tx.execute<{
+    id: string;
+    from_plan: string;
+    to_plan: string;
+    paid_through: string;
+  }>(sql`
+    SELECT id, from_plan, to_plan, paid_through::text AS paid_through
+    FROM plan_change_reviews
+    WHERE business_id = ${businessId}::uuid AND status = 'open'
+  `);
+  const row = [...rows][0];
+  return row
+    ? {
+        id: row.id,
+        fromPlan: row.from_plan,
+        toPlan: row.to_plan,
+        paidThrough: new Date(row.paid_through),
+      }
+    : null;
 }
 
 /**
@@ -398,20 +532,27 @@ export async function scheduleIntervalChange(
 /**
  * Start the grace clock, once.
  *
- * `IS NULL` in the WHERE is what makes a second failed attempt harmless: the
- * seven days run from the FIRST failure, so a card retried daily cannot push
- * the deadline forward one day at a time and keep a merchant in grace
- * forever.
+ * Through `subscription_start_grace` (migration 0217): `payment_failed_at` is one of the guarded
+ * cycle columns (0206), because CLEARING it keeps a paid plan running unpaid, so no runtime role
+ * writes it directly. The function only ever sets it, from empty, for a paid business whose ended
+ * cycle has a renewal open, to a time no earlier than that cycle's end and not in the future. It
+ * is what lets the renewal sweep run on the application credential instead of settlement's
+ * (OD-51.2).
+ *
+ * Already running is what makes a second failed attempt harmless: the seven days run from the
+ * FIRST failure, so a card retried daily cannot push the deadline forward one day at a time and
+ * keep a merchant in grace forever. Answers whether this call started it.
  */
 export async function markRenewalFailed(
   tx: TenantDb,
   businessId: string,
   when: Date,
-): Promise<void> {
-  await tx.execute(sql`
-    UPDATE businesses SET payment_failed_at = ${when.toISOString()}::timestamptz, updated_at = now()
-    WHERE id = ${businessId}::uuid AND payment_failed_at IS NULL
+): Promise<boolean> {
+  const rows = await tx.execute<{ started: boolean }>(sql`
+    SELECT subscription_start_grace(${businessId}::uuid, ${when.toISOString()}::timestamptz)
+      AS started
   `);
+  return [...rows][0]?.started === true;
 }
 
 /* ── charges ──────────────────────────────────────────────────────────────── */
@@ -430,6 +571,25 @@ export interface NewCharge {
   periodEnd?: Date | null;
   /** The interval this charge buys (G-110); absent is monthly. */
   billingInterval?: BillingInterval;
+  /**
+   * The moment the opener priced it (OD-51, migration 0209): settlement recomputes the price at
+   * this same instant. The database bounds it to the insert time; absent is the insert time.
+   */
+  pricedAt?: Date;
+  /**
+   * Where the opener's prices came from (OD-51.6, migration 0215): the plan catalogue or the
+   * compiled constants. Recorded on the charge, so settlement re-prices it from the same source
+   * whatever the settling process is set to; the database refuses a source other than the one in
+   * force. Every production opener passes its own setting. Absent (fixtures), the charge names
+   * none and is priced at settlement from the source in force then.
+   */
+  pricingSource?: 'catalogue' | 'constants';
+  /**
+   * The reference of the retired pending charge this one replaces (OD-51.7, migration 0214): the
+   * new charge is the SAME intended purchase and takes that charge's `purchase_id`, so only one of
+   * the two can ever be credited. Absent, the charge is a new purchase with its own identity.
+   */
+  replaces?: string;
 }
 
 /**
@@ -445,14 +605,22 @@ export async function openCharge(tx: TenantDb, charge: NewCharge): Promise<strin
   const rows = await tx.execute<{ id: string }>(sql`
     INSERT INTO subscription_charges
       (business_id, kind, plan, pack_id, quantity, amount_k, provider,
-       reference, period_start, period_end, billing_interval, created_at)
+       reference, period_start, period_end, billing_interval, created_at, priced_at, purchase_id,
+       pricing_source)
     VALUES (
       ${charge.businessId}::uuid, ${charge.kind}, ${charge.plan ?? null},
       ${charge.packId ?? null}, ${charge.quantity ?? 1}, ${charge.amountK},
       ${charge.provider ?? 'paystack'}, ${charge.reference},
       ${charge.periodStart ? charge.periodStart.toISOString() : null}::timestamptz,
       ${charge.periodEnd ? charge.periodEnd.toISOString() : null}::timestamptz,
-      ${charge.billingInterval ?? 'monthly'}, clock_timestamp())
+      ${charge.billingInterval ?? 'monthly'}, clock_timestamp(),
+      COALESCE(${charge.pricedAt ? charge.pricedAt.toISOString() : null}::timestamptz,
+               clock_timestamp()),
+      COALESCE((SELECT prior.purchase_id FROM subscription_charges prior
+                WHERE prior.business_id = ${charge.businessId}::uuid
+                  AND prior.reference = ${charge.replaces ?? null}),
+               gen_random_uuid()),
+      ${charge.pricingSource ?? null})
     ON CONFLICT DO NOTHING
     RETURNING id
   `);
@@ -472,6 +640,8 @@ export interface ChargeRow extends Record<string, unknown> {
   periodStart: Date | null;
   periodEnd: Date | null;
   createdAt: Date;
+  /** When the opener priced it (OD-51, 0209); settlement recomputes at this instant. Null before 0209. */
+  pricedAt: Date | null;
   /** Paid (or pending) but its plan change was refused as stale (G-104): an operator reconciles it. */
   supersededAt: Date | null;
   /** Paid but its plan change was refused (OD-30): money received, nothing applied. Null otherwise. */
@@ -484,6 +654,16 @@ export interface ChargeRow extends Record<string, unknown> {
   billingInterval: BillingInterval;
   /** The Paystack checkout it was initialised with (G-102); null until the merchant starts paying. */
   checkoutUrl: string | null;
+  /** OD-40: when Paystack says the payment happened (verified `paid_at`); null when not known. */
+  providerPaidAt: Date | null;
+  /** OD-40: when Paystack confirmed settlement; null until verified settlement evidence exists. */
+  providerSettledAt: Date | null;
+  /** OD-40: when Rekoda committed a pack's units (database time); null for a plan charge or before crediting. */
+  unitsCreditedAt: Date | null;
+  /** The intended purchase this charge belongs to (OD-51.7, 0214); a replacement shares it. */
+  purchaseId: string;
+  /** The source it was priced from (OD-51.6, 0215); null for a charge opened before it was recorded. */
+  pricingSource: 'catalogue' | 'constants' | null;
 }
 
 interface RawCharge extends Record<string, unknown> {
@@ -499,12 +679,18 @@ interface RawCharge extends Record<string, unknown> {
   period_start: string | null;
   period_end: string | null;
   created_at: string;
+  priced_at?: string | null;
   superseded_at: string | null;
   unapplied_at: string | null;
   paid_amount_k: string | number | null;
   refunded_amount_k: string | number | null;
   billing_interval: string | null;
   checkout_url: string | null;
+  provider_paid_at: string | null;
+  provider_settled_at: string | null;
+  units_credited_at: string | null;
+  purchase_id: string;
+  pricing_source?: string | null;
 }
 
 const shape = (row: RawCharge): ChargeRow => ({
@@ -520,12 +706,21 @@ const shape = (row: RawCharge): ChargeRow => ({
   periodStart: at(row.period_start),
   periodEnd: at(row.period_end),
   createdAt: new Date(row.created_at),
+  pricedAt: at(row.priced_at ?? null),
   supersededAt: at(row.superseded_at),
   unappliedAt: at(row.unapplied_at),
   paidAmountK: row.paid_amount_k === null ? null : Number(row.paid_amount_k),
   refundedAmountK: Number(row.refunded_amount_k ?? 0),
   billingInterval: intervalOf(row.billing_interval),
   checkoutUrl: row.checkout_url,
+  providerPaidAt: at(row.provider_paid_at),
+  providerSettledAt: at(row.provider_settled_at),
+  unitsCreditedAt: at(row.units_credited_at),
+  purchaseId: row.purchase_id,
+  pricingSource:
+    row.pricing_source === 'catalogue' || row.pricing_source === 'constants'
+      ? row.pricing_source
+      : null,
 });
 
 /**
@@ -620,10 +815,17 @@ export async function settleCharge(
     failureReason?: string | null;
     /** The amount the provider verified it took, for a paid settlement (G-107). */
     paidAmountK?: number | null;
+    /**
+     * OD-40: when the provider says the payment happened, from its verify response only;
+     * null (or absent) when it gave none. Never the webhook's receipt time.
+     */
+    providerPaidAt?: Date | null;
     when: Date;
   },
 ): Promise<ChargeRow | null> {
   const stamp = settlement.when.toISOString();
+  const providerPaidAt =
+    settlement.status === 'paid' ? (settlement.providerPaidAt?.toISOString() ?? null) : null;
   const rows = await tx.execute<RawCharge>(sql`
     UPDATE subscription_charges SET
       status = ${settlement.status},
@@ -632,6 +834,7 @@ export async function settleCharge(
       paid_amount_k = CASE WHEN ${settlement.status} = 'paid'
                            THEN ${settlement.paidAmountK ?? null}::bigint ELSE paid_amount_k END,
       paid_at = CASE WHEN ${settlement.status} = 'paid' THEN ${stamp}::timestamptz ELSE paid_at END,
+      provider_paid_at = COALESCE(provider_paid_at, ${providerPaidAt}::timestamptz),
       failed_at = CASE WHEN ${settlement.status} = 'failed' THEN ${stamp}::timestamptz ELSE failed_at END,
       updated_at = now()
     WHERE reference = ${settlement.reference} AND status = 'pending'
@@ -639,6 +842,47 @@ export async function settleCharge(
   `);
   const row = [...rows][0];
   return row ? shape(row) : null;
+}
+
+/**
+ * Has this intended pack purchase already been credited by ANOTHER charge (OD-51.7, 0214)? A
+ * replacement charge shares its purchase with the retired charge it replaced, and both links can be
+ * paid: the first verified settlement grants the units, a later one must not. Call with the
+ * business row locked, so two settlements of one purchase cannot both read "not yet".
+ */
+export async function purchaseCreditedElsewhere(
+  tx: TenantDb,
+  businessId: string,
+  purchaseId: string,
+  reference: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ reference: string }>(sql`
+    SELECT reference FROM subscription_charges
+    WHERE business_id = ${businessId}::uuid AND purchase_id = ${purchaseId}::uuid
+      AND reference <> ${reference} AND units_credited_at IS NOT NULL
+    LIMIT 1
+  `);
+  return rows.length > 0;
+}
+
+/**
+ * A purchase was just credited: retire its other still-payable charges (OD-51.7), so the billing
+ * page stops offering a link whose payment would be set aside, and buying the pack again opens a
+ * new purchase. A payment already in flight on one is still recorded at settlement. Call with the
+ * business row locked.
+ */
+export async function retirePurchaseSiblings(
+  tx: TenantDb,
+  businessId: string,
+  purchaseId: string,
+  reference: string,
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE subscription_charges
+    SET superseded_at = clock_timestamp(), abandoned_at = clock_timestamp(), updated_at = now()
+    WHERE business_id = ${businessId}::uuid AND purchase_id = ${purchaseId}::uuid
+      AND reference <> ${reference} AND status = 'pending' AND superseded_at IS NULL
+  `);
 }
 
 /**
@@ -703,6 +947,27 @@ export async function retireAbandonedPending(
           : sql`AND plan = ${match.plan}`
       }
   `);
+}
+
+/**
+ * Retire one pending charge that is no longer what this business would be asked to pay (OD-51): an
+ * upgrade prorated on an earlier day, or a pack the catalogue has since repriced. Marked abandoned,
+ * exactly as `retireAbandonedPending`, so a payment already in flight is still recorded and
+ * re-priced at settlement. Returns whether a charge was retired. Call with the business row locked.
+ */
+export async function retirePendingCharge(
+  tx: TenantDb,
+  businessId: string,
+  reference: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ reference: string }>(sql`
+    UPDATE subscription_charges
+    SET superseded_at = clock_timestamp(), abandoned_at = clock_timestamp(), updated_at = now()
+    WHERE business_id = ${businessId}::uuid AND reference = ${reference}
+      AND status = 'pending' AND superseded_at IS NULL
+    RETURNING reference
+  `);
+  return rows.length > 0;
 }
 
 /**
@@ -2215,17 +2480,15 @@ export async function expireSubscription(
   const previous = [...before][0]?.plan;
   if (!previous || previous === 'trial' || previous === 'expired') return null;
 
-  const updated = await tx.execute<{ id: string }>(sql`
-    UPDATE businesses
-    SET plan = 'expired', pending_plan = NULL, plan_decided_at = clock_timestamp(),
-        updated_at = now()
-    WHERE id = ${businessId}::uuid AND plan = ${previous}
-      AND ${reason === 'grace' ? sql`payment_failed_at IS NOT NULL` : sql`pending_plan = 'expired'`}
-    RETURNING id
+  /* OD-37 (migration 0196): the lapse is written by the database function owned by
+   * `rekoda_plan_writer`, with the same race-safe condition: still on `previous`, and still unpaid
+   * (grace) or still cancelling. */
+  const updated = await tx.execute<{ changed: boolean }>(sql`
+    SELECT subscription_expire_plan(${businessId}::uuid, ${previous}, ${reason}) AS changed
   `);
   /* Somebody paid, or undid the cancel, between the read and the write.
    * Their plan stands. */
-  if ([...updated].length !== 1) return null;
+  if ([...updated][0]?.changed !== true) return null;
 
   await tx.execute(sql`
     INSERT INTO audit_events
@@ -2249,4 +2512,398 @@ export async function businessForCharge(db: Db, reference: string): Promise<stri
     SELECT business_id FROM subscription_charges WHERE reference = ${reference}
   `);
   return [...rows][0]?.business_id ?? null;
+}
+
+/* ── OWN-70: renewals raised while the payment could not be taken (migration 0195) ── */
+
+export type RenewalBlockReason = 'awaiting_platform_confirmation' | 'payments_not_configured';
+
+/**
+ * Stamp a just-opened renewal charge as blocked: Rekoda cannot take its payment (the live key is
+ * unconfirmed, or no usable key is configured). Records only: the charge stays pending, the grace
+ * clock runs as for any renewal (OD-44 open), nothing is paid, no provider reference exists. Written
+ * once, with an audit event, in the sweep's own transaction.
+ */
+export async function markRenewalBlocked(
+  tx: TenantDb,
+  businessId: string,
+  reference: string,
+  reason: RenewalBlockReason,
+): Promise<boolean> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE subscription_charges
+    SET blocked_at = now(), blocked_reason = ${reason}, updated_at = now()
+    WHERE business_id = ${businessId}::uuid AND reference = ${reference}
+      AND kind = 'renewal' AND status = 'pending' AND blocked_at IS NULL
+    RETURNING id
+  `);
+  if ([...rows].length !== 1) return false;
+  await tx.execute(sql`
+    INSERT INTO audit_events (business_id, actor, entity, entity_id, action, new_value, source_type)
+    VALUES (${businessId}::uuid, 'system:renewal_sweep', 'subscription_charge', ${reference},
+            'renewal_blocked', ${JSON.stringify({ reason })}::jsonb, 'system')
+  `);
+  return true;
+}
+
+export interface BlockedRenewalRow {
+  reference: string;
+  businessId: string;
+  plan: string | null;
+  amountK: number;
+  reason: RenewalBlockReason;
+  blockedAt: Date;
+  /** The business's plan and paid-to date now. */
+  currentPlan: string;
+  currentRenewsAt: Date | null;
+}
+
+const OPEN_BLOCKED = sql`c.blocked_at IS NOT NULL AND c.blocked_resolved_at IS NULL
+  AND c.status = 'pending' AND c.superseded_at IS NULL`;
+
+/** Open blocked renewals, oldest first, for the operator queue. Worker-credentialed, through the
+ * fixed-column SECURITY DEFINER function `blocked_renewals_ops` (0195, ADR 0035 Amendment 2). */
+export async function blockedRenewals(
+  db: Db,
+  limit = 50,
+  /** Rows to pass over (a caller skipping ones it could not close and could not stamp). */
+  offset = 0,
+  /**
+   * The closing pass's own start time. When given, the list is the close order: rows whose last
+   * failed close is NULL or before this time, never-attempted first and then the longest-failed
+   * (migration 0198). Omitted, it is the operator order, oldest block first.
+   */
+  notAttemptedSince: Date | null = null,
+): Promise<BlockedRenewalRow[]> {
+  const rows = await db.execute<{
+    reference: string;
+    business_id: string;
+    plan: string | null;
+    amount_k: string | number;
+    blocked_reason: RenewalBlockReason;
+    blocked_at: string;
+    current_plan: string;
+    current_renews_at: string | null;
+  }>(
+    sql`SELECT * FROM blocked_renewals_ops(${limit}, ${offset}, ${notAttemptedSince?.toISOString() ?? null}::timestamptz)`,
+  );
+  return [...rows].map((r) => ({
+    reference: r.reference,
+    businessId: r.business_id,
+    plan: r.plan,
+    amountK: Number(r.amount_k),
+    reason: r.blocked_reason,
+    blockedAt: new Date(r.blocked_at),
+    currentPlan: r.current_plan,
+    currentRenewsAt: at(r.current_renews_at),
+  }));
+}
+
+/**
+ * Record that closing this block failed, so the closing pass tries every other block first
+ * (migration 0198). Only an open block is stamped. Returns whether a row was stamped.
+ */
+export async function noteBlockCloseFailed(
+  tx: TenantDb,
+  businessId: string,
+  reference: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE subscription_charges SET blocked_close_failed_at = now()
+    WHERE business_id = ${businessId}::uuid AND reference = ${reference}
+      AND blocked_at IS NOT NULL AND blocked_resolved_at IS NULL
+    RETURNING id
+  `);
+  return [...rows].length === 1;
+}
+
+/** The database's own clock, for a pass that must compare against rows it stamps. */
+export async function databaseNow(db: Db): Promise<Date> {
+  const rows = await db.execute<{ now: string | Date }>(sql`SELECT clock_timestamp() AS now`);
+  return new Date([...rows][0]!.now);
+}
+
+/** How many blocked renewals are open: an approved operational count for the alert (OWN-70). */
+export async function blockedRenewalCount(db: Db): Promise<number> {
+  const rows = await db.execute<{ n: number }>(sql`
+    SELECT count(*)::int AS n FROM subscription_charges c WHERE ${OPEN_BLOCKED}
+  `);
+  return [...rows][0]?.n ?? 0;
+}
+
+/** One open block in close order, with its exact keyset position (migration 0199). */
+export interface BlockedRenewalCloseRow extends BlockedRenewalRow {
+  /** `blocked_at` in microseconds since the epoch, exact (a JS Date would drop the microseconds). */
+  blockedAtUs: string;
+}
+
+/**
+ * The next batch of open blocks after the durable close cursor (migration 0199): keyset order
+ * (blocked_at, reference). The position is read from the cursor row by the database; the caller
+ * supplies only the batch size. Worker credential only.
+ */
+export async function blockedRenewalsCloseBatch(
+  db: Db,
+  limit: number,
+): Promise<BlockedRenewalCloseRow[]> {
+  const rows = await db.execute<{
+    reference: string;
+    business_id: string;
+    plan: string | null;
+    amount_k: string | number;
+    blocked_reason: RenewalBlockReason;
+    blocked_at: string;
+    blocked_at_us: string | number;
+    current_plan: string;
+    current_renews_at: string | null;
+  }>(sql`SELECT * FROM blocked_renewals_close_batch(${limit})`);
+  return [...rows].map((r) => ({
+    reference: r.reference,
+    businessId: r.business_id,
+    plan: r.plan,
+    amountK: Number(r.amount_k),
+    reason: r.blocked_reason,
+    blockedAt: new Date(r.blocked_at),
+    blockedAtUs: String(r.blocked_at_us),
+    currentPlan: r.current_plan,
+    currentRenewsAt: at(r.current_renews_at),
+  }));
+}
+
+/** Claim the close cursor's lease (migration 0199). True when `owner` now holds it. */
+export async function claimBlockCloseCursor(
+  db: Db,
+  owner: string,
+  leaseSeconds: number,
+): Promise<boolean> {
+  const rows = await db.execute<{ ok: boolean }>(
+    sql`SELECT renewal_block_close_claim(${owner}::uuid, ${leaseSeconds}) AS ok`,
+  );
+  return [...rows][0]?.ok === true;
+}
+
+/**
+ * Renew the close cursor's lease while a pass is working (migration 0201): a compare-and-set on the
+ * owner, called before every block the pass closes, so the lease outlives a slow but healthy batch
+ * and expires only when the runner stops. False when `owner` no longer holds the lease: the pass
+ * must stop at once.
+ */
+export async function heartbeatBlockCloseCursor(
+  db: Db,
+  owner: string,
+  leaseSeconds: number,
+): Promise<boolean> {
+  const rows = await db.execute<{ ok: boolean }>(
+    sql`SELECT renewal_block_close_heartbeat(${owner}::uuid, ${leaseSeconds}) AS ok`,
+  );
+  return [...rows][0]?.ok === true;
+}
+
+/**
+ * Durably record a processed batch: the cursor moves to the batch's last key and the lease is
+ * extended. False (nothing written) when `owner` no longer holds the lease.
+ */
+export async function advanceBlockCloseCursor(
+  db: Db,
+  owner: string,
+  after: { blockedAtUs: string; reference: string },
+  counts: { closed: number; failed: number },
+  leaseSeconds: number,
+): Promise<boolean> {
+  const rows = await db.execute<{ ok: boolean }>(sql`
+    SELECT renewal_block_close_advance(${owner}::uuid, ${after.blockedAtUs}::bigint,
+      ${after.reference}, ${counts.closed}, ${counts.failed}, ${leaseSeconds}) AS ok
+  `);
+  return [...rows][0]?.ok === true;
+}
+
+/** End a pass; `wrapped` (the list was exhausted) moves the cursor back to the start. */
+export async function finishBlockClosePass(
+  db: Db,
+  owner: string,
+  wrapped: boolean,
+): Promise<boolean> {
+  const rows = await db.execute<{ ok: boolean }>(
+    sql`SELECT renewal_block_close_finish(${owner}::uuid, ${wrapped}) AS ok`,
+  );
+  return [...rows][0]?.ok === true;
+}
+
+/** Give the lease back without moving the cursor (a pass that stopped on an error). */
+export async function releaseBlockCloseCursor(
+  db: Db,
+  owner: string,
+  /** Failures in the batch whose advance did not happen, so the ops alert still counts them. */
+  unrecordedFailed = 0,
+): Promise<boolean> {
+  const rows = await db.execute<{ ok: boolean }>(
+    sql`SELECT renewal_block_close_release(${owner}::uuid, ${unrecordedFailed}) AS ok`,
+  );
+  return [...rows][0]?.ok === true;
+}
+
+/** The close cursor's state: counts and times only, for the ops snapshot (migration 0199). */
+export interface BlockCloseCursorStatus {
+  positioned: boolean;
+  leased: boolean;
+  /** A lease that expired without a finish or a release: a pass died or could not give it back. */
+  abandoned: boolean;
+  /** An abandoned pass was taken over in the last 24 hours (keeps the stalled alert visible). */
+  recentlyAbandoned: boolean;
+  passesCompleted: number;
+  passesAbandoned: number;
+  /** Failures since the cursor last wrapped, and in the last complete cycle (null before one). */
+  cycleFailed: number;
+  lastCycleFailed: number | null;
+  passClosed: number;
+  passFailed: number;
+  lastPassClosed: number | null;
+  lastPassFailed: number | null;
+  lastPassFinishedAt: Date | null;
+  lastAdvancedAt: Date | null;
+}
+
+export async function blockCloseCursorStatus(db: Db): Promise<BlockCloseCursorStatus | null> {
+  const rows = await db.execute<{
+    positioned: boolean;
+    leased: boolean;
+    abandoned: boolean;
+    recently_abandoned: boolean;
+    passes_completed: string | number;
+    passes_abandoned: string | number;
+    cycle_failed: number;
+    last_cycle_failed: number | null;
+    pass_closed: number;
+    pass_failed: number;
+    last_pass_closed: number | null;
+    last_pass_failed: number | null;
+    last_pass_finished_at: string | null;
+    last_advanced_at: string | null;
+  }>(sql`SELECT * FROM renewal_block_close_status()`);
+  const r = [...rows][0];
+  if (!r) return null;
+  return {
+    positioned: r.positioned,
+    leased: r.leased,
+    abandoned: r.abandoned,
+    recentlyAbandoned: r.recently_abandoned,
+    passesCompleted: Number(r.passes_completed),
+    passesAbandoned: Number(r.passes_abandoned),
+    cycleFailed: r.cycle_failed,
+    lastCycleFailed: r.last_cycle_failed,
+    passClosed: r.pass_closed,
+    passFailed: r.pass_failed,
+    lastPassClosed: r.last_pass_closed,
+    lastPassFailed: r.last_pass_failed,
+    lastPassFinishedAt: at(r.last_pass_finished_at),
+    lastAdvancedAt: at(r.last_advanced_at),
+  };
+}
+
+/** An operator closes a blocked renewal with a written resolution. True when this call closed it. */
+export async function resolveBlockedRenewal(
+  tx: TenantDb,
+  businessId: string,
+  reference: string,
+  resolution: string,
+  actor: string,
+  /** Who closed it: an operator through the route, or the sweep once the gate opens. */
+  sourceType: 'operator' | 'system' = 'operator',
+): Promise<boolean> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE subscription_charges
+    SET blocked_resolved_at = now(), blocked_resolved_by = ${actor},
+        blocked_resolution = ${resolution}, updated_at = now()
+    WHERE business_id = ${businessId}::uuid AND reference = ${reference}
+      AND blocked_at IS NOT NULL AND blocked_resolved_at IS NULL
+      AND status = 'pending' AND superseded_at IS NULL
+    RETURNING id
+  `);
+  if ([...rows].length !== 1) return false;
+  await tx.execute(sql`
+    INSERT INTO audit_events (business_id, actor, entity, entity_id, action, new_value, source_type)
+    VALUES (${businessId}::uuid, ${actor}, 'subscription_charge', ${reference},
+            'renewal_block_resolved', ${JSON.stringify({ resolution })}::jsonb, ${sourceType})
+  `);
+  return true;
+}
+
+/**
+ * OD-44: what a renewal that was blocked before it could be paid looks like now, for the job that
+ * starts a fresh payment for it once the gate has opened. Read under the tenant pin; never locks
+ * (the checkout service takes its own locks when it opens an attempt).
+ */
+export interface BlockedRenewalInitiationState {
+  chargeId: string;
+  kind: string;
+  status: string;
+  supersededAt: Date | null;
+  periodStart: Date | null;
+  blockedAt: Date | null;
+  blockedResolvedAt: Date | null;
+  blockedResolvedBy: string | null;
+}
+
+export async function blockedRenewalInitiationState(
+  tx: TenantDb,
+  businessId: string,
+  reference: string,
+): Promise<BlockedRenewalInitiationState | null> {
+  const rows = await tx.execute<{
+    id: string;
+    kind: string;
+    status: string;
+    superseded_at: string | null;
+    period_start: string | null;
+    blocked_at: string | null;
+    blocked_resolved_at: string | null;
+    blocked_resolved_by: string | null;
+  }>(sql`
+    SELECT id, kind, status, superseded_at, period_start, blocked_at, blocked_resolved_at,
+           blocked_resolved_by
+    FROM subscription_charges
+    WHERE business_id = ${businessId}::uuid AND reference = ${reference}
+  `);
+  const row = [...rows][0];
+  if (!row) return null;
+  return {
+    chargeId: row.id,
+    kind: row.kind,
+    status: row.status,
+    supersededAt: at(row.superseded_at),
+    periodStart: at(row.period_start),
+    blockedAt: at(row.blocked_at),
+    blockedResolvedAt: at(row.blocked_resolved_at),
+    blockedResolvedBy: row.blocked_resolved_by,
+  };
+}
+
+/** The outcomes the OD-44 initiation job records. Fixed codes, never provider or error text. */
+export type RenewalInitiationOutcome =
+  | 'initiated'
+  | 'existing_payment_link'
+  | 'gate_closed'
+  | 'not_eligible'
+  | 'requires_billing_email'
+  | 'requires_billing_email_verification'
+  | 'unavailable'
+  | 'provider_unreachable';
+
+/**
+ * Audit one run of the OD-44 initiation job. The detail carries fixed codes and Rekoda's own
+ * references only: never the checkout link, the billing email or a provider message.
+ */
+export async function recordRenewalInitiation(
+  tx: TenantDb,
+  businessId: string,
+  reference: string,
+  outcome: RenewalInitiationOutcome,
+  detail: { reason?: string; providerReference?: string } = {},
+): Promise<void> {
+  await tx.execute(sql`
+    INSERT INTO audit_events (business_id, actor, entity, entity_id, action, new_value, source_type)
+    VALUES (${businessId}::uuid, 'system:renewal_initiate', 'subscription_charge', ${reference},
+            'renewal_payment_initiation', ${JSON.stringify({ outcome, ...detail })}::jsonb,
+            'system')
+  `);
 }

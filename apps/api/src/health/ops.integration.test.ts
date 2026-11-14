@@ -26,13 +26,17 @@ import {
   type Db,
 } from '@rekoda/db';
 import {
+  applyFixtureCycle,
   migrate,
   requireUrls,
   resetPlanCatalogue,
   storedEventId,
   truncateAll,
   type Urls,
+  applicationDb,
 } from '@rekoda/db/testing';
+import { setPlanForTest, settlementDb } from '@rekoda/db/testing';
+import { paidButUnappliedCharge } from './ops-charges.fixtures.js';
 
 const SECRET = 'test-secret-at-least-32-characters-long';
 /* Deliberately different from REKODA_API_SECRET, which is the point of it
@@ -54,8 +58,7 @@ beforeAll(async () => {
   process.env['DATABASE_URL'] = urls.app;
   // The queue and the event counts both span tenants, so the endpoint needs
   // the worker credential to count either. Given here WITHOUT REKODA_WORKER,
-  // which is the arrangement worth testing: a web process that runs no jobs
-  // still reports both.
+  // which is the arrangement worth testing: a web process that runs no jobs still reports both.
   process.env['WORKER_DATABASE_URL'] = urls.worker;
   delete process.env['REKODA_WORKER'];
   process.env['OTP_PEPPER'] = 'test-pepper-at-least-32-characters-long';
@@ -94,6 +97,8 @@ function margin(query = '', headers: Record<string, string> = {}) {
   return app.inject({ method: 'GET', url: `/v1/ops/margin${query}`, headers });
 }
 
+const QUIET = { stuck: [], flagged: [], unappliedCharges: [] };
+const QUIET_PR_B = { deadJobs: [], deadJobDetails: [], blockedRenewals: [] };
 function exceptions(query = '', headers: Record<string, string> = {}) {
   return app.inject({ method: 'GET', url: `/v1/ops/exceptions${query}`, headers });
 }
@@ -274,7 +279,7 @@ describe('the margin report', () => {
       businessType: null,
       ownerUserId: user.id,
     });
-    await billingRepo.setPlan(db, {
+    await setPlanForTest(db, {
       businessId: business.id,
       plan,
       expiresAt: null,
@@ -420,9 +425,8 @@ describe('the margin report', () => {
 
   it('prices a grandfathered merchant at the version they were sold', async () => {
     const pinned = await merchant('Launch Cohort', '+2348030000210', 'trial');
-    /* Sold Chat through the real cycle path, which pins version 1. */
     await withBusiness(db, pinned, (tx) =>
-      subscriptionsRepo.applyCycle(tx, pinned, {
+      applyFixtureCycle(tx, pinned, {
         plan: 'chat',
         cycleStartedAt: new Date(),
         renewsAt: new Date(Date.now() + 30 * 86_400_000),
@@ -509,7 +513,7 @@ describe('the operator billing surface', () => {
       ownerUserId: user.id,
     });
     const reference = 'RKD-SUB-20260821-AAAAAA';
-    await withBusiness(db, business.id, (tx) =>
+    await withBusiness(applicationDb(), business.id, (tx) =>
       subscriptionsRepo.openCharge(tx, {
         businessId: business.id,
         kind: 'first_purchase',
@@ -520,7 +524,7 @@ describe('the operator billing surface', () => {
         periodEnd: new Date(Date.now() + 30 * 86_400_000),
       }),
     );
-    await withBusiness(db, business.id, (tx) =>
+    await withBusiness(settlementDb(), business.id, (tx) =>
       subscriptionsRepo.settleCharge(tx, { reference, status: 'paid', when: new Date() }),
     );
     return { businessId: business.id, reference };
@@ -603,7 +607,7 @@ describe('the operator billing surface', () => {
   it('leaves the PLAN alone: a refund is money, not a cancellation', async () => {
     const { businessId, reference } = await merchantWithCharge('+2348140001005');
     await withBusiness(db, businessId, (tx) =>
-      billingRepo.setPlan(db, {
+      setPlanForTest(db, {
         businessId,
         plan: 'chat',
         expiresAt: new Date(Date.now() + 20 * 86_400_000),
@@ -673,7 +677,7 @@ describe('the exception queue', () => {
   it('is two empty lists on a quiet platform', async () => {
     const res = await exceptions('', operator);
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ stuck: [], flagged: [], unappliedCharges: [] });
+    expect(res.json()).toEqual({ ...QUIET, ...QUIET_PR_B });
   });
 
   it('shows what is waiting and what was flagged, and NEVER the payload', async () => {
@@ -707,11 +711,7 @@ describe('the exception queue', () => {
     expect(done.statusCode).toBe(200);
     expect(done.json()).toEqual({ resolved: true });
 
-    expect((await exceptions('', operator)).json()).toEqual({
-      stuck: [],
-      flagged: [],
-      unappliedCharges: [],
-    });
+    expect((await exceptions('', operator)).json()).toEqual({ ...QUIET, ...QUIET_PR_B });
 
     const healthNow = (await health(operator)).json() as { paystack: { flagged: number } };
     expect(healthNow.paystack.flagged).toBe(0);
@@ -725,26 +725,10 @@ describe('the exception queue', () => {
       ownerUserId: user.id,
     });
     const reference = 'RKD-SUB-20260821-ZZZZZZ';
-    await withBusiness(db, business.id, async (tx) => {
-      await subscriptionsRepo.openCharge(tx, {
-        businessId: business.id,
-        kind: 'first_purchase',
-        plan: 'chat',
-        amountK: 990_000,
-        reference,
-        periodStart: new Date(),
-        periodEnd: new Date(Date.now() + 30 * 86_400_000),
-      });
-      await subscriptionsRepo.settleCharge(tx, { reference, status: 'paid', when: new Date() });
-      await subscriptionsRepo.markUnapplied(
-        tx,
-        reference,
-        'subscription_decided_after_charge',
-        // Ten days ago is past the end of the next business day whatever weekday
-        // the suite runs on (three days ago was not, on a Monday).
-        new Date(Date.now() - 10 * 86_400_000),
-      );
-    });
+    // Ten days ago is past the end of the next business day whatever weekday the suite runs on
+    // (three days ago was not, on a Monday).
+    const tenDaysAgo = new Date(Date.now() - 10 * 86_400_000);
+    await paidButUnappliedCharge(business.id, reference, tenDaysAgo);
 
     const body = (await exceptions('', operator)).json() as {
       unappliedCharges: Array<Record<string, unknown>>;
@@ -807,24 +791,7 @@ describe('the exception queue', () => {
       ownerUserId: user.id,
     });
     const reference = 'RKD-SUB-20260821-YYYYYY';
-    await withBusiness(db, business.id, async (tx) => {
-      await subscriptionsRepo.openCharge(tx, {
-        businessId: business.id,
-        kind: 'first_purchase',
-        plan: 'chat',
-        amountK: 990_000,
-        reference,
-        periodStart: new Date(),
-        periodEnd: new Date(Date.now() + 30 * 86_400_000),
-      });
-      await subscriptionsRepo.settleCharge(tx, { reference, status: 'paid', when: new Date() });
-      await subscriptionsRepo.markUnapplied(
-        tx,
-        reference,
-        'subscription_decided_after_charge',
-        new Date(),
-      );
-    });
+    await paidButUnappliedCharge(business.id, reference, new Date());
 
     const body = (await exceptions('', operator)).json() as {
       unappliedCharges: Array<{ overdue: boolean; resolveBy: string; createdAt: string }>;

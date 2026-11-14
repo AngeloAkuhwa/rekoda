@@ -28,6 +28,7 @@ export const FILES = {
   workflow: '.github/workflows/deploy-staging.yml',
   ci: '.github/workflows/ci.yml',
   dockerignore: '.dockerignore',
+  compose: 'docker-compose.prod.yml',
 };
 
 /**
@@ -135,7 +136,15 @@ const SCRIPT_FORBIDDEN = [
     'forces files over the checkout instead of refusing',
   ],
   [/\breset --hard\b|\bgit clean\b|\bstash\b/, 'discards changes on the host instead of refusing'],
-  [/--no-deps|--scale\b/, 'can start Caddy past the edge check (G-74)'],
+  [
+    /--no-deps|--scale\b/,
+    'can start Caddy past the edge check (G-74)',
+    // OWN-93: the one-off template check in the new image. `run --no-deps` starts no service at
+    // all (not Caddy, not the edge check); only this exact line is exempt.
+    (line) =>
+      line.trim() ===
+      'template_report=$(dc run --rm -T --no-deps api node dist/template-check.js) || template_rc=$?',
+  ],
   [/\bset -x\b|\bxtrace\b/, 'echoes every command, and so anything it expands'],
   [/secrets\//, 'touches secrets/, which the deploy never needs'],
   [
@@ -541,8 +550,16 @@ function retentionProblems(lines) {
   return problems;
 }
 
-export function problemsFor({ runbook, script, workflow, ci, dockerignore }) {
+export function problemsFor({ runbook, script, workflow, ci, dockerignore, compose = '' }) {
   const problems = [];
+
+  /* ---- G-119 / OWN-77: the staging tools are switched on in the staging host's .env only. The
+   * compose file is what production runs, so it must never name the flag, set or unset. ---- */
+  if (/REKODA_STAGING_TOOLS/.test(compose)) {
+    problems.push(
+      `${FILES.compose} names REKODA_STAGING_TOOLS; the staging tools are set only in the staging host's .env (OWN-77)`,
+    );
+  }
 
   /* ---- The runbook and the script perform the same steps, in order. ---- */
   const block = runbookDeployBlock(runbook);
@@ -595,11 +612,11 @@ export function problemsFor({ runbook, script, workflow, ci, dockerignore }) {
     }
     if (/\bdocker compose\b/.test(line)) {
       const allowed =
-        line === 'dc() { docker compose -f docker-compose.prod.yml "$@"; }' ||
+        line === 'dc() { docker compose --env-file .env -f docker-compose.prod.yml "$@"; }' ||
         /^docker compose version\b/.test(line.trim());
       if (!allowed) {
         problems.push(
-          `${FILES.script}: \`${line.trim()}\` calls compose directly; use dc, which names docker-compose.prod.yml alone`,
+          `${FILES.script}: \`${line.trim()}\` calls compose directly; use dc, which names .env and docker-compose.prod.yml alone`,
         );
       }
     }

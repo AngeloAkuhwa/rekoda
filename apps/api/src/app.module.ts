@@ -3,10 +3,15 @@ import { AuthController, BusinessController } from './auth/auth.controller.js';
 import { AuthService } from './auth/auth.service.js';
 import { SessionGuard } from './auth/session.guard.js';
 import { OperatorGuard } from './auth/operator.guard.js';
+import { OperatorPlaneServedHere } from './auth/operator-plane-served.guard.js';
 import { RolesGuard } from './auth/roles.guard.js';
 import { DbModule } from './db/db.module.js';
 import { HealthController } from './health/health.controller.js';
 import { OpsController } from './health/ops.controller.js';
+import { DeadJobsController } from './health/dead-jobs.controller.js';
+import { DeadJobRecoveryService } from './health/dead-job-recovery.service.js';
+import { StagingToolsController } from './health/staging-tools.controller.js';
+import { StagingToolsService } from './health/staging-tools.service.js';
 import { EmailErasureController } from './privacy/email-erasure.controller.js';
 import { EmailErasureService } from './privacy/email-erasure.service.js';
 import { MetaWebhookController } from './channels/meta.controller.js';
@@ -50,6 +55,8 @@ import { WebhooksModule } from './webhooks/webhooks.module.js';
     BusinessController,
     HealthController,
     OpsController,
+    DeadJobsController,
+    StagingToolsController,
     EmailErasureController,
     MetaWebhookController,
   ],
@@ -58,7 +65,10 @@ import { WebhooksModule } from './webhooks/webhooks.module.js';
     SessionGuard,
     RolesGuard,
     OperatorGuard,
+    OperatorPlaneServedHere,
     EmailErasureService,
+    DeadJobRecoveryService,
+    StagingToolsService,
     MetaIngressService,
     /* One lane per process for every webhook it receives (OWN-74). */
     { provide: IngressSequencer, useFactory: () => new IngressSequencer() },

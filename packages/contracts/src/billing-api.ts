@@ -72,7 +72,8 @@ export const billingChargeView = z.object({
 /**
  * One payment to Rekoda in full (billing Slice A). Every field is read from the charge's own row
  * under the tenant pin; nothing is composed from the provider's response at read time. `paidAt`
- * is the verified payment time and is null for anything that is not paid.
+ * is when Rekoda recorded the verified payment and is null for anything that is not paid; the
+ * provider's own payment and settlement times and the units-credited time are separate (OD-40).
  */
 export const billingPaymentState = z.enum([
   'awaiting_payment',
@@ -105,7 +106,14 @@ export const billingPaymentRecord = z.object({
   periodStart: isoDate.nullable(),
   periodEnd: isoDate.nullable(),
   createdAt: isoDate,
+  /** When Rekoda recorded the verified payment; null for anything that is not paid. */
   paidAt: isoDate.nullable(),
+  /** OD-40: when Paystack says the payment happened (its verified `paid_at`); null when Paystack gave none. */
+  providerPaidAt: isoDate.nullable(),
+  /** OD-40: when Paystack confirmed the money settled; null until verified settlement evidence exists. */
+  providerSettledAt: isoDate.nullable(),
+  /** OD-40: when Rekoda added a pack's units to the account; null for a plan charge or before they were added. */
+  unitsCreditedAt: isoDate.nullable(),
   failedAt: isoDate.nullable(),
   refundedAt: isoDate.nullable(),
   /** A verified payment that took effect on the account, whether or not it was later refunded. False for any unpaid state and for money received but refused as stale. */
@@ -115,7 +123,9 @@ export const billingPaymentRecord = z.object({
   /** An upgrade that cost nothing: applied with no payment taken and no provider involved. */
   noCharge: z.boolean(),
   /** Why a paid charge was not applied, in merchant-safe families; null when it was applied. */
-  notAppliedReason: z.enum(['plan_changed', 'period_ended', 'under_review']).nullable(),
+  notAppliedReason: z
+    .enum(['plan_changed', 'period_ended', 'paid_twice', 'under_review'])
+    .nullable(),
 });
 export type BillingPaymentRecord = z.infer<typeof billingPaymentRecord>;
 
@@ -206,6 +216,18 @@ export const billingOverviewResponse = z.object({
    */
   chargesTotal: z.number().int().nonnegative(),
   charges: z.array(billingChargeView),
+  /**
+   * OWN-76: a Paystack update about a payment to Rekoda could not be processed and is with
+   * Rekoda's team (a dead `billing.process` job). Null when there is none. It is a billing notice,
+   * never a payment-reconciliation exception, and it claims nothing about whether money moved.
+   */
+  processingIssue: z
+    .object({
+      since: isoDate,
+      /** An operator has verified it with Paystack and it is being processed again. */
+      recovering: z.boolean(),
+    })
+    .nullable(),
 });
 
 /** What a plan change costs today, and when it takes effect. */
@@ -375,6 +397,11 @@ export const billingPlanChangeResponse = z.discriminatedUnion('state', [
   z.object({ state: z.literal('scheduled'), plan: z.string(), effectiveAt: isoDate }),
   /** An upgrade that costs nothing today (under a day left) is switched at once. */
   z.object({ state: z.literal('applied'), plan: z.string() }),
+  /**
+   * An upgrade that costs nothing today, accepted and being switched on now (OD-51): the switch is
+   * made by Rekoda's settlement worker and normally lands within seconds. Nothing is charged.
+   */
+  z.object({ state: z.literal('processing'), plan: z.string() }),
   z.object({
     state: z.literal('payment_required'),
     reference: z.string(),
@@ -508,6 +535,56 @@ export const opsEventView = z.object({
   createdAt: z.string(),
   /** How long it has been sitting. What an operator judges "stuck" by. */
   ageSeconds: z.number().int().nonnegative(),
+  /** The dead payment or billing job behind a flagged event (OWN-73, OWN-76); null otherwise. */
+  jobId: z.string().nullable(),
+});
+
+/**
+ * A payment or billing job that died with no event behind it (OWN-73, OWN-76): its own work item,
+ * keyed on the job. Ids, a category and fixed text only; never error text or a payload.
+ */
+export const opsDeadJobView = z.object({
+  jobId: z.string(),
+  businessId: z.string(),
+  kind: z.enum(['payment.process', 'billing.process']),
+  status: z.enum(['open', 'recovering']),
+  /** The signed event behind it, when it had one (then it is also that event's flagged row). */
+  eventId: z.string().nullable(),
+  /** Rekoda's own payment or subscription reference, when the job carried one. */
+  reference: z.string().nullable(),
+  failureCategory: z.string().nullable(),
+  summary: z.string(),
+  attempts: z.number().int().nonnegative(),
+  deathCount: z.number().int().positive(),
+  openedAt: z.string(),
+  lastDiedAt: z.string(),
+  ageSeconds: z.number().int().nonnegative(),
+  /** The charge's (billing) or intent's (payment) status now; null without a reference. */
+  paymentState: z.string().nullable(),
+  /** The business's plan and paid-to date now, for a billing job; null for a payment job. */
+  currentPlan: z.string().nullable(),
+  currentPlanExpiresAt: z.string().nullable(),
+});
+
+/**
+ * A renewal raised while Rekoda cannot take its payment (OWN-70): a live key without the §47
+ * confirmation, or no usable key. It stays pending and the grace clock runs (OD-44 open).
+ */
+export const opsBlockedRenewalView = z.object({
+  reference: z.string(),
+  businessId: z.string(),
+  plan: z.string().nullable(),
+  amountK: z.number().int().nonnegative(),
+  reason: z.enum(['awaiting_platform_confirmation', 'payments_not_configured']),
+  blockedAt: z.string(),
+  ageSeconds: z.number().int().nonnegative(),
+  currentPlan: z.string(),
+  currentRenewsAt: z.string().nullable(),
+});
+
+/** Start one verified, bounded recovery of a dead job. The reason is the audit record's. */
+export const opsDeadJobRecoverRequest = z.object({
+  reason: z.string().trim().min(4).max(200),
 });
 
 /**
@@ -549,6 +626,15 @@ export const opsExceptionsResponse = z.object({
   flagged: z.array(opsEventView),
   /** Paid but unapplied subscription charges awaiting an operator (OD-30). Oldest first. */
   unappliedCharges: z.array(opsUnappliedChargeView),
+  /**
+   * Dead payment or billing jobs with no event behind them (OWN-73, OWN-76). Oldest first. A dead
+   * job WITH an event is that event's flagged row (`jobId`), detailed in `deadJobDetails`.
+   */
+  deadJobs: z.array(opsDeadJobView),
+  /** The detail (reference, current payment and plan state) of each dead job on the flagged list. */
+  deadJobDetails: z.array(opsDeadJobView),
+  /** Renewals raised while Rekoda could not take the payment (OWN-70), still open. Oldest first. */
+  blockedRenewals: z.array(opsBlockedRenewalView),
 });
 
 /**
@@ -594,3 +680,46 @@ export type OpsEventView = z.infer<typeof opsEventView>;
 export type OpsUnappliedChargeView = z.infer<typeof opsUnappliedChargeView>;
 export type OpsExceptionsResponse = z.infer<typeof opsExceptionsResponse>;
 export type OpsResolveEventRequest = z.infer<typeof opsResolveEventRequest>;
+
+/* ── G-119 / OWN-77: staging test-business tools (`ops:staging`, staging only) ── */
+
+/** Designate a business as a test business. The reason is the audit row's. */
+export const opsStagingDesignateRequest = z.object({
+  reason: z.string().trim().min(4).max(200),
+});
+
+/**
+ * Move one date of a designated test business. `expected` is the value the operator read (the
+ * compare-before: null only for a date that is unset); `to` must be within 90 days of now.
+ */
+export const opsStagingMoveDateRequest = z.object({
+  field: z.enum(['trial_end', 'paid_to', 'grace_clock']),
+  expected: z.string().datetime({ offset: true }).nullable(),
+  to: z.string().datetime({ offset: true }),
+  reason: z.string().trim().min(4).max(200),
+});
+
+/** Arm one send fault, consumed by exactly one send for the business. */
+export const opsStagingArmFaultRequest = z.object({
+  kind: z.enum(['send_timeout', 'sender_refused']),
+  reason: z.string().trim().min(4).max(200),
+});
+
+export const opsStagingRevertRequest = z.object({
+  reason: z.string().trim().min(4).max(200),
+});
+
+export const opsStagingActionView = z.object({
+  id: z.string(),
+  businessId: z.string(),
+  operator: z.string(),
+  action: z.string(),
+  field: z.string().nullable(),
+  before: z.string().nullable(),
+  after: z.string().nullable(),
+  reason: z.string(),
+  outcome: z.string(),
+  revertsActionId: z.string().nullable(),
+  createdAt: z.string(),
+});
+export type OpsStagingActionView = z.infer<typeof opsStagingActionView>;

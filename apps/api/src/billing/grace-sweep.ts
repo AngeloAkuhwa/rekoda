@@ -20,6 +20,7 @@
  * opens, the books are readable and the exports still work.
  */
 import { Logger } from '@nestjs/common';
+import { applyStagingFault } from './staging-faults.js';
 import { billingState, GRACE_DAYS } from '@rekoda/core';
 import { redactForLog } from '@rekoda/core/privacy';
 import { subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
@@ -39,6 +40,8 @@ export interface GraceSweepDeps {
    * sender refuses the reminder as not sent and the day is retried once it is configured.
    */
   billingUrl: string | null;
+  /** G-119 / OWN-77: the deployment's staging flag; on, an armed one-shot fault is applied. */
+  stagingFaults?: boolean;
 }
 
 export interface GraceSweepResult {
@@ -134,6 +137,7 @@ export async function sweepGracePeriods(
       if (outcome !== 'send') continue;
 
       try {
+        await applyStagingFault(deps.appDb, row.businessId, deps.stagingFaults);
         await deps.sender.sendBillingNotice({
           to: row.ownerPhone,
           daysLeft: String(state.daysLeft),

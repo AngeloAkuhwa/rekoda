@@ -53,8 +53,26 @@ ADR 0010 is NOT implemented; this is the nightly logical half only, RPO up to 24
   long, mode 0600, custody recorded off the host), optionally `BACKUP_S3_ENDPOINT` and the
   `AWS_*` credentials for an `s3://` destination, `BACKUP_RETAIN_DAYS` (directory destinations only,
   default 30), `BACKUP_DUMP_CMD` (default: `pg_dump` inside the production compose postgres; a pipeline
-  here runs with `pipefail`). For R2 or B2 also set `AWS_REQUEST_CHECKSUM_CALCULATION=when_required`,
-  which newer aws CLI versions otherwise reject.
+  here runs with `pipefail`). For R2 or B2 also set `AWS_REQUEST_CHECKSUM_CALCULATION=when_required`
+  and `AWS_RESPONSE_CHECKSUM_VALIDATION=when_required` (aws CLI 2.23 and later add checksum headers R2
+  only partly supports), and `AWS_DEFAULT_REGION=auto`. R2 endpoint:
+  `BACKUP_S3_ENDPOINT=https://<account id>.r2.cloudflarestorage.com`.
+- **Cloudflare R2 specifics** (owner choice for the staging destination, 13 Nov 2026; tested against an
+  S3-compatible server with aws CLI 2.40, not yet against R2 itself; the full procedure is
+  `staging-first-deploy-pr-b.md` §1):
+  - R2 has **no** S3 versioning and **no** S3 Object Lock API. Its immutability feature is the **bucket
+    lock rule** (by prefix; age, date or indefinite), which blocks deletes and overwrites, and overrides
+    lifecycle deletion. Use a lock rule (for example 30 days on the backup prefix) plus a lifecycle
+    expiry well beyond it.
+  - R2 tokens cannot be limited by key prefix or suffix. _Object Read & Write_ scoped to the one backup
+    bucket is the narrowest token, and it can delete anything in that bucket. The lock rule is what stops
+    a stolen token from deleting recent backups.
+  - Under a lock rule the script's cleanup of its `<name>.pending` staging copy is refused (HTTP 409
+    `ObjectLockedByBucketPolicy`, one line in the journal each run). The script tolerates it, the backup
+    still succeeds, and the `.pending` copy stays until the lock and lifecycle expire it. Listing and the
+    drill never select `.pending` objects.
+  - Use a separate bucket and token from the application's documents (`R2_*` in `.env`). Backup
+    credentials live only in `/etc/rekoda/backup.env`.
 - **Drill variables:** `DRILL_DATABASE_URL` (a superuser URL of a scratch server whose database name
   contains `drill` or `scratch`; unset uses a throwaway `postgres:16-alpine` container, removed with its
   data volume) and `DRILL_OBJECT` (a specific object instead of the newest). In URL mode the host's
@@ -83,7 +101,9 @@ format, scope the credentials to what each script calls: the nightly backup need
 reads back what it staged) and DeleteObject only for its own `.pending` staging objects, or leave those
 to a lifecycle rule; the restore drill additionally needs ListBucket, since it finds the newest object
 by listing, turn on bucket versioning or object lock so an overwrite or delete keeps a prior
-version, and compare the newest object's date with today's. This is an open hardening item for G-02, not
+version, and compare the newest object's date with today's. On Cloudflare R2 neither the per-key
+delete scope nor versioning or object lock exists: use an R2 bucket lock rule instead (see "Cloudflare
+R2 specifics" above). This is an open hardening item for G-02, not
 closed by this change.
 
 ### Restore by hand (no scripts)
@@ -104,8 +124,21 @@ openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 \
 # The target must be an empty database on a server where these roles exist; without
 # them every GRANT and row-level-security policy that names one is skipped, and the
 # restore comes up with missing privileges and policies:
-psql "$SCRATCH_URL" -c "DO \$\$ DECLARE r text; BEGIN FOREACH r IN ARRAY ARRAY['rekoda_owner','rekoda_app','rekoda_worker','rekoda_provenance_owner','rekoda_operator'] LOOP IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN EXECUTE format('CREATE ROLE %I NOLOGIN', r); END IF; END LOOP; END \$\$;"
-pg_restore --no-owner -d "$SCRATCH_URL" restore.dump
+psql "$SCRATCH_URL" -c "DO \$\$ DECLARE r text; BEGIN FOREACH r IN ARRAY ARRAY['rekoda_owner','rekoda_app','rekoda_worker','rekoda_provenance_owner','rekoda_operator','rekoda_plan_writer','rekoda_usage_writer','rekoda_settlement','rekoda_billing_operator'] LOOP IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN EXECUTE format('CREATE ROLE %I NOLOGIN', r); END IF; END LOOP; END \$\$;"
+# Keep ownership (never --no-owner) and restore as a superuser of the target server: the
+# SECURITY DEFINER writer functions must keep their owners (rekoda_plan_writer,
+# rekoda_usage_writer, rekoda_provenance_owner). --no-owner hands them to whoever restores,
+# a superuser, and the plan, usage and payment-provenance boundaries silently disappear.
+pg_restore -d "$SCRATCH_URL" restore.dump
+# Must print 0 (each writer role owns its definer functions again):
+psql "$SCRATCH_URL" -Atc "SELECT count(*) FROM (VALUES ('0058_payment_provenance','rekoda_provenance_owner'),('0196_plan_fields_guard','rekoda_plan_writer'),('0216_usage_meter_boundary','rekoda_usage_writer')) AS e(tag, role) WHERE EXISTS (SELECT 1 FROM rekoda_migrations m WHERE m.tag = e.tag) AND NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_roles r ON r.oid = p.proowner WHERE p.prosecdef AND r.rolname = e.role);"
+# Must print nothing: every function has the owner the archive gave it (the drill's full check).
+# Run from the checkout (/opt/rekoda on the host), with restore.dump given by its full path.
+. scripts/lib/backup-common.sh
+pg_restore -l restore.dump | backup_toc_function_owners > owners.expected
+[ -s owners.expected ] || echo "the archive lists no function: do not trust this restore" >&2
+psql "$SCRATCH_URL" -At -c "$BACKUP_FUNCTION_OWNERS_SQL" | LC_ALL=C sort > owners.restored
+backup_function_owner_mismatches owners.expected owners.restored
 )
 ```
 
@@ -116,7 +149,7 @@ switch the application over; do not restore over a database you may still need.
 
 1. Provision a scratch Postgres (local docker is fine).
 2. Pull the newest object from the destination, check its `.sha256` and decrypt it (see "Restore by hand").
-3. `pg_restore -d "$SCRATCH_URL" --no-owner restore.dump` (the file written by the decrypt step)
+3. `pg_restore -d "$SCRATCH_URL" restore.dump` as a superuser (the file written by the decrypt step); never `--no-owner`, which hands the SECURITY DEFINER writer functions to the restoring superuser
 4. Run the integrity checks (`scripts/restore-drill.sh` does this):
    ```sql
    -- the ledger must balance, in total and per business
@@ -124,6 +157,9 @@ switch the application over; do not restore over a database you may still need.
    FROM ledger_entries GROUP BY business_id HAVING SUM(debit_k) <> SUM(credit_k);
    -- must return zero rows
    ```
+   and the writer roles still own their definer functions (the ownership query under "Restore by
+   hand" prints 0, and every function has the owner the archive's table of contents gives it, the
+   comparison printing nothing; `restore-drill.sh` fails otherwise).
 5. Spot-check one business: invoice count, latest document number, an
    audit-trail tail.
 6. Record the drill (date, dump used, duration, result) in this file's
@@ -132,7 +168,9 @@ switch the application over; do not restore over a database you may still need.
 ## Real restore (incident)
 
 Same as the drill against the production server, plus: stop the app first
-(`docker compose -f docker-compose.prod.yml stop api worker web`), restore, run integrity checks, start, then
+(`docker compose --env-file .env -f docker-compose.prod.yml stop api worker web operator settlement`), restore,
+run integrity checks, put back the application release the backup was taken under (its checkout and its
+`REKODA_RELEASE` in `.env`; `deploy.md`, "Roll back"), start, then
 verify webhooks re-deliver (Meta and Paystack both retry) — idempotency
 keys make replays safe.
 

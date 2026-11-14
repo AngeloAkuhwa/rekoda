@@ -38,10 +38,69 @@ export const OWNER_SECRET = 'postgres_owner_password';
 export const OWNER_SECRET_HOLDERS = ['postgres', 'migrate'];
 /** The services that may reach PostgreSQL, and the network they share. */
 export const DB_NETWORK = 'db';
-export const DB_CLIENTS = ['api', 'migrate', 'postgres', 'worker'];
+export const DB_CLIENTS = ['api', 'migrate', 'operator', 'postgres', 'settlement', 'worker'];
 /** Long-running services: restarted, and (except the proxy) health-checked. */
-export const SERVING = ['api', 'caddy', 'postgres', 'web', 'worker'];
-export const HEALTH_CHECKED = ['api', 'postgres', 'web', 'worker'];
+export const SERVING = ['api', 'caddy', 'operator', 'postgres', 'settlement', 'web', 'worker'];
+export const HEALTH_CHECKED = ['api', 'operator', 'postgres', 'settlement', 'web', 'worker'];
+/**
+ * The two privileged processes (OD-51). Each holds one database credential no other service
+ * may hold, runs its own entrypoint from the api's image, and is given exactly the variables
+ * named here: never the shared .env, which carries every other process's secrets. A name
+ * added to a list is a deliberate widening of what that process can do, reviewed here.
+ */
+export const PRIVILEGED = {
+  operator: {
+    credential: 'OPERATOR_DATABASE_URL',
+    command: 'dist/operator-main.js',
+    networks: ['db', 'edge'],
+    environment: [
+      'NODE_ENV',
+      'OPERATOR_BILLING_OIDC_AUDIENCE',
+      'OPERATOR_DATABASE_URL',
+      'OPERATOR_OIDC_AUDIENCE',
+      'OPERATOR_OIDC_ISSUER',
+      'OPERATOR_OIDC_JWKS_URL',
+      'OPERATOR_OIDC_SCOPE_CLAIM',
+      'PORT',
+      'REKODA_RELEASE',
+    ],
+  },
+  settlement: {
+    credential: 'SETTLEMENT_DATABASE_URL',
+    command: 'dist/settlement-main.js',
+    networks: ['db', 'settlement-egress'],
+    environment: [
+      'NODE_ENV',
+      'PAYSTACK_SECRET_KEY',
+      'PORT',
+      'REKODA_PLAN_CATALOGUE_READS',
+      'REKODA_RELEASE',
+      'REKODA_SETTLEMENT_CONCURRENCY',
+      'SETTLEMENT_DATABASE_URL',
+      'VAULT_KEY',
+    ],
+  },
+};
+/** The plan routes, served by the operator process alone. */
+export const OPERATOR_UPSTREAM = 'operator:3002';
+export const OPERATOR_PATHS = '/v1/businesses/plan /v1/businesses/plan/*';
+/** The fields a privileged service may set; anything else could hand it more than its list. */
+const PRIVILEGED_FIELDS = new Set([
+  'image',
+  'pull_policy',
+  'command',
+  'restart',
+  'stop_grace_period',
+  'environment',
+  'networks',
+  'depends_on',
+  'healthcheck',
+  'read_only',
+  'tmpfs',
+  'cap_drop',
+  'security_opt',
+  'logging',
+]);
 /** A name that looks like a credential, which no image may be built with. */
 const SECRET_SHAPED = /SECRET|PASSWORD|TOKEN|PRIVATE|PEPPER|DATABASE_URL|_KEY$/;
 /** Lines .dockerignore must keep: a secret outside the context cannot reach a layer. */
@@ -291,6 +350,75 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
     if (!webAddress || env.get('REKODA_TRUSTED_WEB') !== webAddress) {
       problems.push(`${name} must trust exactly web's fixed address to name the visitor`);
     }
+  }
+
+  /* The privileged processes (OD-51): one credential each, held nowhere else. */
+  const privilegedCredentials = Object.values(PRIVILEGED).map((p) => p.credential);
+  for (const [name, rule] of Object.entries(PRIVILEGED)) {
+    const s = svc(name);
+    if (!s) continue;
+    const env = keyed(s.environment);
+    if (s.image !== api?.image) problems.push(`${name} must run the same image as the api`);
+    if (asList(s.command).join(' ') !== `node ${rule.command}`) {
+      problems.push(`${name} must run exactly \`node ${rule.command}\``);
+    }
+    for (const key of Object.keys(s)) {
+      if (!PRIVILEGED_FIELDS.has(key)) {
+        problems.push(
+          `${name} must not set ${key}; it is given a named list of variables and nothing a rule does not read (env_file, volumes and secrets would hand it another process's credentials)`,
+        );
+      }
+    }
+    const names = [...env.keys()].sort();
+    if (names.join() !== [...rule.environment].sort().join()) {
+      problems.push(
+        `${name} must be given exactly ${rule.environment.join(', ')} (found ${names.join(', ') || 'nothing'})`,
+      );
+    }
+    if (env.get('NODE_ENV') !== 'production') problems.push(`${name} must set NODE_ENV=production`);
+    if (env.get(rule.credential) !== `\${${rule.credential}:?set ${rule.credential} in .env}`) {
+      problems.push(`${name} must require ${rule.credential} from .env, and fail without it`);
+    }
+    if (networksOf(s).sort().join() !== [...rule.networks].sort().join()) {
+      problems.push(`${name} must join exactly the ${rule.networks.join(' and ')} networks`);
+    }
+    if (conditionOf(s, 'postgres') !== 'service_healthy') {
+      problems.push(`${name} must wait for postgres to be healthy`);
+    }
+  }
+  for (const [name, s] of Object.entries(services)) {
+    const env = keyed(s?.environment);
+    for (const credential of privilegedCredentials) {
+      const owner = Object.entries(PRIVILEGED).find(([, p]) => p.credential === credential)?.[0];
+      if (name === owner) continue;
+      /* The services that load the shared .env must blank it; nothing else may name it at all.
+       * The migrate job is the exception: it sets the two roles' passwords from these URLs. */
+      if (name === 'migrate') continue;
+      if (ENV_FILE_LOADERS.includes(name)) {
+        if (env.get(credential) !== '') {
+          problems.push(
+            `${name} must set ${credential} to '' (it loads .env, which carries it); only ${owner} holds that credential`,
+          );
+        }
+      } else if (env.has(credential)) {
+        problems.push(`${name} is given ${credential}; only ${owner} holds that credential`);
+      }
+    }
+  }
+  for (const network of ['settlement-egress']) {
+    const members = Object.entries(services)
+      .filter(([, s]) => networksOf(s).includes(network))
+      .map(([name]) => name);
+    if (members.join() !== 'settlement') {
+      problems.push(`the ${network} network must hold settlement alone`);
+    }
+  }
+  /* An operator that will not boot (a wrong role, an audience equal to the API's) must fail plan
+   * changes alone, never keep the site, the API and the webhooks offline: Caddy does not wait. */
+  if (conditionOf(svc('caddy'), 'operator') !== null) {
+    problems.push(
+      'caddy must not wait for operator: an operator that will not start would keep the public edge down',
+    );
   }
 
   // PostgreSQL's network: internal, and joined by exactly its clients.
@@ -642,6 +770,26 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
         `${FILES.caddyfile}: reverse_proxy ${upstreams} must remove X-Rekoda-Client-IP; only web may receive it`,
       );
     }
+  }
+  /* Plan changes reach the operator process and nothing else (OD-51): the API does not serve
+   * them, so a route that sent them to the API would only turn them into a 404, but a route
+   * that sent anything ELSE to the operator process would widen what the internet can ask of
+   * the one process holding the plan credential. */
+  const operatorProxies = [...caddyCode.matchAll(/^[ \t]*reverse_proxy[ \t]+([^\n{]*)/gm)].filter(
+    (m) => /(^|\s)operator:/.test(m[1]),
+  );
+  const matcher = caddyCode.match(/^[ \t]*@operator_plane[ \t]+path[ \t]+([^\n]*)$/m);
+  if (
+    operatorProxies.length !== 1 ||
+    operatorProxies[0][1].trim() !== OPERATOR_UPSTREAM ||
+    matcher?.[1].trim() !== OPERATOR_PATHS ||
+    !new RegExp(
+      `handle[ \\t]+@operator_plane[ \\t]*\\{[^}]*\\}\\s*reverse_proxy[ \\t]+${OPERATOR_UPSTREAM.replace('.', '\\.')}[ \\t]*\\{`,
+    ).test(caddyCode)
+  ) {
+    problems.push(
+      `${FILES.caddyfile} must route exactly ${OPERATOR_PATHS} to ${OPERATOR_UPSTREAM}, inside \`handle @operator_plane\`, and nothing else there`,
+    );
   }
   const proxies = (caddyCode.match(/^\s*reverse_proxy\b/gm) ?? []).length;
   const addressed = (caddyCode.match(/^\s*import client_address\b/gm) ?? []).length;
