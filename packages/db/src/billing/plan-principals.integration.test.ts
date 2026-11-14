@@ -307,11 +307,23 @@ describe('OD-37: only settlement records a payment (0202)', () => {
       );
     expect((await settle())?.status).toBe('paid');
     expect(await settle()).toBeNull();
-    // Refunds take entitlement away and stay with the application (the ops refund route).
-    const refunded = await withBusiness(appDb, businessId, (tx) =>
-      subscriptionsRepo.refundCharge(tx, reference, 1000, new Date()),
-    );
-    expect(refunded?.status).toBe('refunded');
+    // A refund is the billing operator's alone since 0230; the application cannot record one.
+    expect(
+      await outcome(
+        withBusiness(appDb, businessId, (tx) =>
+          tx.execute(sql`UPDATE subscription_charges SET status = 'refunded',
+                           refunded_amount_k = amount_k WHERE reference = ${reference}`),
+        ),
+      ),
+    ).toMatch(/^42501 /);
+    const refunded = await subscriptionsRepo.recordRefund(operatorDb, {
+      businessId,
+      reference,
+      amountK: 1000,
+      reason: 'service_failure',
+      actor: 'operator:ada',
+    });
+    expect(refunded.status).toBe('refunded');
     // ...and a refunded charge cannot be made paid again by it.
     expect(
       await outcome(
@@ -396,9 +408,13 @@ describe('OD-37: what a charge buys is frozen from its opening to its end (0205,
         status: from === 'refunded' ? 'paid' : from,
       });
       if (from === 'refunded') {
-        await withBusiness(appDb, businessId, (tx) =>
-          subscriptionsRepo.refundCharge(tx, reference, 1000, new Date()),
-        );
+        await subscriptionsRepo.recordRefund(operatorDb, {
+          businessId,
+          reference,
+          amountK: 1000,
+          reason: 'service_failure',
+          actor: 'operator:ada',
+        });
       }
       expect(
         await outcome(
@@ -453,12 +469,17 @@ describe('OD-37: what a charge buys is frozen from its opening to its end (0205,
       ),
     ).toBe('allowed');
     const paid = await seedCharge(businessId);
+    /* The refund itself is the billing operator's (0230). */
     expect(
       (
-        await withBusiness(appDb, businessId, (tx) =>
-          subscriptionsRepo.refundCharge(tx, paid, 1000, new Date()),
-        )
-      )?.status,
+        await subscriptionsRepo.recordRefund(operatorDb, {
+          businessId,
+          reference: paid,
+          amountK: 1000,
+          reason: 'service_failure',
+          actor: 'operator:ada',
+        })
+      ).status,
     ).toBe('refunded');
   });
 });

@@ -60,6 +60,9 @@ beforeAll(async () => {
   // the worker credential to count either. Given here WITHOUT REKODA_WORKER,
   // which is the arrangement worth testing: a web process that runs no jobs still reports both.
   process.env['WORKER_DATABASE_URL'] = urls.worker;
+  /* A refund is recorded on the billing-operator principal (0230); outside production one process
+   * may hold it, as this one does. */
+  process.env['OPERATOR_DATABASE_URL'] = urls.operator;
   delete process.env['REKODA_WORKER'];
   process.env['OTP_PEPPER'] = 'test-pepper-at-least-32-characters-long';
   process.env['VAULT_KEY'] = randomBytes(32).toString('hex');

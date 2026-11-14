@@ -15,7 +15,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { OperatorGuard, OperatorScopes, type OperatorRequest } from '../auth/operator.guard.js';
-import { opsExceptionsResponse, opsRefundRequest, opsResolveEventRequest } from '@rekoda/contracts';
+import { opsExceptionsResponse, opsResolveEventRequest } from '@rekoda/contracts';
 import type { OpsExceptionsResponse } from '@rekoda/contracts';
 import {
   billingRepo,
@@ -45,7 +45,10 @@ import {
 } from '@rekoda/core';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { SecurityMetrics } from '../channels/security-metrics.service.js';
-import { DB, WORKER_DB } from '../db/db.module.js';
+import { DB, OPERATOR_DB, WORKER_DB } from '../db/db.module.js';
+import { OperatorPlaneServedHere } from '../auth/operator-plane-served.guard.js';
+import { OperatorPlaneRefusal } from '../operator-plane/plan-operations.js';
+import { recordRefundAsOperator } from '../operator-plane/refund-operations.js';
 import { operatorActor } from '../auth/operator-actor.js';
 
 /**
@@ -90,6 +93,8 @@ export class OpsController {
      */
     @Inject(WORKER_DB) private readonly workerDb: Db | null,
     @Inject(SecurityMetrics) private readonly security: SecurityMetrics,
+    /** The billing-operator principal, where this host holds one (development; 0230 refunds). */
+    @Inject(OPERATOR_DB) private readonly operatorDb: Db | null,
   ) {}
 
   @Get('health')
@@ -492,36 +497,27 @@ export class OpsController {
    * decision nobody made.
    */
   @Post('refund')
+  @UseGuards(OperatorPlaneServedHere)
   @OperatorScopes('ops:payment')
   @HttpCode(200)
   async refund(
     @Req() request: OperatorRequest,
     @Body() body: unknown,
-  ): Promise<{ refunded: true; status: string; refundedK: number }> {
-    const input = opsRefundRequest.safeParse(body);
-    if (!input.success) {
-      throw new BadRequestException(
-        'businessId, reference, amountK (positive kobo) and reason are required',
-      );
-    }
-    const { businessId, reference, amountK, reason } = input.data;
+  ): Promise<{ refunded: true; status: string; refundedK: number; revokedUnits: number }> {
     /* The audit actor is the VERIFIED subject, never a name the caller sent.
      * A body field here meant whoever held the shared secret also chose who
      * the record said they were. */
     const actor = operatorActor(request);
-
-    return withBusiness(this.db, businessId, async (tx) => {
-      const charge = await subscriptionsRepo.refundCharge(tx, reference, amountK, new Date(), {
-        actor,
-        reason,
-      });
-      /* Refused because the charge was never paid, has gone, or this refund
-       * would take back more than we ever took. All three are an operator
-       * mistake to correct rather than an error to retry. */
-      if (!charge) throw new BadRequestException('that charge cannot be refunded by that amount');
-
-      return { refunded: true as const, status: charge.status, refundedK: amountK };
-    });
+    /* Since 0230 a refund is recorded on the billing-operator principal alone: in production the
+     * dedicated operator process serves this path, and an API host with no operator credential
+     * answers 404 (`OperatorPlaneServedHere`). A refusal (never paid, more than was charged, a
+     * credited pack that is used, partial or past seven days) is the operator's mistake: a 400. */
+    try {
+      return await recordRefundAsOperator(this.operatorDb!, actor, body);
+    } catch (error) {
+      if (error instanceof OperatorPlaneRefusal) throw new BadRequestException(error.message);
+      throw error;
+    }
   }
 
   /**

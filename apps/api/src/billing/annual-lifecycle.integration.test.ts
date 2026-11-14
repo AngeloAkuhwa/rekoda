@@ -35,7 +35,7 @@ import {
   truncateAll,
   type Urls,
 } from '@rekoda/db/testing';
-import { settlementDb } from '@rekoda/db/testing';
+import { operatorDb, settlementDb } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { sweepRenewals } from './renewal-sweep.js';
 import { sweepGracePeriods } from './grace-sweep.js';
@@ -354,21 +354,23 @@ describe('money returned on a yearly charge', () => {
     return { businessId, reference: answer.reference, now };
   }
 
+  /* Recorded on the billing-operator credential (0230), under one of ADR 0024's reasons. */
   const refund = (businessId: string, reference: string, amountK: number) =>
-    withBusiness(db, businessId, (tx) =>
-      subscriptionsRepo.refundCharge(tx, reference, amountK, new Date(), {
-        actor: 'operator:test',
-        reason: 'goodwill',
-      }),
-    );
+    subscriptionsRepo.recordRefund(operatorDb(), {
+      businessId,
+      reference,
+      amountK,
+      reason: 'service_failure',
+      actor: 'operator:test',
+    });
 
   it('a partial refund leaves the charge paid and the year untouched', async () => {
     const { businessId, reference } = await paidYear();
     const before = await subOf(businessId);
 
     const charge = await refund(businessId, reference, 1_000_00);
-    expect(charge?.status).toBe('paid');
-    expect(charge?.refundedAmountK).toBe(1_000_00);
+    expect(charge.status).toBe('paid');
+    expect(charge.refundedK).toBe(1_000_00);
     expect(await subOf(businessId)).toMatchObject({
       plan: 'chat',
       billingInterval: 'annual',
@@ -381,7 +383,7 @@ describe('money returned on a yearly charge', () => {
     const before = await subOf(businessId);
 
     const charge = await refund(businessId, reference, CHAT_ANNUAL);
-    expect(charge?.status).toBe('refunded');
+    expect(charge.status).toBe('refunded');
     const audit = await withBusiness(db, businessId, (tx) =>
       tx.execute<{ action: string; new_value: { reason: string } }>(sql`
         SELECT action, new_value FROM audit_events
@@ -389,7 +391,7 @@ describe('money returned on a yearly charge', () => {
       `),
     );
     expect([...audit]).toHaveLength(1);
-    expect([...audit][0]?.new_value.reason).toBe('goodwill');
+    expect([...audit][0]?.new_value.reason).toBe('service_failure');
     expect(await subOf(businessId)).toMatchObject({
       plan: 'chat',
       planExpiresAt: before!.planExpiresAt,
@@ -398,12 +400,14 @@ describe('money returned on a yearly charge', () => {
 
   it('refuses to return more than the year cost, and repeats add up to the amount paid and no further', async () => {
     const { businessId, reference } = await paidYear();
-    expect(await refund(businessId, reference, CHAT_ANNUAL - 100)).not.toBeNull();
-    expect(await refund(businessId, reference, 101)).toBeNull();
+    expect((await refund(businessId, reference, CHAT_ANNUAL - 100)).status).toBe('paid');
+    await expect(refund(businessId, reference, 101)).rejects.toThrow(
+      /cannot be refunded by that amount/,
+    );
     const [charge] = await chargesOf(businessId);
     expect(charge?.refundedAmountK).toBe(CHAT_ANNUAL - 100);
     // A second successful refund adds to the first; the exact remainder completes it.
-    expect((await refund(businessId, reference, 100))?.status).toBe('refunded');
+    expect((await refund(businessId, reference, 100)).status).toBe('refunded');
     expect((await chargesOf(businessId))[0]?.refundedAmountK).toBe(CHAT_ANNUAL);
   });
 

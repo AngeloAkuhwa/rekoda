@@ -1,5 +1,5 @@
 /**
- * Migration safety for 0213 to 0229 (OD-50, OD-51, and the 0224 pack-credit terms): an UPGRADE of a database the previous release
+ * Migration safety for 0213 to 0230 (OD-50, OD-51, and the 0224 pack-credit terms): an UPGRADE of a database the previous release
  * left behind, not only a fresh build.
  *
  * A scratch database is migrated to 0212 (the last PR B migration before OWN-91; `main` itself
@@ -71,7 +71,10 @@ async function snapshot(): Promise<Snapshot> {
   const rows = async (query: string): Promise<unknown[]> =>
     (await owner.unsafe(query)).map((row) => row['doc'] as unknown);
   return {
-    charges: await rows(`SELECT to_jsonb(c) - 'purchase_id' - 'pricing_source' AS doc
+    /* Columns a later migration adds are stripped; 0230's must be NULL on every existing row
+     * (asserted after the upgrade), so stripping them hides no rewrite. */
+    charges: await rows(`SELECT to_jsonb(c) - 'purchase_id' - 'pricing_source' - 'credited_units'
+                           - 'credited_unit' - 'credited_period' - 'units_revoked_at' AS doc
                          FROM subscription_charges c ORDER BY reference`),
     business: (await rows(`SELECT to_jsonb(b) AS doc FROM businesses b`))[0],
     counters: await rows(`SELECT to_jsonb(u) AS doc FROM usage_counters u ORDER BY unit`),
@@ -173,7 +176,7 @@ afterAll(async () => {
   }
 });
 
-describe('upgrading a database from 0212 through 0229', () => {
+describe('upgrading a database from 0212 through 0230', () => {
   it('starts from the boundary the previous release had', async () => {
     expect(before.charges).toHaveLength(3);
     expect(await facts()).toEqual({
@@ -185,7 +188,7 @@ describe('upgrading a database from 0212 through 0229', () => {
     });
   });
 
-  it('applies 0213 to 0229 and rewrites no history', async () => {
+  it('applies 0213 to 0230 and rewrites no history', async () => {
     const applied = await applyMigrations(scratchUrl(urls.owner));
     expect(applied).toEqual([
       '0213_support_review_plan_change',
@@ -205,10 +208,18 @@ describe('upgrading a database from 0212 through 0229', () => {
       '0227_paid_launch_gate',
       '0228_worker_reads_no_payload_across_tenants',
       '0229_dead_job_enrolment_dead_letter',
+      '0230_refund_through_the_operator',
     ]);
 
     const after = await snapshot();
     expect(after.charges).toEqual(before.charges);
+    expect(
+      (
+        await owner`SELECT count(*)::int AS n FROM subscription_charges
+          WHERE credited_units IS NOT NULL OR credited_unit IS NOT NULL
+             OR credited_period IS NOT NULL OR units_revoked_at IS NOT NULL`
+      )[0]!['n'],
+    ).toBe(0);
     expect(after.business).toEqual(before.business);
     expect(after.counters).toEqual(before.counters);
     expect(after.jobs).toEqual(before.jobs);
@@ -294,6 +305,7 @@ describe('upgrading a database from 0212 through 0229', () => {
       '0227_paid_launch_gate',
       '0228_worker_reads_no_payload_across_tenants',
       '0229_dead_job_enrolment_dead_letter',
+      '0230_refund_through_the_operator',
     ]) {
       await owner.unsafe(readFileSync(join(MIGRATIONS_DIR, `${tag}.sql`), 'utf8')).simple();
     }

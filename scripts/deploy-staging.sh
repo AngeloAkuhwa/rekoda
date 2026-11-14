@@ -128,7 +128,7 @@ fail() {
 PHASE=checks
 # Migrations the previous release cannot run against (OD-48): the api and worker are stopped before
 # any of them is applied, and the old release is never restarted against a database that has one.
-COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary 0202_settlement_and_operator_principals 0203_plan_duration_rules 0204_external_events_worker_least_privilege 0205_charge_terms_belong_to_settlement 0206_paid_charge_bound_to_its_cycle 0207_operator_standard_periods 0209_settlement_verifies_the_price 0210_worker_least_privilege 0211_operator_principal_least_privilege 0212_closeout_review_fixes 0216_usage_meter_boundary 0217_settlement_isolation 0218_usage_reservation_closure 0220_job_row_and_grace_review_fixes 0221_operator_writes_only_through_its_functions 0228_worker_reads_no_payload_across_tenants'
+COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary 0202_settlement_and_operator_principals 0203_plan_duration_rules 0204_external_events_worker_least_privilege 0205_charge_terms_belong_to_settlement 0206_paid_charge_bound_to_its_cycle 0207_operator_standard_periods 0209_settlement_verifies_the_price 0210_worker_least_privilege 0211_operator_principal_least_privilege 0212_closeout_review_fixes 0216_usage_meter_boundary 0217_settlement_isolation 0218_usage_reservation_closure 0220_job_row_and_grace_review_fixes 0221_operator_writes_only_through_its_functions 0228_worker_reads_no_payload_across_tenants 0230_refund_through_the_operator'
 BREAKING=
 BREAKING_APPLIED=false
 # Set once migrate has been entered for a release carrying a breaking migration. migrate applies each
@@ -183,6 +183,8 @@ UP_ENTERED=false
 #   * the worker reads no job payload across tenants: no SELECT on jobs.payload, and job_payload()
 #     returns one job's payload only under that job's own tenant pin (0228);
 #   * a poison enrolment candidate backs off and is dead-lettered, never starving the rest (0229);
+#   * a refund is recorded by the billing operator alone; a credited pack only in full, unused,
+#     within seven days, its units revoked (0230);
 #   * settlement does not act with rekoda_app's rights: it holds exactly the reads and the column
 #     writes listed (never a charge insert, a plan, a price, a credit time or a job's kind or
 #     payload), no default privilege, and the queue is split by kind between it and the worker (0217);
@@ -216,7 +218,19 @@ SMOKE_0196_SQL="SELECT
                   '0226_settlement_holds_no_add_on',
                   '0227_paid_launch_gate',
                   '0228_worker_reads_no_payload_across_tenants',
-                  '0229_dead_job_enrolment_dead_letter')) = 29
+                  '0229_dead_job_enrolment_dead_letter',
+                  '0230_refund_through_the_operator')) = 30
+  AND has_function_privilege('rekoda_billing_operator', 'public.subscription_record_refund(uuid,text,bigint,text,text)', 'EXECUTE')
+  AND NOT has_function_privilege('rekoda_app', 'public.subscription_record_refund(uuid,text,bigint,text,text)', 'EXECUTE')
+  AND NOT has_function_privilege('rekoda_worker', 'public.subscription_record_refund(uuid,text,bigint,text,text)', 'EXECUTE')
+  AND NOT has_function_privilege('rekoda_settlement', 'public.subscription_record_refund(uuid,text,bigint,text,text)', 'EXECUTE')
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('public.subscription_record_refund(uuid,text,bigint,text,text)'))
+        LIKE '%p_amount <> c.amount_k%interval ''7 days''%has been used%SET bonus = greatest(bonus - c.credited_units, 0)%'
+  AND (SELECT prosrc FROM pg_proc
+        WHERE oid = to_regprocedure('rekoda_private.subscription_charges_settlement_guard()'))
+        LIKE '%only settlement moves a charge''''s status; a refund is recorded by the operator (OD-37, 0230)%a refund is recorded by the operator alone (0230)%'
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('public.usage_credit_pack(uuid,text,text,text,integer)'))
+        LIKE '%credited_units = p_n, credited_unit = p_unit%'
   AND has_function_privilege('rekoda_worker', 'public.dead_job_enrolment_failed(uuid,uuid,text)', 'EXECUTE')
   AND NOT has_function_privilege('rekoda_app', 'public.dead_job_enrolment_failed(uuid,uuid,text)', 'EXECUTE')
   AND has_function_privilege('rekoda_worker', 'public.dead_job_enrolment_dead_letters(integer,uuid)', 'EXECUTE')

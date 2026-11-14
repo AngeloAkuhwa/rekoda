@@ -492,6 +492,23 @@ describe('the pre-start database smoke, executed', () => {
       'GRANT INSERT ON dead_job_enrolment_failures TO rekoda_app',
     ],
     [
+      'the application able to record a refund',
+      'GRANT EXECUTE ON FUNCTION subscription_record_refund(uuid,text,bigint,text,text) TO rekoda_app',
+    ],
+    [
+      'the charge guard back at 0224 (the application refunds)',
+      readFileSync(
+        new URL('../../migrations/0224_pack_credit_derives_from_the_charge.sql', import.meta.url),
+        'utf8',
+      ).match(
+        /CREATE OR REPLACE FUNCTION rekoda_private\.subscription_charges_settlement_guard\(\)[\s\S]*?END \$function\$;/,
+      )![0],
+    ],
+    [
+      '0230 not recorded in the ledger',
+      "DELETE FROM rekoda_migrations WHERE tag = '0230_refund_through_the_operator'",
+    ],
+    [
       '0229 not recorded in the ledger',
       "DELETE FROM rekoda_migrations WHERE tag = '0229_dead_job_enrolment_dead_letter'",
     ],

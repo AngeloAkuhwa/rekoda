@@ -14,7 +14,14 @@ import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { SignJWT, exportJWK, generateKeyPair, type CryptoKey, type JWK } from 'jose';
 import { createDb, identity, sql, subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
-import { applicationDb, migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import {
+  applicationDb,
+  migrate,
+  ownerDb,
+  requireUrls,
+  truncateAll,
+  type Urls,
+} from '@rekoda/db/testing';
 import { startOperatorProcess } from '../operator-main.js';
 import { buildOperatorServer } from './server.js';
 
@@ -321,6 +328,67 @@ describe('the operator process verifies the operator itself (OD-51.1)', () => {
     const after = await subscription(businessId);
     expect(after.plan).toBe('complete');
     expect(after.plan_expires_at).toBe(before.plan_expires_at);
+  });
+});
+
+describe('the operator process records a refund with ops:payment (0230)', () => {
+  async function paidPlanCharge(businessId: string): Promise<string> {
+    const reference = `RKD-SUB-20261115-OP${Math.floor(Math.random() * 9000 + 1000)}`;
+    await ownerDb().execute(sql`
+      INSERT INTO subscription_charges
+        (business_id, kind, plan, amount_k, paid_amount_k, status, reference, period_start,
+         period_end, paid_at, billing_interval)
+      VALUES (${businessId}::uuid, 'first_purchase', 'chat', 990000, 990000, 'paid', ${reference},
+              now(), now() + interval '30 days', now(), 'monthly')`);
+    return reference;
+  }
+  const refundBody = (businessId: string, reference: string) => ({
+    businessId,
+    reference,
+    amountK: 990_000,
+    reason: 'duplicate_charge',
+  });
+
+  it('records it for a verified operator with ops:payment, audited with the token subject', async () => {
+    const businessId = await seedBusiness();
+    const reference = await paidPlanCharge(businessId);
+    const res = await post(
+      '/v1/ops/refund',
+      refundBody(businessId, reference),
+      bearer(await sign({ sub: 'ada@rekoda.app', scope: 'ops:payment' })),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      refunded: true,
+      status: 'refunded',
+      refundedK: 990_000,
+      revokedUnits: 0,
+    });
+    const [audit] = await ownerDb().execute<{ actor: string }>(sql`
+      SELECT actor FROM audit_events WHERE business_id = ${businessId}::uuid AND action = 'refunded'`);
+    expect(audit?.actor).toBe('operator:ada@rekoda.app');
+  });
+
+  it('refuses ops:billing alone, and more than was charged, changing nothing', async () => {
+    const businessId = await seedBusiness();
+    const reference = await paidPlanCharge(businessId);
+    const billingOnly = await post(
+      '/v1/ops/refund',
+      refundBody(businessId, reference),
+      bearer(await billingToken()),
+    );
+    expect(billingOnly.status).toBe(403);
+    expect(((await billingOnly.json()) as { message: string }).message).toMatch(/ops:payment/);
+    const tooMuch = await post(
+      '/v1/ops/refund',
+      { ...refundBody(businessId, reference), amountK: 990_001 },
+      bearer(await sign({ sub: 'ada@rekoda.app', scope: 'ops:payment' })),
+    );
+    expect(tooMuch.status).toBe(400);
+    const [charge] = await ownerDb().execute<{ status: string }>(
+      sql`SELECT status FROM subscription_charges WHERE reference = ${reference}`,
+    );
+    expect(charge?.status).toBe('paid');
   });
 });
 

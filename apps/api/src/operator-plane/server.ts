@@ -1,12 +1,13 @@
 /**
  * The dedicated operator process's HTTP surface (OD-51.1).
  *
- * Three routes and nothing else: the two operator plan operations and a health check. The server
- * is Node's own `http`: no framework, no plugin, no body it does not need, because this process
+ * Four routes and nothing else: the two operator plan operations, the refund record (0230) and a
+ * health check. The server is Node's own `http`: no framework, no plugin, no body it does not need, because this process
  * holds the one credential that can give a business a plan and its job is to be small.
  *
- * Every plan request is authenticated HERE, by this process, against its own token audience
- * (`authenticate.ts`), then checked for `ops:billing`. The audit actor is the verified token's
+ * Every request is authenticated HERE, by this process, against its own token audience
+ * (`authenticate.ts`), then checked for its route's scope (`ops:billing` for a plan, `ops:payment`
+ * for a refund). The audit actor is the verified token's
  * subject; nothing in the body or in any header set by a forwarding party is believed. Refusals
  * are answered in the API's error shape (`{ statusCode, message }`), so a caller written against
  * the API's operator routes reads these the same way.
@@ -27,6 +28,7 @@ import {
   resolvePlanReviewAsOperator,
   setPlanAsOperator,
 } from './plan-operations.js';
+import { recordRefundAsOperator } from './refund-operations.js';
 
 /** Far above either request body (a UUID, a plan name, a 500-character reason). */
 const MAX_BODY_BYTES = 16 * 1024;
@@ -52,6 +54,8 @@ export const OPERATOR_ROUTES: Readonly<Record<string, Route>> = {
     scopes: ['ops:billing'],
     run: resolvePlanReviewAsOperator,
   },
+  /* Recording a refund of a Rekoda charge (0230): the authority that moves payment state. */
+  '/v1/ops/refund': { scopes: ['ops:payment'], run: recordRefundAsOperator },
 };
 
 class HttpRefusal extends Error {

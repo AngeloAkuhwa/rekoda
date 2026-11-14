@@ -36,7 +36,7 @@ import {
   truncateAll,
   type Urls,
 } from '@rekoda/db/testing';
-import { settlementDb } from '@rekoda/db/testing';
+import { operatorDb, settlementDb } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { sweepRenewals } from './renewal-sweep.js';
 import { applySettledCharge, BillingService } from './billing.service.js';
@@ -350,16 +350,22 @@ describe('grandfathering through the catalogue (BL2, PR-100)', () => {
       0,
     );
 
-    await withBusiness(db, businessId, (tx) =>
-      subscriptionsRepo.refundCharge(tx, answer.reference, 100_000, new Date()),
-    );
+    /* A credited pack is refunded only in full, unused, within seven days (owner decision,
+     * 15 Nov 2026; 0230), on the billing-operator credential. */
+    await subscriptionsRepo.recordRefund(operatorDb(), {
+      businessId,
+      reference: answer.reference,
+      amountK: answer.amountK,
+      reason: 'unused_add_on',
+      actor: 'operator:test',
+    });
 
     const overview = await confirmedBilling().overview(businessId);
     const charge = overview.charges.find((row) => row.reference === answer.reference);
 
-    // Still paid: only part came back. The amount that did is on the row.
-    expect(charge?.status).toBe('paid');
-    expect(charge?.refundedAmountK).toBe(100_000);
+    // Refunded in full: the amount that came back is on the row.
+    expect(charge?.status).toBe('refunded');
+    expect(charge?.refundedAmountK).toBe(answer.amountK);
   });
 
   it('a pack is offered exactly where its unit is sold: Integrate is not sold Chat overage', async () => {

@@ -29,7 +29,7 @@ import {
   creditBonusForTest,
   startGraceForTest,
 } from '../testing.js';
-import { settlementDb } from '../testing.js';
+import { operatorDb, settlementDb } from '../testing.js';
 
 let urls: Urls;
 let appDb: Db;
@@ -303,22 +303,25 @@ describe('charges', () => {
       }),
     );
 
-    const half = await inTenant(businessId, (tx) =>
-      subscriptionsRepo.refundCharge(tx, 'RK-SUB-1', 490_000, new Date('2026-09-10T00:00:00Z')),
-    );
+    /* A plan charge (not a credited pack) may be refunded in part, up to its amount (ADR 0024),
+     * on the billing-operator credential (0230). */
+    const refund = (amountK: number) =>
+      subscriptionsRepo.recordRefund(operatorDb(), {
+        businessId,
+        reference: 'RK-SUB-1',
+        amountK,
+        reason: 'service_failure',
+        actor: 'operator:angelo',
+      });
+    const half = await refund(490_000);
     // Half back is still a charge that happened, not a charge that did not.
-    expect(half?.status).toBe('paid');
+    expect(half.status).toBe('paid');
 
-    const rest = await inTenant(businessId, (tx) =>
-      subscriptionsRepo.refundCharge(tx, 'RK-SUB-1', 500_000, new Date('2026-09-11T00:00:00Z')),
-    );
-    expect(rest?.status).toBe('refunded');
+    const rest = await refund(500_000);
+    expect(rest.status).toBe('refunded');
 
     // And never more than was charged.
-    const over = await inTenant(businessId, (tx) =>
-      subscriptionsRepo.refundCharge(tx, 'RK-SUB-1', 1, new Date('2026-09-12T00:00:00Z')),
-    );
-    expect(over).toBeNull();
+    await expect(refund(1)).rejects.toThrow(/cannot be refunded by that amount/);
   });
 
   it('will not let the application delete a charge', async () => {
@@ -420,12 +423,14 @@ describe('recording a refund', () => {
     const businessId = await seedBusiness();
     await paidCharge(businessId, 'RKD-SUB-20260821-EEEEEE');
 
-    await inTenant(businessId, (tx) =>
-      subscriptionsRepo.refundCharge(tx, 'RKD-SUB-20260821-EEEEEE', 990_000, new Date(), {
-        actor: 'operator:angelo',
-        reason: 'unused_add_on',
-      }),
-    );
+    /* Recorded on the billing-operator credential, the only one that may (0230). */
+    await subscriptionsRepo.recordRefund(operatorDb(), {
+      businessId,
+      reference: 'RKD-SUB-20260821-EEEEEE',
+      amountK: 990_000,
+      reason: 'unused_add_on',
+      actor: 'operator:angelo',
+    });
 
     const audit = await inTenant(businessId, (tx) =>
       tx.execute<{ actor: string; new_value: { reason: string; amountK: number } }>(sql`
@@ -446,14 +451,15 @@ describe('recording a refund', () => {
     await paidCharge(businessId, 'RKD-SUB-20260821-FFFFFF');
 
     // More than was ever charged.
-    expect(
-      await inTenant(businessId, (tx) =>
-        subscriptionsRepo.refundCharge(tx, 'RKD-SUB-20260821-FFFFFF', 990_001, new Date(), {
-          actor: 'operator:angelo',
-          reason: 'duplicate_charge',
-        }),
-      ),
-    ).toBeNull();
+    await expect(
+      subscriptionsRepo.recordRefund(operatorDb(), {
+        businessId,
+        reference: 'RKD-SUB-20260821-FFFFFF',
+        amountK: 990_001,
+        reason: 'duplicate_charge',
+        actor: 'operator:angelo',
+      }),
+    ).rejects.toThrow(/cannot be refunded by that amount/);
 
     const audit = await inTenant(businessId, (tx) =>
       tx.execute<{ n: number }>(sql`

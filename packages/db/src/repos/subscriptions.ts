@@ -13,7 +13,7 @@
  * length.
  */
 import { sql } from 'drizzle-orm';
-import type { Db, TenantDb } from '../client.js';
+import { withBusiness, type Db, type TenantDb } from '../client.js';
 
 export type ChargeKind = 'first_purchase' | 'renewal' | 'upgrade' | 'add_on' | 'seat';
 export type ChargeStatus = 'pending' | 'paid' | 'failed' | 'refunded';
@@ -1128,51 +1128,65 @@ export async function resolveUnapplied(
   return [...rows].length === 1;
 }
 
-/**
- * Record a refund against a paid charge (ADR 0024's refund matrix).
- *
- * Partial refunds accumulate, and the CHECK constraint stops the total
- * exceeding what was charged. The status only becomes `refunded` when the
- * whole amount has come back, so a merchant refunded half a month still shows
- * a paid charge with a refund against it rather than a charge that reads as
- * though it never happened.
- */
-export async function refundCharge(
-  tx: TenantDb,
-  reference: string,
-  amountK: number,
-  when: Date,
-  /** Who decided, and under which of ADR 0024's rows. */
-  record?: { actor: string; reason: string },
-): Promise<ChargeRow | null> {
-  const rows = await tx.execute<RawCharge>(sql`
-    UPDATE subscription_charges SET
-      refunded_amount_k = refunded_amount_k + ${amountK},
-      status = CASE WHEN refunded_amount_k + ${amountK} >= amount_k THEN 'refunded' ELSE status END,
-      refunded_at = ${when.toISOString()}::timestamptz,
-      updated_at = now()
-    WHERE reference = ${reference}
-      AND status IN ('paid', 'refunded')
-      AND refunded_amount_k + ${amountK} <= amount_k
-    RETURNING *
-  `);
-  const row = [...rows][0];
-  if (!row) return null;
+/** Why ADR 0024 allows a refund: the reasons the refund function accepts. */
+export type RefundReason =
+  | 'duplicate_charge'
+  | 'incorrect_amount'
+  | 'service_failure'
+  | 'unused_add_on'
+  | 'suspension_error';
 
-  /* Written here rather than by the caller, because a refund and the record
-   * of who decided it are one fact: a caller that could forget the second is
-   * a caller that will. */
-  if (record) {
-    await tx.execute(sql`
-      INSERT INTO audit_events
-        (business_id, actor, entity, entity_id, action, new_value, source_type)
-      VALUES (${row.business_id}::uuid, ${record.actor}, 'subscription_charge',
-              ${reference}, 'refunded',
-              ${JSON.stringify({ amountK, reason: record.reason, status: row.status })}::jsonb,
-              'operator')
-    `);
+export interface RecordedRefund {
+  status: string;
+  refundedK: number;
+  /** Units taken back from a credited pack's meter row (0 for any other charge). */
+  revokedUnits: number;
+}
+
+/**
+ * Record a refund against one of Rekoda's own charges (ADR 0024), on the billing-operator
+ * credential (migration 0230): `subscription_record_refund` is the only path, and only
+ * `rekoda_billing_operator` may run it. It does NOT move money (the naira goes back through
+ * Paystack, by the operator); it records the fact, writes the audit event with the verified actor,
+ * and, for a credited pack, refuses anything but a full refund of an unused pack within seven days
+ * and revokes that pack's units in the same transaction. A refusal is a `RefundRefused` with the
+ * function's own words.
+ */
+export class RefundRefused extends Error {}
+
+export async function recordRefund(
+  operatorDb: Db,
+  input: {
+    businessId: string;
+    reference: string;
+    amountK: number;
+    reason: RefundReason;
+    actor: string;
+  },
+): Promise<RecordedRefund> {
+  try {
+    return await withBusiness(operatorDb, input.businessId, async (tx) => {
+      const rows = await tx.execute<{
+        status: string;
+        refunded_k: string;
+        revoked_units: number;
+      }>(sql`
+        SELECT * FROM subscription_record_refund(${input.businessId}::uuid, ${input.reference},
+          ${input.amountK}::bigint, ${input.reason}, ${input.actor})`);
+      const row = [...rows][0]!;
+      return {
+        status: row.status,
+        refundedK: Number(row.refunded_k),
+        revokedUnits: row.revoked_units,
+      };
+    });
+  } catch (error) {
+    const cause = (error as { cause?: { code?: string; message?: string } }).cause;
+    if (cause?.code === '22023' && cause.message?.startsWith('subscription_record_refund: ')) {
+      throw new RefundRefused(cause.message.replace('subscription_record_refund: ', ''));
+    }
+    throw error;
   }
-  return shape(row);
 }
 
 /**
