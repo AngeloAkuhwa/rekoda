@@ -394,10 +394,10 @@ Because the deploy starts automatically after the merge, **finish every pre-merg
 checks only some values before it builds or stops anything ("nothing has been changed"): the Paystack TEST key (one
 plain line, no `REKODA_PAYSTACK_PLATFORM_CONFIRMED=1`) on every deploy, and, for this release, the settlement and
 operator credentials and their roles, the OIDC issuer, JWKS and billing audience (different from the API's) and that
-`VAULT_KEY` is present. **Everything else** (`META_*`, `RESEND_*`, `MATCH_KEY`, `OTP_PEPPER`, a malformed `VAULT_KEY`,
+`VAULT_KEY` is present, and (OWN-93, in the newly built image) that every `META_*_TEMPLATE` has a well-formed name and its `_LOCALE` beside it. **Everything else** (the other `META_*` values, `RESEND_*`, `MATCH_KEY`, `OTP_PEPPER`, a malformed `VAULT_KEY`,
 the OIDC values' format) is checked only when the api or worker boots, which is **after** the processes are stopped and
 migrations 0193 to 0223 are applied: a mistake there leaves staging down until `.env` is fixed and the deploy is run
-again (fix forward; no rollback past 0196 without a restore). P8 and P9 are the only check for those values. When the
+again (fix forward; no rollback past 0196 without a restore). P8, P9 and P9a are the only check for those values. When the
 deploy does refuse early, fix `.env` and redeploy: Actions → Deploy staging → Run workflow (branch `main`, SHA
 blank).
 

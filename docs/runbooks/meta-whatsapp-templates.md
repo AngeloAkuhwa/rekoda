@@ -77,8 +77,16 @@ you actually see on the day.
 
 Engineering does not read or edit the host. The values go in the staging host's `.env` only, never
 in `docker-compose.prod.yml` (shared with production) and never in the repository. The api and
-worker both load `.env` (`env_file: .env`), so one line configures both; recreate both containers
-after editing (`dc up -d --wait --force-recreate api worker`).
+worker both load `.env` (`env_file: .env`), so one line configures both. After editing, and
+**before** recreating anything, check the edited `.env` against the running release's own rules:
+
+```
+dc run --rm -T --no-deps api node dist/template-check.js
+```
+
+It prints each slot's state (never a value) and must end `RESULT BOOTS`. `RESULT REFUSED` names the
+variable to fix on stderr; recreating with it would take the api and worker down. Then recreate both
+(`dc up -d --wait --force-recreate api worker`).
 
 ```
 META_OTP_TEMPLATE=<approved name, as WhatsApp Manager shows it>
@@ -109,7 +117,8 @@ and refuses with the variable's name if one is missing (nothing live changes).
 2. When WhatsApp Manager shows the new template Approved and active, record §2 for it.
 3. Set the slot's template variable to the new name and its language variable to the new template's
    language, together, in `.env`.
-4. Recreate the api and the worker, then run §4. The template variable must read `SET` in both, and
+4. Run the `template-check.js` command above (it must end `RESULT BOOTS`), recreate the api and
+   the worker, then run §4. The template variable must read `SET` in both, and
    `Meta template settings, api and worker` must read `SAME`.
 5. Keep the old template in WhatsApp Manager until §5 has a delivered message through the new one.
 
