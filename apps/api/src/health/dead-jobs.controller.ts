@@ -8,6 +8,12 @@
  *   POST /v1/ops/dead-jobs/:jobId/recover  { reason }      verify with Paystack, then one attempt
  *   POST /v1/ops/dead-jobs/:jobId/resolve  { resolution }  close it without a recovery
  *
+ * And for the cutover enrolment's dead letters (0229): candidates whose record could not be written
+ * after five attempts.
+ *
+ *   GET  /v1/ops/dead-jobs/enrolment-failures              (ops:read) the dead-lettered list
+ *   POST /v1/ops/dead-jobs/:jobId/enrolment-requeue { reason }  (ops:payment) back in line, audited
+ *
  * Both are conditional on the record still being open, so two operators produce one decision.
  */
 import {
@@ -15,6 +21,7 @@ import {
   Body,
   ConflictException,
   Controller,
+  Get,
   HttpCode,
   Inject,
   NotFoundException,
@@ -43,6 +50,56 @@ const REFUSAL: Record<string, string> = {
 @UseGuards(OperatorGuard)
 export class DeadJobsController {
   constructor(@Inject(DeadJobRecoveryService) private readonly recovery: DeadJobRecoveryService) {}
+
+  @Get('enrolment-failures')
+  @OperatorScopes('ops:read')
+  async enrolmentFailures(): Promise<{ items: unknown[] }> {
+    const result = await this.recovery.enrolmentFailures();
+    if (result.outcome === 'no_worker') {
+      throw new ServiceUnavailableException('this process holds no worker credential');
+    }
+    return {
+      items: result.items.map((item) => ({
+        jobId: item.jobId,
+        businessId: item.businessId,
+        kind: item.kind,
+        attempts: item.attempts,
+        lastSqlstate: item.lastSqlstate,
+        lastFailedAt: item.lastFailedAt?.toISOString() ?? null,
+        deadLetteredAt: item.deadLetteredAt.toISOString(),
+        requeueCount: item.requeueCount,
+      })),
+    };
+  }
+
+  @Post(':jobId/enrolment-requeue')
+  @OperatorScopes('ops:payment')
+  @HttpCode(200)
+  async requeueEnrolment(
+    @Req() request: OperatorRequest,
+    @Param('jobId') jobId: string,
+    @Body() body: unknown,
+  ): Promise<{ requeued: true }> {
+    if (!UUID.test(jobId)) throw new BadRequestException('not a job id');
+    const input = opsDeadJobRecoverRequest.safeParse(body);
+    if (!input.success)
+      throw new BadRequestException('a reason of at least 4 characters is required');
+    const result = await this.recovery.requeueEnrolment(
+      jobId,
+      operatorActor(request),
+      input.data.reason,
+    );
+    if (result.outcome === 'no_worker') {
+      throw new ServiceUnavailableException('this process holds no worker credential');
+    }
+    if (result.outcome === 'not_found') {
+      throw new NotFoundException('no dead-lettered enrolment candidate with that id');
+    }
+    if (result.outcome === 'not_dead_lettered') {
+      throw new ConflictException('that candidate is not dead-lettered');
+    }
+    return { requeued: true as const };
+  }
 
   @Post(':jobId/recover')
   @OperatorScopes('ops:payment')

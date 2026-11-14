@@ -17,7 +17,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { PAYMENT_REFERENCE_PATTERN, SUBSCRIPTION_REFERENCE_PATTERN } from '@rekoda/core';
 import { paystackWebhookBody, summarisePaystackEvent } from '@rekoda/contracts';
-import { deadJobsRepo, events, withBusiness, type Db } from '@rekoda/db';
+import { deadJobsRepo, events, jobsRepo, withBusiness, type Db } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { DB, WORKER_DB } from '../db/db.module.js';
 import { openPayload } from '../privacy/payload-vault.js';
@@ -117,6 +117,30 @@ export class DeadJobRecoveryService {
     });
     if (!closed) return { outcome: 'not_open' as const };
     return { outcome: 'resolved' as const };
+  }
+
+  /** The dead-lettered enrolment candidates (0229): found on the worker credential, read-only. */
+  async enrolmentFailures() {
+    if (!this.workerDb) return { outcome: 'no_worker' as const };
+    return {
+      outcome: 'listed' as const,
+      items: await jobsRepo.enrolmentDeadLetters(this.workerDb),
+    };
+  }
+
+  /**
+   * Put one dead-lettered enrolment candidate back in line (0229). Found on the worker credential;
+   * requeued on the application credential under that candidate's own business, audited. Enrolment
+   * is insert-only per job, so a requeue never duplicates a record.
+   */
+  async requeueEnrolment(jobId: string, actor: string, reason: string) {
+    if (!this.workerDb) return { outcome: 'no_worker' as const };
+    const [found] = await jobsRepo.enrolmentDeadLetters(this.workerDb, { jobId, limit: 1 });
+    if (!found) return { outcome: 'not_found' as const };
+    const requeued = await withBusiness(this.db, found.businessId, (tx) =>
+      jobsRepo.requeueEnrolment(tx, { businessId: found.businessId, jobId, actor, reason }),
+    );
+    return { outcome: requeued ? ('requeued' as const) : ('not_dead_lettered' as const) };
   }
 
   private referenceOf(payload: unknown, externalId: string): string | null {
