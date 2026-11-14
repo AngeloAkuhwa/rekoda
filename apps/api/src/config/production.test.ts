@@ -414,3 +414,38 @@ describe('REKODA_EMAIL_PROVIDER (OWN-51)', () => {
     );
   });
 });
+
+/* Owner decision (15 Nov 2026): production fails fast if the platform Paystack key is missing. The
+ * API opens Rekoda's own charges and verifies Paystack's webhook signatures with it, and the worker
+ * loads the same configuration; with no key, checkout and every webhook would be refused at run time
+ * while the process reported healthy. Built at run time so no key-shaped literal sits in the tree. */
+describe('PAYSTACK_SECRET_KEY in production', () => {
+  const key = (...parts: string[]) => parts.join('_');
+  it.each([
+    ['missing', undefined],
+    ['blank', ''],
+    ['spaces', '   '],
+    ['a public key', key('pk', 'live', 'placeholder')],
+    ['an unrecognised prefix', key('sk', 'livex', 'placeholder')],
+  ])('refuses to boot when it is %s, naming the variable and never the value', (_label, value) => {
+    const env = { ...PROD, PAYSTACK_SECRET_KEY: value } as NodeJS.ProcessEnv;
+    if (value === undefined) delete env['PAYSTACK_SECRET_KEY'];
+    let message = '';
+    try {
+      loadConfig(env);
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toMatch(/PAYSTACK_SECRET_KEY/);
+    if (value && value.trim()) expect(message).not.toContain(value);
+  });
+
+  it('boots with a TEST or a LIVE key, and outside production with none', () => {
+    for (const value of [key('sk', 'test', 'placeholder'), key('sk', 'live', 'placeholder')]) {
+      expect(loadConfig({ ...PROD, PAYSTACK_SECRET_KEY: value }).paystackSecretKey).toBe(value);
+    }
+    const dev = { ...DEV } as NodeJS.ProcessEnv;
+    delete dev['PAYSTACK_SECRET_KEY'];
+    expect(loadConfig(dev).paystackSecretKey).toBe('');
+  });
+});

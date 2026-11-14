@@ -9,6 +9,9 @@ export const BASE = {
   REKODA_API_SECRET: 's'.repeat(40),
   VAULT_KEY: 'a'.repeat(64),
   MATCH_KEY: 'b'.repeat(64),
+  /* Production refuses to boot without a recognised platform key (owner decision, 15 Nov 2026).
+   * A TEST-shaped placeholder, built at run time so no key-shaped literal sits in the tree. */
+  PAYSTACK_SECRET_KEY: ['sk', 'test', 'placeholder'].join('_'),
 } as NodeJS.ProcessEnv;
 
 /**

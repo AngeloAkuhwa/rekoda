@@ -14,6 +14,7 @@ import {
   type Range,
 } from './http/client-address.js';
 import { MONO_API, PAYSTACK_API, nonPublicReason } from './endpoints.js';
+import { paystackKeyKind } from './billing/paystack-key.js';
 import {
   billingPageUrl,
   configuredTemplates,
@@ -1264,6 +1265,24 @@ function flag(value: string | undefined): boolean {
   return value === '1' || value === 'true';
 }
 
+/**
+ * Rekoda's own Paystack secret key (owner decision, 15 Nov 2026: production fails fast without it).
+ * The API opens Rekoda's charges and verifies Paystack's webhook signatures with it, and the worker
+ * loads this same configuration; with none, a production process would report healthy while every
+ * checkout and webhook was refused. Outside production an absent key still degrades honestly
+ * (`chargeGate`: payments not configured). The value is classified, never printed.
+ */
+function platformPaystackKey(env: NodeJS.ProcessEnv, isProduction: boolean): string {
+  const key = env['PAYSTACK_SECRET_KEY'] ?? '';
+  const kind = paystackKeyKind(key);
+  if (isProduction && kind !== 'test' && kind !== 'live') {
+    throw new Error(
+      `PAYSTACK_SECRET_KEY must be a Paystack secret key (sk_test_... or sk_live_...) in production; it is ${kind === 'missing' ? 'missing' : 'not one'}`,
+    );
+  }
+  return key;
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   const isProduction = isProductionEnv(env);
   const r2 = r2Settings(env);
@@ -1569,7 +1588,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     emailProvider: emailProvider(env, isProduction),
     ...resendSettings(env, emailProvider(env, isProduction)),
     operatorAuth: operatorAuth(env, isProduction),
-    paystackSecretKey: env['PAYSTACK_SECRET_KEY'] ?? '',
+    paystackSecretKey: platformPaystackKey(env, isProduction),
     paystackBaseUrl: providerBaseUrl(env, 'PAYSTACK_BASE_URL', PAYSTACK_API, isProduction),
     paystackPlatformConfirmed: env['REKODA_PAYSTACK_PLATFORM_CONFIRMED'] === '1',
     stagingTools: stagingToolsFlag(env),

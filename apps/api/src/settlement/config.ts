@@ -11,6 +11,8 @@
  * Deliberately not `loadConfig`: that one describes the API and the worker and requires their
  * secrets. None of the others belongs here, and in production their presence is refused.
  */
+import { paystackKeyKind } from '../billing/paystack-key.js';
+
 const PAYSTACK_API = 'https://api.paystack.co';
 const NON_PRODUCTION_ENVS = new Set(['development', 'test']);
 
@@ -132,6 +134,16 @@ export function loadSettlementConfig(
     );
   }
 
+  /* Every verify carries this key: in production, a missing or unrecognised one refuses to start
+   * (owner decision, 15 Nov 2026; Qodo 2). Classified, never printed. */
+  const paystackSecretKey = env['PAYSTACK_SECRET_KEY'] ?? '';
+  const keyKind = paystackKeyKind(paystackSecretKey);
+  if (isProduction && keyKind !== 'test' && keyKind !== 'live') {
+    throw new SettlementConfigError(
+      `PAYSTACK_SECRET_KEY must be a Paystack secret key (sk_test_... or sk_live_...) in production; it is ${keyKind === 'missing' ? 'missing' : 'not one'}`,
+    );
+  }
+
   const reads = env['REKODA_PLAN_CATALOGUE_READS'];
   if (reads !== undefined && reads !== '' && reads !== '0' && reads !== '1') {
     throw new SettlementConfigError('REKODA_PLAN_CATALOGUE_READS must be 1 (the default) or 0');
@@ -144,7 +156,7 @@ export function loadSettlementConfig(
     commit: label(env, 'REKODA_COMMIT', 'unknown'),
     isProduction,
     settlementDatabaseUrl,
-    paystackSecretKey: env['PAYSTACK_SECRET_KEY'] ?? '',
+    paystackSecretKey,
     paystackBaseUrl: base || PAYSTACK_API,
     vaultKey,
     planCatalogueReads: reads !== '0',

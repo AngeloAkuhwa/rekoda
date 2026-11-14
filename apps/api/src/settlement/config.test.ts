@@ -136,3 +136,36 @@ describe('the settlement process configuration', () => {
     ).toBe(false);
   });
 });
+
+/* Owner decision (15 Nov 2026): the settlement process verifies every payment with this key, so in
+ * production it refuses to start without a recognised one (it used to report healthy and send an
+ * empty bearer credential on every verify: Qodo 2, OD-51 residual (ii)). */
+describe('the settlement process refuses to start without a Paystack key in production', () => {
+  const key = (...parts: string[]) => parts.join('_');
+  it.each([
+    ['missing', undefined],
+    ['blank', ''],
+    ['a public key', key('pk', 'test', 'placeholder')],
+    ['an unrecognised prefix', key('sk', 'prod', 'placeholder')],
+  ])('%s', (_label, value) => {
+    const env = { ...PRODUCTION, PAYSTACK_SECRET_KEY: value } as NodeJS.ProcessEnv;
+    if (value === undefined) delete env['PAYSTACK_SECRET_KEY'];
+    let error: unknown;
+    try {
+      loadSettlementConfig(env);
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(SettlementConfigError);
+    expect((error as Error).message).toMatch(/PAYSTACK_SECRET_KEY/);
+    if (value) expect((error as Error).message).not.toContain(value);
+  });
+
+  it('starts with a TEST or a LIVE key', () => {
+    for (const value of [key('sk', 'test', 'placeholder'), key('sk', 'live', 'placeholder')]) {
+      expect(
+        loadSettlementConfig({ ...PRODUCTION, PAYSTACK_SECRET_KEY: value }).paystackSecretKey,
+      ).toBe(value);
+    }
+  });
+});
