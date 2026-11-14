@@ -210,14 +210,15 @@ describe('a unit still goes back while its job has not finished (0218)', () => {
     const { eventId, jobId } = await message(mine);
     await setJob(mine, jobId, 'running');
     const meter = await spendFor(mine, eventId);
-    /* Their job names MY event in its payload. */
+    /* Their job names MY event in its payload. The application may enqueue it only as pending
+     * work (0227); the worker's claim makes it running. */
     const forged = await withBusiness(appDb, theirs, (tx) =>
       tx.execute<{ id: string }>(sql`
-        INSERT INTO jobs (business_id, kind, payload, state)
-        VALUES (${theirs}::uuid, 'message.inbound', jsonb_build_object('eventId', ${eventId}::text),
-                'running')
+        INSERT INTO jobs (business_id, kind, payload)
+        VALUES (${theirs}::uuid, 'message.inbound', jsonb_build_object('eventId', ${eventId}::text))
         RETURNING id`),
     );
+    await setJob(theirs, [...forged][0]!.id, 'running');
     await finish(theirs, [...forged][0]!.id);
 
     expect((await reservation(meter)).closed).toBe(false);
@@ -246,6 +247,8 @@ describe('binding and closing are the database’s, not a runtime role’s (0218
     const other = await seedBusiness();
     const first = await message(businessId);
     const second = await message(businessId);
+    /* Bound by the handler of a running job, as the inbound handler does (0227). */
+    await setJob(businessId, first.jobId, 'running');
     const meter = await spendFor(businessId, first.eventId);
     expect((await reservation(meter)).event_id).toBe(first.eventId);
 
@@ -306,6 +309,7 @@ describe('existing reservations are bound and closed by the migration (0218)', (
     state: 'done' | 'pending' | 'running' | 'dead' | null,
   ) {
     const { eventId, jobId } = await message(businessId);
+    await setJob(businessId, jobId, 'running');
     const meter = await spendFor(businessId, eventId);
     await ownerDb.execute(
       sql`UPDATE usage_reservations SET event_id = NULL, closed_at = NULL

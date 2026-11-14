@@ -26,6 +26,7 @@ import {
   settlementDb,
   urls,
   usePlanWriterHarness,
+  workerDb,
 } from './plan-writer.fixtures.js';
 
 usePlanWriterHarness();
@@ -54,6 +55,14 @@ async function storedEvent(businessId: string): Promise<string> {
   );
   if (!recorded.isNew) throw new Error('the event was not stored');
   return recorded.id;
+}
+
+/** The event's job, claimed by the worker: running, as when its handler binds a spend (0227). */
+async function runningJobFor(businessId: string, eventId: string): Promise<void> {
+  await withBusiness(appDb, businessId, (tx) =>
+    jobsRepo.enqueue(tx, { businessId, kind: 'inbound.message', payload: { eventId } }),
+  );
+  expect(await jobsRepo.claimNext(workerDb, 'binding-fixture')).not.toBeNull();
 }
 
 describe('0222: an unbound reservation is refundable only while its request can be running', () => {
@@ -94,6 +103,7 @@ describe('0222: an unbound reservation is refundable only while its request can 
   it('a reservation bound to an unfinished job stays refundable past the window (0218 rule)', async () => {
     const businessId = await seedBusiness();
     const recorded = { id: await storedEvent(businessId) };
+    await runningJobFor(businessId, recorded.id);
     const meter = await withBusiness(appDb, businessId, async (tx) => {
       const spent = await usageRepo.reserveUnit(tx, businessId, NOW_MONTH(), UNIT, TRIAL_AI);
       await events.noteReservedUnit(tx, businessId, recorded.id, UNIT, spent.meter);

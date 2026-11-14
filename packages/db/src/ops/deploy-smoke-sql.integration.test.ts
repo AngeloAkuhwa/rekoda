@@ -452,6 +452,26 @@ describe('the pre-start database smoke, executed', () => {
       'GRANT INSERT ON business_add_ons TO rekoda_settlement',
     ],
     [
+      'the job guard back at 0223 (the application reschedules queued work)',
+      readFileSync(
+        new URL('../../migrations/0223_settlement_scope_and_dead_job_requeue.sql', import.meta.url),
+        'utf8',
+      ).match(
+        /CREATE OR REPLACE FUNCTION rekoda_private\.jobs_application_transition_guard\(\)[\s\S]*?END \$\$;/,
+      )![0],
+    ],
+    [
+      'usage_bind_event back at 0218 (any event id)',
+      readFileSync(
+        new URL('../../migrations/0218_usage_reservation_closure.sql', import.meta.url),
+        'utf8',
+      ).match(/CREATE OR REPLACE FUNCTION public\.usage_bind_event\([\s\S]*?END \$\$;/)![0],
+    ],
+    [
+      '0227 not recorded in the ledger',
+      "DELETE FROM rekoda_migrations WHERE tag = '0227_paid_launch_gate'",
+    ],
+    [
       '0226 not recorded in the ledger',
       "DELETE FROM rekoda_migrations WHERE tag = '0226_settlement_holds_no_add_on'",
     ],

@@ -1590,6 +1590,13 @@
       "when": 1796904000003,
       "tag": "0226_settlement_holds_no_add_on",
       "breakpoints": true
+    },
+    {
+      "idx": 227,
+      "version": "7",
+      "when": 1796904000004,
+      "tag": "0227_paid_launch_gate",
+      "breakpoints": true
     }
   ]
 }

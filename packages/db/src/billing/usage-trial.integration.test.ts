@@ -21,6 +21,7 @@ import {
   type Urls,
   setPlanAsOwner,
   creditBonusForTest,
+  runningJobForEvent,
 } from '../testing.js';
 import { settlementDb } from '../testing.js';
 
@@ -219,6 +220,7 @@ describe('one budget per trial (G-109, OWN-27, OD-26)', () => {
         }),
       );
       if (!recorded.isNew) throw new Error('event not recorded');
+      await runningJobForEvent(businessId, recorded.id);
       return recorded.id;
     }
 

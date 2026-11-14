@@ -13,7 +13,14 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db } from '../client.js';
 import { billingRepo, events, identity, usageRepo } from '../index.js';
-import { migrate, requireUrls, truncateAll, type Urls, setPlanAsOwner } from '../testing.js';
+import {
+  migrate,
+  requireUrls,
+  runningJobForEvent,
+  truncateAll,
+  type Urls,
+  setPlanAsOwner,
+} from '../testing.js';
 import { creditBonusForTest, setPlanForTest, settlementDb, operatorDb } from '../testing.js';
 import { USAGE_UNITS, allowanceFor, usagePeriod } from '@rekoda/core';
 
@@ -473,6 +480,7 @@ describe('a unit reserved for an event, by two attempts at once', () => {
       }),
     );
     if (!recorded.isNew) throw new Error('event not recorded');
+    await runningJobForEvent(businessId, recorded.id);
     return recorded.id;
   }
 

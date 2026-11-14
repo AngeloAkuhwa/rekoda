@@ -16,11 +16,11 @@ export async function queueOnly(wamid: string, text: string, from = '23480312345
 }
 
 /**
- * A test-setup statement on `jobs`, run as the business it belongs to (`withBusiness`, so RLS applies
- * as in production) rather than through the worker pool's cross-tenant reach.
+ * A test-setup statement on `jobs`, pinned to the business it belongs to. Written as the table owner:
+ * the retry budget and run time it stages are the worker's to write, never the application's (0227).
  */
 export function asTenant(businessId: string, statement: ReturnType<typeof sql>) {
-  return withBusiness(db, businessId, (tx) => tx.execute(statement));
+  return withBusiness(ownerDb(), businessId, (tx) => tx.execute(statement));
 }
 
 /**

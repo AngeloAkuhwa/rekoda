@@ -21,7 +21,14 @@ import {
   withBusiness,
   type Db,
 } from '@rekoda/db';
-import { migrate, requireUrls, storedEventId, truncateAll, type Urls } from '@rekoda/db/testing';
+import {
+  migrate,
+  requireUrls,
+  storedEventId,
+  truncateAll,
+  type Urls,
+  ownerDb,
+} from '@rekoda/db/testing';
 import { settlementDb } from '@rekoda/db/testing';
 import { buildRunner, type RunnerDeps } from '../jobs/jobs.module.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
@@ -257,7 +264,7 @@ async function deadPaymentJob(businessId: string, reference: string) {
   provider.willVerify(reference, { amountK: 15_000_000 });
   const eventId = await storeChargeSuccess(reference);
   expect(await pump()).toBe(1);
-  await withBusiness(appDb, businessId, (tx) =>
+  await withBusiness(ownerDb(), businessId, (tx) =>
     tx.execute(sql`UPDATE jobs SET max_attempts = 1 WHERE business_id = ${businessId}::uuid`),
   );
   provider.failNextVerifyWith(new Error('Paystack is down'));

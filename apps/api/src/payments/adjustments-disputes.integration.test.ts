@@ -18,6 +18,7 @@
  */
 // Provider refunds, reversals and chargebacks (G-06). Split by concern across adjustments*.integration.test.ts; the shared setup is in
 // adjustments.fixtures.ts.
+import { ownerDb } from '@rekoda/db/testing';
 import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { paymentReference } from '@rekoda/core';
@@ -398,7 +399,7 @@ describe("a dispute read that fails is retried, then a human's, never a dead job
     const runner = buildRunner(workerDb, appDb, deps);
     for (let attempt = 1; attempt <= 5; attempt += 1) {
       provider.failNextDisputeReadWith(new Error('dispute read failed with HTTP 503'));
-      await withBusiness(appDb, businessId, (tx) =>
+      await withBusiness(ownerDb(), businessId, (tx) =>
         tx.execute(sql`UPDATE jobs SET run_at = now() WHERE state = 'pending'`),
       );
       expect(await runner.runOnce()).toBe(true);
@@ -443,7 +444,7 @@ describe("a dispute read that fails is retried, then a human's, never a dead job
       providerResolution: 'merchant-accepted',
       outcome: 'lost',
     });
-    await withBusiness(appDb, businessId, (tx) =>
+    await withBusiness(ownerDb(), businessId, (tx) =>
       tx.execute(sql`UPDATE jobs SET run_at = now() WHERE state = 'pending'`),
     );
     await drainJobs();

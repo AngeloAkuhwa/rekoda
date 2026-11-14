@@ -26,6 +26,7 @@ import {
   usePlanWriterHarness,
   workerDb,
 } from './plan-writer.fixtures.js';
+import { runningJobForEvent } from '../testing.js';
 
 usePlanWriterHarness();
 
@@ -438,6 +439,7 @@ describe('0222: the plan the database records is the plan that is metered', () =
   it('an idempotent retry of the same event does not spend twice', async () => {
     const businessId = await seedBusiness();
     const recorded = { id: await storedEvent(businessId) };
+    await runningJobForEvent(businessId, recorded.id);
     const attempt = () =>
       withBusiness(appDb, businessId, (tx) =>
         events.reserveUnitForEvent(tx, businessId, recorded.id, UNIT, () =>

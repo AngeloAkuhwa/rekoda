@@ -18,6 +18,7 @@
  */
 // Provider refunds, reversals and chargebacks (G-06). Split by concern across adjustments*.integration.test.ts; the shared setup is in
 // adjustments.fixtures.ts.
+import { ownerDb } from '@rekoda/db/testing';
 import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { paymentReference } from '@rekoda/core';
@@ -214,7 +215,7 @@ describe('the documented refund envelope and refund read (no refund id, charge n
       amountK: 15_000_000,
       transactionReference: intent.reference,
     });
-    await withBusiness(appDb, businessId, (tx) =>
+    await withBusiness(ownerDb(), businessId, (tx) =>
       tx.execute(sql`UPDATE jobs SET run_at = now() WHERE state = 'pending'`),
     );
     await drainJobs();
@@ -229,7 +230,7 @@ describe('the documented refund envelope and refund read (no refund id, charge n
     const never = await storeEvent(refundEvent(second.intent.reference, 15_000_000, { id: 904 }));
     await pump();
     for (let attempt = 1; attempt <= 5; attempt += 1) {
-      await withBusiness(appDb, businessId, (tx) =>
+      await withBusiness(ownerDb(), businessId, (tx) =>
         tx.execute(sql`UPDATE jobs SET run_at = now() WHERE state = 'pending'`),
       );
       expect(await runner.runOnce()).toBe(true);
@@ -250,7 +251,7 @@ describe('the documented refund envelope and refund read (no refund id, charge n
     const runner = buildRunner(workerDb, appDb, deps);
     for (let attempt = 1; attempt <= 5; attempt += 1) {
       provider.failNextRefundReadWith(new Error('refund read returned an unreadable response'));
-      await withBusiness(appDb, businessId, (tx) =>
+      await withBusiness(ownerDb(), businessId, (tx) =>
         tx.execute(sql`UPDATE jobs SET run_at = now() WHERE state = 'pending'`),
       );
       expect(await runner.runOnce()).toBe(true);
@@ -412,7 +413,7 @@ describe('an id-less refund event waits for a refund the provider lists but has 
       transactionReference: null,
       transactionId: 'pst-tx-950',
     });
-    await withBusiness(appDb, businessId, (tx) =>
+    await withBusiness(ownerDb(), businessId, (tx) =>
       tx.execute(sql`UPDATE jobs SET run_at = now() WHERE state = 'pending'`),
     );
     await drainJobs();
@@ -461,7 +462,7 @@ describe('an id-less refund event waits for a refund the provider lists but has 
     await pump();
     const runner = buildRunner(workerDb, appDb, deps);
     for (let attempt = 1; attempt <= 5; attempt += 1) {
-      await withBusiness(appDb, businessId, (tx) =>
+      await withBusiness(ownerDb(), businessId, (tx) =>
         tx.execute(sql`UPDATE jobs SET run_at = now() WHERE state = 'pending'`),
       );
       expect(await runner.runOnce()).toBe(true);

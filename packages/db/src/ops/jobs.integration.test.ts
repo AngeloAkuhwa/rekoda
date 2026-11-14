@@ -447,7 +447,8 @@ describe('queue order is a promise, not a hope (H7a)', () => {
     const yes = await enqueue(businessId);
     if (!failure || !yes) throw new Error('both jobs should have enqueued');
     // The receipt failed once and backed off: its run_at is now in the future.
-    await withBusiness(appDb, businessId, (tx) =>
+    /* Staged as the owner: the worker's retry and defer write run_at, never the application (0227). */
+    await withBusiness(ownerDb(), businessId, (tx) =>
       tx.execute(sql`UPDATE jobs SET run_at = now() + interval '1 minute'
                       WHERE id = ${failure.id}::uuid`),
     );
@@ -463,7 +464,8 @@ describe('queue order is a promise, not a hope (H7a)', () => {
     if (!first || !second) throw new Error('both jobs should have enqueued');
     // The first message stepped back behind a failed receipt: deferClaimed
     // pushed its run_at forward. It is still the older message.
-    await withBusiness(appDb, businessId, (tx) =>
+    /* Staged as the owner: the worker's retry and defer write run_at, never the application (0227). */
+    await withBusiness(ownerDb(), businessId, (tx) =>
       tx.execute(sql`UPDATE jobs SET run_at = now() + interval '1 minute'
                       WHERE id = ${first.id}::uuid`),
     );

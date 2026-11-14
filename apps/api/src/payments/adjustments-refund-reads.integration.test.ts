@@ -18,6 +18,7 @@
  */
 // Provider refunds, reversals and chargebacks (G-06). Split by concern across adjustments*.integration.test.ts; the shared setup is in
 // adjustments.fixtures.ts.
+import { ownerDb } from '@rekoda/db/testing';
 import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { paymentReference } from '@rekoda/core';
@@ -118,7 +119,7 @@ describe('a refund.processed event whose provider read disagrees', () => {
       amountK: 15_000_000,
       transactionReference: intent.reference,
     });
-    await withBusiness(appDb, businessId, (tx) =>
+    await withBusiness(ownerDb(), businessId, (tx) =>
       tx.execute(sql`UPDATE jobs SET run_at = now() WHERE state = 'pending'`),
     );
     await drainJobs();
@@ -179,7 +180,7 @@ describe('a refund read that never turns processed ends in the exception queue, 
     const runner = buildRunner(workerDb, appDb, deps);
     const maxAttempts = 5; // the queue's default (migration 0004)
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      await withBusiness(appDb, businessId, (tx) =>
+      await withBusiness(ownerDb(), businessId, (tx) =>
         tx.execute(sql`UPDATE jobs SET run_at = now() WHERE state = 'pending'`),
       );
       expect(await runner.runOnce()).toBe(true);

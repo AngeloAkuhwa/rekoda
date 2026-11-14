@@ -105,6 +105,27 @@ export const operatorDb = (): Db => principalDb(requireUrls(), 'operator');
 export const ownerDb = (): Db =>
   principalDb({ ...requireUrls(), owner: OWNER_URL_AT_LOAD ?? requireUrls().owner }, 'owner');
 
+/**
+ * The event's job, running, as the worker's claim leaves it while the event's handler meters its
+ * spend (fixture, written as the table owner). Since 0227 a usage reservation binds only to an
+ * event of its business whose job is running, exactly as the handler does; a test that reserves a
+ * unit for an event without running its handler stages the job with this.
+ */
+export async function runningJobForEvent(
+  businessId: string,
+  eventId: string,
+  kind = 'message.inbound',
+): Promise<string> {
+  const rows = await withBusiness(ownerDb(), businessId, (tx) =>
+    tx.execute<{ id: string }>(drizzleSql`
+      INSERT INTO jobs (business_id, kind, payload, state, locked_by, locked_at, attempts)
+      VALUES (${businessId}::uuid, ${kind}, jsonb_build_object('eventId', ${eventId}::text),
+              'running', 'fixture', now(), 1)
+      RETURNING id`),
+  );
+  return [...rows][0]!.id;
+}
+
 /* Captured when this module loads (the integration setup imports it before any test runs): several
  * API suites point DATABASE_URL at the application role before booting the app, and the owner pool
  * must stay the owner. */

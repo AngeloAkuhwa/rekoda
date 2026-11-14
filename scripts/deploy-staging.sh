@@ -177,6 +177,9 @@ UP_ENTERED=false
 #   * the cutover enrolment of unrecorded dead jobs discovers ids only, through a definer function
 #     only the worker may execute (0225);
 #   * no runtime role writes an add-on holding, settlement included (0226);
+#   * the OWN-92 paid-launch gate: the application cannot reschedule or retry-budget a job, or
+#     insert one that is not new pending work, and a usage reservation binds only to an event of
+#     its business whose job is running (0227);
 #   * settlement does not act with rekoda_app's rights: it holds exactly the reads and the column
 #     writes listed (never a charge insert, a plan, a price, a credit time or a job's kind or
 #     payload), no default privilege, and the queue is split by kind between it and the worker (0217);
@@ -207,7 +210,13 @@ SMOKE_0196_SQL="SELECT
                   '0223_settlement_scope_and_dead_job_requeue',
                   '0224_pack_credit_derives_from_the_charge',
                   '0225_dead_job_enrolment_discovery',
-                  '0226_settlement_holds_no_add_on')) = 26
+                  '0226_settlement_holds_no_add_on',
+                  '0227_paid_launch_gate')) = 27
+  AND (SELECT prosrc FROM pg_proc
+        WHERE oid = to_regprocedure('rekoda_private.jobs_application_transition_guard()'))
+        LIKE '%no lease and no attempt spent (OWN-92, 0227)%NEW.run_at IS DISTINCT FROM OLD.run_at OR NEW.max_attempts IS DISTINCT FROM OLD.max_attempts%only the worker schedules or retries a job%'
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('public.usage_bind_event(uuid,uuid,uuid)'))
+        LIKE '%FROM public.external_events e%e.business_id = p_business%j.state = ''running''%not an event of this business whose job is running%'
   AND (SELECT p.prosecdef AND p.proconfig @> ARRAY['search_path=pg_catalog, public, pg_temp']
          AND pg_get_function_result(p.oid) = 'TABLE(job_id uuid, business_id uuid)'
        FROM pg_proc p WHERE p.oid = to_regprocedure('public.dead_job_unrecorded_candidates(integer)'))
