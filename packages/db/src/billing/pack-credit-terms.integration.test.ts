@@ -266,6 +266,65 @@ describe('0224: the amount paid for is bound to the units credited', () => {
   });
 });
 
+describe('0224: settlement moves a status only out of pending', () => {
+  const asSettlement = (businessId: string, statement: ReturnType<typeof sql>) =>
+    outcome(withBusiness(settlementDb as Db, businessId, (tx) => tx.execute(statement)));
+
+  it('cannot move a set-aside paid charge back to pending, clear it, and pay it again', async () => {
+    const businessId = await paidBusiness();
+    const setAside = await packCharge(businessId, { unapplied: true });
+    expect(
+      await asSettlement(
+        businessId,
+        sql`UPDATE subscription_charges SET status = 'pending' WHERE reference = ${setAside}`,
+      ),
+    ).toMatch(/^42501 .*settlement moves a charge's status only out of pending/);
+    expect(
+      await outcome(credit(businessId, setAside, await thisMonth(), 'AI_ACTIONS', 100)),
+    ).toMatch(NOT_A_PACK);
+    expect(await counters(businessId)).toEqual([]);
+  });
+
+  it('cannot revive a refunded charge to credit it', async () => {
+    const businessId = await paidBusiness();
+    const reference = await packCharge(businessId);
+    await ownerDb.execute(sql`UPDATE subscription_charges
+      SET status = 'refunded', refunded_amount_k = amount_k, refunded_at = now()
+      WHERE reference = ${reference}`);
+    for (const status of ['pending', 'paid', 'failed']) {
+      expect(
+        await asSettlement(
+          businessId,
+          sql`UPDATE subscription_charges SET status = ${status} WHERE reference = ${reference}`,
+        ),
+      ).toMatch(/^42501 .*settlement moves a charge's status only out of pending/);
+    }
+    expect(
+      await outcome(credit(businessId, reference, await thisMonth(), 'AI_ACTIONS', 100)),
+    ).toMatch(NOT_A_PACK);
+  });
+
+  it('still settles a pending charge (pending to paid, and pending to failed)', async () => {
+    const businessId = await paidBusiness();
+    const a = await packCharge(businessId);
+    const b = await packCharge(businessId, { packId: 'documents_50' });
+    await ownerDb.execute(sql`UPDATE subscription_charges SET status = 'pending', paid_at = NULL
+      WHERE reference IN (${a}, ${b})`);
+    expect(
+      await asSettlement(
+        businessId,
+        sql`UPDATE subscription_charges SET status = 'paid', paid_at = now() WHERE reference = ${a}`,
+      ),
+    ).toBe('allowed');
+    expect(
+      await asSettlement(
+        businessId,
+        sql`UPDATE subscription_charges SET status = 'failed', failed_at = now() WHERE reference = ${b}`,
+      ),
+    ).toBe('allowed');
+  });
+});
+
 describe('0224: a charge priced from the compiled figures (constants)', () => {
   it('still credits only the unit the pack sells, on the meter row in use (the quantity is the recorded trust boundary)', async () => {
     const businessId = await paidBusiness();

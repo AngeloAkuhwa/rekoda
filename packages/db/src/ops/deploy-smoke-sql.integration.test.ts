@@ -400,6 +400,15 @@ describe('the pre-start database smoke, executed', () => {
       ).match(/CREATE OR REPLACE FUNCTION public\.usage_credit_pack\([\s\S]*?END \$\$;/)![0],
     ],
     [
+      'the charge guard back at 0222 (settlement may walk a paid charge back and clear its set-aside)',
+      readFileSync(
+        new URL('../../migrations/0222_usage_entitlement_in_the_database.sql', import.meta.url),
+        'utf8',
+      ).match(
+        /CREATE OR REPLACE FUNCTION rekoda_private\.subscription_charges_settlement_guard\(\)[\s\S]*?END \$function\$;/,
+      )![0],
+    ],
+    [
       '0224 not recorded in the ledger',
       "DELETE FROM rekoda_migrations WHERE tag = '0224_pack_credit_derives_from_the_charge'",
     ],

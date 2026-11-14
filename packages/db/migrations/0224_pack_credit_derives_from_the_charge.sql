@@ -30,7 +30,8 @@
 -- And settlement can no longer put a paid charge that was set aside (`unapplied_at`) or superseded
 -- back in play: the charge guard's rule "a paid charge set aside cannot be put back" now applies
 -- to settlement as it already applied to the application (no code path clears either column on a
--- paid charge). Before, settlement could clear `unapplied_at` on a charge set aside as
+-- paid charge), and settlement moves a status only out of `pending`, so it cannot walk a paid,
+-- failed or refunded charge back to pending, clear it there and pay it again. Before, settlement could clear `unapplied_at` on a charge set aside as
 -- `price_not_verified` and then credit it.
 --
 -- What this does NOT cover, deliberately: the QUANTITY of a charge priced from `constants` (the
@@ -41,7 +42,10 @@
 -- the table owner's alone (`rekoda_private.set_pricing_source`, 0215, recorded in its history), and
 -- a charge can record `constants` only while it is in force (the 0215 insert guard), so no runtime
 -- credential can create such a charge while `catalogue` is in force; charges already recorded as
--- `constants` (none exist: the source has been `catalogue` since 0215) keep this boundary.
+-- `constants` (none exist: the source has been `catalogue` since 0215) keep this boundary. A charge
+-- that records no source is judged by the source in force when it is credited, so if the owner
+-- ever switches to `constants`, a pending charge opened without a source falls on this path too
+-- (the application's `buyPack` always records one).
 --
 -- A refusal raises (42501): the settlement transaction rolls back, nothing is credited and the
 -- charge is not stamped; the job is retried and, past its budget, becomes a dead-job record for an
@@ -243,6 +247,15 @@ BEGIN
     IF NEW.units_credited_at IS DISTINCT FROM OLD.units_credited_at
        AND NOT pg_has_role(current_user, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), 'USAGE') THEN
       RAISE EXCEPTION 'a pack is credited only through usage_credit_pack (OD-51)'
+        USING ERRCODE = '42501';
+    END IF;
+    -- 0224: settlement moves a charge's status only out of `pending` (`settleCharge` updates only
+    -- `WHERE status = 'pending'`; a refund is recorded by the application, paid to refunded). So a
+    -- paid, failed or refunded charge cannot be walked back to pending and paid again, which would
+    -- get round the rule below.
+    IF NEW.status IS DISTINCT FROM OLD.status AND OLD.status IS DISTINCT FROM 'pending'
+       AND NOT pg_has_role(current_user, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), 'USAGE') THEN
+      RAISE EXCEPTION 'settlement moves a charge''s status only out of pending (OD-37)'
         USING ERRCODE = '42501';
     END IF;
     -- 0224: a paid charge set aside or superseded stays so, for settlement too (an operator

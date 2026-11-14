@@ -171,7 +171,8 @@ UP_ENTERED=false
 #     no members) owns exactly the three usage functions with exactly their grantees; a pack's
 #     credit time is written by usage_credit_pack alone (0216), which credits exactly the unit,
 #     quantity and meter row the charge bought, derived in the database, for an amount that is its
-#     price, and settlement cannot put a set-aside paid charge back (0224);
+#     price; settlement moves a charge's status only out of pending and cannot put a set-aside
+#     paid charge back (0224);
 #   * settlement does not act with rekoda_app's rights: it holds exactly the reads and the column
 #     writes listed (never a charge insert, a plan, a price, a credit time or a job's kind or
 #     payload), no default privilege, and the queue is split by kind between it and the worker (0217);
@@ -387,7 +388,7 @@ SMOKE_0196_SQL="SELECT
         LIKE '%c.pack_id IS NULL%v_source := coalesce(c.pricing_source, (SELECT mode FROM public.billing_pricing_source))%IF v_source = ''catalogue'' THEN%FROM public.usage_packs p%p_n::bigint IS DISTINCT FROM v_n%c.amount_k IS DISTINCT FROM pk.price_minor::bigint * c.quantity%c.paid_amount_k < c.amount_k%usage_meter_row_at(%to_char(now() AT TIME ZONE ''Africa/Lagos'', ''YYYY-MM''), p_unit, now())%'
   AND (SELECT prosrc FROM pg_proc
         WHERE oid = to_regprocedure('rekoda_private.subscription_charges_settlement_guard()'))
-        LIKE '%0224: a paid charge set aside or superseded stays so, for settlement too%'
+        LIKE '%usage_credit_pack (0216) runs as rekoda_usage_writer%IF NEW.status IS DISTINCT FROM OLD.status AND OLD.status IS DISTINCT FROM ''pending''%settlement moves a charge''''s status only out of pending%a paid charge set aside or superseded stays so, for settlement too%IF OLD.status IN (''paid'', ''refunded'')%OR (OLD.superseded_at IS NOT NULL AND NEW.superseded_at IS NULL))%AND NOT pg_has_role(current_user, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), ''USAGE'') THEN%a paid charge set aside cannot be put back (OD-37)%'
   AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('public.usage_refund(uuid,uuid,text,integer)'))
         LIKE '%closed_at IS NOT NULL%event_id IS NULL AND r.created_at < now() - interval ''15 minutes''%'
   AND (SELECT prosrc FROM pg_proc
