@@ -11,6 +11,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import {
   LOCK_CLASS,
   withAdvisoryLock,
+  withBusiness,
   type Db,
   type LockClient,
   type TenantDb,
@@ -519,6 +520,29 @@ export async function markFailed(
   return { state };
 }
 
+/**
+ * A dying job's payload, read under its own business's pin and only where that business owns it
+ * (final review of PR #432): the reclaim crosses tenants to move coordination columns, never to
+ * read what a tenant's job carries. Pins the transaction (savepoint) it runs in.
+ */
+async function pinnedPayload(tx: Queryable, jobId: string, businessId: string): Promise<unknown> {
+  await tx.execute(sql`SELECT set_config('app.business_id', ${businessId}, true)`);
+  const rows = await tx.execute<{ payload: unknown }>(sql`
+    SELECT payload FROM jobs
+    WHERE id = ${jobId}::uuid
+      AND business_id = nullif(current_setting('app.business_id', true), '')::uuid`);
+  return [...rows][0]?.payload ?? null;
+}
+
+interface ReclaimedRow extends Record<string, unknown> {
+  id: string;
+  business_id: string;
+  kind: string;
+  attempts: number;
+  state: string;
+  failure_category: string | null;
+}
+
 interface DyingRow extends Record<string, unknown> {
   id: string;
   business_id: string;
@@ -561,7 +585,7 @@ export async function reclaimStalled(db: Db, olderThanMs = 300_000): Promise<num
   /* One transaction: every payment or billing job this pass sends to `dead` writes its dead-job
    * record in the same commit (OWN-73, OWN-76). `recordDeath` pins each job's own tenant. */
   return db.transaction(async (tx) => {
-    const rows = await tx.execute<DyingRow>(sql`
+    const rows = await tx.execute<ReclaimedRow>(sql`
       UPDATE jobs SET
         state      = CASE WHEN ${exhausted} THEN 'dead' ELSE 'pending' END,
         locked_at  = NULL,
@@ -579,15 +603,19 @@ export async function reclaimStalled(db: Db, olderThanMs = 300_000): Promise<num
         updated_at = now()
       WHERE state = 'running'
         AND locked_at < now() - make_interval(secs => ${olderThanMs / 1000})
-      RETURNING id, business_id, kind, payload, attempts, state, failure_category
+      -- Coordination columns only: what a job carries is read below, under its own tenant's pin.
+      RETURNING id, business_id, kind, attempts, state, failure_category
     `);
     const reclaimed = [...rows];
     /* Each record in its own savepoint: one that fails (a transient lock conflict) rolls back
      * only itself, not the whole cross-tenant pass. Its job is already dead in this transaction,
      * so a failure is re-thrown: losing the record would be a silent dead job. */
     for (const row of reclaimed) {
-      if (row.state === 'dead') {
-        await tx.transaction((savepoint) => deadJobs.recordDeath(savepoint, dyingJob(row)));
+      if (row.state === 'dead' && deadJobs.isDeadJobKind(row.kind) && row.business_id) {
+        await tx.transaction(async (savepoint) => {
+          const payload = await pinnedPayload(savepoint, row.id, row.business_id);
+          await deadJobs.recordDeath(savepoint, dyingJob({ ...row, payload }));
+        });
       }
     }
     return reclaimed.length;
@@ -600,41 +628,65 @@ export async function reclaimStalled(db: Db, olderThanMs = 300_000): Promise<num
  * A job that died before migration 0194, or under a worker still running the old code during a
  * rollout, has no record, so it would sit dead with no merchant notice, no operator item and no
  * recovery. This pass, run beside the reclaim, gives each one the same record a death writes now.
+ *
+ * It crosses tenants only to DISCOVER ids (`dead_job_unrecorded_candidates`, 0225: worker-only,
+ * job id and business id, nothing else; ADR 0035 Amendment 1). Each candidate is then re-read,
+ * re-checked and recorded by `enrolDeath` in its own transaction under its own business's pin, so
+ * a payload is never read outside the tenant that owns it and one business's failure rolls back
+ * that job alone. The failures are reported together after every other candidate has been tried.
  * `recordDeath` is idempotent per job, and a job an operator already closed has a row, so it is
- * never enrolled twice. Bounded per pass; one savepoint per job.
+ * never enrolled twice. Bounded per pass.
  */
 export async function enrolUnrecordedDeaths(db: Db, limit = 100): Promise<number> {
-  return db.transaction(async (tx) => {
+  const candidates = [
+    ...(await db.execute<{ job_id: string; business_id: string }>(
+      sql`SELECT job_id, business_id FROM dead_job_unrecorded_candidates(${limit}::int)`,
+    )),
+  ];
+  let enrolled = 0;
+  let failed = 0;
+  for (const candidate of candidates) {
+    try {
+      if (await enrolDeath(db, candidate.job_id, candidate.business_id)) enrolled += 1;
+    } catch {
+      /* Not re-thrown yet: the other businesses' candidates still run. Nothing about the failure
+       * (its message may quote a row) is carried out of here but the count. */
+      failed += 1;
+    }
+  }
+  if (failed > 0) {
+    throw new Error(`dead-job enrolment failed for ${failed} dead job(s); ${enrolled} enrolled`);
+  }
+  return enrolled;
+}
+
+/**
+ * Enrol one unrecorded death, under its own business's pin. False (and nothing read or written)
+ * when either id is not a UUID, or when the job is not, under that pin, a dead payment or billing
+ * job without a record (another pass or a recovery took it, or it is another business's job).
+ */
+export async function enrolDeath(db: Db, jobId: string, businessId: string): Promise<boolean> {
+  if (!UUID_TEXT.test(jobId) || !UUID_TEXT.test(businessId)) return false;
+  return withBusiness(db, businessId, async (tx) => {
     const rows = await tx.execute<DyingRow>(sql`
       SELECT j.id, j.business_id, j.kind, j.payload, j.attempts, j.state, j.failure_category
       FROM jobs j
-      WHERE j.state = 'dead' AND j.kind IN ('payment.process', 'billing.process')
-        AND j.business_id IS NOT NULL
+      WHERE j.id = ${jobId}::uuid
+        AND j.business_id = nullif(current_setting('app.business_id', true), '')::uuid
+        AND j.state = 'dead' AND j.kind IN ('payment.process', 'billing.process')
         AND NOT dead_job_has_record(j.id)
-        -- Work an operator already closed by resolving its event (before 0194's guard), or whose
-        -- event was processed another way (a verify or intent sweep booked it), is not reopened:
-        -- no stale merchant notice and no operator item for a settled job. The id is compared as
-        -- lower-cased text (a uuid prints lower-case; a payload may carry any case) and never cast,
-        -- so a malformed payload value matches nothing and cannot throw.
-        AND NOT EXISTS (SELECT 1 FROM external_events e
-                         WHERE e.id::text = lower(j.payload->>'eventId') AND e.business_id = j.business_id
-                           AND (e.resolved_at IS NOT NULL OR e.processed_at IS NOT NULL))
-      ORDER BY j.updated_at, j.id
-      LIMIT ${limit}
-      -- Held until this pass commits: a recovery requeueing the job waits, and a second pass skips it.
+      -- Held until this job's record commits: a recovery requeueing it waits, a second pass skips it.
       FOR UPDATE OF j SKIP LOCKED
     `);
-    const found = [...rows];
-    for (const row of found) {
-      /* Insert only: a record that already exists (another pass, or a recovery since) is never
-       * reopened by a stale candidate. */
-      await tx.transaction((savepoint) =>
-        deadJobs.recordDeath(savepoint, dyingJob(row), { enrolOnly: true }),
-      );
-    }
-    return found.length;
+    const row = [...rows][0];
+    if (!row) return false;
+    /* Insert only: a record that already exists is never reopened by a stale candidate. */
+    await deadJobs.recordDeath(tx, dyingJob(row), { enrolOnly: true });
+    return true;
   });
 }
+
+const UUID_TEXT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface JobRow {
   id: string;

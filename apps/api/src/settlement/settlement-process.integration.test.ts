@@ -34,6 +34,7 @@ import {
 import {
   applicationDb,
   migrate,
+  ownerDb,
   requireUrls,
   setPricingSource,
   settlementDb,
@@ -58,6 +59,7 @@ import { sealPayload } from '../privacy/payload-vault.js';
 import { ReplySender } from '../replies/reply.service.js';
 import { RiskPolicyService } from '../risk/risk-policy.service.js';
 import { startSettlementProcess } from '../settlement-main.js';
+import { buildSettlementRunner } from './runner.js';
 
 const RUN_SALT = randomBytes(16).toString('hex');
 const testKey = (label: string) =>
@@ -352,6 +354,32 @@ describe('the settlement process (OD-51.2)', () => {
     await expect(startSettlementProcess(settlementEnv(), provider)).rejects.toThrow(
       /pricing source/i,
     );
+  });
+});
+
+describe('only the worker enrols an unrecorded death (0225)', () => {
+  it('the settlement runner does not run the worker-only discovery; the worker enrols its kind', async () => {
+    const businessId = await seedBusiness();
+    const reference = await openPack(businessId);
+    await paymentArrives(reference);
+    /* A billing job that died before 0194: dead, with no record. Staged as the owner. */
+    await ownerDb().execute(sql`UPDATE jobs SET state = 'dead', attempts = max_attempts
+      WHERE business_id = ${businessId}::uuid AND kind = 'billing.process'`);
+    const records = async () =>
+      [
+        ...(await ownerDb().execute<{ n: number }>(
+          sql`SELECT count(*)::int AS n FROM dead_job_exceptions WHERE business_id = ${businessId}::uuid`,
+        )),
+      ][0]!.n;
+
+    const settlement = buildSettlementRunner(settlementDb(), { provider, config });
+    expect(await settlement.reclaim()).toBe(0);
+    expect(await records()).toBe(0);
+    /* Not by policy alone: the function refuses the settlement credential outright. */
+    await expect(jobsRepo.enrolUnrecordedDeaths(settlementDb())).rejects.toThrow();
+
+    expect(await buildRunner(workerDb, appDb, workerDeps).reclaim()).toBe(0);
+    expect(await records()).toBe(1);
   });
 });
 

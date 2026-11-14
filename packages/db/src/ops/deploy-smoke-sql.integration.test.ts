@@ -429,6 +429,28 @@ describe('the pre-start database smoke, executed', () => {
         )![0]
         .replaceAll('a link is withdrawn only while it is pending (OD-51)', 'withdrawn'),
     ],
+    // 0225: the enrolment discovery is worker-only and returns ids only.
+    [
+      'the enrolment discovery executable by settlement',
+      'GRANT EXECUTE ON FUNCTION dead_job_unrecorded_candidates(integer) TO rekoda_settlement',
+    ],
+    [
+      'the enrolment discovery executable by the application',
+      'GRANT EXECUTE ON FUNCTION dead_job_unrecorded_candidates(integer) TO rekoda_app',
+    ],
+    [
+      'the enrolment discovery returning a payload',
+      `DROP FUNCTION dead_job_unrecorded_candidates(integer);
+       CREATE FUNCTION dead_job_unrecorded_candidates(p_limit integer)
+       RETURNS TABLE (job_id uuid, business_id uuid, payload jsonb) LANGUAGE sql SECURITY DEFINER
+       SET search_path = pg_catalog, public, pg_temp
+       AS 'SELECT id, business_id, payload FROM public.jobs LIMIT p_limit';
+       GRANT EXECUTE ON FUNCTION dead_job_unrecorded_candidates(integer) TO rekoda_worker`,
+    ],
+    [
+      '0225 not recorded in the ledger',
+      "DELETE FROM rekoda_migrations WHERE tag = '0225_dead_job_enrolment_discovery'",
+    ],
     [
       '0224 not recorded in the ledger',
       "DELETE FROM rekoda_migrations WHERE tag = '0224_pack_credit_derives_from_the_charge'",

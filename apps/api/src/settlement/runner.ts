@@ -37,6 +37,8 @@ export function buildSettlementRunner(
     workerId: `settlement-${process.pid}`,
     ...options,
     claim: { only: jobsRepo.SETTLEMENT_JOB_KINDS },
+    /* The worker enrols unrecorded deaths of these kinds too (0225 is worker-only). */
+    enrolDeaths: false,
   });
   runner.register(
     PROCESS_BILLING_CHARGE,

@@ -68,6 +68,12 @@ export interface RunnerOptions {
    * settlement kinds; the settlement runner claims ONLY those. Absent means any kind.
    */
   claim?: jobsRepo.ClaimFilter;
+  /**
+   * Whether this runner's reclaim pass also enrols unrecorded deaths (OWN-73 cutover). Only the
+   * general worker does (default true): the discovery function is worker-only (0225, ADR 0035
+   * Amendment 1), and the worker records the deaths of the settlement kinds too (Amendment 5).
+   */
+  enrolDeaths?: boolean;
 }
 
 /**
@@ -96,6 +102,7 @@ export class JobRunner {
   private reclaimInFlight: Promise<void> | null = null;
   private loops: Promise<void>[] = [];
   private readonly claim: jobsRepo.ClaimFilter;
+  private readonly enrolDeaths: boolean;
   /** A second runner driven with this one (development and tests only): see `attach`. */
   private companion: JobRunner | null = null;
 
@@ -111,6 +118,7 @@ export class JobRunner {
     this.workerId = options.workerId ?? `worker-${process.pid}`;
     this.concurrency = Math.max(1, options.concurrency ?? 1);
     this.claim = options.claim ?? {};
+    this.enrolDeaths = options.enrolDeaths ?? true;
   }
 
   /**
@@ -255,9 +263,17 @@ export class JobRunner {
   async reclaim(): Promise<number> {
     const n = await jobsRepo.reclaimStalled(this.workerDb, this.stalledAfterMs);
     if (n > 0) this.log.warn(`reclaimed ${n} stalled job(s)`);
-    /* Deaths with no record (from before 0194, or an old worker mid-rollout) get one here. */
-    const enrolled = await jobsRepo.enrolUnrecordedDeaths(this.workerDb);
-    if (enrolled > 0) this.log.warn(`enrolled ${enrolled} dead payment or billing job(s)`);
+    /* Deaths with no record (from before 0194, or an old worker mid-rollout) get one here. A
+     * failure (some business's record could not be written; the rest were) is logged and does not
+     * stop the companion's reclaim below; the next pass retries what is left. */
+    if (this.enrolDeaths) {
+      try {
+        const enrolled = await jobsRepo.enrolUnrecordedDeaths(this.workerDb);
+        if (enrolled > 0) this.log.warn(`enrolled ${enrolled} dead payment or billing job(s)`);
+      } catch (error: unknown) {
+        this.log.warn(`dead-job enrolment: ${redactForLog(describeFailure(error))}`);
+      }
+    }
     /* Each runner reclaims what its own credential may touch: the database hides the settlement
      * kinds' running jobs from the worker and every other kind from settlement (0217). */
     return n + (this.companion ? await this.companion.reclaim() : 0);

@@ -174,6 +174,8 @@ UP_ENTERED=false
 #     price; a superseded charge only when it was a withdrawn link and its purchase is not credited
 #     yet; settlement moves a charge's status only out of pending, cannot put a set-aside paid
 #     charge back, and marks a link withdrawn only while it is pending (0224);
+#   * the cutover enrolment of unrecorded dead jobs discovers ids only, through a definer function
+#     only the worker may execute (0225);
 #   * settlement does not act with rekoda_app's rights: it holds exactly the reads and the column
 #     writes listed (never a charge insert, a plan, a price, a credit time or a job's kind or
 #     payload), no default privilege, and the queue is split by kind between it and the worker (0217);
@@ -202,7 +204,15 @@ SMOKE_0196_SQL="SELECT
                   '0221_operator_writes_only_through_its_functions',
                   '0222_usage_entitlement_in_the_database',
                   '0223_settlement_scope_and_dead_job_requeue',
-                  '0224_pack_credit_derives_from_the_charge')) = 24
+                  '0224_pack_credit_derives_from_the_charge',
+                  '0225_dead_job_enrolment_discovery')) = 25
+  AND (SELECT p.prosecdef AND p.proconfig @> ARRAY['search_path=pg_catalog, public, pg_temp']
+         AND pg_get_function_result(p.oid) = 'TABLE(job_id uuid, business_id uuid)'
+       FROM pg_proc p WHERE p.oid = to_regprocedure('public.dead_job_unrecorded_candidates(integer)'))
+  AND has_function_privilege('rekoda_worker', 'public.dead_job_unrecorded_candidates(integer)', 'EXECUTE')
+  AND NOT has_function_privilege('rekoda_app', 'public.dead_job_unrecorded_candidates(integer)', 'EXECUTE')
+  AND NOT has_function_privilege('rekoda_settlement', 'public.dead_job_unrecorded_candidates(integer)', 'EXECUTE')
+  AND NOT has_function_privilege('rekoda_billing_operator', 'public.dead_job_unrecorded_candidates(integer)', 'EXECUTE')
   AND (SELECT string_agg(column_name, ',' ORDER BY column_name)
          FROM information_schema.column_privileges
         WHERE grantee = 'rekoda_billing_operator' AND table_schema = 'public'
