@@ -73,16 +73,19 @@ session never starts a capability from zero.
   every business-owned table; an RLS exemption register enforced by tests.
 - **Database principals** (ADR 0022, ADR 0035 Amendments 2 to 5, OWN-85 to OWN-91). The
   migration owner (`rekoda_owner`; an administrative trust boundary, not an application
-  role) plus four LOGIN roles, each held by one process: `rekoda_app` (API),
-  `rekoda_worker` (worker), `rekoda_settlement` (settlement process: records Rekoda's own
-  payments, applies paid plans, credits packs) and `rekoda_billing_operator` (operator
-  process: plan changes). Neither privileged principal is a member of `rekoda_app` or of the
-  other, and each process refuses a credential that belongs to another. Four NOLOGIN roles
-  exist only to own `SECURITY DEFINER` functions or hold a narrow grant:
-  `rekoda_plan_writer` (the only writer of `businesses.plan` and the cycle fields),
-  `rekoda_usage_writer` (the only writer of `usage_counters` and `usage_reservations`),
-  `rekoda_provenance_owner` (payment provenance, 0058) and `rekoda_operator` (0058's operator
-  grant). A restore must keep their ownership (never `pg_restore --no-owner`). The exact
+  role) plus four LOGIN roles. `rekoda_app` and `rekoda_worker` are held by the API and the
+  worker processes alike (both load `.env`; the worker does its work on the application
+  connection, and the ops routes read on the worker credential). `rekoda_settlement`
+  (records Rekoda's own payments, applies paid plans, credits packs) and
+  `rekoda_billing_operator` (plan changes) are each held only by their own process
+  (`settlement`, `operator`): the API and worker refuse them in production, neither is a
+  member of `rekoda_app` or of the other, and each refuses a credential that belongs to
+  another process. Four NOLOGIN roles exist only to own `SECURITY DEFINER` functions or
+  hold a narrow grant: `rekoda_plan_writer` (the only writer of `businesses.plan` and the
+  cycle fields), `rekoda_usage_writer` (the only writer of `usage_counters` and
+  `usage_reservations`), `rekoda_provenance_owner` (NOLOGIN with BYPASSRLS: owns the
+  payment-provenance functions, 0058) and `rekoda_operator` (0058's role for running the
+  provenance rollback, granted to a person). A restore must keep their ownership (never `pg_restore --no-owner`). The exact
   grants and owners are pinned by the pre-start smoke in `scripts/deploy-staging.sh` and the
   `packages/db/src/{billing,ops,tenancy}` boundary suites.
 - **WhatsApp channel:** Meta Cloud API webhook (signature, verify token,
@@ -139,12 +142,14 @@ session never starts a capability from zero.
    worker-only `SECURITY DEFINER` function, followed by tenant-scoped reads and writes. A
    fourth (OWN-85, ADR 0035 Amendment 2): approved operator work lists (dead payment and
    billing jobs, blocked renewals), each a worker-only, read-only, fixed-column, bounded
-   (at most 200 rows) `SECURITY DEFINER` function reached from an `ops:read` route; reading
-   authorises nothing, and every recovery or resolution runs under `withBusiness()` for the
-   record's own business with its own scope and an audit event. The queue is split by job
-   kind (ADR 0035 Amendment 5): `rekoda_settlement` claims only `billing.process` and
-   `billing.apply_no_charge` jobs, the worker every other kind; that claim is coordination of
-   job rows, never a read of tenant records. None of these exceptions grants general access
+   (at most 200 rows) `SECURITY DEFINER` function reached from an `ops:read` route or the
+   worker's own pass (the blocked-renewal close pass has no route); reading authorises
+   nothing, and every recovery or resolution runs under `withBusiness()` for the record's
+   own business with its own scope and an audit event. The queue is split by job kind (ADR
+   0035 Amendment 5): `rekoda_settlement` claims only `billing.process` and
+   `billing.apply_no_charge` jobs, the worker every other kind (for those two it may only
+   requeue a dead job or record its death); either claim is coordination of job rows, never
+   a read of tenant records. None of these exceptions grants general access
    to tenant-owned records, payloads or merchant data, and a new cross-tenant read needs its
    own review and its own line in ADR 0035.
 4. **Customer PII lives in the vault** and travels as tokens; rehydration

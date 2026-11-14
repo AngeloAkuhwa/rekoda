@@ -698,13 +698,15 @@ This release starts two more services. Before deploying:
      enqueued with its full retry budget, and every application requeue of a dead job is due now
      with exactly one more attempt (0223);
    - a pack charge credits exactly the unit, quantity and meter row it bought, derived in the
-     database (0224);
+     database, for an amount that is its price, and settlement cannot put a set-aside paid charge
+     back (0224);
    - the ledger carries the tags 0213 to 0224.
 
 4. 0223 is not a compatibility break either: it narrows only the settlement process this release
    introduces, and an application write no release makes. It ships in the same stopped window.
    Nor is 0224: it keeps `usage_credit_pack`'s signature and grants and refuses only a credit
-   that differs from what the charge bought, which this release's settlement never asks for.
+   that differs from what the charge bought, which this release's settlement never asks for, and
+   it stops settlement clearing a paid charge's set-aside, which no release does.
 
    Two checks before the window, both read-only:
    - `PAYSTACK_SECRET_KEY` is set in `.env` (a test key on staging). The settlement process boots

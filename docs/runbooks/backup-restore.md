@@ -133,8 +133,10 @@ pg_restore -d "$SCRATCH_URL" restore.dump
 # Must print 0 (each writer role owns its definer functions again):
 psql "$SCRATCH_URL" -Atc "SELECT count(*) FROM (VALUES ('0058_payment_provenance','rekoda_provenance_owner'),('0196_plan_fields_guard','rekoda_plan_writer'),('0216_usage_meter_boundary','rekoda_usage_writer')) AS e(tag, role) WHERE EXISTS (SELECT 1 FROM rekoda_migrations m WHERE m.tag = e.tag) AND NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_roles r ON r.oid = p.proowner WHERE p.prosecdef AND r.rolname = e.role);"
 # Must print nothing: every function has the owner the archive gave it (the drill's full check).
+# Run from the checkout (/opt/rekoda on the host), with restore.dump given by its full path.
 . scripts/lib/backup-common.sh
 pg_restore -l restore.dump | backup_toc_function_owners > owners.expected
+[ -s owners.expected ] || echo "the archive lists no function: do not trust this restore" >&2
 psql "$SCRATCH_URL" -At -c "$BACKUP_FUNCTION_OWNERS_SQL" | LC_ALL=C sort > owners.restored
 backup_function_owner_mismatches owners.expected owners.restored
 )
