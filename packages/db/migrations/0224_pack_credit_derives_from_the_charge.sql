@@ -19,8 +19,8 @@
 --   * the quantity: that version's quantity x the packs bought (`subscription_charges.quantity`),
 --     voice counted in seconds (`UNIT_SCALE`, as `usage_entitlement` counts it);
 --   * the amount: the charge's `amount_k` must be that version's price x the packs bought, so a
---     charge opened for many packs at a token amount credits nothing; and a recorded payment
---     (`paid_amount_k`) must cover it;
+--     charge opened for many packs at a token amount credits nothing; and a payment must be
+--     recorded (`paid_amount_k`, never NULL) and cover it;
 --   * the meter row: this Lagos month, or the trial row where `rekoda_private.usage_meter_row_at`
 --     meters the unit on it. Last month (even in its first seven days), a future month, an old
 --     month or the trial row of a paid plan is refused.
@@ -172,8 +172,14 @@ BEGIN
   END IF;
 
   -- A recorded payment covers the amount (an overpayment still buys the pack; an underpayment never
-  -- settles, and a charge marked paid for less is refused here as well).
-  IF c.paid_amount_k IS NOT NULL AND c.paid_amount_k < c.amount_k THEN
+  -- settles, and a charge marked paid for less is refused here as well). Settlement records the
+  -- verified amount on every pack charge it pays (`applySettledCharge` from the Paystack verify),
+  -- so a paid pack charge with no amount recorded was not paid through it and credits nothing.
+  IF c.paid_amount_k IS NULL THEN
+    RAISE EXCEPTION 'usage_credit_pack: the credit does not match the pack this charge bought (no payment amount is recorded)'
+      USING ERRCODE = '42501';
+  END IF;
+  IF c.paid_amount_k < c.amount_k THEN
     RAISE EXCEPTION 'usage_credit_pack: the credit does not match the pack this charge bought (paid less than its amount)'
       USING ERRCODE = '42501';
   END IF;

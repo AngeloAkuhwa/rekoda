@@ -113,12 +113,14 @@ const open = (
     });
   });
 
-const settle = (businessId: string, reference: string) =>
+/** `paidAmountK`: the amount the provider verified, as the settlement job always passes it. */
+const settle = (businessId: string, reference: string, paidAmountK?: number) =>
   withBusiness(settlementDb(), businessId, (tx) =>
     applySettledCharge(tx, {
       businessId,
       reference,
       providerReference: `ps_${reference}`,
+      ...(paidAmountK === undefined ? {} : { paidAmountK }),
       when: new Date(),
       config,
     }),
@@ -580,6 +582,6 @@ describe('a charge that is still current settles normally', () => {
     await open(businessId, 'add_on', 'RKD-PACK-STALE-1', null);
     await operator(businessId, 'integrate');
 
-    expect(await settle(businessId, 'RKD-PACK-STALE-1')).toBe('applied');
+    expect(await settle(businessId, 'RKD-PACK-STALE-1', 250_000)).toBe('applied');
   });
 });

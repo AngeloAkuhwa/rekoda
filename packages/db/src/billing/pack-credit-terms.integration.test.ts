@@ -41,6 +41,7 @@ async function packCharge(
     pricingSource?: 'catalogue' | 'constants' | null;
     /** Default: the pack's catalogue price x the packs bought, as the application opens it. */
     amountK?: number;
+    /** Default: the amount, as settlement records a verified payment (`null`: none recorded). */
     paidAmountK?: number | null;
     unapplied?: boolean;
     superseded?: boolean;
@@ -68,7 +69,13 @@ async function packCharge(
        unapplied_at, unapplied_reason, superseded_at, abandoned_at, purchase_id,
        failed_at, refunded_at, refunded_amount_k)
     VALUES (${businessId}::uuid, 'add_on', NULL, ${packId}, ${quantity}, ${amount},
-      ${spec.paidAmountK ?? null}::bigint, ${status}, ${reference}, now(), now() + interval '30 days',
+      ${
+        spec.paidAmountK === undefined
+          ? status === 'paid' || status === 'refunded'
+            ? amount
+            : sql`NULL`
+          : sql`${spec.paidAmountK}::bigint`
+      }, ${status}, ${reference}, now(), now() + interval '30 days',
       ${status === 'paid' || status === 'refunded' ? sql`now()` : sql`NULL`},
       ${spec.pricedAt ?? null}::timestamptz,
       ${spec.pricingSource === undefined ? 'catalogue' : spec.pricingSource}, 'monthly',
@@ -256,6 +263,17 @@ describe('0224: the amount paid for is bound to the units credited', () => {
     expect(await credit(businessId, exact, month, 'AI_ACTIONS', 100)).toBe(true);
     // An overpayment still buys the pack (the excess is visible on the charge, G-107).
     expect(await credit(businessId, over, month, 'AI_ACTIONS', 100)).toBe(true);
+  });
+
+  it('refuses a paid charge with no recorded payment amount, and writes nothing', async () => {
+    const businessId = await paidBusiness();
+    const month = await thisMonth();
+    const unrecorded = await packCharge(businessId, { paidAmountK: null });
+    expect(await outcome(credit(businessId, unrecorded, month, 'AI_ACTIONS', 100))).toMatch(
+      /^42501 .*no payment amount is recorded/,
+    );
+    expect(await counters(businessId)).toEqual([]);
+    expect(await creditedAt(unrecorded)).toBeNull();
   });
 
   it('settlement cannot put a set-aside or superseded paid charge back to credit it', async () => {

@@ -346,6 +346,7 @@ describe('a charge the provider confirmed', () => {
         businessId,
         reference: 'RKD-PACK-20260815-BBBBBB',
         providerReference: 'ps_2',
+        paidAmountK: 250_000,
         when: now,
         config,
       }),

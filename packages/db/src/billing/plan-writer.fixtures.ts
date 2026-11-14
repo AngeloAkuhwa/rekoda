@@ -110,7 +110,8 @@ export interface ChargeSpec {
 let chargeSeq = 0;
 /** A subscription charge in any state, written as the table owner: a fixture. No runtime role
  * inserts a charge that already carries a payment (the application opens pending ones, and
- * settlement settles them but opens none, 0217). */
+ * settlement settles them but opens none, 0217). A paid one records the amount paid, as
+ * settlement does from the Paystack verify. */
 export async function seedCharge(businessId: string, spec: ChargeSpec = {}): Promise<string> {
   chargeSeq += 1;
   const reference = `RKD-SUB-OD37-${String(chargeSeq).padStart(6, '0')}`;
@@ -119,11 +120,12 @@ export async function seedCharge(businessId: string, spec: ChargeSpec = {}): Pro
   const status = spec.status ?? 'paid';
   await ownerDb.execute(sql`
       INSERT INTO subscription_charges
-        (business_id, kind, plan, pack_id, amount_k, status, reference, period_start, period_end,
-         paid_at, applied_period_start, applied_period_end, unapplied_at, unapplied_reason,
+        (business_id, kind, plan, pack_id, amount_k, paid_amount_k, status, reference,
+         period_start, period_end, paid_at, applied_period_start, applied_period_end, unapplied_at, unapplied_reason,
          superseded_at, billing_interval)
       VALUES (${businessId}::uuid, ${kind}, ${plan},
         ${kind === 'add_on' ? 'messages_100' : null}, ${kind === 'add_on' ? 250_000 : 1000},
+        ${status === 'paid' ? (kind === 'add_on' ? 250_000 : 1000) : null}::bigint,
         ${status}, ${reference},
         now(), now() + interval '30 days',
         ${status === 'paid' ? sql`now()` : sql`NULL`},
