@@ -467,6 +467,38 @@ describe('the pre-start database smoke, executed', () => {
         'utf8',
       ).match(/CREATE OR REPLACE FUNCTION public\.usage_bind_event\([\s\S]*?END \$\$;/)![0],
     ],
+    ['the worker reading job payloads again', 'GRANT SELECT ON jobs TO rekoda_worker'],
+    [
+      'job_payload executable by the application',
+      'GRANT EXECUTE ON FUNCTION job_payload(uuid) TO rekoda_app',
+    ],
+    [
+      'job_payload ignoring the tenant pin',
+      `CREATE OR REPLACE FUNCTION public.job_payload(p_job uuid) RETURNS jsonb LANGUAGE sql STABLE
+       SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp
+       AS 'SELECT payload FROM public.jobs WHERE id = p_job'`,
+    ],
+    [
+      'the enrolment discovery back at 0225 (poison candidates starve the page)',
+      readFileSync(
+        new URL('../../migrations/0225_dead_job_enrolment_discovery.sql', import.meta.url),
+        'utf8',
+      ).match(
+        /CREATE OR REPLACE FUNCTION public\.dead_job_unrecorded_candidates\([\s\S]*?END \$\$;/,
+      )![0],
+    ],
+    [
+      'the application writing enrolment failures directly',
+      'GRANT INSERT ON dead_job_enrolment_failures TO rekoda_app',
+    ],
+    [
+      '0229 not recorded in the ledger',
+      "DELETE FROM rekoda_migrations WHERE tag = '0229_dead_job_enrolment_dead_letter'",
+    ],
+    [
+      '0228 not recorded in the ledger',
+      "DELETE FROM rekoda_migrations WHERE tag = '0228_worker_reads_no_payload_across_tenants'",
+    ],
     [
       '0227 not recorded in the ledger',
       "DELETE FROM rekoda_migrations WHERE tag = '0227_paid_launch_gate'",

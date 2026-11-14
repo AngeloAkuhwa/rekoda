@@ -294,7 +294,8 @@ describe('a worker that dies mid-job', () => {
       lastError: 'reclaimed past the last attempt: its lease expired',
       failureCategory: 'lease_expired_after_handler_error',
     });
-    const raw = await workerDb.execute<{ row: string }>(
+    /* The whole raw row, read as the owner: the worker may not read a whole job row since 0228. */
+    const raw = await ownerDb().execute<{ row: string }>(
       sql`SELECT row_to_json(j)::text AS row FROM jobs j WHERE business_id = ${businessId}::uuid`,
     );
     expect([...raw][0]?.row).not.toMatch(/sk_live_|xxxxxxxx|provider said|2348040000001/);

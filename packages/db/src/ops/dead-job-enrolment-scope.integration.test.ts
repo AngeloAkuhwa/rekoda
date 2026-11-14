@@ -193,7 +193,10 @@ describe('0225: each death is enrolled in its own business, independently', () =
     }
     expect(await recordsOf(healthy)).toEqual([{ jobId: healthyJob, businessId: healthy }]);
     expect(await recordsOf(failing)).toEqual([]);
-    /* The failing one is still a candidate, and enrols once the cause is gone. */
+    /* The failing one is still a candidate: once its backoff has passed (0229) and the cause is
+     * gone, it enrols. */
+    await ownerDb().execute(sql`UPDATE dead_job_enrolment_failures
+      SET next_attempt_at = now() - interval '1 second' WHERE business_id = ${failing}::uuid`);
     expect(await jobsRepo.enrolUnrecordedDeaths(workerDb)).toBe(1);
     expect(await recordsOf(failing)).toHaveLength(1);
   });

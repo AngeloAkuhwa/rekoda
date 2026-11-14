@@ -128,7 +128,7 @@ fail() {
 PHASE=checks
 # Migrations the previous release cannot run against (OD-48): the api and worker are stopped before
 # any of them is applied, and the old release is never restarted against a database that has one.
-COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary 0202_settlement_and_operator_principals 0203_plan_duration_rules 0204_external_events_worker_least_privilege 0205_charge_terms_belong_to_settlement 0206_paid_charge_bound_to_its_cycle 0207_operator_standard_periods 0209_settlement_verifies_the_price 0210_worker_least_privilege 0211_operator_principal_least_privilege 0212_closeout_review_fixes 0216_usage_meter_boundary 0217_settlement_isolation 0218_usage_reservation_closure 0220_job_row_and_grace_review_fixes 0221_operator_writes_only_through_its_functions'
+COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary 0202_settlement_and_operator_principals 0203_plan_duration_rules 0204_external_events_worker_least_privilege 0205_charge_terms_belong_to_settlement 0206_paid_charge_bound_to_its_cycle 0207_operator_standard_periods 0209_settlement_verifies_the_price 0210_worker_least_privilege 0211_operator_principal_least_privilege 0212_closeout_review_fixes 0216_usage_meter_boundary 0217_settlement_isolation 0218_usage_reservation_closure 0220_job_row_and_grace_review_fixes 0221_operator_writes_only_through_its_functions 0228_worker_reads_no_payload_across_tenants'
 BREAKING=
 BREAKING_APPLIED=false
 # Set once migrate has been entered for a release carrying a breaking migration. migrate applies each
@@ -180,6 +180,9 @@ UP_ENTERED=false
 #   * the OWN-92 paid-launch gate: the application cannot reschedule or retry-budget a job, or
 #     insert one that is not new pending work, and a usage reservation binds only to an event of
 #     its business whose job is running (0227);
+#   * the worker reads no job payload across tenants: no SELECT on jobs.payload, and job_payload()
+#     returns one job's payload only under that job's own tenant pin (0228);
+#   * a poison enrolment candidate backs off and is dead-lettered, never starving the rest (0229);
 #   * settlement does not act with rekoda_app's rights: it holds exactly the reads and the column
 #     writes listed (never a charge insert, a plan, a price, a credit time or a job's kind or
 #     payload), no default privilege, and the queue is split by kind between it and the worker (0217);
@@ -211,7 +214,28 @@ SMOKE_0196_SQL="SELECT
                   '0224_pack_credit_derives_from_the_charge',
                   '0225_dead_job_enrolment_discovery',
                   '0226_settlement_holds_no_add_on',
-                  '0227_paid_launch_gate')) = 27
+                  '0227_paid_launch_gate',
+                  '0228_worker_reads_no_payload_across_tenants',
+                  '0229_dead_job_enrolment_dead_letter')) = 29
+  AND has_function_privilege('rekoda_worker', 'public.dead_job_enrolment_failed(uuid,uuid,text)', 'EXECUTE')
+  AND NOT has_function_privilege('rekoda_app', 'public.dead_job_enrolment_failed(uuid,uuid,text)', 'EXECUTE')
+  AND has_function_privilege('rekoda_worker', 'public.dead_job_enrolment_dead_letters(integer,uuid)', 'EXECUTE')
+  AND NOT has_function_privilege('rekoda_app', 'public.dead_job_enrolment_dead_letters(integer,uuid)', 'EXECUTE')
+  AND has_function_privilege('rekoda_app', 'public.dead_job_enrolment_requeue(uuid,uuid,text,text)', 'EXECUTE')
+  AND NOT has_function_privilege('rekoda_worker', 'public.dead_job_enrolment_requeue(uuid,uuid,text,text)', 'EXECUTE')
+  AND NOT has_table_privilege('rekoda_app', 'public.dead_job_enrolment_failures', 'INSERT')
+  AND NOT has_table_privilege('rekoda_worker', 'public.dead_job_enrolment_failures', 'INSERT')
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('public.dead_job_unrecorded_candidates(integer)'))
+        LIKE '%FROM public.dead_job_enrolment_failures f%f.dead_lettered_at IS NOT NULL OR f.next_attempt_at > now()%'
+  AND NOT has_column_privilege('rekoda_worker', 'public.jobs', 'payload', 'SELECT')
+  AND NOT has_table_privilege('rekoda_worker', 'public.jobs', 'SELECT')
+  AND has_column_privilege('rekoda_worker', 'public.jobs', 'business_id', 'SELECT')
+  AND has_function_privilege('rekoda_worker', 'public.job_payload(uuid)', 'EXECUTE')
+  AND NOT has_function_privilege('rekoda_app', 'public.job_payload(uuid)', 'EXECUTE')
+  AND NOT has_function_privilege('rekoda_billing_operator', 'public.job_payload(uuid)', 'EXECUTE')
+  AND (SELECT p.prosecdef AND p.proconfig @> ARRAY['search_path=pg_catalog, public, pg_temp']
+         AND p.prosrc LIKE '%j.business_id = nullif(current_setting(''app.business_id'', true), '''')::uuid%'
+       FROM pg_proc p WHERE p.oid = to_regprocedure('public.job_payload(uuid)'))
   AND (SELECT prosrc FROM pg_proc
         WHERE oid = to_regprocedure('rekoda_private.jobs_application_transition_guard()'))
         LIKE '%no lease and no attempt spent (OWN-92, 0227)%NEW.run_at IS DISTINCT FROM OLD.run_at OR NEW.max_attempts IS DISTINCT FROM OLD.max_attempts%only the worker schedules or retries a job%'

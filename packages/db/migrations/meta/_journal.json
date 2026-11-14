@@ -1597,6 +1597,20 @@
       "when": 1796904000004,
       "tag": "0227_paid_launch_gate",
       "breakpoints": true
+    },
+    {
+      "idx": 228,
+      "version": "7",
+      "when": 1796904000005,
+      "tag": "0228_worker_reads_no_payload_across_tenants",
+      "breakpoints": true
+    },
+    {
+      "idx": 229,
+      "version": "7",
+      "when": 1796904000006,
+      "tag": "0229_dead_job_enrolment_dead_letter",
+      "breakpoints": true
     }
   ]
 }

@@ -385,7 +385,6 @@ export async function claimNext(
     id: string;
     business_id: string;
     kind: string;
-    payload: Record<string, unknown>;
     attempts: number;
     max_attempts: number;
   }>(sql`
@@ -404,16 +403,21 @@ export async function claimNext(
       LIMIT 1
       FOR UPDATE SKIP LOCKED
     )
-    RETURNING id, business_id, kind, payload, attempts, max_attempts
+    RETURNING id, business_id, kind, attempts, max_attempts
   `);
 
   const row = [...rows][0];
   if (!row) return null;
+  /* The claim crosses tenants for coordination columns only; the payload is read under the job's
+   * own pin, through the one function the database allows for it (0228). */
+  const payload = await withBusiness(db, row.business_id, (tx) =>
+    pinnedPayload(tx, row.id, row.business_id),
+  );
   return {
     id: row.id,
     businessId: row.business_id,
     kind: row.kind,
-    payload: row.payload ?? {},
+    payload: (payload as Record<string, unknown> | null) ?? {},
     attempts: row.attempts,
     maxAttempts: row.max_attempts,
   };
@@ -497,7 +501,7 @@ export async function markFailed(
   /* One transaction: a payment or billing job that dies here writes its dead-job record in the
    * same commit as the transition (OWN-73, OWN-76), so neither can exist without the other. */
   const updated = await db.transaction(async (tx) => {
-    const rows = await tx.execute<DyingRow>(sql`
+    const rows = await tx.execute<ReclaimedRow>(sql`
       UPDATE jobs SET
         state      = ${state},
         run_at     = ${exhausted ? sql`run_at` : sql`now() + make_interval(secs => ${delayMs / 1000})`},
@@ -508,10 +512,13 @@ export async function markFailed(
         updated_at = now()
       WHERE id = ${job.id}::uuid
         AND (${claimedBy ?? null}::text IS NULL OR locked_by = ${claimedBy ?? null})
-      RETURNING id, business_id, kind, payload, attempts, state, failure_category
+      RETURNING id, business_id, kind, attempts, state, failure_category
     `);
     const row = [...rows][0];
-    if (row?.state === 'dead') await deadJobs.recordDeath(tx, dyingJob(row));
+    if (row?.state === 'dead' && deadJobs.isDeadJobKind(row.kind) && row.business_id) {
+      const payload = await pinnedPayload(tx, row.id, row.business_id);
+      await deadJobs.recordDeath(tx, dyingJob({ ...row, payload }));
+    }
     return row;
   });
   /* A fenced update that matched nothing means another claim owns the job:
@@ -527,10 +534,10 @@ export async function markFailed(
  */
 async function pinnedPayload(tx: Queryable, jobId: string, businessId: string): Promise<unknown> {
   await tx.execute(sql`SELECT set_config('app.business_id', ${businessId}, true)`);
+  /* `job_payload` (0228) returns it only where the job's business is the pinned one: the worker
+   * holds no SELECT on the column itself. */
   const rows = await tx.execute<{ payload: unknown }>(sql`
-    SELECT payload FROM jobs
-    WHERE id = ${jobId}::uuid
-      AND business_id = nullif(current_setting('app.business_id', true), '')::uuid`);
+    SELECT job_payload(${jobId}::uuid) AS payload`);
   return [...rows][0]?.payload ?? null;
 }
 
@@ -648,10 +655,15 @@ export async function enrolUnrecordedDeaths(db: Db, limit = 100): Promise<number
   for (const candidate of candidates) {
     try {
       if (await enrolDeath(db, candidate.job_id, candidate.business_id)) enrolled += 1;
-    } catch {
+    } catch (error) {
       /* Not re-thrown yet: the other businesses' candidates still run. Nothing about the failure
-       * (its message may quote a row) is carried out of here but the count. */
+       * (its message may quote a row) is carried out of here but the count and its SQLSTATE. The
+       * database applies the retry policy and dead-letters a candidate whose attempts are spent
+       * (0229), so a poison candidate leaves the page instead of starving the rest. */
       failed += 1;
+      await noteEnrolmentFailure(db, candidate.job_id, candidate.business_id, error).catch(
+        () => undefined,
+      );
     }
   }
   if (failed > 0) {
@@ -669,7 +681,8 @@ export async function enrolDeath(db: Db, jobId: string, businessId: string): Pro
   if (!UUID_TEXT.test(jobId) || !UUID_TEXT.test(businessId)) return false;
   return withBusiness(db, businessId, async (tx) => {
     const rows = await tx.execute<DyingRow>(sql`
-      SELECT j.id, j.business_id, j.kind, j.payload, j.attempts, j.state, j.failure_category
+      SELECT j.id, j.business_id, j.kind, job_payload(j.id) AS payload, j.attempts, j.state,
+             j.failure_category
       FROM jobs j
       WHERE j.id = ${jobId}::uuid
         AND j.business_id = nullif(current_setting('app.business_id', true), '')::uuid
@@ -687,6 +700,81 @@ export async function enrolDeath(db: Db, jobId: string, businessId: string): Pro
 }
 
 const UUID_TEXT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** The SQLSTATE behind a failed query, when there is one: a code, never a message. */
+function sqlstateOf(error: unknown): string | null {
+  const code =
+    (error as { cause?: { code?: unknown }; code?: unknown } | null)?.cause?.code ??
+    (error as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && /^[0-9A-Z]{5}$/.test(code) ? code : null;
+}
+
+/** Record one failed enrolment of a candidate, under its own business's pin (0229). */
+async function noteEnrolmentFailure(
+  db: Db,
+  jobId: string,
+  businessId: string,
+  error: unknown,
+): Promise<void> {
+  if (!UUID_TEXT.test(jobId) || !UUID_TEXT.test(businessId)) return;
+  await withBusiness(db, businessId, (tx) =>
+    tx.execute(sql`SELECT dead_job_enrolment_failed(${businessId}::uuid, ${jobId}::uuid,
+                                                    ${sqlstateOf(error)}::text)`),
+  );
+}
+
+export interface EnrolmentDeadLetter {
+  jobId: string;
+  businessId: string;
+  kind: string;
+  attempts: number;
+  lastSqlstate: string | null;
+  lastFailedAt: Date | null;
+  deadLetteredAt: Date;
+  requeueCount: number;
+}
+
+/** The dead-lettered enrolment candidates, for the operator (worker credential, 0229). */
+export async function enrolmentDeadLetters(
+  db: Db,
+  options: { limit?: number; jobId?: string } = {},
+): Promise<EnrolmentDeadLetter[]> {
+  const jobId = options.jobId && UUID_TEXT.test(options.jobId) ? options.jobId : null;
+  if (options.jobId !== undefined && jobId === null) return [];
+  const rows = await db.execute<{
+    job_id: string;
+    business_id: string;
+    kind: string;
+    attempts: number;
+    last_sqlstate: string | null;
+    last_failed_at: string | null;
+    dead_lettered_at: string;
+    requeue_count: number;
+  }>(
+    sql`SELECT * FROM dead_job_enrolment_dead_letters(${options.limit ?? 200}::int, ${jobId}::uuid)`,
+  );
+  return [...rows].map((r) => ({
+    jobId: r.job_id,
+    businessId: r.business_id,
+    kind: r.kind,
+    attempts: r.attempts,
+    lastSqlstate: r.last_sqlstate,
+    lastFailedAt: r.last_failed_at ? new Date(r.last_failed_at) : null,
+    deadLetteredAt: new Date(r.dead_lettered_at),
+    requeueCount: r.requeue_count,
+  }));
+}
+
+/** An operator's requeue of a dead-lettered candidate, audited (0229). False when it is not one. */
+export async function requeueEnrolment(
+  tx: TenantDb,
+  input: { businessId: string; jobId: string; actor: string; reason: string },
+): Promise<boolean> {
+  const rows = await tx.execute<{ requeued: boolean }>(sql`
+    SELECT dead_job_enrolment_requeue(${input.businessId}::uuid, ${input.jobId}::uuid,
+                                      ${input.actor}, ${input.reason}) AS requeued`);
+  return [...rows][0]?.requeued === true;
+}
 
 export interface JobRow {
   id: string;

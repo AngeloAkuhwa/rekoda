@@ -1,0 +1,245 @@
+/**
+ * Dead-letter handling for poison enrolment candidates (owner brief, 15 Nov 2026; migration 0229).
+ *
+ * The cutover enrolment pages 100 candidates by `updated_at, id`. Before 0229 a candidate whose
+ * record could never be written stayed first in that order for ever, so 100 or more of them kept
+ * every later candidate from being reached. Since 0229 each failure is recorded against its job and
+ * retried with backoff (5, 10, 20, 40 minutes); the fifth failure dead-letters it; a dead-lettered
+ * candidate is skipped until an operator requeues it, which is audited and never duplicates a record.
+ */
+import { randomUUID } from 'node:crypto';
+import { afterEach, describe, expect, it } from 'vitest';
+import { sql } from 'drizzle-orm';
+import { withBusiness } from '../client.js';
+import { jobsRepo } from '../index.js';
+import {
+  appDb,
+  outcome,
+  ownerDb,
+  seedBusiness,
+  settlementDb,
+  usePlanWriterHarness,
+  workerDb,
+} from '../billing/plan-writer.fixtures.js';
+
+usePlanWriterHarness();
+
+/** Dead payment jobs with no record, as deaths before 0194 left them (staged as the owner). */
+async function deadJobs(businessId: string, n: number): Promise<string[]> {
+  const rows = await withBusiness(ownerDb, businessId, (tx) =>
+    tx.execute<{ id: string }>(sql`
+      INSERT INTO jobs (business_id, kind, payload, state, attempts, max_attempts, updated_at)
+      SELECT ${businessId}::uuid, 'payment.process', jsonb_build_object('eventId', gen_random_uuid()),
+             'dead', 2, 2, now() - make_interval(secs => ${n} - g)
+      FROM generate_series(1, ${n}::int) g
+      RETURNING id`),
+  );
+  return [...rows].map((r) => r.id);
+}
+
+/** Every record insert for `businessId` fails, as a poison candidate's would. */
+async function poison(businessId: string): Promise<void> {
+  await ownerDb.execute(
+    sql.raw(`
+    CREATE OR REPLACE FUNCTION public.test_poison_record() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      IF NEW.business_id = '${businessId}'::uuid THEN
+        RAISE EXCEPTION 'test: poison candidate' USING ERRCODE = 'P0001';
+      END IF;
+      RETURN NEW;
+    END $$;
+    DROP TRIGGER IF EXISTS test_poison_record ON dead_job_exceptions;
+    CREATE TRIGGER test_poison_record BEFORE INSERT ON dead_job_exceptions
+      FOR EACH ROW EXECUTE FUNCTION public.test_poison_record();`),
+  );
+}
+afterEach(async () => {
+  await ownerDb.execute(
+    sql.raw(`DROP TRIGGER IF EXISTS test_poison_record ON dead_job_exceptions;
+             DROP FUNCTION IF EXISTS public.test_poison_record();`),
+  );
+});
+
+const failureOf = async (jobId: string) =>
+  [
+    ...(await ownerDb.execute<{
+      attempts: number;
+      last_sqlstate: string | null;
+      due_in_minutes: number | null;
+      dead: boolean;
+    }>(sql`
+      SELECT attempts, last_sqlstate::text,
+             round(extract(epoch FROM next_attempt_at - now()) / 60)::int AS due_in_minutes,
+             dead_lettered_at IS NOT NULL AS dead
+      FROM dead_job_enrolment_failures WHERE job_id = ${jobId}::uuid`)),
+  ][0];
+const records = async (businessId: string) =>
+  [
+    ...(await ownerDb.execute<{ n: number }>(
+      sql`SELECT count(*)::int AS n FROM dead_job_exceptions WHERE business_id = ${businessId}::uuid`,
+    )),
+  ][0]!.n;
+/** The backoff has passed: the next attempt is due now. */
+const dueNow = (jobId: string) =>
+  ownerDb.execute(sql`UPDATE dead_job_enrolment_failures SET next_attempt_at = now() - interval '1 second'
+                      WHERE job_id = ${jobId}::uuid`);
+const pass = () => outcome(jobsRepo.enrolUnrecordedDeaths(workerDb));
+
+describe('0229: a failing candidate is retried with backoff, then dead-lettered', () => {
+  it('records each failure (count, SQLSTATE, next attempt) and skips it while it backs off', async () => {
+    const businessId = await seedBusiness();
+    const [job] = await deadJobs(businessId, 1);
+    await poison(businessId);
+    expect(await pass()).toMatch(/enrolment failed for 1 dead job/);
+    expect(await failureOf(job!)).toEqual({
+      attempts: 1,
+      last_sqlstate: 'P0001',
+      due_in_minutes: 5,
+      dead: false,
+    });
+    /* Backing off: the next pass does not touch it. */
+    expect(await pass()).toBe('allowed');
+    expect((await failureOf(job!))!.attempts).toBe(1);
+    for (const [attempt, minutes] of [
+      [2, 10],
+      [3, 20],
+      [4, 40],
+    ] as const) {
+      await dueNow(job!);
+      expect(await pass()).toMatch(/enrolment failed for 1 dead job/);
+      expect(await failureOf(job!)).toMatchObject({ attempts: attempt, due_in_minutes: minutes });
+    }
+    await dueNow(job!);
+    expect(await pass()).toMatch(/enrolment failed for 1 dead job/);
+    expect(await failureOf(job!)).toEqual({
+      attempts: 5,
+      last_sqlstate: 'P0001',
+      due_in_minutes: null,
+      dead: true,
+    });
+    /* Dead-lettered: never picked again by an ordinary pass. */
+    expect(await pass()).toBe('allowed');
+    expect((await failureOf(job!))!.attempts).toBe(5);
+    expect(await jobsRepo.enrolmentDeadLetters(workerDb)).toMatchObject([
+      { jobId: job, businessId, kind: 'payment.process', attempts: 5, lastSqlstate: 'P0001' },
+    ]);
+  });
+
+  it('more than a page of poison candidates cannot starve a healthy one', async () => {
+    const sick = await seedBusiness();
+    const well = await seedBusiness();
+    await deadJobs(sick, 105); // older than the healthy one: first in the page order
+    const [healthy] = await deadJobs(well, 1);
+    await poison(sick);
+    /* Pass 1 fills its page of 100 with poison; each fails and backs off. */
+    expect(await pass()).toMatch(/enrolment failed for 100 dead job/);
+    expect(await records(well)).toBe(0);
+    /* Pass 2: the 100 are backing off, so the remaining 5 and the healthy one are reached. */
+    expect(await pass()).toMatch(/enrolment failed for 5 dead job\(s\); 1 enrolled/);
+    expect(await records(well)).toBe(1);
+    expect((await failureOf(healthy!)) ?? null).toBeNull();
+  });
+});
+
+describe('0229: an operator inspects and requeues a dead-lettered candidate', () => {
+  async function deadLettered(businessId: string): Promise<string> {
+    const [job] = await deadJobs(businessId, 1);
+    await poison(businessId);
+    for (let i = 0; i < 5; i += 1) {
+      await pass();
+      await dueNow(job!);
+    }
+    expect((await failureOf(job!))!.dead).toBe(true);
+    return job!;
+  }
+  const requeue = (pinned: string, businessId: string, jobId: string, db = appDb) =>
+    outcome(
+      withBusiness(db, pinned, (tx) =>
+        jobsRepo.requeueEnrolment(tx, {
+          businessId,
+          jobId,
+          actor: 'operator:ada@rekoda.test',
+          reason: 'storage fixed; retry',
+        }),
+      ),
+    );
+
+  it('requeues once, audited; the candidate then enrols exactly once', async () => {
+    const businessId = await seedBusiness();
+    const job = await deadLettered(businessId);
+    await ownerDb.execute(sql.raw(`DROP TRIGGER test_poison_record ON dead_job_exceptions;`));
+    const done = await withBusiness(appDb, businessId, (tx) =>
+      jobsRepo.requeueEnrolment(tx, {
+        businessId,
+        jobId: job,
+        actor: 'operator:ada',
+        reason: 'fixed; retry',
+      }),
+    );
+    expect(done).toBe(true);
+    expect(await failureOf(job)).toMatchObject({ attempts: 0, dead: false, due_in_minutes: null });
+    const [audit] = await ownerDb.execute<{ actor: string; reason: string }>(sql`
+      SELECT actor, new_value->>'reason' AS reason FROM audit_events
+      WHERE business_id = ${businessId}::uuid AND action = 'enrolment_requeued' AND entity_id = ${job}`);
+    expect(audit).toEqual({ actor: 'operator:ada', reason: 'fixed; retry' });
+    /* A second requeue finds nothing dead-lettered and changes nothing. */
+    expect(
+      await withBusiness(appDb, businessId, (tx) =>
+        jobsRepo.requeueEnrolment(tx, {
+          businessId,
+          jobId: job,
+          actor: 'operator:ada',
+          reason: 'again',
+        }),
+      ),
+    ).toBe(false);
+    expect(await pass()).toBe('allowed');
+    expect(await pass()).toBe('allowed');
+    expect(await records(businessId)).toBe(1);
+    expect(await jobsRepo.enrolmentDeadLetters(workerDb)).toEqual([]);
+  });
+
+  it('refuses another business’s pin, a job that is not dead-lettered, and every other role', async () => {
+    const businessId = await seedBusiness();
+    const other = await seedBusiness();
+    const job = await deadLettered(businessId);
+    expect(await requeue(other, businessId, job)).toMatch(/^42501 .*not the pinned tenant/);
+    expect(await requeue(other, other, job)).toBe('allowed'); // nothing of theirs: false, no change
+    expect((await failureOf(job))!.dead).toBe(true);
+    expect(await requeue(businessId, businessId, randomUUID())).toBe('allowed');
+    for (const db of [workerDb, settlementDb]) {
+      expect(await requeue(businessId, businessId, job, db)).toMatch(/^42501 .*permission denied/);
+    }
+    for (const statement of [
+      sql`SELECT * FROM dead_job_enrolment_dead_letters(10)`,
+      sql`SELECT dead_job_enrolment_failed(${businessId}::uuid, ${job}::uuid, 'P0001')`,
+      sql`INSERT INTO dead_job_enrolment_failures (job_id, business_id, attempts) VALUES (${randomUUID()}::uuid, ${businessId}::uuid, 0)`,
+      sql`UPDATE dead_job_enrolment_failures SET dead_lettered_at = NULL`,
+    ]) {
+      expect(await outcome(withBusiness(appDb, businessId, (tx) => tx.execute(statement)))).toMatch(
+        /^42501 .*permission denied/,
+      );
+    }
+    expect(
+      await outcome(workerDb.execute(sql`SELECT * FROM dead_job_enrolment_dead_letters(201)`)),
+    ).toMatch(/^22023 /);
+  });
+
+  it('the functions are pinned definers; the table is tenant-scoped', async () => {
+    const rows = [
+      ...(await ownerDb.execute<{ name: string; definer: boolean; config: string[] | null }>(sql`
+        SELECT proname AS name, prosecdef AS definer, proconfig AS config FROM pg_proc
+        WHERE proname IN ('dead_job_enrolment_failed', 'dead_job_enrolment_dead_letters',
+                          'dead_job_enrolment_requeue', 'dead_job_unrecorded_candidates')`)),
+    ];
+    expect(rows).toHaveLength(4);
+    for (const row of rows) {
+      expect(row.definer).toBe(true);
+      expect(row.config).toContain('search_path=pg_catalog, public, pg_temp');
+    }
+    const [table] = await ownerDb.execute<{ rls: boolean; forced: boolean }>(sql`
+      SELECT relrowsecurity AS rls, relforcerowsecurity AS forced FROM pg_class
+      WHERE oid = 'public.dead_job_enrolment_failures'::regclass`);
+    expect(table).toEqual({ rls: true, forced: true });
+  });
+});
