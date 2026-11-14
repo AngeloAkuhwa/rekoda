@@ -457,3 +457,31 @@ test('OWN-70: a Paystack key or vault key exported in the deploy shell never rea
   }
   assert.doesNotMatch(r.stderr + r.stdout, /exportedkey|bbbbbbbb/, 'a value is never printed');
 });
+
+test('OWN-93: template settings the new image would refuse to boot with refuse the deploy before anything is stopped or migrated', () => {
+  const h = host([BREAKING]);
+  writeFileSync(join(h.fake, 'template-check-fails'), '');
+  const r = h.run();
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /META_TRIAL_TEMPLATE_LOCALE must be set when META_TRIAL_TEMPLATE is set/);
+  assert.match(r.stderr, /would refuse to boot with the WhatsApp template settings in \.env/);
+  assert.match(r.stderr, /STAGING DEPLOY FAILED before anything live changed/);
+  const check = h.at('run --rm -T api node dist/template-check.js');
+  assert.ok(check > h.at('build --build-arg'), 'checked in the image just built');
+  assert.equal(h.at('stop api worker'), -1, 'nothing may be stopped');
+  assert.equal(h.at('run --rm -T migrate'), -1, 'migrate must not run');
+  assert.equal(h.at(' up '), -1);
+});
+
+test('OWN-93: settings the new image accepts let the deploy through, checked once, before the stop', () => {
+  const h = host([BREAKING]);
+  const r = h.run();
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  const check = h.at('run --rm -T api node dist/template-check.js');
+  assert.ok(check >= 0 && check < h.at('stop api worker'), h.calls().join('\n'));
+  assert.equal(
+    h.calls().filter((c) => c.includes('dist/template-check.js')).length,
+    1,
+    'checked exactly once',
+  );
+});

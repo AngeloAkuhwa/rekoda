@@ -27,6 +27,9 @@
 #   - a host whose .env does not hold a Paystack TEST key (sk_test_...), or sets
 #     REKODA_PAYSTACK_PLATFORM_CONFIRMED=1 (OWN-70): staging never runs a live key,
 #     and the settlement process would start healthy with none;
+#   - WhatsApp template settings the new image would refuse to boot with (OWN-93:
+#     a template without its language, or a malformed name or language), checked
+#     in the freshly built image before anything live is stopped;
 #   - a running staging that is not healthy, or is not the release and commit
 #     the checkout and .env name (the rollback this run would print);
 #   - a commit whose code does not know the schema staging already has: one
@@ -1016,6 +1019,17 @@ dc config -q
 log_memory 'before the api build'
 dc build --build-arg REKODA_COMMIT="$SHORT" api
 log_memory 'after the api build'
+
+# OWN-93: the new release takes every WhatsApp template's name AND language from .env, assumes
+# neither, and refuses to boot with a template set without its language or with a malformed one.
+# Ask the new image (its own slot table and validator, dist/template-check.js) now, while the old
+# release still runs, so such a .env refuses the deploy instead of leaving staging down after a
+# migration. It reads the environment only: no database, no Meta (the api's one dependency,
+# postgres, is already running). Its per-slot report (stdout) is not kept; a refusal names
+# variables only, on stderr.
+step 'check the WhatsApp template settings in .env against the new image (nothing live changes)'
+dc run --rm -T api node dist/template-check.js >/dev/null ||
+  fail 'the new release would refuse to boot with the WhatsApp template settings in .env (the variable is named above; set each META_*_TEMPLATE_LOCALE beside its template: docs/runbooks/meta-whatsapp-templates.md); nothing live has been changed'
 
 step "build the web image, tagged $RELEASE (nothing live changes)"
 require_memory 'before the web build'
