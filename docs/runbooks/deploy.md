@@ -698,8 +698,8 @@ This release starts two more services. Before deploying:
      enqueued with its full retry budget, and every application requeue of a dead job is due now
      with exactly one more attempt (0223);
    - a pack charge credits exactly the unit, quantity and meter row it bought, derived in the
-     database, for an amount that is its price, and settlement cannot put a set-aside paid charge
-     back (0224);
+     database, for an amount that is its price; settlement moves a status only out of pending and
+     cannot put a set-aside paid charge back (0224);
    - the ledger carries the tags 0213 to 0224.
 
 4. 0223 is not a compatibility break either: it narrows only the settlement process this release
