@@ -124,7 +124,7 @@ openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 \
 # The target must be an empty database on a server where these roles exist; without
 # them every GRANT and row-level-security policy that names one is skipped, and the
 # restore comes up with missing privileges and policies:
-psql "$SCRATCH_URL" -c "DO \$\$ DECLARE r text; BEGIN FOREACH r IN ARRAY ARRAY['rekoda_owner','rekoda_app','rekoda_worker','rekoda_provenance_owner','rekoda_operator','rekoda_plan_writer','rekoda_usage_writer','rekoda_settlement','rekoda_billing_operator'] LOOP IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN EXECUTE format('CREATE ROLE %I NOLOGIN', r); END IF; END LOOP; END \$\$;"
+psql "$SCRATCH_URL" -c "DO \$\$ DECLARE r text; BEGIN FOREACH r IN ARRAY ARRAY['rekoda_owner','rekoda_app','rekoda_worker','rekoda_provenance_owner','rekoda_operator','rekoda_plan_writer','rekoda_usage_writer','rekoda_settlement','rekoda_billing_operator'] LOOP IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN EXECUTE format('CREATE ROLE %I NOLOGIN' || CASE r WHEN 'rekoda_provenance_owner' THEN ' BYPASSRLS' WHEN 'rekoda_owner' THEN ' BYPASSRLS' ELSE '' END, r); END IF; END LOOP; END \$\$;"
 # Keep ownership (never --no-owner) and restore as a superuser of the target server: the
 # SECURITY DEFINER writer functions must keep their owners (rekoda_plan_writer,
 # rekoda_usage_writer, rekoda_provenance_owner). --no-owner hands them to whoever restores,
@@ -132,6 +132,9 @@ psql "$SCRATCH_URL" -c "DO \$\$ DECLARE r text; BEGIN FOREACH r IN ARRAY ARRAY['
 pg_restore -d "$SCRATCH_URL" restore.dump
 # Must print 0 (each writer role owns its definer functions again):
 psql "$SCRATCH_URL" -Atc "SELECT count(*) FROM (VALUES ('0058_payment_provenance','rekoda_provenance_owner'),('0196_plan_fields_guard','rekoda_plan_writer'),('0216_usage_meter_boundary','rekoda_usage_writer')) AS e(tag, role) WHERE EXISTS (SELECT 1 FROM rekoda_migrations m WHERE m.tag = e.tag) AND NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_roles r ON r.oid = p.proowner WHERE p.prosecdef AND r.rolname = e.role);"
+# Must print 0: pg_restore carries no role attribute, and these two roles' definer functions must
+# not be filtered by row-level security (rekoda_owner may instead be the server's superuser):
+psql "$SCRATCH_URL" -Atc "SELECT count(*) FROM pg_roles WHERE (rolname = 'rekoda_provenance_owner' AND NOT rolbypassrls) OR (rolname = 'rekoda_owner' AND NOT (rolbypassrls OR rolsuper));"
 # Must print nothing: every function has the owner the archive gave it (the drill's full check).
 # Run from the checkout (/opt/rekoda on the host), with restore.dump given by its full path.
 . scripts/lib/backup-common.sh

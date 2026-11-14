@@ -24,8 +24,11 @@ cleanup() { rm -rf "$WORK"; [ -z "$CONTAINER" ] || docker rm -fv "$CONTAINER" >/
 trap cleanup EXIT
 
 # The dump references the runtime roles in grants and policies; a scratch
-# server has none, so create them (no login, no privileges) before restoring.
-ROLES_SQL="DO \$\$ DECLARE r text; BEGIN FOREACH r IN ARRAY ARRAY['rekoda_owner','rekoda_app','rekoda_worker','rekoda_provenance_owner','rekoda_operator','rekoda_plan_writer','rekoda_usage_writer','rekoda_settlement','rekoda_billing_operator'] LOOP IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN EXECUTE format('CREATE ROLE %I NOLOGIN', r); END IF; END LOOP; END \$\$;"
+# server has none, so create them (no login, no privileges) before restoring. pg_restore carries no
+# role attribute, so the two roles the definer functions rely on bypassing row-level security get
+# BYPASSRLS here, as 0058 creates rekoda_provenance_owner and the migrating role has it in
+# production (the server's superuser); a role that already exists is checked after the restore.
+ROLES_SQL="DO \$\$ DECLARE r text; BEGIN FOREACH r IN ARRAY ARRAY['rekoda_owner','rekoda_app','rekoda_worker','rekoda_provenance_owner','rekoda_operator','rekoda_plan_writer','rekoda_usage_writer','rekoda_settlement','rekoda_billing_operator'] LOOP IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN EXECUTE format('CREATE ROLE %I NOLOGIN' || CASE r WHEN 'rekoda_provenance_owner' THEN ' BYPASSRLS' WHEN 'rekoda_owner' THEN ' BYPASSRLS' ELSE '' END, r); END IF; END LOOP; END \$\$;"
 
 START=$(date +%s)
 OBJECT=$(backup_fetch_decrypt "${DRILL_OBJECT:-}" "$WORK/restore.dump")
@@ -90,6 +93,10 @@ echo "restore-drill: object=$OBJECT restore_seconds=$((END - START)) businesses=
 # created it is applied; a restore that handed them to the superuser fails here.
 OWNERS=$("${PSQL[@]}" -c "SELECT count(*) FROM (VALUES ('0058_payment_provenance','rekoda_provenance_owner'),('0196_plan_fields_guard','rekoda_plan_writer'),('0216_usage_meter_boundary','rekoda_usage_writer')) AS e(tag, role) WHERE EXISTS (SELECT 1 FROM rekoda_migrations m WHERE m.tag = e.tag) AND NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_roles r ON r.oid = p.proowner WHERE p.prosecdef AND r.rolname = e.role);")
 [ "$OWNERS" = "0" ] || backup_die "DRILL FAILED: $OWNERS writer role(s) own no SECURITY DEFINER function after the restore (was it restored with --no-owner?)"
+# Row-level security must not filter the definer functions' cross-tenant work (Qodo 45): the
+# provenance owner and the migrating role keep BYPASSRLS (or, for the migrating role, superuser).
+NOBYPASS=$("${PSQL[@]}" -c "SELECT count(*) FROM pg_roles WHERE (rolname = 'rekoda_provenance_owner' AND NOT rolbypassrls) OR (rolname = 'rekoda_owner' AND NOT (rolbypassrls OR rolsuper));")
+[ "$NOBYPASS" = "0" ] || backup_die "DRILL FAILED: $NOBYPASS role(s) lack BYPASSRLS after the restore (rekoda_provenance_owner, rekoda_owner): their definer functions would be filtered by row-level security"
 # And every function has exactly the owner the dump gave it: the full mapping, not a floor.
 "${PSQL[@]}" -c "$BACKUP_FUNCTION_OWNERS_SQL" | LC_ALL=C sort >"$WORK/owners.restored"
 [ -s "$WORK/owners.expected" ] || backup_die "DRILL FAILED: the archive lists no function (an empty or data-less archive proves nothing)"

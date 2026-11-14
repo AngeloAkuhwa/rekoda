@@ -311,3 +311,25 @@ test('the drill compares every function owner with the archive (parser and wirin
   ])
     assert.match(drill, wiring);
 });
+
+test('a role the migrations create with BYPASSRLS is created with it on the restore target, and checked', () => {
+  /* pg_restore does not carry role attributes: a role the bootstrap creates as plain NOLOGIN loses
+   * BYPASSRLS, and the definer functions it owns (0058's payment provenance) then see only what
+   * row-level security lets them (final review of PR #432, Qodo 45). */
+  const dir = join(ROOT, 'packages/db/migrations');
+  const bypass = new Set();
+  for (const f of readdirSync(dir).filter((n) => n.endsWith('.sql'))) {
+    const sql = readFileSync(join(dir, f), 'utf8');
+    for (const m of sql.matchAll(/CREATE ROLE\s+"?(rekoda_[a-z_]+)"?[^;]*\bBYPASSRLS\b/gi)) bypass.add(m[1].toLowerCase());
+  }
+  assert.ok(bypass.has('rekoda_provenance_owner'), `expected 0058's role, got ${[...bypass]}`);
+  const drill = readFileSync(join(ROOT, 'scripts/restore-drill.sh'), 'utf8');
+  const runbook = readFileSync(join(ROOT, 'docs/runbooks/backup-restore.md'), 'utf8');
+  for (const [name, text] of [['restore-drill.sh', drill], ['backup-restore.md', runbook]]) {
+    for (const role of bypass) {
+      assert.match(text, new RegExp(`WHEN '${role}'[^;]*BYPASSRLS`), `${name} does not create ${role} with BYPASSRLS`);
+    }
+    assert.match(text, /rolbypassrls/, `${name} does not check the restored roles' BYPASSRLS`);
+  }
+  assert.match(drill, /DRILL FAILED: .*BYPASSRLS/);
+});
