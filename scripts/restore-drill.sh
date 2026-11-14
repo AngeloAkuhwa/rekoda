@@ -58,6 +58,7 @@ CREATE SCHEMA public;
 SQL
   psql "$URL" -v ON_ERROR_STOP=1 -q -c "$ROLES_SQL" >/dev/null
   pg_restore -d "$URL" "$WORK/restore.dump"
+  pg_restore -l "$WORK/restore.dump" | backup_toc_function_owners >"$WORK/owners.expected"
   PSQL=(psql "$URL" -v ON_ERROR_STOP=1 -At)
 else
   PW=$(openssl rand -hex 16)
@@ -70,6 +71,7 @@ else
   docker exec "$CONTAINER" psql -U postgres -d rekoda_drill -v ON_ERROR_STOP=1 -q -c "$ROLES_SQL" >/dev/null
   docker cp "$WORK/restore.dump" "$CONTAINER:/tmp/restore.dump"
   docker exec "$CONTAINER" pg_restore -U postgres -d rekoda_drill /tmp/restore.dump
+  docker exec "$CONTAINER" pg_restore -l /tmp/restore.dump | backup_toc_function_owners >"$WORK/owners.expected"
   PSQL=(docker exec -i "$CONTAINER" psql -U postgres -d rekoda_drill -v ON_ERROR_STOP=1 -At)
 fi
 END=$(date +%s)
@@ -88,4 +90,12 @@ echo "restore-drill: object=$OBJECT restore_seconds=$((END - START)) businesses=
 # created it is applied; a restore that handed them to the superuser fails here.
 OWNERS=$("${PSQL[@]}" -c "SELECT count(*) FROM (VALUES ('0058_payment_provenance','rekoda_provenance_owner'),('0196_plan_fields_guard','rekoda_plan_writer'),('0216_usage_meter_boundary','rekoda_usage_writer')) AS e(tag, role) WHERE EXISTS (SELECT 1 FROM rekoda_migrations m WHERE m.tag = e.tag) AND NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_roles r ON r.oid = p.proowner WHERE p.prosecdef AND r.rolname = e.role);")
 [ "$OWNERS" = "0" ] || backup_die "DRILL FAILED: $OWNERS writer role(s) own no SECURITY DEFINER function after the restore (was it restored with --no-owner?)"
+# And every function has exactly the owner the dump gave it: the full mapping, not a floor.
+"${PSQL[@]}" -c "$BACKUP_FUNCTION_OWNERS_SQL" | LC_ALL=C sort >"$WORK/owners.restored"
+[ -s "$WORK/owners.expected" ] || backup_die "DRILL FAILED: the archive lists no function (an empty or data-less archive proves nothing)"
+MISOWNED=$(backup_function_owner_mismatches "$WORK/owners.expected" "$WORK/owners.restored")
+if [ -n "$MISOWNED" ]; then
+  printf '%s\n' "$MISOWNED" | sed 's/^[[:space:]]*/  differs: /' >&2
+  backup_die "DRILL FAILED: $(printf '%s\n' "$MISOWNED" | grep -c .) function owner line(s) differ between the archive and the restored database"
+fi
 echo "restore-drill: PASS"

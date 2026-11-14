@@ -27,6 +27,8 @@
 #   - a host whose .env does not hold a Paystack TEST key (sk_test_...), or sets
 #     REKODA_PAYSTACK_PLATFORM_CONFIRMED=1 (OWN-70): staging never runs a live key,
 #     and the settlement process would start healthy with none;
+#   - a .env that sets a COMPOSE_ variable (COMPOSE_PROJECT_NAME and the like), which would
+#     point the deploy at another Compose project;
 #   - WhatsApp template settings the new image would refuse to boot with (OWN-93:
 #     a template without its language, or a malformed name or language), checked
 #     in the freshly built image before anything live is stopped;
@@ -81,8 +83,9 @@ clear_compose_overrides() {
   # Compose's own settings too (COMPOSE_PROJECT_NAME, COMPOSE_PROFILES, COMPOSE_FILE, ...): an
   # exported project name would point every call at another, empty project, so the stop check would
   # pass with nothing stopped and migrate would run against a fresh database. A COMPOSE_* line in
-  # .env still applies: --env-file .env reads it. DOCKER_HOST and DOCKER_CONTEXT are left alone:
-  # they choose the daemon (a rootless one, for example), not what runs on it.
+  # .env would apply through --env-file .env, so the checks above refuse one. DOCKER_HOST and
+  # DOCKER_CONTEXT are left alone: they choose the daemon (a rootless one, for example), not what
+  # runs on it.
   for name in "${!COMPOSE_@}"; do unset "$name"; done
 }
 # Whether this release brings in the plan and payment boundary (0196, 0200, 0202 to 0206), so the
@@ -166,7 +169,8 @@ UP_ENTERED=false
 #     credited (business, purchase) exists (0214);
 #   * no runtime role writes a usage counter or the reservation ledger; rekoda_usage_writer (NOLOGIN,
 #     no members) owns exactly the three usage functions with exactly their grantees; a pack's
-#     credit time is written by usage_credit_pack alone (0216);
+#     credit time is written by usage_credit_pack alone (0216), which credits exactly the unit,
+#     quantity and meter row the charge bought, derived in the database (0224);
 #   * settlement does not act with rekoda_app's rights: it holds exactly the reads and the column
 #     writes listed (never a charge insert, a plan, a price, a credit time or a job's kind or
 #     payload), no default privilege, and the queue is split by kind between it and the worker (0217);
@@ -194,7 +198,8 @@ SMOKE_0196_SQL="SELECT
                   '0220_job_row_and_grace_review_fixes',
                   '0221_operator_writes_only_through_its_functions',
                   '0222_usage_entitlement_in_the_database',
-                  '0223_settlement_scope_and_dead_job_requeue')) = 23
+                  '0223_settlement_scope_and_dead_job_requeue',
+                  '0224_pack_credit_derives_from_the_charge')) = 24
   AND (SELECT string_agg(column_name, ',' ORDER BY column_name)
          FROM information_schema.column_privileges
         WHERE grantee = 'rekoda_billing_operator' AND table_schema = 'public'
@@ -376,6 +381,9 @@ SMOKE_0196_SQL="SELECT
         || ' ; rekoda_private.jobs_close_event_reservations() => '
         || ' ; rekoda_private.usage_meter_row(uuid, text, text) => '
         || ' ; rekoda_private.usage_meter_row_at(uuid, text, text, timestamp with time zone) => '
+  AND (SELECT prosrc FROM pg_proc
+        WHERE oid = to_regprocedure('public.usage_credit_pack(uuid,text,text,text,integer)'))
+        LIKE '%c.pack_id IS NULL%FROM public.usage_packs p%p_n::bigint IS DISTINCT FROM v_n%usage_meter_row_at(p_business, p_period, p_unit, now())%'
   AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('public.usage_refund(uuid,uuid,text,integer)'))
         LIKE '%closed_at IS NOT NULL%event_id IS NULL AND r.created_at < now() - interval ''15 minutes''%'
   AND (SELECT prosrc FROM pg_proc
@@ -809,6 +817,15 @@ case "$(sed -n 's/^REKODA_PAYSTACK_PLATFORM_CONFIRMED=//p' .env | tail -1)" in
   '' | 0) ;;
   *) fail 'REKODA_PAYSTACK_PLATFORM_CONFIRMED must be absent, empty or 0 on staging (OWN-70); nothing has been changed' ;;
 esac
+# Compose's own settings never come from .env either. `--env-file .env` makes Compose read a
+# COMPOSE_* line there (COMPOSE_PROJECT_NAME, COMPOSE_PROFILES, COMPOSE_FILE, ...), which would
+# point every call below at another project: the stop check would pass with nothing stopped and
+# migrate would run against a fresh database. The project is the compose file's `name:` alone, so
+# any non-comment line naming a COMPOSE_ variable (in any spelling Compose reads) is refused here.
+compose_lines=$(LC_ALL=C grep -v '^[[:space:]]*#' .env | LC_ALL=C grep -cE '(^|[^A-Za-z0-9_])COMPOSE_[A-Za-z0-9_]*' || true)
+[ "$compose_lines" = 0 ] ||
+  fail ".env sets a COMPOSE_ variable on $compose_lines line(s): remove it; the project and its files come from docker-compose.prod.yml alone; nothing has been changed"
+unset compose_lines
 clear_compose_overrides
 
 

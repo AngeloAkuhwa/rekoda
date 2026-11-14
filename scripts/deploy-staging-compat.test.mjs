@@ -423,6 +423,29 @@ test('OWN-70: a host whose Paystack key is missing, empty, live or malformed, or
   }
 });
 
+test('a .env that sets a COMPOSE_ variable is refused before anything is built or stopped', () => {
+  for (const line of [
+    'COMPOSE_PROJECT_NAME=someone-elses-project\n',
+    'export COMPOSE_PROJECT_NAME=x\n',
+    '  COMPOSE_PROFILES=migrate\n',
+    'COMPOSE_FILE: other.yml\n',
+    'COMPOSE_ENV_FILES = other.env\n',
+  ]) {
+    const h = od51Host(PAYSTACK_ENV + line);
+    const r = h.run();
+    assert.notEqual(r.status, 0, line);
+    assert.match(
+      r.stderr,
+      /STAGING DEPLOY REFUSED: \.env sets a COMPOSE_ variable.*nothing has been changed/,
+    );
+    assert.equal(h.at(' build '), -1, 'nothing may be built');
+    assert.equal(h.at('stop api worker'), -1, 'nothing may be stopped');
+  }
+  // A comment that mentions one is fine.
+  const ok = od51Host(PAYSTACK_ENV + '# COMPOSE_PROJECT_NAME is never set here\n');
+  assert.equal(ok.run().status, 0);
+});
+
 test('OWN-70: a TEST key, quoted or not, lets the deploy through', () => {
   for (const paystackEnv of [
     PAYSTACK_ENV,

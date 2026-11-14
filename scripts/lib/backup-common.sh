@@ -79,3 +79,16 @@ backup_fetch_decrypt() { # [name] out-file
     echo "$name"
   )
 }
+
+# Every function's owner, one "schema name(argument types) owner" line each, sorted bytewise. The
+# restore drill compares the dump's list (`pg_restore -l`, read on stdin by backup_toc_function_owners)
+# with the restored database's (BACKUP_FUNCTION_OWNERS_SQL) line by line, so a SECURITY DEFINER
+# function handed to the wrong role fails the drill even while every writer role still owns some.
+# Extension members are not in a dump, so they are left out of the database's list too.
+BACKUP_FUNCTION_OWNERS_SQL="SELECT n.nspname || ' ' || p.proname || '(' || oidvectortypes(p.proargtypes) || ') ' || r.rolname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace JOIN pg_roles r ON r.oid = p.proowner WHERE p.prokind = 'f' AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\\_%' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')"
+backup_toc_function_owners() { # stdin: pg_restore -l output
+  LC_ALL=C awk '$4 == "FUNCTION" { sub(/^[^ ]+ [^ ]+ [^ ]+ FUNCTION /, ""); print }' | LC_ALL=C sort
+}
+backup_function_owner_mismatches() { # expected-file actual-file; prints each differing line
+  LC_ALL=C comm -3 <(LC_ALL=C sort "$1") <(LC_ALL=C sort "$2")
+}

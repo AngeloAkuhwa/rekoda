@@ -16,9 +16,10 @@
  * this fails in CI rather than at 2am against production.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 import {
@@ -164,6 +165,59 @@ describe('the recovery drill (S1, PR-107)', () => {
         } finally {
           await source.end();
         }
+
+        /* The shell drill's own comparison (scripts/lib/backup-common.sh): the dump's function
+         * owners against the restored database's, line by line. It agrees on an honest restore,
+         * and it catches ONE function handed to the wrong owner while every writer role still owns
+         * others, which the drill's per-role floor alone would let through. */
+        const helpers = join(
+          fileURLToPath(new URL('../../../../', import.meta.url)),
+          'scripts/lib/backup-common.sh',
+        );
+        const shell = (body: string, input = '') =>
+          execFileSync('bash', ['-c', `. "$0"; ${body}`, helpers], {
+            input,
+            encoding: 'utf8',
+            env: parts.env,
+          });
+        const expectedFile = join(workDir, 'owners.expected');
+        const restoredFile = join(workDir, 'owners.restored');
+        const toc = execFileSync('pg_restore', ['-l', dumpFile], {
+          encoding: 'utf8',
+          env: parts.env,
+        });
+        writeFileSync(expectedFile, shell('backup_toc_function_owners', toc));
+        const ownersSql = shell('printf %s "$BACKUP_FUNCTION_OWNERS_SQL"');
+        const listRestored = async () =>
+          writeFileSync(
+            restoredFile,
+            [
+              ...(await restored.unsafe<{ line: string }[]>(
+                `SELECT line FROM (${ownersSql}) o(line)`,
+              )),
+            ]
+              .map((r) => r.line)
+              .join('\n') + '\n',
+          );
+        const mismatches = () =>
+          shell(`backup_function_owner_mismatches "${expectedFile}" "${restoredFile}"`);
+        await listRestored();
+        expect(shell(`wc -l < "${expectedFile}"`).trim()).not.toBe('0');
+        expect(mismatches()).toBe('');
+
+        const [victim] = await restored<{ sig: string }[]>`
+          SELECT p.oid::regprocedure::text AS sig FROM pg_proc p
+          WHERE p.prosecdef AND p.proowner = 'rekoda_plan_writer'::regrole
+          ORDER BY 1 LIMIT 1`;
+        await restored.unsafe(`ALTER FUNCTION ${victim!.sig} OWNER TO CURRENT_USER`);
+        const [floor] = await restored<{ n: number }[]>`
+          SELECT count(*)::int AS n FROM pg_proc
+          WHERE prosecdef AND proowner = 'rekoda_plan_writer'::regrole`;
+        expect(floor!.n).toBeGreaterThan(0); // the per-role floor still passes
+        await listRestored();
+        const caught = mismatches().trim().split('\n');
+        expect(caught).toHaveLength(2); // the expected owner, and the wrong one
+        expect(caught.join('\n')).toMatch(/rekoda_plan_writer/);
 
         /* Invariant 2: every posted journal balances, per business. */
         const unbalanced = await restored`
