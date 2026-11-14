@@ -57,7 +57,7 @@ DROP SCHEMA IF EXISTS public CASCADE;
 CREATE SCHEMA public;
 SQL
   psql "$URL" -v ON_ERROR_STOP=1 -q -c "$ROLES_SQL" >/dev/null
-  pg_restore --no-owner -d "$URL" "$WORK/restore.dump"
+  pg_restore -d "$URL" "$WORK/restore.dump"
   PSQL=(psql "$URL" -v ON_ERROR_STOP=1 -At)
 else
   PW=$(openssl rand -hex 16)
@@ -69,7 +69,7 @@ else
   docker exec "$CONTAINER" pg_isready -h 127.0.0.1 -U postgres -d rekoda_drill >/dev/null || backup_die "scratch postgres did not start"
   docker exec "$CONTAINER" psql -U postgres -d rekoda_drill -v ON_ERROR_STOP=1 -q -c "$ROLES_SQL" >/dev/null
   docker cp "$WORK/restore.dump" "$CONTAINER:/tmp/restore.dump"
-  docker exec "$CONTAINER" pg_restore --no-owner -U postgres -d rekoda_drill /tmp/restore.dump
+  docker exec "$CONTAINER" pg_restore -U postgres -d rekoda_drill /tmp/restore.dump
   PSQL=(docker exec -i "$CONTAINER" psql -U postgres -d rekoda_drill -v ON_ERROR_STOP=1 -At)
 fi
 END=$(date +%s)
@@ -82,4 +82,10 @@ INVOICES=$("${PSQL[@]}" -c 'SELECT count(*) FROM invoices;')
 [ "$ENTRIES" -gt 0 ] || backup_die "DRILL FAILED: the restored database holds no ledger entries (an empty or data-less archive proves nothing)"
 echo "restore-drill: object=$OBJECT restore_seconds=$((END - START)) businesses=$BUSINESSES ledger_entries=$ENTRIES invoices=$INVOICES unbalanced_businesses=$DRIFT"
 [ "$DRIFT" = "0" ] || backup_die "DRILL FAILED: $DRIFT business(es) whose ledger does not balance"
+# The privilege boundary must survive the restore as well as the data (PR B review, 14 Nov 2026):
+# ownership is kept (no --no-owner), so the sanctioned SECURITY DEFINER writer functions still run
+# as their own roles. Each role must own at least one definer function once the migration that
+# created it is applied; a restore that handed them to the superuser fails here.
+OWNERS=$("${PSQL[@]}" -c "SELECT count(*) FROM (VALUES ('0058_payment_provenance','rekoda_provenance_owner'),('0196_plan_fields_guard','rekoda_plan_writer'),('0216_usage_meter_boundary','rekoda_usage_writer')) AS e(tag, role) WHERE EXISTS (SELECT 1 FROM rekoda_migrations m WHERE m.tag = e.tag) AND NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_roles r ON r.oid = p.proowner WHERE p.prosecdef AND r.rolname = e.role);")
+[ "$OWNERS" = "0" ] || backup_die "DRILL FAILED: $OWNERS writer role(s) own no SECURITY DEFINER function after the restore (was it restored with --no-owner?)"
 echo "restore-drill: PASS"

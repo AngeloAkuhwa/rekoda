@@ -130,10 +130,10 @@ describe('the recovery drill (S1, PR-107)', () => {
       await admin.unsafe(`DROP DATABASE IF EXISTS ${scratchName}`);
       await admin.unsafe(`CREATE DATABASE ${scratchName}`);
 
-      /* The restore the runbook names, into the scratch database. --no-owner
-       * because the dump's objects are owned by the cluster's roles and the
-       * drill only proves the DATA survives, not a role migration. */
-      execFileSync('pg_restore', ['--no-owner', '--dbname', scratchName, dumpFile], {
+      /* The restore the runbook names, into the scratch database, KEEPING ownership: the roles
+       * exist on the cluster, and the SECURITY DEFINER writer functions must keep their owners
+       * (checked below). --no-owner would hand them all to the restoring superuser. */
+      execFileSync('pg_restore', ['--dbname', scratchName, dumpFile], {
         env: parts.env,
       });
 
@@ -143,6 +143,28 @@ describe('the recovery drill (S1, PR-107)', () => {
       scratchUrl.pathname = `/${scratchName}`;
       const restored = postgres(scratchUrl.toString(), { max: 1, onnotice: () => {} });
       try {
+        /* The privilege boundary survives too (PR B review, 14 Nov 2026): every SECURITY DEFINER
+         * function keeps the owner it has in the source, so a sanctioned writer function still
+         * runs as its own role (rekoda_plan_writer, rekoda_usage_writer, rekoda_provenance_owner)
+         * and never as the superuser that restored it. */
+        const definers = (db: typeof restored) => db<{ f: string; owner: string }[]>`
+          SELECT n.nspname || '.' || p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')' AS f,
+                 r.rolname AS owner
+          FROM pg_proc p
+          JOIN pg_namespace n ON n.oid = p.pronamespace
+          JOIN pg_roles r ON r.oid = p.proowner
+          WHERE p.prosecdef
+          ORDER BY 1
+        `;
+        const source = postgres(urls.owner, { max: 1, onnotice: () => {} });
+        try {
+          const before = await definers(source);
+          expect(before.some((d) => d.owner === 'rekoda_plan_writer')).toBe(true);
+          expect(await definers(restored)).toEqual(before);
+        } finally {
+          await source.end();
+        }
+
         /* Invariant 2: every posted journal balances, per business. */
         const unbalanced = await restored`
           SELECT business_id

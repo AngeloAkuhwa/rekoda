@@ -125,7 +125,13 @@ openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 \
 # them every GRANT and row-level-security policy that names one is skipped, and the
 # restore comes up with missing privileges and policies:
 psql "$SCRATCH_URL" -c "DO \$\$ DECLARE r text; BEGIN FOREACH r IN ARRAY ARRAY['rekoda_owner','rekoda_app','rekoda_worker','rekoda_provenance_owner','rekoda_operator','rekoda_plan_writer','rekoda_usage_writer','rekoda_settlement','rekoda_billing_operator'] LOOP IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN EXECUTE format('CREATE ROLE %I NOLOGIN', r); END IF; END LOOP; END \$\$;"
-pg_restore --no-owner -d "$SCRATCH_URL" restore.dump
+# Keep ownership (never --no-owner) and restore as a superuser of the target server: the
+# SECURITY DEFINER writer functions must keep their owners (rekoda_plan_writer,
+# rekoda_usage_writer, rekoda_provenance_owner). --no-owner hands them to whoever restores,
+# a superuser, and the plan, usage and payment-provenance boundaries silently disappear.
+pg_restore -d "$SCRATCH_URL" restore.dump
+# Must print 0 (each writer role owns its definer functions again):
+psql "$SCRATCH_URL" -Atc "SELECT count(*) FROM (VALUES ('0058_payment_provenance','rekoda_provenance_owner'),('0196_plan_fields_guard','rekoda_plan_writer'),('0216_usage_meter_boundary','rekoda_usage_writer')) AS e(tag, role) WHERE EXISTS (SELECT 1 FROM rekoda_migrations m WHERE m.tag = e.tag) AND NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_roles r ON r.oid = p.proowner WHERE p.prosecdef AND r.rolname = e.role);"
 )
 ```
 
@@ -136,7 +142,7 @@ switch the application over; do not restore over a database you may still need.
 
 1. Provision a scratch Postgres (local docker is fine).
 2. Pull the newest object from the destination, check its `.sha256` and decrypt it (see "Restore by hand").
-3. `pg_restore -d "$SCRATCH_URL" --no-owner restore.dump` (the file written by the decrypt step)
+3. `pg_restore -d "$SCRATCH_URL" restore.dump` as a superuser (the file written by the decrypt step); never `--no-owner`, which hands the SECURITY DEFINER writer functions to the restoring superuser
 4. Run the integrity checks (`scripts/restore-drill.sh` does this):
    ```sql
    -- the ledger must balance, in total and per business
@@ -144,6 +150,8 @@ switch the application over; do not restore over a database you may still need.
    FROM ledger_entries GROUP BY business_id HAVING SUM(debit_k) <> SUM(credit_k);
    -- must return zero rows
    ```
+   and the writer roles still own their definer functions (the ownership query under "Restore by
+   hand" prints 0; `restore-drill.sh` fails otherwise).
 5. Spot-check one business: invoice count, latest document number, an
    audit-trail tail.
 6. Record the drill (date, dump used, duration, result) in this file's

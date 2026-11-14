@@ -237,6 +237,16 @@ test('the drill creates every role the migrations grant to, and its container ne
   const runbook = readFileSync(join(ROOT, 'docs/runbooks/backup-restore.md'), 'utf8');
   for (const r of roles) assert.ok(runbook.includes(`'${r}'`), `backup-restore.md "Restore by hand" does not create role ${r}`);
   assert.match(drill, /docker rm -fv /, 'removing the container must remove its anonymous data volume');
+  /* PR B review: ownership must survive the restore, or the SECURITY DEFINER writer functions run as
+   * the restoring superuser. Neither the drill nor the by-hand restore may drop it, and the drill
+   * checks the owners afterwards. */
+  /* A pg_restore command (a script line, or one written in backticks in the runbook) with the flag. */
+  const restoreWithNoOwner = /^\s*(?:\d+\.\s*`)?(?:docker exec \S+ )?pg_restore\b[^`\n]*--no-owner/m;
+  assert.doesNotMatch(drill, restoreWithNoOwner);
+  assert.doesNotMatch(runbook, restoreWithNoOwner);
+  for (const role of ['rekoda_provenance_owner', 'rekoda_plan_writer', 'rekoda_usage_writer'])
+    assert.match(drill, new RegExp(`'${role}'\\)`), `the drill checks that ${role} owns its functions`);
+  assert.match(drill, /DRILL FAILED: \$OWNERS writer role/);
 });
 
 test('a failed run never deletes the last good backup, even one older than the retention window', () => {
