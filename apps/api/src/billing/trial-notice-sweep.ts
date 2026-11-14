@@ -30,7 +30,7 @@ import { redactForLog } from '@rekoda/core/privacy';
 import { subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
 import { SendFailed, type MessageSender } from '../channels/sender.js';
 import { recordMessageCost } from '../channels/message-cost.js';
-import { billingPageUrl } from '../channels/template-slots.js';
+import { billingPageUrl, type MetaTemplates } from '../channels/template-slots.js';
 
 /**
  * What the worker hands the trial sweep (OD-41(b), OWN-80): the template counts as configured only
@@ -38,12 +38,12 @@ import { billingPageUrl } from '../channels/template-slots.js';
  * claims nothing and sends nothing.
  */
 export function trialNoticeGate(config: {
-  metaTrialTemplate: string | null;
+  metaTemplates: Pick<MetaTemplates, 'trial'>;
   webUrl: string | null;
 }): { templateConfigured: boolean; billingUrl: string | null } {
   const billingUrl = billingPageUrl(config.webUrl);
   return {
-    templateConfigured: config.metaTrialTemplate !== null && billingUrl !== null,
+    templateConfigured: config.metaTemplates.trial !== null && billingUrl !== null,
     billingUrl,
   };
 }
@@ -59,7 +59,7 @@ export interface TrialNoticeSweepDeps {
    * (`billingUrl` null): the pass then does nothing at all, so nothing is claimed.
    */
   templateConfigured: boolean;
-  /** The billing page the reminder links to (`{{3}}` of `rekoda_trial_ending`, OD-41(b)). */
+  /** The billing page the reminder links to (`{{3}}` of the trial template, OD-41(b)). */
   billingUrl: string | null;
   /** Planning FX, for pricing the utility template this sweep sends. */
   fxNairaPerUsd: number;

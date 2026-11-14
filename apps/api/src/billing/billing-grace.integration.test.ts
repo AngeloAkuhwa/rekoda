@@ -160,7 +160,7 @@ describe('the grace period', () => {
 
     await sweepGracePeriods(deps, dayAfterFailure(1));
     expect(sender.billingNotices).toHaveLength(1);
-    /* `rekoda_billing_grace_notice` carries the billing page as {{3}} (OD-41(b)). */
+    /* The billing slot's template carries the billing page as {{3}} (OD-41(b)). */
     expect(sender.billingNotices[0]).toMatchObject({ billingUrl: BILLING_URL });
 
     const rows = await marginRepo.costByUsageType(workerDb, usagePeriod(new Date()));

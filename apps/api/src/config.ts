@@ -15,9 +15,10 @@ import {
 } from './http/client-address.js';
 import { MONO_API, PAYSTACK_API, nonPublicReason } from './endpoints.js';
 import {
-  DEFAULT_TEMPLATE_LOCALE,
   billingPageUrl,
+  configuredTemplates,
   templateConfigProblems,
+  type MetaTemplates,
 } from './channels/template-slots.js';
 
 export interface ApiConfig {
@@ -415,41 +416,16 @@ export interface ApiConfig {
   metaPhoneNumberId: string;
   metaGraphVersion: string;
   /**
-   * The Meta-approved AUTHENTICATION template that carries a sign-in code.
-   *
-   * Null means sign-in cannot deliver anything, which is the honest state
-   * before a WABA has an approved template: a free-form text to a phone that
-   * has never messaged the business number is rejected by Meta, so there is
-   * no working fallback to quietly take instead.
+   * The Meta templates of the five slots (OD-41(b)), each the exact name and language the
+   * environment gives (`META_<SLOT>_TEMPLATE` and `..._LOCALE`; OWN-93: no name and no language is
+   * assumed by the code). Null where a slot is not configured, which is the honest state before a
+   * template is approved: the sender refuses that message as not sent rather than sending
+   * free-form text Meta would reject (131047). For each slot: sign-in cannot deliver a code; the
+   * grace sweep records reminders and delivers none; the retention sweep warns nobody and so
+   * deletes nobody; a document outside the 24-hour window is not announced; the trial sweep sends
+   * nothing.
    */
-  metaOtpTemplate: string | null;
-  metaOtpTemplateLocale: string;
-  /**
-   * The Meta-approved UTILITY template that carries a grace reminder.
-   *
-   * Null means the grace sweep records reminders and delivers none, which is
-   * the honest state before the template is approved. The dashboard still
-   * shows the merchant where they stand; a free-form text to a phone that has
-   * not messaged the business number in days would simply be rejected.
-   */
-  metaBillingTemplate: string | null;
-  metaBillingTemplateLocale: string;
-  /**
-   * The Meta-approved UTILITY template that warns about deletion.
-   *
-   * Null means the retention sweep warns nobody and therefore deletes
-   * nothing: a schedule that promises notice cannot delete an account it
-   * failed to notify, so the absence of a template stops the sweep rather
-   * than being routed around.
-   */
-  metaRetentionTemplate: string | null;
-  metaRetentionTemplateLocale: string;
-  /** Approved UTILITY template for "your document is ready" (G-67). Null: no fallback outside the window. */
-  metaDocumentTemplate: string | null;
-  metaDocumentTemplateLocale: string;
-  /** Approved UTILITY template for trial reminders (G-109, OWN-56). Null: the trial sweep sends nothing. */
-  metaTrialTemplate: string | null;
-  metaTrialTemplateLocale: string;
+  metaTemplates: MetaTemplates;
   /**
    * USD micros per in-window service reply. Zero today — Meta does not charge
    * for them yet — and chargeable from 1 October 2026, at which point this is
@@ -1378,7 +1354,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   }
   /* A template name or language Meta cannot have approved is refused at boot, everywhere: every
    * send through it would be rejected, which reads like an approval problem rather than a typo
-   * (OD-41(b)). The value is never echoed. */
+   * (OD-41(b)). So is a template set without its language: the code assumes none (OWN-93). The
+   * value is never echoed. */
   const templateProblem = templateConfigProblems(env)[0];
   if (templateProblem) {
     throw new ConfigError(`${templateProblem.env} ${templateProblem.problem}`);
@@ -1602,16 +1579,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     metaAccessToken: env['META_ACCESS_TOKEN'] ?? '',
     metaPhoneNumberId: env['META_PHONE_NUMBER_ID'] ?? '',
     metaGraphVersion: env['META_GRAPH_VERSION'] ?? 'v21.0',
-    metaOtpTemplate: env['META_OTP_TEMPLATE'] || null,
-    metaOtpTemplateLocale: env['META_OTP_TEMPLATE_LOCALE'] || DEFAULT_TEMPLATE_LOCALE,
-    metaBillingTemplate: env['META_BILLING_TEMPLATE'] || null,
-    metaBillingTemplateLocale: env['META_BILLING_TEMPLATE_LOCALE'] || DEFAULT_TEMPLATE_LOCALE,
-    metaRetentionTemplate: env['META_RETENTION_TEMPLATE'] || null,
-    metaRetentionTemplateLocale: env['META_RETENTION_TEMPLATE_LOCALE'] || DEFAULT_TEMPLATE_LOCALE,
-    metaDocumentTemplate: env['META_DOCUMENT_TEMPLATE'] || null,
-    metaDocumentTemplateLocale: env['META_DOCUMENT_TEMPLATE_LOCALE'] || DEFAULT_TEMPLATE_LOCALE,
-    metaTrialTemplate: env['META_TRIAL_TEMPLATE'] || null,
-    metaTrialTemplateLocale: env['META_TRIAL_TEMPLATE_LOCALE'] || DEFAULT_TEMPLATE_LOCALE,
+    metaTemplates: configuredTemplates(env),
     metaServiceReplyCostMicros: nonNegativeInteger(env, 'META_SERVICE_REPLY_COST_MICROS', 0),
     metaWabaRegisteredInNigeria: env['META_WABA_REGISTERED_IN_NIGERIA'] !== 'false',
     planCatalogueReads: env['REKODA_PLAN_CATALOGUE_READS'] !== '0',
