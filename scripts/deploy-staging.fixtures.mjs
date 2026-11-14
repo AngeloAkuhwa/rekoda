@@ -121,7 +121,10 @@ case "$*" in
   *"ps --status running --services"*) [ -e "${fake}/ps-fails" ] && exit 1; cat "${fake}/running" 2>/dev/null ;;
   *"info --format"*) echo "${fake}" ;;
   *"run --rm -T migrate"*) [ -e "${fake}/hang-migrate" ] && sleep 60; [ -e "${fake}/fail-migrate" ] && exit 1 ;;
-  *"run --rm -T api node dist/template-check.js"*) [ -e "${fake}/template-check-fails" ] && { echo 'META_TRIAL_TEMPLATE_LOCALE must be set when META_TRIAL_TEMPLATE is set' >&2; exit 1; } ;;
+  *"run --rm -T --no-deps api node dist/template-check.js"*)
+    [ -e "${fake}/template-check-fails" ] && { echo 'META_TRIAL_TEMPLATE_LOCALE must be set when META_TRIAL_TEMPLATE is set' >&2; echo 'RESULT REFUSED'; exit 1; }
+    [ -e "${fake}/template-check-cannot-run" ] && exit 125
+    echo 'SLOT META_OTP_TEMPLATE required set set'; echo 'RESULT BOOTS' ;;
   *"exec -T postgres psql"*) [ -e "${fake}/smoke-errors" ] && exit 1; if [ -e "${fake}/smoke-fails" ]; then echo f; else echo t; fi ;;
   *" up "*) [ -e "${fake}/fail-up" ] && exit 1; cp "${fake}/next-health.json" "${fake}/health.json" ;;
   *network\\ inspect*) echo '172.30.10.1 false' ;;

@@ -1,5 +1,6 @@
 /**
- * G-119 / OWN-77: the staging tools flag never appears in the production compose file. Run with
+ * G-119 / OWN-77: the staging tools flag never appears in the production compose file. G-74 and
+ * OWN-93: `--no-deps` stays refused in the deploy script except on the one-off template check. Run with
  * `node --test scripts/check-staging-deploy.tools.test.mjs` (CI does, beside the staging guard).
  */
 import assert from 'node:assert/strict';
@@ -26,3 +27,22 @@ for (const line of [
     );
   });
 }
+
+const CHECK =
+  'template_report=$(dc run --rm -T --no-deps api node dist/template-check.js) || template_rc=$?';
+
+test('OWN-93: the deploy runs the one-off template check with --no-deps, and the guard allows that line only', () => {
+  assert.ok(REAL.script.split('\n').some((l) => l.trim() === CHECK));
+  for (const line of [
+    'dc up -d --no-deps api',
+    'dc run --rm -T --no-deps migrate',
+    `${CHECK} ; dc up -d --no-deps caddy`,
+    'dc up -d --scale api=2',
+  ]) {
+    const found = problemsFor({ ...REAL, script: `${REAL.script}\n${line}\n` });
+    assert.ok(
+      found.some((p) => p.includes('can start Caddy past the edge check')),
+      `expected ${line} to be refused, got:\n  ${found.join('\n  ') || '(none)'}`,
+    );
+  }
+});

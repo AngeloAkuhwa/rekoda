@@ -201,6 +201,11 @@ test('a template without its language, or a malformed name or language, is ATTEN
       /META_TRIAL_TEMPLATE_LOCALE \(worker\)\s+UNSET \(required with META_TRIAL_TEMPLATE; the api refuses to boot without it\)\n/,
     );
     assert.match(r.stdout, /META_DOCUMENT_TEMPLATE \(worker\)\s+SET but not a Meta template name/);
+    // The malformed template's language is its own, not "unused".
+    assert.match(
+      r.stdout,
+      /META_DOCUMENT_TEMPLATE_LOCALE \(worker\)\s+SET \(confirm it is the template's language/,
+    );
     assert.match(
       r.stdout,
       /META_BILLING_TEMPLATE_LOCALE \(worker\)\s+SET but not a Meta language code/,

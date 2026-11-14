@@ -401,11 +401,11 @@ for c in api worker; do
         *) flag "$k ($c)" "unknown (unreadable report line)" ;;
       esac
       case "$locale:$name" in
-        set:set) say "${k}_LOCALE ($c)" "SET (confirm it is the template's language in WhatsApp Manager)" ;;
-        unset:set) flag "${k}_LOCALE ($c)" "UNSET (required with $k; the api refuses to boot without it)" ;;
+        set:set | set:invalid) say "${k}_LOCALE ($c)" "SET (confirm it is the template's language in WhatsApp Manager)" ;;
+        unset:set | unset:invalid) flag "${k}_LOCALE ($c)" "UNSET (required with $k; the api refuses to boot without it)" ;;
         invalid:*) flag "${k}_LOCALE ($c)" "SET but not a Meta language code (the api refuses to boot with it)" ;;
-        unset:*) say "${k}_LOCALE ($c)" "unset" ;;
-        set:*) say "${k}_LOCALE ($c)" "SET without a template (unused)" ;;
+        unset:unset) say "${k}_LOCALE ($c)" "unset" ;;
+        set:unset) say "${k}_LOCALE ($c)" "SET without a template (unused)" ;;
         *) flag "${k}_LOCALE ($c)" "unknown (unreadable report line)" ;;
       esac
     done <<<"$rep"

@@ -3,9 +3,6 @@
  * states only, a digest that changes with any setting, and the boot refusals by variable name.
  * No configured value is ever printed.
  */
-import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { templateReport } from './template-report.js';
 import { TEMPLATE_SLOTS } from './template-slots.js';
@@ -65,32 +62,6 @@ describe('templateReport', () => {
   });
 });
 
-/* The built entry point the scripts run, when the package has been built (CI builds before it
- * tests; a plain `vitest run` on a fresh checkout skips this block rather than failing). */
-const built = fileURLToPath(new URL('../../dist/template-check.js', import.meta.url));
-describe.skipIf(!existsSync(built))('dist/template-check.js', () => {
-  const run = (env: NodeJS.ProcessEnv) => {
-    try {
-      return { code: 0, out: execFileSync(process.execPath, [built], { env, encoding: 'utf8' }) };
-    } catch (e) {
-      const err = e as { status: number; stdout: string; stderr: string };
-      return { code: err.status, out: err.stdout, err: err.stderr };
-    }
-  };
-
-  it('exits 0 with RESULT BOOTS on settings that boot', () => {
-    const r = run({ PATH: process.env['PATH'], ...CONFIGURED });
-    expect(r.code).toBe(0);
-    expect(r.out).toMatch(/^SLOT META_OTP_TEMPLATE required set set$/m);
-    expect(r.out).toMatch(/^RESULT BOOTS$/m);
-    expect(r.out).not.toContain('_abc');
-  });
-
-  it('exits 1 with RESULT REFUSED, naming the variable on stderr', () => {
-    const r = run({ PATH: process.env['PATH'], ...CONFIGURED, META_OTP_TEMPLATE_LOCALE: '' });
-    expect(r.code).toBe(1);
-    expect(r.out).toMatch(/^RESULT REFUSED$/m);
-    expect(r.err).toMatch(/^META_OTP_TEMPLATE_LOCALE must be set when META_OTP_TEMPLATE is set/m);
-    expect(`${r.out}${r.err}`).not.toContain('_abc');
-  });
-});
+/* The built entry point (`dist/template-check.js`) is exercised end to end by the staging script
+ * suites, which run it inside their fake containers after CI's build step
+ * (scripts/staging-readonly-check.templates.test.mjs). */

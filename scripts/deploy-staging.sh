@@ -1021,15 +1021,25 @@ dc build --build-arg REKODA_COMMIT="$SHORT" api
 log_memory 'after the api build'
 
 # OWN-93: the new release takes every WhatsApp template's name AND language from .env, assumes
-# neither, and refuses to boot with a template set without its language or with a malformed one.
-# Ask the new image (its own slot table and validator, dist/template-check.js) now, while the old
-# release still runs, so such a .env refuses the deploy instead of leaving staging down after a
-# migration. It reads the environment only: no database, no Meta (the api's one dependency,
-# postgres, is already running). Its per-slot report (stdout) is not kept; a refusal names
-# variables only, on stderr.
+# neither, and refuses to boot with a template set without its language or with a malformed one
+# (templateConfigProblems). Ask the new image (its own slot table and validator,
+# dist/template-check.js) now, while the old release still runs, so such a .env refuses the deploy
+# instead of leaving staging down after a migration. It reads the environment only: no database, no
+# Meta, so --no-deps: a one-off container that starts, recreates or waits on no other service. It
+# does not cover config.ts's other production template refusals (a Meta token without the sign-in
+# template; a grace or trial template without an https REKODA_WEB_URL), which `up --wait` reports.
+# The per-slot report (stdout) is kept in a variable and never printed; a refusal names variables
+# only, on stderr.
 step 'check the WhatsApp template settings in .env against the new image (nothing live changes)'
-dc run --rm -T api node dist/template-check.js >/dev/null ||
-  fail 'the new release would refuse to boot with the WhatsApp template settings in .env (the variable is named above; set each META_*_TEMPLATE_LOCALE beside its template: docs/runbooks/meta-whatsapp-templates.md); nothing live has been changed'
+template_rc=0
+template_report=$(dc run --rm -T --no-deps api node dist/template-check.js) || template_rc=$?
+case "$template_report" in
+  *'RESULT REFUSED'*)
+    fail 'the new release would refuse to boot with the WhatsApp template settings in .env (the variable is named above; set each META_*_TEMPLATE_LOCALE beside its template: docs/runbooks/meta-whatsapp-templates.md); nothing live has been changed' ;;
+  *'RESULT BOOTS'*) [ "$template_rc" -eq 0 ] ||
+    fail "the template check in the new image reported its settings boot but exited $template_rc; nothing live has been changed" ;;
+  *) fail "could not run the template check in the new image (exit $template_rc, no report); nothing live has been changed" ;;
+esac
 
 step "build the web image, tagged $RELEASE (nothing live changes)"
 require_memory 'before the web build'

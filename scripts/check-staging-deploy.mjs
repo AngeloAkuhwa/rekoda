@@ -136,7 +136,15 @@ const SCRIPT_FORBIDDEN = [
     'forces files over the checkout instead of refusing',
   ],
   [/\breset --hard\b|\bgit clean\b|\bstash\b/, 'discards changes on the host instead of refusing'],
-  [/--no-deps|--scale\b/, 'can start Caddy past the edge check (G-74)'],
+  [
+    /--no-deps|--scale\b/,
+    'can start Caddy past the edge check (G-74)',
+    // OWN-93: the one-off template check in the new image. `run --no-deps` starts no service at
+    // all (not Caddy, not the edge check); only this exact line is exempt.
+    (line) =>
+      line.trim() ===
+      'template_report=$(dc run --rm -T --no-deps api node dist/template-check.js) || template_rc=$?',
+  ],
   [/\bset -x\b|\bxtrace\b/, 'echoes every command, and so anything it expands'],
   [/secrets\//, 'touches secrets/, which the deploy never needs'],
   [
