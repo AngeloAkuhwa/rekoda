@@ -304,6 +304,21 @@ describe('0224: settlement moves a status only out of pending', () => {
     ).toMatch(NOT_A_PACK);
   });
 
+  it('cannot turn a failed charge into a paid one', async () => {
+    const businessId = await paidBusiness();
+    const reference = await packCharge(businessId);
+    await ownerDb.execute(sql`UPDATE subscription_charges
+      SET status = 'failed', paid_at = NULL, failed_at = now() WHERE reference = ${reference}`);
+    for (const status of ['paid', 'pending']) {
+      expect(
+        await asSettlement(
+          businessId,
+          sql`UPDATE subscription_charges SET status = ${status} WHERE reference = ${reference}`,
+        ),
+      ).toMatch(/^42501 .*settlement moves a charge's status only out of pending/);
+    }
+  });
+
   it('still settles a pending charge (pending to paid, and pending to failed)', async () => {
     const businessId = await paidBusiness();
     const a = await packCharge(businessId);
