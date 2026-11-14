@@ -240,8 +240,8 @@ test('pruning the previous images', () => {
 test('a second compose file', () => {
   const edit = edited(
     'script',
-    'dc() { docker compose -f docker-compose.prod.yml "$@"; }',
-    'dc() { docker compose -f docker-compose.prod.yml -f override.yml "$@"; }',
+    'dc() { docker compose --env-file .env -f docker-compose.prod.yml "$@"; }',
+    'dc() { docker compose --env-file .env -f docker-compose.prod.yml -f override.yml "$@"; }',
   );
   expectProblem(problems(edit), /calls compose directly/);
 });

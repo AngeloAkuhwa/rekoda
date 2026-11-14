@@ -60,14 +60,17 @@ API_URL=https://staging-api.myrekoda.com
 EDGE_NETWORK=rekoda-prod_edge
 EDGE_EXPECTED='172.30.10.1 false'
 
-dc() { docker compose -f docker-compose.prod.yml "$@"; }
+dc() { docker compose --env-file .env -f docker-compose.prod.yml "$@"; }
 # Compose fills ${NAME} from the shell before .env. Staging's settings live in .env alone (the
 # owner's decision, 14 Nov 2026; never in GitHub or a deploy shell), and the checks above read
 # .env, so every name the compose file interpolates is cleared from this shell, except
 # REKODA_RELEASE, which this script pins on purpose. Otherwise a key exported in the deploy
 # session (a live Paystack key, another VAULT_KEY) would reach settlement or operator past them.
+# Compose's own COMPOSE_* settings are cleared too (COMPOSE_ENV_FILES would point it at another
+# env file), and dc names .env explicitly, so compose reads .env and nothing else.
 clear_compose_overrides() {
   local name
+  for name in "${!COMPOSE_@}"; do unset "$name"; done
   for name in $(grep -oE '\$\{[A-Z_][A-Z0-9_]*' docker-compose.prod.yml 2>/dev/null | cut -c3- | sort -u); do
     [ "$name" = REKODA_RELEASE ] || unset "$name"
   done

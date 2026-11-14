@@ -12,7 +12,7 @@ Every command runs from the checkout (`/opt/rekoda`) as the deploy user. The
 examples use one alias:
 
 ```bash
-alias dc='docker compose -f docker-compose.prod.yml'
+alias dc='docker compose --env-file .env -f docker-compose.prod.yml'
 ```
 
 ## What runs, and who holds which credential

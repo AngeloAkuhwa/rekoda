@@ -103,7 +103,7 @@ function host(extraTags, extraEnv = PRINCIPAL_ENV, paystackEnv = PAYSTACK_ENV) {
   bin(
     'docker',
     `echo "$*" >> "${fake}/docker.log"
-case "$*" in *"-f docker-compose.prod.yml"*) echo "PAYSTACK_SECRET_KEY=\${PAYSTACK_SECRET_KEY-unset} VAULT_KEY=\${VAULT_KEY-unset} ONLY_IN_TARGET=\${ONLY_IN_TARGET-unset}" >> "${fake}/shell-env.log" ;; esac
+case "$*" in *"-f docker-compose.prod.yml"*) case "$*" in "compose --env-file .env -f docker-compose.prod.yml "*) ef= ;; *) ef=' env-file not pinned to .env' ;; esac; echo "PAYSTACK_SECRET_KEY=\${PAYSTACK_SECRET_KEY-unset} VAULT_KEY=\${VAULT_KEY-unset} ONLY_IN_TARGET=\${ONLY_IN_TARGET-unset}\${COMPOSE_ENV_FILES+ COMPOSE_ENV_FILES=set}$ef" >> "${fake}/shell-env.log" ;; esac
 case "$*" in
   *"stop api worker"*) [ -e "${fake}/stop-fails" ] && exit 1; [ -e "${fake}/hang-stop" ] && sleep 60 ;;
   *"ps --status running --services"*) [ -e "${fake}/ps-fails" ] && exit 1; cat "${fake}/running" 2>/dev/null ;;
@@ -583,12 +583,12 @@ test('OWN-70: a Paystack key or vault key exported in the deploy shell never rea
   /* Built at run time so no key-shaped literal sits in the source (secret scan). */
   const live = ['sk', 'live', 'exportedkey'].join('_');
   const h = od51Host();
-  /* ONLY_IN_TARGET is interpolated only by the commit being deployed: the clear after the checkout
-   * is what removes it. */
+  /* Only the deployed commit interpolates ONLY_IN_TARGET: the clear after checkout removes it. */
   const r = h.run({
     PAYSTACK_SECRET_KEY: live,
     VAULT_KEY: 'b'.repeat(64),
     ONLY_IN_TARGET: 'from-the-deploy-shell',
+    COMPOSE_ENV_FILES: '/elsewhere/live.env', // compose's own pointer to another env file
   });
   assert.equal(r.status, 0, r.stderr + r.stdout);
   const seen = h.shellEnvSeen();
