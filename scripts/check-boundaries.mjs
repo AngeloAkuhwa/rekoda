@@ -15,6 +15,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { jobPayloadReadViolations } from './lib/job-payload-reads.mjs';
 
 const ROOT = join(fileURLToPath(import.meta.url), '..', '..');
 
@@ -392,6 +393,7 @@ for (const dir of ['apps', 'packages']) {
     if (!isTestOrConfig) violations.push(...contractViolations(rel, body));
     if (!isTestOrConfig) violations.push(...highRiskViolations(rel, body));
     if (!isTestOrConfig) violations.push(...darkFxViolations(rel, body));
+    if (!isTestOrConfig) violations.push(...jobPayloadReadViolations(rel, body));
     violations.push(...capacityMeterViolations(rel, body));
   }
 }
@@ -435,4 +437,4 @@ if (violations.length > 0) {
   process.exit(1);
 }
 
-console.log(`Boundaries OK — ${RULES.length + 6} rules, no violations.`);
+console.log(`Boundaries OK — ${RULES.length + 7} rules, no violations.`);
