@@ -27,6 +27,20 @@
 --
 -- A charge with no pack (`pack_id` NULL) is no longer a pack charge that may be credited.
 --
+-- A SUPERSEDED charge (final review, 14 Nov 2026): OD-51.7 (OWN-91) has the first verified payment
+-- of a purchase grant its units even when it lands on a link that was retired while pending (a
+-- reprice opens a replacement that shares the purchase, and Paystack may still take payment on the
+-- old link). So the function credits a superseded charge only when it was superseded as a WITHDRAWN
+-- LINK (`abandoned_at` set with it, which every retirement of a pending charge does) and no other
+-- charge of its purchase is credited; it refuses any other superseded charge (a paid charge set
+-- aside, which also carries `unapplied_at`) and a second credit of a purchase, before anything is
+-- written (the 0214 unique index stays the backstop). The usage writer's stamp in the charge guard
+-- carries the same superseded rule, and the guard lets no runtime role mark a charge withdrawn once
+-- it has left `pending`, so a paid charge cannot be made to qualify. Refusing every superseded
+-- charge would contradict OD-51.7 and strand a real in-flight payment (the refusal rolls the
+-- settlement back, so the job would retry and die with the payment unrecorded on the charge); that stricter rule is
+-- recorded as an open owner question in OD-41, not implemented.
+--
 -- And settlement can no longer put a paid charge that was set aside (`unapplied_at`) or superseded
 -- back in play: the charge guard's rule "a paid charge set aside cannot be put back" now applies
 -- to settlement as it already applied to the application (no code path clears either column on a
@@ -85,18 +99,33 @@ BEGIN
   IF p_business IS DISTINCT FROM nullif(current_setting('app.business_id', true), '')::uuid THEN
     RAISE EXCEPTION 'usage_credit_pack: the business is not the pinned tenant' USING ERRCODE = '42501';
   END IF;
-  SELECT id, kind, status, units_credited_at, unapplied_at, pack_id, quantity, priced_at,
-         created_at, pricing_source, amount_k, paid_amount_k INTO c
+  SELECT id, kind, status, units_credited_at, unapplied_at, superseded_at, abandoned_at,
+         purchase_id, pack_id, quantity, priced_at, created_at, pricing_source, amount_k,
+         paid_amount_k INTO c
   FROM public.subscription_charges
   WHERE business_id = p_business AND reference = p_reference
   FOR UPDATE;
+  -- A superseded charge may be credited only when it was superseded as a WITHDRAWN LINK (retired
+  -- while pending, `abandoned_at` set with it: a reprice replacement or a completed purchase's
+  -- sibling) and its payment, already in flight, is the first of its purchase (OD-51.7). Any other
+  -- supersession (a paid charge set aside, which also carries `unapplied_at`) is never credited.
   IF NOT FOUND OR c.kind IS DISTINCT FROM 'add_on' OR c.pack_id IS NULL
-     OR c.status IS DISTINCT FROM 'paid' OR c.unapplied_at IS NOT NULL THEN
+     OR c.status IS DISTINCT FROM 'paid' OR c.unapplied_at IS NOT NULL
+     OR (c.superseded_at IS NOT NULL AND c.abandoned_at IS NULL) THEN
     RAISE EXCEPTION 'usage_credit_pack: not a paid pack charge that may be credited'
       USING ERRCODE = '42501';
   END IF;
   IF c.units_credited_at IS NOT NULL THEN
     RETURN false; -- credited already: a charge raises the ceiling once
+  END IF;
+  -- One intended purchase is credited once (OD-51.7, 0214), refused here before anything is written
+  -- (the unique index on a credited purchase stays the backstop). The charges of the purchase are
+  -- serialised by the business row lock settlement takes first (`lockBusiness`).
+  IF EXISTS (SELECT 1 FROM public.subscription_charges o
+             WHERE o.business_id = p_business AND o.purchase_id = c.purchase_id
+               AND o.id <> c.id AND o.units_credited_at IS NOT NULL) THEN
+    RAISE EXCEPTION 'usage_credit_pack: this purchase is credited already (OD-51.7)'
+      USING ERRCODE = '42501';
   END IF;
 
   -- The source the charge was priced from; none recorded means the source in force (0215).
@@ -228,6 +257,7 @@ BEGIN
   -- pack charge, once, and change nothing else on the row.
   IF current_user = 'rekoda_usage_writer' THEN
     IF OLD.kind = 'add_on' AND OLD.status = 'paid' AND OLD.unapplied_at IS NULL
+       AND (OLD.superseded_at IS NULL OR OLD.abandoned_at IS NOT NULL) -- 0224: as usage_credit_pack
        AND OLD.units_credited_at IS NULL AND NEW.units_credited_at IS NOT NULL
        AND (to_jsonb(NEW) - 'units_credited_at' - 'updated_at')
            = (to_jsonb(OLD) - 'units_credited_at' - 'updated_at') THEN
@@ -257,6 +287,13 @@ BEGIN
        AND NOT pg_has_role(current_user, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), 'USAGE') THEN
       RAISE EXCEPTION 'settlement moves a charge''s status only out of pending (OD-37)'
         USING ERRCODE = '42501';
+    END IF;
+    -- 0224: a link is withdrawn (`abandoned_at`) only while it is pending, never afterwards: a
+    -- withdrawn link paid first may still be credited (OD-51.7), so marking a paid charge withdrawn
+    -- must not be a way to qualify it.
+    IF NEW.abandoned_at IS DISTINCT FROM OLD.abandoned_at AND OLD.status IS DISTINCT FROM 'pending'
+       AND NOT pg_has_role(current_user, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), 'USAGE') THEN
+      RAISE EXCEPTION 'a link is withdrawn only while it is pending (OD-51)' USING ERRCODE = '42501';
     END IF;
     -- 0224: a paid charge set aside or superseded stays so, for settlement too (an operator
     -- resolves it; nothing un-sets it to credit or apply it after all).
@@ -305,6 +342,10 @@ BEGIN
      AND ((OLD.unapplied_at IS NOT NULL AND NEW.unapplied_at IS NULL)
           OR (OLD.superseded_at IS NOT NULL AND NEW.superseded_at IS NULL)) THEN
     RAISE EXCEPTION 'a paid charge set aside cannot be put back (OD-37)' USING ERRCODE = '42501';
+  END IF;
+  -- 0224: as for settlement above.
+  IF NEW.abandoned_at IS DISTINCT FROM OLD.abandoned_at AND OLD.status IS DISTINCT FROM 'pending' THEN
+    RAISE EXCEPTION 'a link is withdrawn only while it is pending (OD-51)' USING ERRCODE = '42501';
   END IF;
   RETURN NEW;
 END $function$;

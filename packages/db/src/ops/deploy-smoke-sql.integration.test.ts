@@ -409,6 +409,27 @@ describe('the pre-start database smoke, executed', () => {
       )![0],
     ],
     [
+      'the pack credit without its superseded and one-purchase refusals',
+      readFileSync(
+        new URL('../../migrations/0224_pack_credit_derives_from_the_charge.sql', import.meta.url),
+        'utf8',
+      )
+        .match(/CREATE OR REPLACE FUNCTION public\.usage_credit_pack\([\s\S]*?END \$\$;/)![0]
+        .replace('OR (c.superseded_at IS NOT NULL AND c.abandoned_at IS NULL)', '')
+        .replace(/IF EXISTS \(SELECT 1 FROM public\.subscription_charges o[\s\S]*?END IF;/, ''),
+    ],
+    [
+      'the charge guard without the withdrawn-only-while-pending rule',
+      readFileSync(
+        new URL('../../migrations/0224_pack_credit_derives_from_the_charge.sql', import.meta.url),
+        'utf8',
+      )
+        .match(
+          /CREATE OR REPLACE FUNCTION rekoda_private\.subscription_charges_settlement_guard\(\)[\s\S]*?END \$function\$;/,
+        )![0]
+        .replaceAll('a link is withdrawn only while it is pending (OD-51)', 'withdrawn'),
+    ],
+    [
       '0224 not recorded in the ledger',
       "DELETE FROM rekoda_migrations WHERE tag = '0224_pack_credit_derives_from_the_charge'",
     ],

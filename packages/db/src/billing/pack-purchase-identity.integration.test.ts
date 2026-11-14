@@ -137,9 +137,18 @@ describe('OD-51.7: a pack charge carries the identity of its purchase (0214)', (
     const second = await openPack(businessId, { purchaseId: await purchaseOf(first) });
 
     await credit(businessId, second);
+    /* 0224: the credit function refuses it before writing anything ... */
     expect(await outcome(credit(businessId, first))).toMatch(
-      /^23505 .*subscription_charges_one_credit_per_purchase_ux/,
+      /^42501 .*this purchase is credited already/,
     );
+    /* ... and the unique index is still the backstop, whatever writes the credit time (here the
+     * table owner, whom no trigger stops). */
+    expect(
+      await outcome(
+        ownerDb.execute(sql`UPDATE subscription_charges SET units_credited_at = now()
+                            WHERE reference = ${first}`),
+      ),
+    ).toMatch(/^23505 .*subscription_charges_one_credit_per_purchase_ux/);
 
     const rows = await ownerDb.execute<{ reference: string; credited: boolean; status: string }>(
       sql`SELECT reference, units_credited_at IS NOT NULL AS credited, status FROM subscription_charges

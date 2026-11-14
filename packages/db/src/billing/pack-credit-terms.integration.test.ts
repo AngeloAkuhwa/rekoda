@@ -44,12 +44,18 @@ async function packCharge(
     paidAmountK?: number | null;
     unapplied?: boolean;
     superseded?: boolean;
+    /** With `superseded`: the link was withdrawn while pending (retired), as the application does. */
+    abandoned?: boolean;
+    /** Share the purchase of this charge (a replacement link, OD-51.7). */
+    samePurchaseAs?: string;
+    status?: 'paid' | 'pending' | 'failed' | 'refunded';
   } = {},
 ): Promise<string> {
   chargeSeq += 1;
   const reference = `RKD-ADD-0224-${String(chargeSeq).padStart(6, '0')}`;
   const packId = spec.packId === undefined ? 'messages_100' : spec.packId;
   const quantity = spec.quantity ?? 1;
+  const status = spec.status ?? 'paid';
   const amount =
     spec.amountK === undefined
       ? sql`coalesce((SELECT price_minor FROM usage_packs WHERE pack_id = ${packId}
@@ -59,13 +65,23 @@ async function packCharge(
     INSERT INTO subscription_charges
       (business_id, kind, plan, pack_id, quantity, amount_k, paid_amount_k, status, reference,
        period_start, period_end, paid_at, priced_at, pricing_source, billing_interval,
-       unapplied_at, unapplied_reason, superseded_at)
+       unapplied_at, unapplied_reason, superseded_at, abandoned_at, purchase_id,
+       failed_at, refunded_at, refunded_amount_k)
     VALUES (${businessId}::uuid, 'add_on', NULL, ${packId}, ${quantity}, ${amount},
-      ${spec.paidAmountK ?? null}::bigint, 'paid', ${reference}, now(), now() + interval '30 days',
-      now(), ${spec.pricedAt ?? null}::timestamptz,
+      ${spec.paidAmountK ?? null}::bigint, ${status}, ${reference}, now(), now() + interval '30 days',
+      ${status === 'paid' || status === 'refunded' ? sql`now()` : sql`NULL`},
+      ${spec.pricedAt ?? null}::timestamptz,
       ${spec.pricingSource === undefined ? 'catalogue' : spec.pricingSource}, 'monthly',
       ${spec.unapplied ? sql`now()` : sql`NULL`}, ${spec.unapplied ? 'price_not_verified' : null},
-      ${spec.superseded ? sql`now()` : sql`NULL`})`);
+      ${spec.superseded ? sql`now()` : sql`NULL`}, ${spec.abandoned ? sql`now()` : sql`NULL`},
+      ${
+        spec.samePurchaseAs === undefined
+          ? sql`gen_random_uuid()`
+          : sql`(SELECT purchase_id FROM subscription_charges WHERE reference = ${spec.samePurchaseAs})`
+      },
+      ${status === 'failed' ? sql`now()` : sql`NULL`},
+      ${status === 'refunded' ? sql`now()` : sql`NULL`},
+      ${status === 'refunded' ? amount : sql`0`})`);
   return reference;
 }
 
@@ -398,5 +414,135 @@ describe('0224: the catalogue version in force when the charge was PRICED', () =
     expect(await outcome(credit(businessId, after, month, 'AI_ACTIONS', 100))).toMatch(MISMATCH);
     expect(await credit(businessId, after, month, 'AI_ACTIONS', 150)).toBe(true);
     expect(await counters(businessId)).toEqual([{ period: month, unit: 'AI_ACTIONS', bonus: 250 }]);
+  });
+});
+
+/**
+ * Phase 2 of the final review (14 Nov 2026): every state a pack charge can be in, credited directly
+ * through the function. A superseded charge is the case that needs care: OD-51.7 (OWN-91) has the
+ * first verified payment of a purchase grant its units even when it arrives on a link that had been
+ * retired while pending (a reprice opened a replacement that shares the purchase), so a withdrawn
+ * link paid first is still credited. Any other superseded charge, and any charge of a purchase
+ * that is already credited, is refused before anything is written.
+ */
+describe('0224: which charges may be credited at all', () => {
+  const UNITS = 100;
+  const tryCredit = async (businessId: string, reference: string) =>
+    outcome(credit(businessId, reference, await thisMonth(), 'AI_ACTIONS', UNITS));
+
+  it.each([
+    ['pending', { status: 'pending' as const }],
+    ['failed', { status: 'failed' as const }],
+    ['refunded', { status: 'refunded' as const }],
+    ['set aside', { unapplied: true }],
+    ['set aside and superseded', { unapplied: true, superseded: true }],
+    ['superseded without being withdrawn as a link', { superseded: true }],
+    ['with no pack', { packId: null }],
+  ])('refuses a %s charge, and writes nothing', async (_name, spec) => {
+    const businessId = await paidBusiness();
+    const reference = await packCharge(businessId, spec);
+    expect(await tryCredit(businessId, reference)).toMatch(NOT_A_PACK);
+    expect(await counters(businessId)).toEqual([]);
+    expect(await creditedAt(reference)).toBeNull();
+  });
+
+  it.each([
+    ['a pack the catalogue does not hold', { packId: 'no_such_pack_0224' }],
+    ['an amount that is not the pack price', { amountK: 1 }],
+  ])('refuses a charge for %s, and writes nothing', async (_name, spec) => {
+    const businessId = await paidBusiness();
+    const reference = await packCharge(businessId, spec);
+    expect(await tryCredit(businessId, reference)).toMatch(MISMATCH);
+    expect(await counters(businessId)).toEqual([]);
+    expect(await creditedAt(reference)).toBeNull();
+  });
+
+  it('credits a valid paid pack charge once; a second call writes nothing more', async () => {
+    const businessId = await paidBusiness();
+    const reference = await packCharge(businessId);
+    expect(await tryCredit(businessId, reference)).toBe('allowed');
+    const stamped = await creditedAt(reference);
+    expect(stamped).not.toBeNull();
+    expect(await credit(businessId, reference, await thisMonth(), 'AI_ACTIONS', UNITS)).toBe(false);
+    expect(await counters(businessId)).toEqual([
+      { period: await thisMonth(), unit: 'AI_ACTIONS', bonus: UNITS },
+    ]);
+    expect(await creditedAt(reference)).toBe(stamped);
+  });
+
+  it('credits a withdrawn link paid first (OD-51.7), and then never its replacement', async () => {
+    const businessId = await paidBusiness();
+    const retired = await packCharge(businessId, { superseded: true, abandoned: true });
+    const replacement = await packCharge(businessId, { samePurchaseAs: retired });
+    expect(await tryCredit(businessId, retired)).toBe('allowed');
+    expect(await tryCredit(businessId, replacement)).toMatch(
+      /^42501 .*this purchase is credited already/,
+    );
+    expect(await counters(businessId)).toEqual([
+      { period: await thisMonth(), unit: 'AI_ACTIONS', bonus: UNITS },
+    ]);
+    expect(await creditedAt(replacement)).toBeNull();
+  });
+
+  it('refuses a withdrawn link once its replacement is credited, and writes nothing', async () => {
+    const businessId = await paidBusiness();
+    const retired = await packCharge(businessId, { superseded: true, abandoned: true });
+    const replacement = await packCharge(businessId, { samePurchaseAs: retired });
+    expect(await tryCredit(businessId, replacement)).toBe('allowed');
+    expect(await tryCredit(businessId, retired)).toMatch(
+      /^42501 .*this purchase is credited already/,
+    );
+    expect(await counters(businessId)).toEqual([
+      { period: await thisMonth(), unit: 'AI_ACTIONS', bonus: UNITS },
+    ]);
+    expect(await creditedAt(retired)).toBeNull();
+  });
+
+  it('the usage writer cannot stamp a superseded charge that was not withdrawn as a link (trigger)', async () => {
+    const businessId = await paidBusiness();
+    const reference = await packCharge(businessId, { superseded: true });
+    const refused = await outcome(
+      ownerDb.transaction(async (tx) => {
+        await tx.execute(sql`SET LOCAL ROLE rekoda_usage_writer`);
+        await tx.execute(sql`SELECT set_config('app.business_id', ${businessId}, true)`);
+        await tx.execute(sql`UPDATE subscription_charges SET units_credited_at = now()
+                             WHERE reference = ${reference}`);
+      }),
+    );
+    expect(refused).toMatch(/^42501 .*the usage writer records only the credit time/);
+    expect(await creditedAt(reference)).toBeNull();
+  });
+
+  it('settlement and the application cannot clear superseded_at, stamp the credit time, or mark a paid charge withdrawn to get round the rule', async () => {
+    const businessId = await paidBusiness();
+    const reference = await packCharge(businessId, { superseded: true });
+    for (const db of [settlementDb as Db, appDb]) {
+      for (const statement of [
+        sql`UPDATE subscription_charges SET units_credited_at = now() WHERE reference = ${reference}`,
+        sql`UPDATE subscription_charges SET superseded_at = NULL WHERE reference = ${reference}`,
+        sql`UPDATE subscription_charges SET abandoned_at = now() WHERE reference = ${reference}`,
+      ]) {
+        expect(await outcome(withBusiness(db, businessId, (tx) => tx.execute(statement)))).toMatch(
+          /^42501 /,
+        );
+      }
+    }
+    expect(await tryCredit(businessId, reference)).toMatch(NOT_A_PACK);
+    expect(await creditedAt(reference)).toBeNull();
+    expect(await counters(businessId)).toEqual([]);
+  });
+
+  it('a pending link is still withdrawn as before (the application retires it)', async () => {
+    const businessId = await paidBusiness();
+    const reference = await packCharge(businessId, { status: 'pending' });
+    expect(
+      await outcome(
+        withBusiness(appDb, businessId, (tx) =>
+          tx.execute(sql`UPDATE subscription_charges
+            SET superseded_at = clock_timestamp(), abandoned_at = clock_timestamp()
+            WHERE reference = ${reference}`),
+        ),
+      ),
+    ).toBe('allowed');
   });
 });
