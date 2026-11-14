@@ -6,7 +6,12 @@
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { PRIVILEGED, problemsFor, readFiles } from './check-deploy.mjs';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { OPERATOR_PATHS, PRIVILEGED, problemsFor, readFiles } from './check-deploy.mjs';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 const REAL = readFiles();
 const problems = (edit = {}) => problemsFor({ ...REAL, ...edit });
@@ -127,7 +132,7 @@ test('plan changes routed anywhere but the operator process, or more routed to i
   expectProblem(problems(toApi), /must route exactly .* to operator:3002/);
   const wider = edited(
     'caddyfile',
-    '@operator_plane path /v1/businesses/plan /v1/businesses/plan/*',
+    '@operator_plane path /v1/businesses/plan /v1/businesses/plan/* /v1/ops/refund',
     '@operator_plane path /v1/*',
   );
   expectProblem(problems(wider), /must route exactly .* to operator:3002/);
@@ -143,4 +148,25 @@ test('plan changes routed anywhere but the operator process, or more routed to i
     '      operator:\n        condition: service_healthy\n      # Never serve with an edge trust list',
   );
   expectProblem(problems(waiting), /caddy must not wait for operator/);
+});
+
+test('every route the operator process serves is routed to it at the edge (0230 refunds)', () => {
+  /* The operator process's whole surface is OPERATOR_ROUTES; a path there that Caddy sends to the
+   * API instead is unreachable in production, where the API holds no operator credential and
+   * answers 404 (review of 7a58696: POST /v1/ops/refund). */
+  const server = readFileSync(join(ROOT, 'apps/api/src/operator-plane/server.ts'), 'utf8');
+  const table = /export const OPERATOR_ROUTES[^=]*=\s*\{([\s\S]*?)\n\};/.exec(server)?.[1] ?? '';
+  const paths = [...table.matchAll(/^\s*'(\/v1\/[^']+)':/gm)].map((m) => m[1]);
+  assert.ok(paths.includes('/v1/ops/refund'), `expected the refund route, got ${paths}`);
+  const routed = OPERATOR_PATHS.split(/\s+/);
+  const covered = (path) =>
+    routed.some((pattern) =>
+      pattern.endsWith('/*') ? path.startsWith(pattern.slice(0, -1)) : path === pattern,
+    );
+  for (const path of paths) assert.ok(covered(path), `${path} is not routed to the operator`);
+  const caddy = readFileSync(join(ROOT, 'deploy/Caddyfile'), 'utf8');
+  assert.match(
+    caddy,
+    new RegExp(`@operator_plane path ${OPERATOR_PATHS.replaceAll('*', '\\*')}\\n`),
+  );
 });

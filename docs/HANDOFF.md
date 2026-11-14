@@ -58,7 +58,7 @@ MERGED, NOT DEPLOYED; the owner merges after the pre-merge steps, including the 
   - review and approve the merge of #432;
   - add `OPERATOR_BILLING_OIDC_AUDIENCE` to the staging `.env`;
   - confirm a fresh off-box backup;
-  - run the stopped-window deploy ("Deploy a release carrying 0213 to 0223");
+  - run the stopped-window deploy ("Deploy a release carrying 0213 to 0230");
   - run the acceptance walkthrough;
   - rule OD-53 before paid launch.
 
@@ -68,7 +68,7 @@ MERGED, NOT DEPLOYED; the owner merges after the pre-merge steps, including the 
 - **The three MINOR residuals of `ece0e14` are closed:** guards follow role inheritance (11), a recovered dead job clears its lease (10), the smoke checks guard text (9). An unbound reservation is refundable for 15 minutes only.
 - **Not closed, recorded in OD-51 (residuals a to d) and OD-53 (five owner decisions):** the tenant pin is not an authentication of the caller; the application decides what is metered; it can still delete the Paystack event a settlement job reads (no reconciliation of Rekoda's own pending charges exists); the meter ceiling is always the catalogue's.
 - **Autopilot, 13 Nov 2026 (second independent review of `ece0e14..10ef5c9`):** IMPORTANT, fixed in 0222 (never on main or staging): the application's dead->pending requeue of a settlement job was unbounded (reproduced as `rekoda_app`: a 50-year `run_at` was accepted), which would take a verified payment out of dead-job enrolment and the operator's recovery path. The requeue must now be due within a minute with exactly one more attempt, as `deadJobs.startRecovery` writes it; the pre-start smoke checks the clause. RED first: `ATTACK: requeueing a dead settlement job far in the future, or with no attempt left, is refused` (`usage-refund-and-job-guards`). MINORs from the same review, not fixed: an app clock more than 60 s ahead of the database would refuse the Paystack pump's enqueue; `rekoda_usage_writer` reads every `businesses` column; an unknown plan value meters 0 in the database but the trial allowance in core; pre-existing (0220) the application can push a pending non-settlement job's `run_at` out.
-- **New runbook:** `docs/runbooks/billing-duplicate-payments.md` (two steps await OD-53 decisions). Deploy section renamed "Deploy a release carrying 0213 to 0223".
+- **New runbook:** `docs/runbooks/billing-duplicate-payments.md` (two steps await OD-53 decisions). Deploy section renamed "Deploy a release carrying 0213 to 0230".
 
 **PR B, 12 Nov 2026, independent reviews of `208c919` (three fresh read-only contexts: database boundary; financial and runtime; process, deployment and documentation): 0 BLOCKING, 3 IMPORTANT, all fixed; still OPEN as #432, not merged, not deployed.**
 
@@ -118,7 +118,7 @@ MERGED, NOT DEPLOYED; the owner merges after the pre-merge steps, including the 
 - **Two sessions worked on this branch on 12 Nov.** The engineering session holding the owner's instruction wrote 0213 to 0219 (and later 0220); the scheduled autopilot run, working from `2b602b0`, fixed CI, a web copy defect and the runbook, and reviewed 0213 to 0216 (its note is kept below). Its two IMPORTANT findings are both closed here (the runbook section, and OD-52, by 0218 and then 0220), and its OD-50 minor about a later cancellation is fixed by 0219.
 - **Before a deploy (owner):**
   - add `OPERATOR_BILLING_OIDC_AUDIENCE` to the staging `.env`, different from `OPERATOR_OIDC_AUDIENCE`, and have the identity provider issue plan-change tokens for it; the staging deploy refuses to start without it, with nothing changed;
-  - follow `docs/runbooks/deploy.md`, "Deploy a release carrying 0213 to 0223" (two new services; every writing process is stopped);
+  - follow `docs/runbooks/deploy.md`, "Deploy a release carrying 0213 to 0230" (two new services; every writing process is stopped);
   - run the OD-49 preflight as before.
 - **Not done, on purpose:** no merge, no deploy, no staging change, no live Paystack or Meta call. `REKODA_USER_JOURNEYS.md` and the acceptance documents do not yet describe the support-review route or the `duplicate_purchase` record.
 - **Honest limits:** the end of the OD-51 row in `REKODA_LAUNCH_READINESS.md`.

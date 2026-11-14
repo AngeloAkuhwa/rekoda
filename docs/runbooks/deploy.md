@@ -185,7 +185,7 @@ dc build --build-arg REKODA_COMMIT=$(git rev-parse --short HEAD) api   # build B
 dc build --build-arg REKODA_COMMIT=$(git rev-parse --short HEAD) web   # one image at a time: never both at once
 # First PRODUCTION deploy carrying migrations 0175-0178 (G-109): run `dc stop api worker` here first
 # Every deploy carrying 0196 or 0200 (PR B, plan-field boundary, OD-48): run `dc stop api worker` here first, and see "Deploy a release carrying 0196"
-# Every deploy carrying 0216, 0217, 0218, 0220, 0221, 0222 or 0223 (OD-51): run `dc stop api worker operator settlement` here first, and see "Deploy a release carrying 0213 to 0223"
+# Every deploy carrying 0216, 0217, 0218, 0220, 0221, 0222, 0223, 0228 or 0230 (OD-51, OWN-94): run `dc stop api worker operator settlement` here first, and see "Deploy a release carrying 0213 to 0230"
 # ...and after migrate, run the step-8 pre-start database smoke (SMOKE_0196_SQL) as the owner: do not `dc up` unless it prints t
 dc run --rm -T migrate                                             # expand-only migrations, as the owner
 dc up -d --wait                                                    # recreates api, worker and web on the new images
@@ -642,7 +642,7 @@ worker or the api. Step 1 below describes the release that carried 0209.
 
 Rollback past these migrations is a backup restore (G-02), as for 0196 to 0206 (OWN-86).
 
-### Deploy a release carrying 0213 to 0223 (support-review upgrade, pack purchase identity, pricing source, usage meter boundary, settlement and operator processes, reservation closure)
+### Deploy a release carrying 0213 to 0230 (support-review upgrade, pack purchase identity, pricing source, usage meter boundary, settlement and operator processes, reservation closure; 0227 to 0230: the paid-launch gate, the worker's payload isolation, enrolment dead letters, refunds through the operator)
 
 0216, 0217, 0218, 0220 and 0221 are compatibility breaks: the previous release writes `usage_counters`
 directly, which no runtime role may do afterwards, and settles charges in the worker on a role
@@ -709,9 +709,10 @@ This release starts two more services. Before deploying:
    it stops settlement clearing a paid charge's set-aside, which no release does.
 
    Two checks before the window, both read-only:
-   - `PAYSTACK_SECRET_KEY` is set in `.env` (a test key on staging). The settlement process boots
-     without it, reports `/health` ok, and every subscription payment job then fails verify until it
-     dies into the dead-job queue (independent review of `75a8002`, recorded MINOR). On staging,
+   - `PAYSTACK_SECRET_KEY` is set in `.env` (a test key on staging). Since 15 Nov 2026 (OWN-94) the
+     api, the worker and the settlement process refuse to start in production without a recognised
+     key, naming the variable (before, settlement booted without it and every payment job failed
+     verify until it died: independent review of `75a8002`). On staging,
      `deploy-staging.sh` now refuses a key that is not `sk_test_...` before building anything, and
      `scripts/staging-readonly-check.sh` asks the running settlement container for its own key;
      production has no such script, so check it by hand there.

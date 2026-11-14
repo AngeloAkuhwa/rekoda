@@ -639,7 +639,7 @@ export class OpsController {
 
   /**
    * Close a blocked renewal (OWN-70) with what the operator decided. Records only: it neither pays
-   * the renewal, nor starts a new one, nor touches the grace clock (OD-44 is open).
+   * the renewal, nor starts a new one, nor touches the grace clock (a fresh payment for a blocked renewal is `billing.renewal_initiate`, OD-44, queued by the block-close pass).
    */
   @Post('exceptions/renewals/:reference/resolve')
   @OperatorScopes('ops:payment')

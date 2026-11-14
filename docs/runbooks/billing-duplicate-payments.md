@@ -1,7 +1,7 @@
 # Runbook: a merchant paid twice for one pack, or for one charge
 
-Status: written in the MVP readiness review of PR #432 (13 Nov 2026). Reflects the code at that
-PR's head. Nothing here moves money automatically: Rekoda never refunds on its own, and the
+Status: written in the MVP readiness review of PR #432 (13 Nov 2026); refund recording updated for
+migration 0230 (15 Nov 2026, OWN-94). Nothing here moves money automatically: Rekoda never refunds on its own, and the
 refund itself is a Paystack dashboard action taken by a person (ADR 0024, `docs/safety-review.md`).
 
 ## When this happens
@@ -14,7 +14,7 @@ payments for one logical purchase:
   `purchase_id`. The first verified payment credits the units; the database's unique index
   `subscription_charges_one_credit_per_purchase_ux` allows only one credited charge per business and
   purchase. The second verified payment is recorded as `paid` and set aside with
-  `unapplied_reason = 'duplicate_purchase'`. The merchant's billing page shows it as **paid twice**.
+  `unapplied_reason = 'duplicate_purchase'`. The merchant's billing page shows it under **Payment received, not applied**, explaining that it was already paid for and no extra units were added.
 - **`duplicate_payment`**: the same charge is paid again under a different Paystack session (a lost
   link was replaced and both sessions were paid). The charge stays paid once. The second payment is
   NOT recorded as a charge: settlement marks the Paystack event processed with reason
@@ -27,7 +27,7 @@ paid Rekoda that Rekoda did not deliver anything for.
 
 ## 1. Find it
 
-- **`duplicate_purchase`:** `GET /v1/ops/exceptions` (operator token, scope `ops:payment`) lists
+- **`duplicate_purchase`:** `GET /v1/ops/exceptions` (operator token, scope `ops:read`) lists
   `unappliedCharges`. Each row has the charge reference, the business, the reason, `resolveBy` and
   `overdue`. A row with reason `duplicate_purchase` is this runbook's case.
 - **`duplicate_payment`:** no operator endpoint lists it yet (a gap, recorded as OD-53 (5) in
@@ -99,9 +99,17 @@ the owner.
    record instead; Rekoda has no record-only entry for a second payment of the same charge yet
    (OD-53 (5)). Skip to section 6.
 3. `duplicate_purchase`: record it in Rekoda: `POST /v1/ops/refund` with `businessId`, `reference` (the set-aside
-   reference), `amountK` (the kobo refunded) and `reason`. This writes the refunded amount, moves the
-   charge to `refunded` when the whole amount is back, and writes an audit row naming the verified
-   operator. It does not move money and does not touch the plan.
+   reference), `amountK` (the kobo refunded) and `reason` (one of `duplicate_charge`,
+   `incorrect_amount`, `service_failure`, `unused_add_on`, `suspension_error`; use
+   `duplicate_charge` here). Since migration 0230 this route is served by the **operator
+   process** (Caddy sends it to `operator:3002`): the token must be issued for
+   `OPERATOR_BILLING_OIDC_AUDIENCE` and carry `ops:payment`; an API-audience token is refused,
+   and an API host answers 404. It writes the refunded amount, moves the charge to `refunded`
+   when the whole amount is back, and writes an audit row naming the verified operator. It does
+   not move money and does not touch the plan. The set-aside charge was never credited, so no
+   units are revoked. (A refund of a CREDITED pack is a different case: only in full, of an
+   unused pack, within seven days of its credit, and its units are revoked in the same step;
+   anything else is refused. A partial refund of a pack is not approved: OWN-94.)
 4. Close the exception: `POST /v1/ops/exceptions/charges/<reference>/resolve` with a resolution that
    names the Paystack refund id.
 

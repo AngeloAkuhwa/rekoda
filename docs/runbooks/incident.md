@@ -21,7 +21,7 @@ curl -fsS -H "authorization: Bearer $OPERATOR_TOKEN" \
 `$OPERATOR_TOKEN` is a token from the identity provider named by
 `OPERATOR_OIDC_ISSUER`, carrying at least the `ops:read` scope. Both reads
 above declare `ops:read`; the endpoints that MOVE something declare more
-(`/v1/ops/refund` and the exception resolver want `ops:payment`). Two statuses
+(the exception resolver wants `ops:payment`; `/v1/ops/refund` wants `ops:payment` too, but is served by the operator process since 0230, so its token is issued for `OPERATOR_BILLING_OIDC_AUDIENCE`). Two statuses
 to read correctly under stress: **401** means the token was missing, expired
 or did not verify — get a fresh one. **403** means it verified and the person
 it names lacks the scope the route asked for — the fix is with whoever

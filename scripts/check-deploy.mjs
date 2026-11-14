@@ -81,9 +81,9 @@ export const PRIVILEGED = {
     ],
   },
 };
-/** The plan routes, served by the operator process alone. */
+/** The plan routes and the refund record (0230), served by the operator process alone. */
 export const OPERATOR_UPSTREAM = 'operator:3002';
-export const OPERATOR_PATHS = '/v1/businesses/plan /v1/businesses/plan/*';
+export const OPERATOR_PATHS = '/v1/businesses/plan /v1/businesses/plan/* /v1/ops/refund';
 /** The fields a privileged service may set; anything else could hand it more than its list. */
 const PRIVILEGED_FIELDS = new Set([
   'image',
