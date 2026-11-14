@@ -62,6 +62,10 @@ describe('the settlement process configuration', () => {
     'OPENAI_API_KEY',
     'MONO_SECRET_KEY',
     'RESEND_API_KEY',
+    'APP_DATABASE_URL',
+    'R2_ACCESS_KEY_ID',
+    'R2_SECRET_ACCESS_KEY',
+    'REKODA_ALERT_WEBHOOK_URL',
   ])('in production refuses %s, which belongs to another process', (name) => {
     const value = 'postgres://someone:topsecretvalue@postgres:5432/rekoda';
     let message = '';

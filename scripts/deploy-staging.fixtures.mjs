@@ -115,7 +115,7 @@ export function host(
     'docker',
     `echo "$*" >> "${fake}/docker.log"
 ${realDocker ? resolveWithRealCompose(realDocker, fake) : ''}
-case "$*" in *"-f docker-compose.prod.yml"*) echo "PAYSTACK_SECRET_KEY=\${PAYSTACK_SECRET_KEY-unset} VAULT_KEY=\${VAULT_KEY-unset} ONLY_IN_TARGET=\${ONLY_IN_TARGET-unset}" >> "${fake}/shell-env.log" ;; esac
+case "$*" in *"-f docker-compose.prod.yml"*) echo "PAYSTACK_SECRET_KEY=\${PAYSTACK_SECRET_KEY-unset} VAULT_KEY=\${VAULT_KEY-unset} ONLY_IN_TARGET=\${ONLY_IN_TARGET-unset} COMPOSE_PROJECT_NAME=\${COMPOSE_PROJECT_NAME-unset} COMPOSE_PROFILES=\${COMPOSE_PROFILES-unset}" >> "${fake}/shell-env.log" ;; esac
 case "$*" in
   *"stop api worker"*) [ -e "${fake}/stop-fails" ] && exit 1; [ -e "${fake}/hang-stop" ] && sleep 60 ;;
   *"ps --status running --services"*) [ -e "${fake}/ps-fails" ] && exit 1; cat "${fake}/running" 2>/dev/null ;;

@@ -37,6 +37,7 @@ export interface SettlementProcessConfig {
 /** Credentials and keys that belong to OTHER processes; this one must not be handed any. */
 const FOREIGN_SECRETS = [
   'DATABASE_URL',
+  'APP_DATABASE_URL',
   'WORKER_DATABASE_URL',
   'OPERATOR_DATABASE_URL',
   'MATCH_KEY',
@@ -52,6 +53,9 @@ const FOREIGN_SECRETS = [
   'OPENAI_API_KEY',
   'RESEND_API_KEY',
   'RESEND_WEBHOOK_SECRET',
+  'R2_ACCESS_KEY_ID',
+  'R2_SECRET_ACCESS_KEY',
+  'REKODA_ALERT_WEBHOOK_URL',
 ] as const;
 
 function label(env: NodeJS.ProcessEnv, key: string, fallback: string): string {

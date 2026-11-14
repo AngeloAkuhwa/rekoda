@@ -448,12 +448,19 @@ test('OWN-70: a Paystack key or vault key exported in the deploy shell never rea
     PAYSTACK_SECRET_KEY: live,
     VAULT_KEY: 'b'.repeat(64),
     ONLY_IN_TARGET: 'from-the-deploy-shell',
+    /* Compose's own variables: an exported project name would point every call at another,
+     * empty project (the stop check would pass with nothing stopped). */
+    COMPOSE_PROJECT_NAME: 'someone-elses-project',
+    COMPOSE_PROFILES: 'everything',
   });
   assert.equal(r.status, 0, r.stderr + r.stdout);
   const seen = h.shellEnvSeen();
   assert.ok(seen.length > 0, 'compose was called');
   for (const line of seen) {
-    assert.equal(line, 'PAYSTACK_SECRET_KEY=unset VAULT_KEY=unset ONLY_IN_TARGET=unset');
+    assert.equal(
+      line,
+      'PAYSTACK_SECRET_KEY=unset VAULT_KEY=unset ONLY_IN_TARGET=unset COMPOSE_PROJECT_NAME=unset COMPOSE_PROFILES=unset',
+    );
   }
   assert.doesNotMatch(r.stderr + r.stdout, /exportedkey|bbbbbbbb/, 'a value is never printed');
 });

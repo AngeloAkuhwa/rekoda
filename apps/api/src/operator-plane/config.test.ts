@@ -70,6 +70,24 @@ describe('the operator process configuration', () => {
     ).toThrow(/must be a public https URL in production/);
   });
 
+  /* The API's public-endpoint rule (endpoints.ts), applied to the same variables: a container, a
+   * link-local or shared address, a local suffix or a URL with credentials could sign plan changes. */
+  it.each([
+    'https://web:3000/jwks',
+    'https://host.docker.internal/jwks',
+    'https://idp.local/jwks',
+    'https://169.254.169.254/jwks',
+    'https://100.64.0.1/jwks',
+    'https://[fd00::1]/jwks',
+    'https://user:pass@idp.rekoda.app/jwks',
+  ])('in production refuses a non-public identity provider: %s', (value) => {
+    for (const key of ['OPERATOR_OIDC_JWKS_URL', 'OPERATOR_OIDC_ISSUER']) {
+      expect(() => loadOperatorConfig({ ...PRODUCTION, [key]: value })).toThrow(
+        new RegExp(`${key} must be a public https URL in production`),
+      );
+    }
+  });
+
   it('refuses the development secret in production, and a short one anywhere', () => {
     expect(() =>
       loadOperatorConfig({ ...PRODUCTION, REKODA_OPERATOR_SECRET: 's'.repeat(40) }),
@@ -105,6 +123,10 @@ describe('the operator process configuration', () => {
     'OPENAI_API_KEY',
     'MONO_SECRET_KEY',
     'RESEND_API_KEY',
+    'APP_DATABASE_URL',
+    'R2_ACCESS_KEY_ID',
+    'R2_SECRET_ACCESS_KEY',
+    'REKODA_ALERT_WEBHOOK_URL',
   ])('in production refuses %s, which belongs to another process', (name) => {
     const value = 'postgres://someone:topsecretvalue@postgres:5432/rekoda';
     let message = '';

@@ -78,6 +78,12 @@ clear_compose_overrides() {
     grep -oE '\$\{[A-Z_][A-Z0-9_]*' | cut -c3- | sort -u); do
     [ "$name" = REKODA_RELEASE ] || unset "$name"
   done
+  # Compose's own settings too (COMPOSE_PROJECT_NAME, COMPOSE_PROFILES, COMPOSE_FILE, ...): an
+  # exported project name would point every call at another, empty project, so the stop check would
+  # pass with nothing stopped and migrate would run against a fresh database. A COMPOSE_* line in
+  # .env still applies: --env-file .env reads it. DOCKER_HOST and DOCKER_CONTEXT are left alone:
+  # they choose the daemon (a rootless one, for example), not what runs on it.
+  for name in "${!COMPOSE_@}"; do unset "$name"; done
 }
 # Whether this release brings in the plan and payment boundary (0196, 0200, 0202 to 0206), so the
 # OWN-86 pre-start smoke applies.

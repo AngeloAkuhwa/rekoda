@@ -11,6 +11,7 @@
  * secrets (the vault key, the OTP pepper, provider keys). None of them belongs in this process,
  * and in production their presence is refused rather than ignored.
  */
+import { nonPublicReason } from '../endpoints.js';
 import type { OperatorAuthConfig } from '../auth/operator-identity.js';
 
 /** A configuration this process refuses to start with. The message never carries a value. */
@@ -35,6 +36,7 @@ const NON_PRODUCTION_ENVS = new Set(['development', 'test']);
 /** Credentials and keys that belong to OTHER processes; this one must not be handed any. */
 const FOREIGN_SECRETS = [
   'DATABASE_URL',
+  'APP_DATABASE_URL',
   'WORKER_DATABASE_URL',
   'SETTLEMENT_DATABASE_URL',
   'VAULT_KEY',
@@ -51,6 +53,9 @@ const FOREIGN_SECRETS = [
   'OPENAI_API_KEY',
   'RESEND_API_KEY',
   'RESEND_WEBHOOK_SECRET',
+  'R2_ACCESS_KEY_ID',
+  'R2_SECRET_ACCESS_KEY',
+  'REKODA_ALERT_WEBHOOK_URL',
 ] as const;
 
 function label(env: NodeJS.ProcessEnv, key: string, fallback: string): string {
@@ -83,14 +88,12 @@ function httpsUrl(name: string, value: string, isProduction: boolean): void {
     throw new OperatorConfigError(`${name} must be an https URL`);
   }
   if (url.protocol !== 'https:') throw new OperatorConfigError(`${name} must be an https URL`);
-  /* A local identity provider would let whoever runs it sign operator tokens (G-72). */
-  if (
-    isProduction &&
-    /^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|\[?::1\]?$|0\.0\.0\.0)/.test(
-      url.hostname,
-    )
-  ) {
-    throw new OperatorConfigError(`${name} must be a public https URL in production`);
+  /* A local identity provider would let whoever runs it sign operator tokens (G-72). The same
+   * public-endpoint rule the API applies to these variables (endpoints.ts), so the two processes,
+   * which read one .env, can never disagree about an identity provider. */
+  if (isProduction) {
+    const reason = nonPublicReason(value);
+    if (reason) throw new OperatorConfigError(`${name} must be a public https URL in production`);
   }
 }
 
