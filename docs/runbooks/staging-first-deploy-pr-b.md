@@ -580,9 +580,20 @@ migrate, the database holds 0196 and later, which the previous release cannot ru
 database **and** the previous release, and nothing starts until both are back, in this order:
 
 1. Stop every writing process: `dc stop api worker web operator settlement` (`postgres` and `caddy` stay up).
-2. Restore the P7 backup (`backup-restore.md`, "Restore by hand" and "Real restore").
+2. Restore the P7 backup into a new, empty `rekoda`, keeping the migrated database beside it for inspection (nothing
+   is dropped):
+
+   ```bash
+   dc exec -T postgres psql -U rekoda_owner -d postgres -v ON_ERROR_STOP=1 \
+     -c 'ALTER DATABASE rekoda RENAME TO rekoda_pr432_failed' \
+     -c 'CREATE DATABASE rekoda OWNER rekoda_owner'
+   ```
+
+   Then decrypt, check and restore the P7 object into it as `backup-restore.md`, "Restore by hand", says (the target is
+   that new `rekoda`; the roles already exist on this server), and run the drill's ledger check on it.
+
 3. Restore the previous application release, the one P7 recorded (`58e6834`, `staging-58e6834`). Do not take it from
-   `.git/rekoda-deploy-staging.rollback`, which is rewritten only after a deploy that succeeded and may name an older
+   `.git/rekoda-deploy-staging.rollback`, which is rewritten only after a deploy that succeeded and may name a different
    release:
 
    ```bash
@@ -593,8 +604,8 @@ database **and** the previous release, and nothing starts until both are back, i
 
    The compose file, the Caddyfile and the `rekoda-*:staging-58e6834` images then match the restored database. The
    deploy's own image cleanup keeps the release it replaced; check with `docker image ls 'rekoda-*'` and, if those
-   images are gone (a cleanup by hand), build them from this checkout first (`deploy.md`, "Roll back"). Run no Docker
-   cleanup by hand between a failed deploy and its rollback.
+   images are gone (a later successful deploy prunes them, as does a cleanup by hand), build them from this checkout
+   first (`deploy.md`, "Roll back"). Run no Docker cleanup by hand between a failed deploy and its rollback.
 
 4. Only then start: `dc up -d --wait`, then `dc exec caddy caddy reload --config /etc/caddy/Caddyfile`. The previous
    compose file does not define `operator` or `settlement`; they stay stopped from step 1, and must not be started
