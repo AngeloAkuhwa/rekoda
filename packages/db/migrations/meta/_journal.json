@@ -1569,6 +1569,13 @@
       "when": 1796904000000,
       "tag": "0223_settlement_scope_and_dead_job_requeue",
       "breakpoints": true
+    },
+    {
+      "idx": 224,
+      "version": "7",
+      "when": 1796904000001,
+      "tag": "0224_pack_credit_derives_from_the_charge",
+      "breakpoints": true
     }
   ]
 }

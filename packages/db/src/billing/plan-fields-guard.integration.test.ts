@@ -102,7 +102,7 @@ async function seedCharge(businessId: string, spec: ChargeSpec = {}): Promise<st
          paid_at, applied_period_start, applied_period_end, unapplied_at, unapplied_reason,
          superseded_at)
       VALUES (${businessId}::uuid, ${kind}, ${plan},
-        ${kind === 'add_on' ? 'whatsapp_500' : null}, 1000, ${status}, ${reference},
+        ${kind === 'add_on' ? 'messages_100' : null}, 1000, ${status}, ${reference},
         now(), now() + interval '30 days',
         ${status === 'paid' ? sql`now()` : sql`NULL`},
         ${spec.applied ? sql`now()` : sql`NULL`}, ${spec.applied ? sql`now() + interval '30 days'` : sql`NULL`},

@@ -391,6 +391,18 @@ describe('the pre-start database smoke, executed', () => {
         /CREATE OR REPLACE FUNCTION rekoda_private\.jobs_application_transition_guard\(\)[\s\S]*?END \$\$;/,
       )![0],
     ],
+    // 0224: a pack charge credits exactly what it bought.
+    [
+      'the pack credit back at 0216 (unit, quantity and row taken from the caller)',
+      readFileSync(
+        new URL('../../migrations/0216_usage_meter_boundary.sql', import.meta.url),
+        'utf8',
+      ).match(/CREATE OR REPLACE FUNCTION public\.usage_credit_pack\([\s\S]*?END \$\$;/)![0],
+    ],
+    [
+      '0224 not recorded in the ledger',
+      "DELETE FROM rekoda_migrations WHERE tag = '0224_pack_credit_derives_from_the_charge'",
+    ],
   ])('prints f for %s', async (_label, tamper) => {
     expect(await smokeAfter(tamper)).toBe('f');
   });

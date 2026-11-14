@@ -367,7 +367,7 @@ describe('OD-37: what a charge buys is frozen from its opening to its end (0205,
       sql`plan = 'complete'`,
       sql`kind = 'renewal'`,
       sql`quantity = 50`,
-      sql`pack_id = 'whatsapp_500'`,
+      sql`pack_id = 'documents_50'`,
       sql`period_end = now() + interval '10 years'`,
       sql`created_at = now() + interval '1 day'`,
     ]) {
@@ -490,13 +490,14 @@ describe('OD-37: only settlement credits pack units or records an add-on holding
     const reference = await seedCharge(businessId, { kind: 'add_on', plan: null });
     expect(
       await withBusiness(settlementDb, businessId, (tx) =>
-        usageRepo.creditPack(tx, businessId, reference, '2026-11', 'AI_ACTIONS', 7),
+        usageRepo.creditPack(tx, businessId, reference, '2026-11', 'AI_ACTIONS', 100),
       ),
     ).toBe(true);
     const [row] = await ownerDb.execute<{ bonus: number }>(
       sql`SELECT bonus FROM usage_counters WHERE business_id = ${businessId}::uuid AND unit = 'AI_ACTIONS'`,
     );
-    expect(row!.bonus).toBe(7);
+    /* The fixture's pack is `messages_100`: what it bought (0224), not what a caller names. */
+    expect(row!.bonus).toBe(100);
   });
 
   it('the application can no longer insert or change an add-on holding; settlement can', async () => {
