@@ -132,6 +132,11 @@ psql "$SCRATCH_URL" -c "DO \$\$ DECLARE r text; BEGIN FOREACH r IN ARRAY ARRAY['
 pg_restore -d "$SCRATCH_URL" restore.dump
 # Must print 0 (each writer role owns its definer functions again):
 psql "$SCRATCH_URL" -Atc "SELECT count(*) FROM (VALUES ('0058_payment_provenance','rekoda_provenance_owner'),('0196_plan_fields_guard','rekoda_plan_writer'),('0216_usage_meter_boundary','rekoda_usage_writer')) AS e(tag, role) WHERE EXISTS (SELECT 1 FROM rekoda_migrations m WHERE m.tag = e.tag) AND NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_roles r ON r.oid = p.proowner WHERE p.prosecdef AND r.rolname = e.role);"
+# Must print nothing: every function has the owner the archive gave it (the drill's full check).
+. scripts/lib/backup-common.sh
+pg_restore -l restore.dump | backup_toc_function_owners > owners.expected
+psql "$SCRATCH_URL" -At -c "$BACKUP_FUNCTION_OWNERS_SQL" | LC_ALL=C sort > owners.restored
+backup_function_owner_mismatches owners.expected owners.restored
 )
 ```
 
@@ -151,7 +156,8 @@ switch the application over; do not restore over a database you may still need.
    -- must return zero rows
    ```
    and the writer roles still own their definer functions (the ownership query under "Restore by
-   hand" prints 0; `restore-drill.sh` fails otherwise).
+   hand" prints 0, and every function has the owner the archive's table of contents gives it, the
+   comparison printing nothing; `restore-drill.sh` fails otherwise).
 5. Spot-check one business: invoice count, latest document number, an
    audit-trail tail.
 6. Record the drill (date, dump used, duration, result) in this file's

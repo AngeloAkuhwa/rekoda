@@ -70,8 +70,21 @@ session never starts a capability from zero.
 - **Tenancy:** `withBusiness()` is the only path to tenant data, apart from the
   approved non-identifying operational-monitoring aggregates (invariant 3,
   OWN-36, ADR 0035); RLS on
-  every business-owned table; three DB roles (owner, `rekoda_app`,
-  `rekoda_worker`); an RLS exemption register enforced by tests.
+  every business-owned table; an RLS exemption register enforced by tests.
+- **Database principals** (ADR 0022, ADR 0035 Amendments 2 to 5, OWN-85 to OWN-91). The
+  migration owner (`rekoda_owner`; an administrative trust boundary, not an application
+  role) plus four LOGIN roles, each held by one process: `rekoda_app` (API),
+  `rekoda_worker` (worker), `rekoda_settlement` (settlement process: records Rekoda's own
+  payments, applies paid plans, credits packs) and `rekoda_billing_operator` (operator
+  process: plan changes). Neither privileged principal is a member of `rekoda_app` or of the
+  other, and each process refuses a credential that belongs to another. Four NOLOGIN roles
+  exist only to own `SECURITY DEFINER` functions or hold a narrow grant:
+  `rekoda_plan_writer` (the only writer of `businesses.plan` and the cycle fields),
+  `rekoda_usage_writer` (the only writer of `usage_counters` and `usage_reservations`),
+  `rekoda_provenance_owner` (payment provenance, 0058) and `rekoda_operator` (0058's operator
+  grant). A restore must keep their ownership (never `pg_restore --no-owner`). The exact
+  grants and owners are pinned by the pre-start smoke in `scripts/deploy-staging.sh` and the
+  `packages/db/src/{billing,ops,tenancy}` boundary suites.
 - **WhatsApp channel:** Meta Cloud API webhook (signature, verify token,
   idempotency), sender with templates, STOP/START, stranger handling
   (`apps/api/src/channels/`).
@@ -123,9 +136,17 @@ session never starts a capability from zero.
    non-identifying aggregate queue, webhook and delivery-health metrics using
    narrowly scoped service authorization (OWN-36, ADR 0035). A third, narrower class
    (OWN-57, ADR 0035 Amendment 1): ID-only scheduling discovery through a dedicated
-   worker-only `SECURITY DEFINER` function, followed by tenant-scoped reads and writes. None of these
-   exceptions grants general access to tenant-owned records, payloads or
-   merchant data.
+   worker-only `SECURITY DEFINER` function, followed by tenant-scoped reads and writes. A
+   fourth (OWN-85, ADR 0035 Amendment 2): approved operator work lists (dead payment and
+   billing jobs, blocked renewals), each a worker-only, read-only, fixed-column, bounded
+   (at most 200 rows) `SECURITY DEFINER` function reached from an `ops:read` route; reading
+   authorises nothing, and every recovery or resolution runs under `withBusiness()` for the
+   record's own business with its own scope and an audit event. The queue is split by job
+   kind (ADR 0035 Amendment 5): `rekoda_settlement` claims only `billing.process` and
+   `billing.apply_no_charge` jobs, the worker every other kind; that claim is coordination of
+   job rows, never a read of tenant records. None of these exceptions grants general access
+   to tenant-owned records, payloads or merchant data, and a new cross-tenant read needs its
+   own review and its own line in ADR 0035.
 4. **Customer PII lives in the vault** and travels as tokens; rehydration
    happens only in the authorised output layer. Never log a message body,
    a customer name, or a token-to-identity mapping.
@@ -155,7 +176,7 @@ session never starts a capability from zero.
 Monorepo (pnpm + turbo, Node from `.nvmrc`): `apps/api` (NestJS on
 Fastify: webhooks, `/v1`, auth, jobs), `apps/web` (Next.js: marketing,
 legal, dashboard `/app`, storefront `/s/[slug]`), `packages/core` (pure
-rules, no IO), `packages/db` (Drizzle schema, SQL migrations `0000`–`0223`,
+rules, no IO), `packages/db` (Drizzle schema, SQL migrations `0000`–`0224`,
 RLS, repos in `src/repos/`), `packages/contracts` (zod borders),
 `packages/shared` (branded types).
 

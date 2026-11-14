@@ -126,12 +126,15 @@ exercise the inbound path.
 pnpm turbo typecheck lint test build          # unit tests across every package
 node scripts/check-boundaries.mjs             # architectural boundaries (CI runs seven guard scripts)
 
-# Integration suites need a real PostgreSQL and three roles; run them SERIALLY.
-# Both suites read the three URLs (requireUrls in packages/db/src/testing.ts),
-# so export them once for the shell rather than prefixing one command.
+# Integration suites need a real PostgreSQL and five URLs (the owner and the four
+# login principals); run them SERIALLY. Both suites read them (requireUrls in
+# packages/db/src/testing.ts), so export them once for the shell rather than
+# prefixing one command.
 export DATABASE_URL=postgres://rekoda@127.0.0.1:5432/rekoda
 export APP_DATABASE_URL=postgres://rekoda_app@127.0.0.1:5432/rekoda
 export WORKER_DATABASE_URL=postgres://rekoda_worker@127.0.0.1:5432/rekoda
+export SETTLEMENT_DATABASE_URL=postgres://rekoda_settlement@127.0.0.1:5432/rekoda
+export OPERATOR_DATABASE_URL=postgres://rekoda_billing_operator@127.0.0.1:5432/rekoda
 pnpm --filter @rekoda/db test:integration
 pnpm --filter @rekoda/api test:integration
 
