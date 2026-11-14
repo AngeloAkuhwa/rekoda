@@ -12,8 +12,12 @@ Every command runs from the checkout (`/opt/rekoda`) as the deploy user. The
 examples use one alias:
 
 ```bash
-alias dc='docker compose -f docker-compose.prod.yml'
+alias dc='docker compose --env-file .env -f docker-compose.prod.yml'
 ```
+
+`--env-file .env` names the checkout's `.env` as compose's only settings file: without it an
+exported `COMPOSE_ENV_FILES` would replace `.env`. `scripts/deploy-staging.sh` defines `dc` the
+same way.
 
 ## What runs, and who holds which credential
 
@@ -397,6 +401,10 @@ would have plan changes, renewals and lapses refused (`42501`). Therefore:
   you saw, and escalate to the owner. The only database rollback is a restore from backup, and there
   is no backup mechanism yet (G-02); a restore also needs the `rekoda_plan_writer` role
   (`scripts/restore-drill.sh` creates it). That is an owner decision, never an operator reflex.
+  A restore brings back a database the previous release wrote, so the previous release comes back
+  with it, and before anything starts: stop every writing process, restore, check out the previous
+  commit and set its `REKODA_RELEASE` in `.env`, and only then `dc up -d --wait` (the staging
+  sequence for PR #432 is `docs/runbooks/staging-first-deploy-pr-b.md`, §8, "Rollback").
 - If migration 0196 itself fails, its own transaction rolls back and the database stays as it was.
   Confirm that **in the database, not only the ledger** before deciding anything: the
   guard exists if `SELECT 1 FROM pg_trigger WHERE tgname = 'businesses_plan_fields_guard'` returns a
@@ -662,7 +670,8 @@ This release starts two more services. Before deploying:
    passwords from them). The compose file hands each to its own service by name and blanks both
    for `api` and `worker`. The `operator` and `settlement` services never load `.env`: each
    receives a short named list (`scripts/check-deploy.mjs`, `PRIVILEGED`). A value exported in the
-   deploy shell would override `.env` for those two services, so run compose from a clean shell.
+   deploy shell would override `.env` for those two services, so run compose from a clean shell
+   (no exported key, no `COMPOSE_ENV_FILES`) with the `dc` alias above.
 
 3. `dc run --rm -T migrate`, then the pre-start smoke. The smoke now also checks that:
    - the support-review resolution (0213) runs for the billing operator only, and the request for

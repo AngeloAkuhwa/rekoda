@@ -604,11 +604,11 @@ export function problemsFor({ runbook, script, workflow, ci, dockerignore, compo
     }
     if (/\bdocker compose\b/.test(line)) {
       const allowed =
-        line === 'dc() { docker compose -f docker-compose.prod.yml "$@"; }' ||
+        line === 'dc() { docker compose --env-file .env -f docker-compose.prod.yml "$@"; }' ||
         /^docker compose version\b/.test(line.trim());
       if (!allowed) {
         problems.push(
-          `${FILES.script}: \`${line.trim()}\` calls compose directly; use dc, which names docker-compose.prod.yml alone`,
+          `${FILES.script}: \`${line.trim()}\` calls compose directly; use dc, which names .env and docker-compose.prod.yml alone`,
         );
       }
     }

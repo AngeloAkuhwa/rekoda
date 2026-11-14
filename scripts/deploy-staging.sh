@@ -60,15 +60,19 @@ API_URL=https://staging-api.myrekoda.com
 EDGE_NETWORK=rekoda-prod_edge
 EDGE_EXPECTED='172.30.10.1 false'
 
-dc() { docker compose -f docker-compose.prod.yml "$@"; }
+# --env-file .env names the one settings file on every call: without it an exported
+# COMPOSE_ENV_FILES replaces the project's .env as Compose's source, past every .env check below.
+dc() { docker compose --env-file .env -f docker-compose.prod.yml "$@"; }
 # Compose fills ${NAME} from the shell before .env. Staging's settings live in .env alone (the
 # owner's decision, 14 Nov 2026; never in GitHub or a deploy shell), and the checks above read
 # .env, so every name the compose file interpolates is cleared from this shell, except
 # REKODA_RELEASE, which this script pins on purpose. Otherwise a key exported in the deploy
 # session (a live Paystack key, another VAULT_KEY) would reach settlement or operator past them.
+# Comment lines are skipped: a ${NAME} in a comment is prose, and may name one of this script's own.
 clear_compose_overrides() {
   local name
-  for name in $(grep -oE '\$\{[A-Z_][A-Z0-9_]*' docker-compose.prod.yml 2>/dev/null | cut -c3- | sort -u); do
+  for name in $(grep -v '^[[:space:]]*#' docker-compose.prod.yml 2>/dev/null |
+    grep -oE '\$\{[A-Z_][A-Z0-9_]*' | cut -c3- | sort -u); do
     [ "$name" = REKODA_RELEASE ] || unset "$name"
   done
 }
@@ -777,8 +781,10 @@ PREV_RELEASE=$(sed -n 's/^REKODA_RELEASE=//p' .env)
 # refused outright, and the values below are read from those plain lines only.
 for name in PAYSTACK_SECRET_KEY REKODA_PAYSTACK_PLATFORM_CONFIRMED; do
   mentions=$(LC_ALL=C grep -v '^[[:space:]]*#' .env | LC_ALL=C grep -cE "${name}([^A-Za-z0-9_]|\$)" || true)
-  [ "$mentions" = "$(LC_ALL=C grep -c "^${name}=" .env || true)" ] ||
-    fail 'write PAYSTACK_SECRET_KEY and REKODA_PAYSTACK_PLATFORM_CONFIRMED in .env as one plain line each (NAME=value, nothing else on the line; no export, indent, colon or space before =); nothing has been changed'
+  # And at most one: a second plain line can sit inside another value's multi-line quotes, where
+  # Compose never reads it but this check would.
+  [ "$mentions" = "$(LC_ALL=C grep -c "^${name}=" .env || true)" ] && [ "$mentions" -le 1 ] ||
+    fail 'write PAYSTACK_SECRET_KEY and REKODA_PAYSTACK_PLATFORM_CONFIRMED in .env as at most one plain line each (NAME=value, nothing else on the line; no export, indent, colon or space before =); nothing has been changed'
 done
 unset mentions
 paystack_key=$(sed -n 's/^PAYSTACK_SECRET_KEY=//p' .env | tail -1)

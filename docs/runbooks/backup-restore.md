@@ -152,7 +152,9 @@ switch the application over; do not restore over a database you may still need.
 ## Real restore (incident)
 
 Same as the drill against the production server, plus: stop the app first
-(`docker compose -f docker-compose.prod.yml stop api worker web`), restore, run integrity checks, start, then
+(`docker compose --env-file .env -f docker-compose.prod.yml stop api worker web operator settlement`), restore,
+run integrity checks, put back the application release the backup was taken under (its checkout and its
+`REKODA_RELEASE` in `.env`; `deploy.md`, "Roll back"), start, then
 verify webhooks re-deliver (Meta and Paystack both retry) — idempotency
 keys make replays safe.
 
