@@ -12,6 +12,12 @@
  * (`business_id = ... current_setting('app.business_id', true)`), or runs in a function handed a
  * pinned `TenantDb` and names that business in the statement (`business_id = ${businessId}`), as a
  * job handler does on the application credential, where RLS also holds it to the pin.
+ *
+ * It is a TRIPWIRE, not a guarantee: a regular expression over source text. It recognises a named
+ * `payload`, `*`, `to_jsonb(` and `row_to_json(`, top-level functions and `const` arrow functions,
+ * and strips `--` and block comments; `sql.raw`, SQL built outside an `sql` template, and files
+ * outside the repositories are not seen. The guarantee is review plus the statement-level test
+ * (`packages/db/src/ops/dead-job-enrolment-pin.test.ts`).
  */
 
 /** Functions whose statements may read a job's payload without a tenant pin, and why. */
@@ -21,7 +27,10 @@ export const CLAIM_FUNCTIONS = new Map([
 ]);
 
 const REPOS = 'packages/db/src/repos/';
-const FUNCTION_START = /^(?:export\s+)?(?:async\s+)?function\s+(\w+)/gm;
+const FUNCTION_START =
+  /^(?:export\s+)?(?:(?:async\s+)?function\s+(\w+)|const\s+(\w+)\s*=\s*(?:async\s*)?(?:\([^)]*\)|\w+)\s*(?::[^=]+)?=>)/gm;
+/** What reads a whole job row, or its payload, without naming the column. */
+const READS_PAYLOAD = /\bpayload\b|(?:^|[\s,.])\*|\bto_jsonb\s*\(|\brow_to_json\s*\(/;
 const SQL_TEMPLATE = /\bsql`([\s\S]*?)`/g;
 const READS_JOBS = /\b(?:FROM|UPDATE|JOIN)\s+(?:public\.)?jobs\b/i;
 const PINNED = /business_id\s*=\s*nullif\(\s*current_setting\('app\.business_id',\s*true\)/i;
@@ -30,7 +39,10 @@ const TENANT_PARAMETER = /^[^{]*\btx:\s*TenantDb\b/;
 
 /** Each top-level function of a file, with its body (up to the next top-level function). */
 function functionsOf(body) {
-  const starts = [...body.matchAll(FUNCTION_START)].map((m) => ({ name: m[1], at: m.index }));
+  const starts = [...body.matchAll(FUNCTION_START)].map((m) => ({
+    name: m[1] ?? m[2],
+    at: m.index,
+  }));
   return starts.map((start, i) => ({
     name: start.name,
     body: body.slice(start.at, i + 1 < starts.length ? starts[i + 1].at : body.length),
@@ -43,8 +55,8 @@ export function jobPayloadReadViolations(rel, body) {
   for (const fn of functionsOf(body)) {
     if (CLAIM_FUNCTIONS.has(fn.name)) continue;
     for (const [, template] of fn.body.matchAll(SQL_TEMPLATE)) {
-      const statement = template.replace(/--[^\n]*/g, '');
-      if (!/\bpayload\b/.test(statement) || !READS_JOBS.test(statement)) continue;
+      const statement = template.replace(/--[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+      if (!READS_PAYLOAD.test(statement) || !READS_JOBS.test(statement)) continue;
       if (PINNED.test(statement)) continue;
       if (TENANT_PARAMETER.test(fn.body) && NAMED_BUSINESS.test(statement)) continue;
       found.push({

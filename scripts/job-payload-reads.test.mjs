@@ -92,3 +92,34 @@ test('the repository as it stands has no violation, and the boundary check runs 
     /jobPayloadReadViolations\(rel, body\)/,
   );
 });
+
+test('catches the ways round a name match: *, to_jsonb, an arrow function, a block comment', () => {
+  const cases = {
+    star: `
+export async function reclaimAll(db: Db) {
+  return db.execute(sql\`UPDATE jobs SET state = 'pending' RETURNING *\`);
+}`,
+    alias: `
+export async function listDead(db: Db) {
+  return db.execute(sql\`SELECT j.* FROM jobs j WHERE j.state = 'dead'\`);
+}`,
+    jsonb: `
+export async function dumpDead(db: Db) {
+  return db.execute(sql\`SELECT to_jsonb(j) FROM jobs j\`);
+}`,
+    arrow: `
+export async function claimNext(db: Db) {
+  return db.execute(sql\`UPDATE jobs SET state = 'running' RETURNING id, payload\`);
+}
+export const sneaky = async (db: Db) =>
+  db.execute(sql\`SELECT payload FROM jobs\`);`,
+    comment: `
+export async function hidden(db: Db) {
+  return db.execute(sql\`SELECT payload FROM jobs
+    /* business_id = nullif(current_setting('app.business_id', true), '')::uuid */\`);
+}`,
+  };
+  for (const [name, body] of Object.entries(cases)) {
+    assert.equal(jobPayloadReadViolations(REL, body).length, 1, name);
+  }
+});
