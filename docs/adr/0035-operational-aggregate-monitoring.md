@@ -332,9 +332,25 @@ other's enrolment. Since migration 0225:
 4. The reclaim pass (`jobsRepo.reclaimStalled`) likewise returns coordination columns only from its
    cross-tenant update and reads a dying job's payload under that job's own pin.
 
-**Not database-enforced:** the worker's queue policy still lets its credential read any job row,
-because the claim works across tenants (Amendment 1, class 2; invariant 3). "A payload is read only
-under its own tenant's pin" is a property of the repository code, proved statement by statement
+5. **The worker reads no payload across tenants (0228, owner brief 15 Nov 2026: database-level
+   enforcement where feasible).** `rekoda_worker` holds SELECT on every column of `jobs` except
+   `payload`, and reads a payload only through `job_payload(job)`: SECURITY DEFINER, `search_path`
+   pinned, EXECUTE for the worker and settlement, returning one job's payload only where that
+   job's business is the pinned tenant (NULL otherwise). An unpinned, cross-tenant or bulk payload
+   read on the worker credential is refused by the database.
+6. **The enrolment dead letters (0229)** are a further operator work list of the Amendment 2
+   shape: `dead_job_enrolment_dead_letters(page_size, job)`, worker-only, read-only, fixed
+   columns (job id, business id, kind, attempts, last SQLSTATE, times, requeue count; never a
+   payload or an error text), 1 to 200 rows, reached from `GET /v1/ops/dead-jobs/enrolment-failures`
+   (`ops:read`). A requeue runs under `withBusiness()` for the record's own business, through a
+   definer that requires that pin, with its own scope (`ops:payment`) and an audit event.
+
+**What the database still cannot enforce (after 0228):** the tenant pin is set by the caller (a
+scoping device, not an authentication), and the worker process legitimately runs every tenant's
+jobs, so a holder of the worker credential can still pin each business in turn and read its jobs
+one at a time; and the worker still reads the coordination columns of every tenant's jobs, because
+the claim works across tenants (Amendment 1, class 2; invariant 3). Before 0228, "a payload is read
+only under its own tenant's pin" was a property of the repository code alone, proved statement by statement
 (`packages/db/src/ops/dead-job-enrolment-pin.test.ts`) and held by the boundary check
 (`scripts/check-boundaries.mjs`, rule "cross-tenant job payload read"). The function's grants,
 column set and bound, and the per-business isolation, are proved in
