@@ -65,7 +65,7 @@ export function host(
     writeFileSync(
       join(work, 'docker-compose.prod.yml'),
       realDocker
-        ? `# ${n}\nservices:\n  settlement:\n    image: busybox\n    environment:\n      PAYSTACK_SECRET_KEY: \${PAYSTACK_SECRET_KEY:-}\n`
+        ? `# ${n}\nname: rekoda-prod\nservices:\n  settlement:\n    image: busybox\n    environment:\n      PAYSTACK_SECRET_KEY: \${PAYSTACK_SECRET_KEY:-}\n`
         : `# ${n}\n# A comment naming the script's own \${API_URL} and \${REKODA_DIR}, which no clear may touch.\nx-interpolated: ['\${PAYSTACK_SECRET_KEY:-}', '\${VAULT_KEY:?}', '\${REKODA_RELEASE:?}'${
             n === 2 ? ", '\${ONLY_IN_TARGET:-}'" : ''
           }]\n`,
@@ -117,6 +117,17 @@ export function host(
 ${realDocker ? resolveWithRealCompose(realDocker, fake) : ''}
 case "$*" in *"-f docker-compose.prod.yml"*) echo "PAYSTACK_SECRET_KEY=\${PAYSTACK_SECRET_KEY-unset} VAULT_KEY=\${VAULT_KEY-unset} ONLY_IN_TARGET=\${ONLY_IN_TARGET-unset} COMPOSE_PROJECT_NAME=\${COMPOSE_PROJECT_NAME-unset} COMPOSE_PROFILES=\${COMPOSE_PROFILES-unset}" >> "${fake}/shell-env.log" ;; esac
 case "$*" in
+  *" config -q"*) ;;
+  *" config settlement") ${
+    realDocker
+      ? `"${realDocker}" "$@"; exit $?`
+      : `if [ -e "${fake}/settlement-key" ]; then printf '      PAYSTACK_SECRET_KEY: %s\\n' "$(cat "${fake}/settlement-key")"; else printf '      PAYSTACK_SECRET_KEY: %s\\n' "$(sed -n 's/^PAYSTACK_SECRET_KEY=//p' .env | tail -1 | tr -d '\\042\\047')"; fi`
+  } ;;
+  *" config") ${
+    realDocker
+      ? `"${realDocker}" "$@"; exit $?`
+      : `if [ -e "${fake}/project-name" ]; then cat "${fake}/project-name"; else printf 'name: rekoda-prod\\nservices: {}\\n'; fi`
+  } ;;
   *"stop api worker"*) [ -e "${fake}/stop-fails" ] && exit 1; [ -e "${fake}/hang-stop" ] && sleep 60 ;;
   *"ps --status running --services"*) [ -e "${fake}/ps-fails" ] && exit 1; cat "${fake}/running" 2>/dev/null ;;
   *"info --format"*) echo "${fake}" ;;

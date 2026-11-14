@@ -78,3 +78,54 @@ test(
     assert.doesNotMatch(r.stderr + r.stdout, /placeholderkey/, 'a key is never printed');
   },
 );
+
+test(
+  'a COMPOSE_PROJECT_NAME hidden after the closing quote of a multi-line value is refused: real Compose decides',
+  { skip: skipReal },
+  () => {
+    assert.ok(REAL_DOCKER, 'docker compose must be installed on CI');
+    /* The continuation line starts with '#', so a line-based check reads it as a comment, while
+     * Compose reads a new statement after the closing quote. */
+    const hidden = 'NOTE="x\n#"COMPOSE_PROJECT_NAME=elsewhere\n';
+    const h = host(['0198_something_additive'], PRINCIPAL_ENV + hidden, undefined, {
+      realDocker: REAL_DOCKER,
+    });
+    const control = spawnSync(
+      REAL_DOCKER,
+      ['compose', '--env-file', '.env', '-f', 'docker-compose.prod.yml', 'config'],
+      { cwd: h.dir, encoding: 'utf8' },
+    );
+    assert.match(control.stdout, /^name: elsewhere$/m, 'Compose reads the hidden statement');
+    const r = h.run();
+    assert.notEqual(r.status, 0);
+    assert.match(
+      r.stderr,
+      /Compose resolves this deployment to project 'elsewhere', not rekoda-prod/,
+    );
+    assert.equal(h.at(' build '), -1, 'nothing may be built');
+    assert.doesNotMatch(r.stderr + r.stdout, /placeholderkey/, 'a key is never printed');
+  },
+);
+
+test(
+  'OWN-70: a live key hidden after the closing quote of a multi-line value is refused: real Compose decides',
+  { skip: skipReal },
+  () => {
+    assert.ok(REAL_DOCKER, 'docker compose must be installed on CI');
+    const hidden = `NOTE="x\n#"PAYSTACK_SECRET_KEY=${LIVE_KEY}\n`;
+    const h = host(['0198_something_additive'], PRINCIPAL_ENV + hidden, undefined, {
+      realDocker: REAL_DOCKER,
+    });
+    const control = spawnSync(
+      REAL_DOCKER,
+      ['compose', '--env-file', '.env', '-f', 'docker-compose.prod.yml', 'config', 'settlement'],
+      { cwd: h.dir, encoding: 'utf8' },
+    );
+    assert.match(control.stdout, /PAYSTACK_SECRET_KEY: sk_live_/, 'Compose reads the hidden key');
+    const r = h.run();
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /Compose does not resolve a Paystack TEST key/);
+    assert.equal(h.at(' build '), -1, 'nothing may be built');
+    assert.doesNotMatch(r.stderr + r.stdout, /placeholderkey/, 'a key is never printed');
+  },
+);

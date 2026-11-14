@@ -95,7 +95,8 @@ OWNERS=$("${PSQL[@]}" -c "SELECT count(*) FROM (VALUES ('0058_payment_provenance
 [ -s "$WORK/owners.expected" ] || backup_die "DRILL FAILED: the archive lists no function (an empty or data-less archive proves nothing)"
 MISOWNED=$(backup_function_owner_mismatches "$WORK/owners.expected" "$WORK/owners.restored")
 if [ -n "$MISOWNED" ]; then
-  printf '%s\n' "$MISOWNED" | sed 's/^[[:space:]]*/  differs: /' >&2
+  # comm -3: a line only in the archive comes first, a line only in the restored database after a tab.
+  printf '%s\n' "$MISOWNED" | sed -e 's/^\t/  restored database has: /' -e 't' -e 's/^/  archive has: /' >&2
   backup_die "DRILL FAILED: $(printf '%s\n' "$MISOWNED" | grep -c .) function owner line(s) differ between the archive and the restored database"
 fi
 echo "restore-drill: PASS"

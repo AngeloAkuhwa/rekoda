@@ -446,6 +446,37 @@ test('a .env that sets a COMPOSE_ variable is refused before anything is built o
   assert.equal(ok.run().status, 0);
 });
 
+test('Compose itself must resolve the project to rekoda-prod, whatever spelling .env uses', () => {
+  for (const answer of ['name: someone-elses-project\n', '', 'services: {}\n']) {
+    const h = od51Host();
+    writeFileSync(join(h.fake, 'project-name'), answer);
+    const r = h.run();
+    assert.notEqual(r.status, 0, answer);
+    assert.match(
+      r.stderr,
+      /STAGING DEPLOY REFUSED: Compose resolves this deployment to project '.*', not rekoda-prod.*nothing live has been changed/,
+    );
+    assert.match(r.stderr, /STAGING DEPLOY FAILED before anything live changed/);
+    assert.equal(h.at(' build '), -1, 'nothing may be built');
+    assert.equal(h.at('stop api worker'), -1, 'nothing may be stopped');
+  }
+});
+
+test('OWN-70: the key Compose resolves for settlement must be a TEST key, whatever the .env lines say', () => {
+  for (const resolved of [LIVE_KEY, '""', '', 'pk_test_placeholderkey', `${TEST_KEY} trailing`]) {
+    const h = od51Host();
+    writeFileSync(join(h.fake, 'settlement-key'), resolved);
+    const r = h.run();
+    assert.notEqual(r.status, 0, resolved);
+    assert.match(
+      r.stderr,
+      /STAGING DEPLOY REFUSED: Compose does not resolve a Paystack TEST key .*nothing live has been changed/,
+    );
+    assert.equal(h.at(' build '), -1, 'nothing may be built');
+    assert.doesNotMatch(r.stderr + r.stdout, /placeholderkey/, 'the key is never printed');
+  }
+});
+
 test('OWN-70: a TEST key, quoted or not, lets the deploy through', () => {
   for (const paystackEnv of [
     PAYSTACK_ENV,

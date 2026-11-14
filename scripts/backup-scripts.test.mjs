@@ -263,3 +263,51 @@ test('a failed run never deletes the last good backup, even one older than the r
   assert.ok(files.includes('rekoda-20261001T000000Z-1.dump.enc.sha256'));
   assert.ok(!files.includes('rekoda-20261001T000000Z-2.dump.enc.part'), 'stale staging debris was not cleared');
 });
+
+test('the drill compares every function owner with the archive (parser and wiring, no database)', () => {
+  const toc = [
+    ';',
+    '; Archive created at 2026-11-14 18:00:00 UTC',
+    '409; 1255 20118 FUNCTION public staging_move_date(uuid, text, timestamp with time zone) rekoda_plan_writer',
+    '6108; 0 0 ACL public FUNCTION staging_move_date(p_business uuid) rekoda_plan_writer',
+    '449; 1255 20299 FUNCTION public usage_credit_pack(uuid, text, text, text, integer) rekoda_usage_writer',
+    '447; 1255 20314 FUNCTION rekoda_private usage_meter_row_at(uuid, text, text, timestamp with time zone) rekoda_usage_writer',
+    '501; 1255 20400 PROCEDURE public some_procedure() rekoda',
+    '502; 0 0 COMMENT public FUNCTION usage_credit_pack(uuid, text, text, text, integer) rekoda',
+  ].join('\n');
+  const parse = spawnSync('bash', ['-c', '. scripts/lib/backup-common.sh; backup_toc_function_owners'], {
+    cwd: ROOT,
+    input: toc,
+    encoding: 'utf8',
+  });
+  assert.equal(parse.status, 0, parse.stderr);
+  assert.deepEqual(parse.stdout.trim().split('\n'), [
+    'public staging_move_date(uuid, text, timestamp with time zone) rekoda_plan_writer',
+    'public usage_credit_pack(uuid, text, text, text, integer) rekoda_usage_writer',
+    'rekoda_private usage_meter_row_at(uuid, text, text, timestamp with time zone) rekoda_usage_writer',
+  ]);
+  // One function on the wrong owner is a difference even though every role still owns another.
+  const dir = mkdtempSync(join(tmpdir(), 'owners-'));
+  writeFileSync(join(dir, 'e'), parse.stdout);
+  writeFileSync(
+    join(dir, 'a'),
+    parse.stdout.replace('usage_credit_pack(uuid, text, text, text, integer) rekoda_usage_writer', 'usage_credit_pack(uuid, text, text, text, integer) rekoda'),
+  );
+  const cmp = spawnSync(
+    'bash',
+    ['-c', `. scripts/lib/backup-common.sh; backup_function_owner_mismatches "${join(dir, 'e')}" "${join(dir, 'a')}"`],
+    { cwd: ROOT, encoding: 'utf8' },
+  );
+  assert.equal(cmp.status, 0, cmp.stderr);
+  assert.equal(cmp.stdout.trim().split('\n').length, 2, cmp.stdout);
+  const drill = readFileSync(join(ROOT, 'scripts/restore-drill.sh'), 'utf8');
+  for (const wiring of [
+    /pg_restore -l "\$WORK\/restore\.dump" \| backup_toc_function_owners >"\$WORK\/owners\.expected"/,
+    /docker exec "\$CONTAINER" pg_restore -l \/tmp\/restore\.dump \| backup_toc_function_owners >"\$WORK\/owners\.expected"/,
+    /-c "\$BACKUP_FUNCTION_OWNERS_SQL"/,
+    /\[ -s "\$WORK\/owners\.expected" \] \|\| backup_die/,
+    /backup_function_owner_mismatches "\$WORK\/owners\.expected" "\$WORK\/owners\.restored"/,
+    /backup_die "DRILL FAILED: .* function owner line\(s\) differ/,
+  ])
+    assert.match(drill, wiring);
+});

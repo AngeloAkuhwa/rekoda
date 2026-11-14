@@ -170,7 +170,8 @@ UP_ENTERED=false
 #   * no runtime role writes a usage counter or the reservation ledger; rekoda_usage_writer (NOLOGIN,
 #     no members) owns exactly the three usage functions with exactly their grantees; a pack's
 #     credit time is written by usage_credit_pack alone (0216), which credits exactly the unit,
-#     quantity and meter row the charge bought, derived in the database (0224);
+#     quantity and meter row the charge bought, derived in the database, for an amount that is its
+#     price, and settlement cannot put a set-aside paid charge back (0224);
 #   * settlement does not act with rekoda_app's rights: it holds exactly the reads and the column
 #     writes listed (never a charge insert, a plan, a price, a credit time or a job's kind or
 #     payload), no default privilege, and the queue is split by kind between it and the worker (0217);
@@ -383,7 +384,10 @@ SMOKE_0196_SQL="SELECT
         || ' ; rekoda_private.usage_meter_row_at(uuid, text, text, timestamp with time zone) => '
   AND (SELECT prosrc FROM pg_proc
         WHERE oid = to_regprocedure('public.usage_credit_pack(uuid,text,text,text,integer)'))
-        LIKE '%c.pack_id IS NULL%FROM public.usage_packs p%p_n::bigint IS DISTINCT FROM v_n%usage_meter_row_at(p_business, p_period, p_unit, now())%'
+        LIKE '%c.pack_id IS NULL%v_source := coalesce(c.pricing_source, (SELECT mode FROM public.billing_pricing_source))%IF v_source = ''catalogue'' THEN%FROM public.usage_packs p%p_n::bigint IS DISTINCT FROM v_n%c.amount_k IS DISTINCT FROM pk.price_minor::bigint * c.quantity%c.paid_amount_k < c.amount_k%usage_meter_row_at(%to_char(now() AT TIME ZONE ''Africa/Lagos'', ''YYYY-MM''), p_unit, now())%'
+  AND (SELECT prosrc FROM pg_proc
+        WHERE oid = to_regprocedure('rekoda_private.subscription_charges_settlement_guard()'))
+        LIKE '%0224: a paid charge set aside or superseded stays so, for settlement too%'
   AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('public.usage_refund(uuid,uuid,text,integer)'))
         LIKE '%closed_at IS NOT NULL%event_id IS NULL AND r.created_at < now() - interval ''15 minutes''%'
   AND (SELECT prosrc FROM pg_proc
@@ -1039,6 +1043,21 @@ clear_compose_overrides
 # the host. The api image is the one api, worker, migrate and edge-check run.
 step "build the api image, tagged $RELEASE (nothing live changes)"
 dc config -q
+# And Compose itself is the authority: whatever spelling a .env line uses (a statement after the
+# closing quote of a multi-line value hides from the line check above), the project every call
+# reaches must resolve to the compose file's own name. Only the `name:` line of the resolved
+# configuration is read; the rest, which holds resolved settings, is never printed.
+resolved_project=$(dc config 2>/dev/null | sed -n 's/^name: //p' | head -n 1) || resolved_project=''
+[ "$resolved_project" = rekoda-prod ] ||
+  fail "Compose resolves this deployment to project '${resolved_project:-unknown}', not rekoda-prod: remove whatever sets COMPOSE_PROJECT_NAME from .env; nothing live has been changed"
+unset resolved_project
+# OWN-70 with Compose as the authority too: the key Compose actually hands the settlement process
+# must be a TEST key, whatever spelling .env uses (the line checks before the checkout can be
+# hidden from the same way). Classified here, never printed.
+resolved_key=$(dc config settlement 2>/dev/null | sed -n 's/^ *PAYSTACK_SECRET_KEY: *//p' | head -n 1) || resolved_key=''
+[[ "$resolved_key" =~ ^\"?sk_test_[A-Za-z0-9]+\"?$ ]] ||
+  fail 'Compose does not resolve a Paystack TEST key (sk_test_...) for the settlement process from .env: staging never runs a live key or none (OWN-70); nothing live has been changed'
+unset resolved_key
 log_memory 'before the api build'
 dc build --build-arg REKODA_COMMIT="$SHORT" api
 log_memory 'after the api build'
