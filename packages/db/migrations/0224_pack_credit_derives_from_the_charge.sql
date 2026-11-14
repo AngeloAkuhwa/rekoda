@@ -19,7 +19,8 @@
 --   * the quantity: that version's quantity x the packs bought (`subscription_charges.quantity`),
 --     voice counted in seconds (`UNIT_SCALE`, as `usage_entitlement` counts it);
 --   * the amount: the charge's `amount_k` must be that version's price x the packs bought, so a
---     charge opened for many packs at a token amount credits nothing; and a payment must be
+--     charge opened for many packs at a token amount credits nothing; the charge's currency must
+--     be the one the pack is sold in (for `constants` too, the catalogue's); and a payment must be
 --     recorded (`paid_amount_k`, never NULL) and cover it;
 --   * the meter row: this Lagos month, or the trial row where `rekoda_private.usage_meter_row_at`
 --     meters the unit on it. Last month (even in its first seven days), a future month, an old
@@ -51,8 +52,8 @@
 -- What this does NOT cover, deliberately: the QUANTITY of a charge priced from `constants` (the
 -- compiled figures, the documented rollback source while a catalogue migration is repaired). Those
 -- figures live in the release, not in the database, so the database cannot derive a constants
--- pack's size or price; it still checks the unit (the catalogue's for that pack), the payment and
--- the meter row, and takes the quantity from settlement. Switching the source to `constants` is
+-- pack's size or price; it still checks the unit and the currency (the catalogue's for that
+-- pack), the payment and the meter row, and takes the quantity from settlement. Switching the source to `constants` is
 -- the table owner's alone (`rekoda_private.set_pricing_source`, 0215, recorded in its history), and
 -- a charge can record `constants` only while it is in force (the 0215 insert guard), so no runtime
 -- credential can create such a charge while `catalogue` is in force; charges already recorded as
@@ -101,7 +102,7 @@ BEGIN
   END IF;
   SELECT id, kind, status, units_credited_at, unapplied_at, superseded_at, abandoned_at,
          purchase_id, pack_id, quantity, priced_at, created_at, pricing_source, amount_k,
-         paid_amount_k INTO c
+         paid_amount_k, currency INTO c
   FROM public.subscription_charges
   WHERE business_id = p_business AND reference = p_reference
   FOR UPDATE;
@@ -133,7 +134,7 @@ BEGIN
   IF v_source = 'catalogue' THEN
     v_at := coalesce(c.priced_at, c.created_at);
     -- `planCatalogueRepo.usagePackAt`: the version in force at that instant, else the earliest.
-    SELECT p.unit, p.quantity, p.price_minor INTO pk
+    SELECT p.unit, p.quantity, p.price_minor, p.currency INTO pk
     FROM public.usage_packs p
     WHERE p.id = coalesce(
       (SELECT id FROM public.usage_packs
@@ -161,12 +162,21 @@ BEGIN
       RAISE EXCEPTION 'usage_credit_pack: the credit does not match the pack this charge bought (the amount is not its price)'
         USING ERRCODE = '42501';
     END IF;
+    IF c.currency IS DISTINCT FROM pk.currency THEN
+      RAISE EXCEPTION 'usage_credit_pack: the credit does not match the pack this charge bought (not the currency the pack is sold in)'
+        USING ERRCODE = '42501';
+    END IF;
   ELSE
     -- Constants: the compiled figures are not in the database, so the quantity is settlement's (the
     -- recorded trust boundary). A pack's unit is not a commercial figure: it is the catalogue's.
-    IF p_unit IS DISTINCT FROM
-       (SELECT unit FROM public.usage_packs WHERE pack_id = c.pack_id ORDER BY version LIMIT 1) THEN
+    SELECT p.unit, p.currency INTO pk
+    FROM public.usage_packs p WHERE p.pack_id = c.pack_id ORDER BY p.version LIMIT 1;
+    IF p_unit IS DISTINCT FROM pk.unit THEN
       RAISE EXCEPTION 'usage_credit_pack: the credit does not match the pack this charge bought (not the unit the pack sells)'
+        USING ERRCODE = '42501';
+    END IF;
+    IF c.currency IS DISTINCT FROM pk.currency THEN
+      RAISE EXCEPTION 'usage_credit_pack: the credit does not match the pack this charge bought (not the currency the pack is sold in)'
         USING ERRCODE = '42501';
     END IF;
   END IF;

@@ -50,6 +50,7 @@ async function packCharge(
     /** Share the purchase of this charge (a replacement link, OD-51.7). */
     samePurchaseAs?: string;
     status?: 'paid' | 'pending' | 'failed' | 'refunded';
+    currency?: string;
   } = {},
 ): Promise<string> {
   chargeSeq += 1;
@@ -67,7 +68,7 @@ async function packCharge(
       (business_id, kind, plan, pack_id, quantity, amount_k, paid_amount_k, status, reference,
        period_start, period_end, paid_at, priced_at, pricing_source, billing_interval,
        unapplied_at, unapplied_reason, superseded_at, abandoned_at, purchase_id,
-       failed_at, refunded_at, refunded_amount_k)
+       failed_at, refunded_at, refunded_amount_k, currency)
     VALUES (${businessId}::uuid, 'add_on', NULL, ${packId}, ${quantity}, ${amount},
       ${
         spec.paidAmountK === undefined
@@ -88,7 +89,7 @@ async function packCharge(
       },
       ${status === 'failed' ? sql`now()` : sql`NULL`},
       ${status === 'refunded' ? sql`now()` : sql`NULL`},
-      ${status === 'refunded' ? amount : sql`0`})`);
+      ${status === 'refunded' ? amount : sql`0`}, ${spec.currency ?? 'NGN'})`);
   return reference;
 }
 
@@ -263,6 +264,19 @@ describe('0224: the amount paid for is bound to the units credited', () => {
     expect(await credit(businessId, exact, month, 'AI_ACTIONS', 100)).toBe(true);
     // An overpayment still buys the pack (the excess is visible on the charge, G-107).
     expect(await credit(businessId, over, month, 'AI_ACTIONS', 100)).toBe(true);
+  });
+
+  it('refuses a charge in another currency than the pack is sold in, for either source', async () => {
+    const businessId = await paidBusiness();
+    const month = await thisMonth();
+    for (const pricingSource of ['catalogue', 'constants'] as const) {
+      const foreign = await packCharge(businessId, { currency: 'USD', pricingSource });
+      expect(await outcome(credit(businessId, foreign, month, 'AI_ACTIONS', 100))).toMatch(
+        /^42501 .*not the currency the pack is sold in/,
+      );
+      expect(await creditedAt(foreign)).toBeNull();
+    }
+    expect(await counters(businessId)).toEqual([]);
   });
 
   it('refuses a paid charge with no recorded payment amount, and writes nothing', async () => {
