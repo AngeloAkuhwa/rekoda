@@ -500,7 +500,27 @@ describe('OD-37: only settlement credits pack units or records an add-on holding
     expect(row!.bonus).toBe(100);
   });
 
-  it('the application can no longer insert or change an add-on holding; settlement can', async () => {
+  /* 0226 (final review of PR #432): settlement no longer writes add-on holdings either. Nothing
+   * sells an add-on yet, and a holding raises the metered ceiling (`usage_entitlement`, 0222) with
+   * no paid charge behind it, the hole 0224 closed for packs. A future sale needs a definer
+   * function bound to a paid charge. */
+  it('settlement cannot hold an add-on for a business: the insert is refused (0226)', async () => {
+    const businessId = await seedBusiness();
+    const refused = await withBusiness(settlementDb, businessId, (tx) =>
+      tx.execute(sql`INSERT INTO business_add_ons (business_id, add_on_id, version, started_at)
+                     VALUES (${businessId}::uuid, 'developer_api_starter', 1, now())`),
+    ).then(
+      () => 'allowed',
+      (error: { cause?: { code?: string } }) => error.cause?.code,
+    );
+    expect(refused).toBe('42501');
+    const [held] = await ownerDb.execute<{ n: number }>(
+      sql`SELECT count(*)::int AS n FROM business_add_ons WHERE business_id = ${businessId}::uuid`,
+    );
+    expect(held!.n).toBe(0);
+  });
+
+  it('no runtime role can insert or change an add-on holding (0226)', async () => {
     const [facts] = await ownerDb.execute<Record<string, boolean>>(sql`
       SELECT has_table_privilege('rekoda_app', 'business_add_ons', 'INSERT') AS app_insert,
              has_table_privilege('rekoda_app', 'business_add_ons', 'UPDATE') AS app_update,
@@ -511,8 +531,8 @@ describe('OD-37: only settlement credits pack units or records an add-on holding
       app_insert: false,
       app_update: false,
       operator_insert: false,
-      settlement_insert: true,
-      settlement_update: true,
+      settlement_insert: false,
+      settlement_update: false,
     });
   });
 });

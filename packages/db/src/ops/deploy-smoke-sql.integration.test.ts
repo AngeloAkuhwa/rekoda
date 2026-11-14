@@ -448,6 +448,14 @@ describe('the pre-start database smoke, executed', () => {
        GRANT EXECUTE ON FUNCTION dead_job_unrecorded_candidates(integer) TO rekoda_worker`,
     ],
     [
+      'settlement able to hold an add-on again',
+      'GRANT INSERT ON business_add_ons TO rekoda_settlement',
+    ],
+    [
+      '0226 not recorded in the ledger',
+      "DELETE FROM rekoda_migrations WHERE tag = '0226_settlement_holds_no_add_on'",
+    ],
+    [
       '0225 not recorded in the ledger',
       "DELETE FROM rekoda_migrations WHERE tag = '0225_dead_job_enrolment_discovery'",
     ],

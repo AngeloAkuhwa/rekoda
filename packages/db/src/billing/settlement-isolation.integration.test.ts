@@ -285,7 +285,7 @@ describe('the settlement role, exactly (0217)', () => {
       add_ons: 'SELECT',
       audit_events: 'INSERT',
       billing_pricing_source: 'SELECT',
-      business_add_ons: 'INSERT,SELECT,UPDATE',
+      business_add_ons: 'SELECT',
       businesses: 'SELECT,UPDATE',
       dead_job_exceptions: 'INSERT,SELECT,UPDATE',
       external_events: 'SELECT,UPDATE',

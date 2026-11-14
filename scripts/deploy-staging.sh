@@ -176,6 +176,7 @@ UP_ENTERED=false
 #     charge back, and marks a link withdrawn only while it is pending (0224);
 #   * the cutover enrolment of unrecorded dead jobs discovers ids only, through a definer function
 #     only the worker may execute (0225);
+#   * no runtime role writes an add-on holding, settlement included (0226);
 #   * settlement does not act with rekoda_app's rights: it holds exactly the reads and the column
 #     writes listed (never a charge insert, a plan, a price, a credit time or a job's kind or
 #     payload), no default privilege, and the queue is split by kind between it and the worker (0217);
@@ -205,7 +206,8 @@ SMOKE_0196_SQL="SELECT
                   '0222_usage_entitlement_in_the_database',
                   '0223_settlement_scope_and_dead_job_requeue',
                   '0224_pack_credit_derives_from_the_charge',
-                  '0225_dead_job_enrolment_discovery')) = 25
+                  '0225_dead_job_enrolment_discovery',
+                  '0226_settlement_holds_no_add_on')) = 26
   AND (SELECT p.prosecdef AND p.proconfig @> ARRAY['search_path=pg_catalog, public, pg_temp']
          AND pg_get_function_result(p.oid) = 'TABLE(job_id uuid, business_id uuid)'
        FROM pg_proc p WHERE p.oid = to_regprocedure('public.dead_job_unrecorded_candidates(integer)'))
@@ -317,7 +319,7 @@ SMOKE_0196_SQL="SELECT
           AND CASE WHEN p.priv IN ('INSERT', 'UPDATE')
                    THEN has_any_column_privilege('rekoda_settlement', c.oid, p.priv)
                    ELSE has_table_privilege('rekoda_settlement', c.oid, p.priv) END)
-      = 'audit_events:INSERT,business_add_ons:INSERT,business_add_ons:UPDATE,businesses:UPDATE,'
+      = 'audit_events:INSERT,businesses:UPDATE,'
         || 'dead_job_exceptions:INSERT,dead_job_exceptions:UPDATE,external_events:UPDATE,jobs:UPDATE,'
         || 'subscription_charge_attempts:UPDATE,subscription_charges:UPDATE'
   AND (SELECT string_agg(c.relname, ',' ORDER BY c.relname)
