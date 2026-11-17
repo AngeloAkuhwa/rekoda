@@ -3,8 +3,10 @@
  * that job's own tenant pin (final review of PR #432, 14 Nov 2026).
  *
  * The worker's queue policy (`worker_claim`, 0004) lets its credential read every tenant's job row,
- * because it claims work across tenants; the database therefore cannot refuse an unpinned payload
- * read, and this is an APPLICATION-LEVEL guarantee, proved here statement by statement: the only
+ * because it claims work across tenants. Since 0228 the database refuses it a direct read of the
+ * payload column, and `job_payload()` checks the pin at each call; that the worker's own code reads
+ * one job under that job's own pin is still an APPLICATION-LEVEL guarantee (the caller sets the pin;
+ * see the RESIDUAL cases of job-payload-isolation), proved here statement by statement: the only
  * cross-tenant step is the discovery function (0225), which returns job and business ids, and every
  * statement that reads a payload runs in a transaction pinned to the business that owns the job.
  * The database-level half (the discovery function's grants, column set and bound) is proved in

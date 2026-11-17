@@ -6,7 +6,7 @@
  * setting: no session or transaction setting, and no role the application holds, reaches it. Each
  * writer accepts only what its caller is entitled to do (0200): the provider writer takes the plan
  * from a paid, unapplied charge of the business; the operator writer takes a known plan and a sane
- * date and is executable by the API credential only. The table owner keeps migrations and an
+ * date and is executable by the billing-operator credential only (0202). The table owner keeps migrations and an
  * administrator's repair.
  */
 import { readFileSync } from 'node:fs';

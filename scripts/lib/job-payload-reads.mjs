@@ -3,9 +3,11 @@
  * 14 Nov 2026).
  *
  * The worker's queue policy (`worker_claim`, migration 0004) lets its credential read every
- * tenant's job row, because it claims work across tenants. The database therefore cannot refuse an
- * unpinned read of what a job carries, and the cutover enrolment of dead jobs once read every
- * tenant's payloads in one unpinned query. This rule holds the repositories to the shape that
+ * tenant's job row, because it claims work across tenants, and the cutover enrolment of dead jobs
+ * once read every tenant's payloads in one unpinned query. Since 0228 the database refuses the
+ * worker a direct read of `jobs.payload` and serves it only through `job_payload()`, which checks
+ * the pin at each call (0234: running and dying jobs only); it cannot stop a caller re-pinning, so
+ * the shape of the worker's OWN statements is still this rule's job. It holds the repositories to the shape that
  * replaced it: in `packages/db/src/repos`, an SQL statement that reads `payload` from `jobs` is
  * either part of the claim itself (the worker takes one job to run it under that job's own tenant,
  * or ends the job it holds the lease on), or is bounded in the statement to the pinned tenant
