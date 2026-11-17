@@ -164,6 +164,43 @@ describe('0229: an operator inspects and requeues a dead-lettered candidate', ()
       ),
     );
 
+  /* R05 (second review of #432, 0233): the actor follows the shared operator-actor contract,
+   * `operator:<subject>` with a subject of 1 to 255 printable characters and no space, exactly as
+   * `auditActorOf` produces it. */
+  it('accepts a 255-character operator subject and refuses a 256-character or malformed actor', async () => {
+    const businessId = await seedBusiness();
+    const job = await deadLettered(businessId);
+    const attempt = (actor: string) =>
+      outcome(
+        withBusiness(appDb, businessId, (tx) =>
+          jobsRepo.requeueEnrolment(tx, { businessId, jobId: job, actor, reason: 'fixed; retry' }),
+        ),
+      );
+    const longest = `operator:${'s'.repeat(255)}`;
+    expect(await attempt(longest)).toBe('allowed');
+    const [row] = await ownerDb.execute<{ requeued_by: string }>(sql`
+      SELECT requeued_by FROM dead_job_enrolment_failures WHERE job_id = ${job}::uuid`);
+    expect(row!.requeued_by).toBe(longest);
+    for (const bad of [
+      `operator:${'s'.repeat(256)}`,
+      'alice',
+      'operator:',
+      'operator:has space',
+      'operator:new\nline',
+      ' operator:ada',
+      'OPERATOR:ada',
+    ]) {
+      expect(await attempt(bad)).toMatch(/^22023 /);
+    }
+    /* The column holds the same contract, whoever writes it. */
+    expect(
+      await outcome(
+        ownerDb.execute(sql`UPDATE dead_job_enrolment_failures SET requeued_by = 'alice'
+                            WHERE job_id = ${job}::uuid`),
+      ),
+    ).toMatch(/^23514 /);
+  });
+
   it('requeues once, audited; the candidate then enrols exactly once', async () => {
     const businessId = await seedBusiness();
     const job = await deadLettered(businessId);
