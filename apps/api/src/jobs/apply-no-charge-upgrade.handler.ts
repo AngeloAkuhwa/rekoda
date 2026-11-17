@@ -17,6 +17,13 @@ import type { JobContext, JobHandler } from './runner.js';
 
 const REFERENCE = /^RKD-SUB-\d{8}-[0-9A-Z]{6}$/;
 
+/** Settlement would set this zero-priced charge aside: roll the savepoint back and withdraw it. */
+class NoChargeNotApplied extends Error {
+  constructor(readonly reason: string) {
+    super(reason);
+  }
+}
+
 export function applyNoChargeUpgradeHandler(deps: {
   config: Pick<ApiConfig, 'planCatalogueReads'> & Partial<ApiConfig>;
 }): JobHandler {
@@ -41,18 +48,56 @@ export function applyNoChargeUpgradeHandler(deps: {
     }
     let outcome: string;
     try {
-      /* In a savepoint, so a failure on the last attempt can still be recorded below. */
-      outcome = await tx.transaction((sp) =>
-        applySettledCharge(sp, {
+      /* In a savepoint, so a failure on the last attempt can still be recorded below, and so a
+       * switch that can no longer happen leaves no trace of a payment (G-3-1, below). */
+      outcome = await tx.transaction(async (sp) => {
+        const applied = await applySettledCharge(sp, {
           businessId,
           reference,
           /* Unique per charge: (provider, provider_reference) is globally unique. */
           providerReference: `no_charge:${reference}`,
           when: new Date(),
           config: deps.config,
-        }),
-      );
+        });
+        /* Second review of PR #432 (G3-1): settlement sets a charge aside (paid, not applied) when
+         * the switch can no longer happen: the cycle ended while this job waited, the merchant
+         * decided something newer, or it no longer prices at nothing. For a paid charge that keeps
+         * the money on record for an operator. Here nothing was paid, so "paid, not applied"
+         * would be false three times over (a paid record, a "contact support to have it applied
+         * or refunded" notice, an operator queue item for a payment that never existed). The
+         * savepoint is rolled back instead and the charge withdrawn below. */
+        if (applied === 'superseded') {
+          const [setAside] = await sp.execute<{ reason: string | null }>(sql`
+            SELECT unapplied_reason AS reason FROM subscription_charges
+            WHERE business_id = ${businessId}::uuid AND reference = ${reference}`);
+          throw new NoChargeNotApplied(setAside?.reason ?? 'not_applicable');
+        }
+        return applied;
+      });
     } catch (error) {
+      if (error instanceof NoChargeNotApplied) {
+        /* The savepoint's row lock went with it: take the business again before withdrawing. */
+        await subscriptionsRepo.lockBusiness(tx, businessId);
+        await subscriptionsRepo.retirePendingCharge(tx, businessId, reference);
+        await tx.execute(sql`
+          INSERT INTO audit_events (business_id, actor, entity, entity_id, action, new_value, source_type)
+          VALUES (${businessId}::uuid, 'system:no_charge_upgrade', 'subscription_charge', ${reference},
+                  'no_charge_upgrade_withdrawn',
+                  jsonb_build_object('outcome', 'withdrawn', 'reason', ${error.reason}::text),
+                  'system')`);
+        if (error.reason === 'price_not_verified') {
+          /* Rekoda's pricing does not put this charge at nothing: the application opened a charge
+           * it should not have. Nothing is applied or recorded as paid; an operator is told. */
+          log.error(
+            `ALERT billing_no_charge_price_not_verified business=${businessId} reference=${reference}`,
+          );
+        } else {
+          log.warn(
+            `billing.apply_no_charge: ${reference} could no longer be applied (${error.reason}); withdrawn`,
+          );
+        }
+        return;
+      }
       if (attempt < maxAttempts) throw error;
       /* Not enrolled as a dead job (that is the payment-recovery path, OWN-73/OWN-76): nothing was
        * paid. The charge stays pending at nothing, the merchant can choose the plan again (a new

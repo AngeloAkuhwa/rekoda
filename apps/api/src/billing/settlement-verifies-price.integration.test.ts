@@ -515,12 +515,49 @@ describe('OD-51: a zero-priced upgrade is applied by the worker, after it re-pri
     await runJob(businessId, reference);
 
     expect((await planOf(businessId)).plan).toBe('chat');
-    expect(await chargeOf(businessId, reference)).toMatchObject({
-      status: 'paid',
-      unapplied_reason: 'price_not_verified',
+    /* G3-1 (second review of #432): nothing was paid, so the charge is never recorded as paid and
+     * set aside (that told the merchant "Paystack confirmed this payment" and queued a payment that
+     * never existed for an operator). It is withdrawn, and the refusal is audited with its reason. */
+    const charge = await chargeOf(businessId, reference);
+    expect(charge).toMatchObject({ status: 'pending', unapplied_reason: null });
+    expect(await withdrawnAudit(businessId, reference)).toEqual(['price_not_verified']);
+  });
+
+  it('a zero-priced upgrade whose cycle ended before the worker ran is withdrawn, not recorded as paid', async () => {
+    const businessId = await seedBusiness();
+    await onPlan(businessId, 'chat', 10 * 3_600_000);
+    expect((await billing().changePlan(businessId, 'complete')).state).toBe('processing');
+    const [job] = await queued(businessId);
+    /* A backlog: the job runs after the paid-through date. */
+    await ownerDb.execute(sql`
+      UPDATE businesses SET plan_expires_at = now() - interval '1 minute' WHERE id = ${businessId}::uuid`);
+    await runJob(businessId, job!.reference);
+
+    expect((await planOf(businessId)).plan).toBe('chat');
+    expect(await chargeOf(businessId, job!.reference)).toMatchObject({
+      status: 'pending',
+      unapplied_reason: null,
     });
+    const [withdrawn] = await ownerDb.execute<{ superseded: boolean; abandoned: boolean }>(sql`
+      SELECT superseded_at IS NOT NULL AS superseded, abandoned_at IS NOT NULL AS abandoned
+      FROM subscription_charges WHERE reference = ${job!.reference}`);
+    expect(withdrawn).toEqual({ superseded: true, abandoned: true });
+    expect(await withdrawnAudit(businessId, job!.reference)).toEqual(['cycle_ended']);
+    /* Nothing for the operator's paid-but-not-applied queue: no payment exists. */
+    const [queue] = await ownerDb.execute<{ n: number }>(sql`
+      SELECT count(*)::int AS n FROM subscription_charges
+      WHERE business_id = ${businessId}::uuid AND status = 'paid'`);
+    expect(queue!.n).toBe(0);
   });
 });
+
+const withdrawnAudit = async (businessId: string, reference: string) =>
+  [
+    ...(await ownerDb.execute<{ reason: string }>(sql`
+      SELECT new_value->>'reason' AS reason FROM audit_events
+      WHERE business_id = ${businessId}::uuid AND entity_id = ${reference}
+        AND action = 'no_charge_upgrade_withdrawn'`)),
+  ].map((r) => r.reason);
 
 describe('OD-51: a planted charge is never offered for payment', () => {
   it('checkout refuses a pending charge whose price is not Rekoda own, and asks Paystack nothing', async () => {
