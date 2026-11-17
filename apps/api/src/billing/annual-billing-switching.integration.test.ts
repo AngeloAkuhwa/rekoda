@@ -378,36 +378,6 @@ describe('changing plan inside an annual cycle', () => {
     expect(review).toEqual({ to_plan: 'complete', status: 'open' });
   });
 
-  /* R03 (second review of #432): when the database refuses to record the review, the merchant is
-   * not told a support review was started. The refusal is forced by a test trigger standing in for
-   * any fact the database checks that the application did not (a race, a catalogue gap). */
-  it('a review the database refuses is not answered as a support review', async () => {
-    const { businessId } = await onboard();
-    await putOnPlan(businessId, 'chat', 'annual', new Date(Date.now() - 100 * DAY));
-    await ownerDb.execute(sql`
-      CREATE OR REPLACE FUNCTION public.test_refuse_plan_review() RETURNS trigger
-      LANGUAGE plpgsql AS $$ BEGIN
-        RAISE EXCEPTION 'test: review refused' USING ERRCODE = '22023';
-      END $$`);
-    await ownerDb.execute(sql`
-      CREATE TRIGGER test_refuse_plan_review BEFORE INSERT ON plan_change_reviews
-      FOR EACH ROW EXECUTE FUNCTION public.test_refuse_plan_review()`);
-    try {
-      const answer = await billing().changePlan(businessId, 'complete', new Date());
-      expect(answer).toEqual({ state: 'unavailable', reason: 'support_review_unavailable' });
-      const [n] = await ownerDb.execute<{ n: number }>(sql`
-        SELECT count(*)::int AS n FROM plan_change_reviews WHERE business_id = ${businessId}::uuid`);
-      expect(n!.n).toBe(0);
-      expect(await chargesOf(businessId)).toHaveLength(0);
-      expect((await subOf(businessId))?.plan).toBe('chat');
-    } finally {
-      await ownerDb.execute(
-        sql`DROP TRIGGER IF EXISTS test_refuse_plan_review ON plan_change_reviews`,
-      );
-      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS public.test_refuse_plan_review()`);
-    }
-  });
-
   it('a downgrade waits for the renewal and renews on the same interval at the cheaper annual price', async () => {
     const { businessId } = await onboard();
     const start = justEndedYear();

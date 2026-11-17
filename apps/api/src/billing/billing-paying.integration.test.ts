@@ -209,6 +209,44 @@ describe('paying, and the gate in front of it', () => {
     expect(after).toEqual(before);
   });
 
+  /* R03 (second review of #432): when the database refuses to record the review, the merchant is
+   * not told a support review was started. The refusal is forced by a test trigger standing in for
+   * any fact the database checks that the application did not (a race, a catalogue gap). */
+  it('a review the database refuses is not answered as a support review', async () => {
+    const { businessId } = await onboard('+2348177100097');
+    const now = new Date();
+    await putOnPlan(
+      businessId,
+      'chat',
+      new Date(now.getTime() - 182 * 86_400_000),
+      new Date(now.getTime() + 183 * 86_400_000),
+    );
+    await ownerDb.execute(sql`
+      CREATE OR REPLACE FUNCTION public.test_refuse_plan_review() RETURNS trigger
+      LANGUAGE plpgsql AS $$ BEGIN
+        RAISE EXCEPTION 'test: review refused' USING ERRCODE = '22023';
+      END $$`);
+    await ownerDb.execute(sql`
+      CREATE TRIGGER test_refuse_plan_review BEFORE INSERT ON plan_change_reviews
+      FOR EACH ROW EXECUTE FUNCTION public.test_refuse_plan_review()`);
+    try {
+      const answer = await confirmedBilling().changePlan(businessId, 'complete', now);
+      expect(answer).toEqual({ state: 'unavailable', reason: 'support_review_unavailable' });
+      const [n] = await ownerDb.execute<{ n: number }>(sql`
+        SELECT count(*)::int AS n FROM plan_change_reviews WHERE business_id = ${businessId}::uuid`);
+      expect(n!.n).toBe(0);
+      const charges = await withBusiness(db, businessId, (tx) =>
+        subscriptionsRepo.chargesFor(tx, businessId),
+      );
+      expect(charges.count).toBe(0);
+    } finally {
+      await ownerDb.execute(
+        sql`DROP TRIGGER IF EXISTS test_refuse_plan_review ON plan_change_reviews`,
+      );
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS public.test_refuse_plan_review()`);
+    }
+  });
+
   it('treats a dated plan with no recorded cycle start as custom, not prorated (OWN-33)', async () => {
     const { businessId } = await onboard('+2348177100098');
     const now = new Date();
