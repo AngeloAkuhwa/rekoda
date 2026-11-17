@@ -45,10 +45,7 @@ import {
 } from '@rekoda/core';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { SecurityMetrics } from '../channels/security-metrics.service.js';
-import { DB, OPERATOR_DB, WORKER_DB } from '../db/db.module.js';
-import { OperatorPlaneServedHere } from '../auth/operator-plane-served.guard.js';
-import { OperatorPlaneRefusal } from '../operator-plane/plan-operations.js';
-import { recordRefundAsOperator } from '../operator-plane/refund-operations.js';
+import { DB, WORKER_DB } from '../db/db.module.js';
 import { operatorActor } from '../auth/operator-actor.js';
 
 /**
@@ -93,8 +90,6 @@ export class OpsController {
      */
     @Inject(WORKER_DB) private readonly workerDb: Db | null,
     @Inject(SecurityMetrics) private readonly security: SecurityMetrics,
-    /** The billing-operator principal, where this host holds one (development; 0230 refunds). */
-    @Inject(OPERATOR_DB) private readonly operatorDb: Db | null,
   ) {}
 
   @Get('health')
@@ -479,45 +474,6 @@ export class OpsController {
         })),
       };
     });
-  }
-
-  /**
-   * Record a refund against a charge (ADR 0024's matrix).
-   *
-   * THIS DOES NOT MOVE MONEY. Returning the naira is a Paystack action the
-   * operator performs, and saying otherwise in a method name is how somebody
-   * comes to believe a merchant has been paid because a row says so. What
-   * this does is make the refund a fact Rekoda knows: the amount comes off
-   * the charge, the status becomes `refunded` only when the whole of it is
-   * back, and an audit row records who decided and under which rule.
-   *
-   * The plan is deliberately untouched. ADR 0024 refunds money in several
-   * situations that all leave the merchant with the period they paid for, and
-   * a refund that silently cancelled a subscription would be a second
-   * decision nobody made.
-   */
-  @Post('refund')
-  @UseGuards(OperatorPlaneServedHere)
-  @OperatorScopes('ops:payment')
-  @HttpCode(200)
-  async refund(
-    @Req() request: OperatorRequest,
-    @Body() body: unknown,
-  ): Promise<{ refunded: true; status: string; refundedK: number; revokedUnits: number }> {
-    /* The audit actor is the VERIFIED subject, never a name the caller sent.
-     * A body field here meant whoever held the shared secret also chose who
-     * the record said they were. */
-    const actor = operatorActor(request);
-    /* Since 0230 a refund is recorded on the billing-operator principal alone: in production the
-     * dedicated operator process serves this path, and an API host with no operator credential
-     * answers 404 (`OperatorPlaneServedHere`). A refusal (never paid, more than was charged, a
-     * credited pack that is used, partial or past seven days) is the operator's mistake: a 400. */
-    try {
-      return await recordRefundAsOperator(this.operatorDb!, actor, body);
-    } catch (error) {
-      if (error instanceof OperatorPlaneRefusal) throw new BadRequestException(error.message);
-      throw error;
-    }
   }
 
   /**

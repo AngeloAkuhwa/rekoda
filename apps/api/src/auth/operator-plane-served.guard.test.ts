@@ -9,6 +9,7 @@ import { GUARDS_METADATA } from '@nestjs/common/constants.js';
 import type { Db } from '@rekoda/db';
 import { describe, expect, it } from 'vitest';
 import { BusinessController } from './auth.controller.js';
+import { OpsRefundController } from '../health/ops-refund.controller.js';
 import { OperatorGuard } from './operator.guard.js';
 import { OperatorPlaneServedHere } from './operator-plane-served.guard.js';
 
@@ -29,5 +30,15 @@ describe('the operator plan routes on an API process', () => {
       ) as unknown[];
       expect(guards, handler).toEqual([OperatorPlaneServedHere, OperatorGuard]);
     }
+  });
+
+  it('check that before the operator identity on the refund route too (G4a-1)', () => {
+    const guards = Reflect.getMetadata(
+      GUARDS_METADATA,
+      OpsRefundController.prototype.refund,
+    ) as unknown[];
+    expect(guards).toEqual([OperatorPlaneServedHere, OperatorGuard]);
+    /* And no class-level guard runs ahead of them. */
+    expect(Reflect.getMetadata(GUARDS_METADATA, OpsRefundController)).toBeUndefined();
   });
 });

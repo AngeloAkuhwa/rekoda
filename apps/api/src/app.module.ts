@@ -8,6 +8,7 @@ import { RolesGuard } from './auth/roles.guard.js';
 import { DbModule } from './db/db.module.js';
 import { HealthController } from './health/health.controller.js';
 import { OpsController } from './health/ops.controller.js';
+import { OpsRefundController } from './health/ops-refund.controller.js';
 import { DeadJobsController } from './health/dead-jobs.controller.js';
 import { DeadJobRecoveryService } from './health/dead-job-recovery.service.js';
 import { StagingToolsController } from './health/staging-tools.controller.js';
@@ -55,6 +56,7 @@ import { WebhooksModule } from './webhooks/webhooks.module.js';
     BusinessController,
     HealthController,
     OpsController,
+    OpsRefundController,
     DeadJobsController,
     StagingToolsController,
     EmailErasureController,
