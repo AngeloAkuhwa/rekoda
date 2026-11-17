@@ -116,7 +116,7 @@ describe('the reclaim pass reads a dying job’s payload only under its own tena
         };
         return [row(JOB_A, A), row(JOB_B, B)];
       }
-      if (/\bpayload\b/.test(text) && /FROM jobs/i.test(text)) {
+      if (/\bjob_payload\(/.test(text)) {
         const id = params.find((p) => p === JOB_A || p === JOB_B);
         return id === JOB_A ? [{ payload: {} }] : id === JOB_B ? [{ payload: {} }] : [];
       }
@@ -130,7 +130,11 @@ describe('the reclaim pass reads a dying job’s payload only under its own tena
     const payloadReads = seen.filter((s) => /\bpayload\b/.test(s.text));
     expect(payloadReads.map((r) => r.pin).sort()).toEqual([A, B]);
     for (const read of payloadReads) {
-      expect(read.text).toMatch(/current_setting\('app\.business_id', true\)/);
+      /* Since 0228 the worker holds no SELECT on `jobs.payload`; the read goes through
+       * `job_payload()`, which returns it only where the job's business is the pinned one
+       * (database-level bound proved in `job-payload-isolation.integration.test.ts`). */
+      expect(read.text).toMatch(/\bjob_payload\(\$\d+::uuid\)/);
+      expect(read.text).not.toMatch(/FROM jobs/i);
     }
   });
 });

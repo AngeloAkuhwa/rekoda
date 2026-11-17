@@ -127,6 +127,9 @@ API_SECRET=$(rand)
 PEPPER=$(rand)
 META_SECRET=$(rand)
 VERIFY=$(rand)
+# Production refuses to boot without a recognised Paystack secret key (2e54f35): a generated
+# test-mode placeholder, never a real key, so every later refusal is the one the step is about.
+PAYSTACK_KEY="sk_test_$(rand)"
 # The runbook's layout: secrets/ is readable by the deploy user alone, and
 # the file inside by the postgres and node users of the containers it is
 # bind-mounted into, which compose (outside swarm) cannot re-own.
@@ -158,6 +161,7 @@ set_env REKODA_API_SECRET "$API_SECRET"
 set_env OTP_PEPPER "$PEPPER"
 set_env META_APP_SECRET "$META_SECRET"
 set_env META_VERIFY_TOKEN "$VERIFY"
+set_env PAYSTACK_SECRET_KEY "$PAYSTACK_KEY"
 set_env OPERATOR_OIDC_ISSUER https://idp.example.com/
 set_env OPERATOR_OIDC_AUDIENCE rekoda-ci
 set_env OPERATOR_OIDC_JWKS_URL https://idp.example.com/.well-known/jwks.json
