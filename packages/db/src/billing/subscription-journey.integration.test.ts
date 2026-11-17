@@ -138,8 +138,11 @@ describe('one merchant, trial to reactivation', () => {
     // Use the meter this month, then schedule a downgrade: nothing moves yet.
     const midCycle = new Date(start.getTime() + 8 * 86_400_000);
     expect(await generate(businessId, midCycle)).toBe(true);
+    /* Since 0222 the database picks the meter row from its own clock, not from the date the caller
+     * passes, so the unit is on the row for the real current month. Reading the row for `midCycle`
+     * (thirteen days from now) failed whenever that date fell in the next Lagos month. */
     const spent = await inTenant(businessId, (tx) =>
-      usageRepo.usageFor(tx, businessId, usagePeriod(midCycle)),
+      usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
     );
     expect(spent.find((r) => r.unit === DOCS)?.used).toBe(1);
     await inTenant(businessId, (tx) =>
