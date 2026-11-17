@@ -420,7 +420,13 @@ export class BillingService {
         /* OD-50 (0213): the request is recorded, so an operator can resolve exactly this upgrade
          * with the paid-through date kept. The database checks the facts itself; a request it
          * refuses (nothing to review) records nothing. No charge, no plan change. */
-        await subscriptionsRepo.requestPlanReview(tx, businessId, to);
+        const reviewId = await subscriptionsRepo.requestPlanReview(tx, businessId, to);
+        /* R03: the merchant is told a review was started only when one exists. A refusal (the
+         * database's own facts disagree with ours: a race, a catalogue gap) records nothing, and
+         * the answer says the change could not be set up, not that our team is on it. */
+        if (reviewId === null) {
+          return { state: 'unavailable' as const, reason: 'support_review_unavailable' as const };
+        }
         return { state: 'unavailable' as const, reason: 'support_review' as const };
       }
 

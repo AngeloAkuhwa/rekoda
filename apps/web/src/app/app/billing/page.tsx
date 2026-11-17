@@ -108,6 +108,8 @@ const PROBLEMS: Record<string, string> = {
     'Your paid period has ended, so there is nothing to upgrade yet. Nothing was charged. Message upgrade on WhatsApp and we will sort out your renewal with you.',
   support_review:
     'Your plan needs a quick check by our team, so we change it with you rather than automatically. Nothing was charged and nothing was changed. Message upgrade on WhatsApp and we will sort it out with you.',
+  support_review_unavailable:
+    'We could not set up that change. Nothing was charged and nothing was changed. Message upgrade on WhatsApp and we will help you with it.',
   plan: 'That change did not go through. Nothing was charged.',
   pack: 'That purchase did not go through. Nothing was charged.',
   view_only:
