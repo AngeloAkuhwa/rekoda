@@ -116,7 +116,11 @@ describe('the reclaim pass reads a dying job’s payload only under its own tena
         };
         return [row(JOB_A, A), row(JOB_B, B)];
       }
-      if (/\bjob_payload\(/.test(text)) {
+      /* The worker credential may execute job_payload (0228): the privilege probe says so. */
+      if (/has_function_privilege\('public\.job_payload\(uuid\)'/.test(text)) {
+        return [{ via_function: true }];
+      }
+      if (/\bjob_payload\(\$/.test(text)) {
         const id = params.find((p) => p === JOB_A || p === JOB_B);
         return id === JOB_A ? [{ payload: {} }] : id === JOB_B ? [{ payload: {} }] : [];
       }
@@ -136,5 +140,27 @@ describe('the reclaim pass reads a dying job’s payload only under its own tena
       expect(read.text).toMatch(/\bjob_payload\(\$\d+::uuid\)/);
       expect(read.text).not.toMatch(/FROM jobs/i);
     }
+  });
+
+  /* R01 (0231): settlement may not execute job_payload, so its payload read is the plain column
+   * read, bounded to the pinned tenant; RLS (0217) limits it to settlement's own two kinds. */
+  it('on a credential without job_payload, reads the column pinned and bounded to the pin', async () => {
+    const { db, seen } = recordingDb((text) => {
+      if (/^\s*UPDATE jobs SET/i.test(text)) {
+        const { payload: _payload, ...rest } = jobRow(JOB_A, A);
+        return [rest];
+      }
+      if (/has_function_privilege\('public\.job_payload\(uuid\)'/.test(text)) {
+        return [{ via_function: false }];
+      }
+      if (/SELECT j\.payload FROM jobs j/.test(text)) return [{ payload: {} }];
+      return [];
+    });
+    await jobsRepo.reclaimStalled(db);
+    const reads = seen.filter((s) => /SELECT j\.payload FROM jobs j/.test(s.text));
+    expect(reads).toHaveLength(1);
+    expect(reads[0]!.pin).toBe(A);
+    expect(reads[0]!.text).toMatch(/current_setting\('app\.business_id', true\)/);
+    expect(seen.some((s) => /\bjob_payload\(\$/.test(s.text))).toBe(false);
   });
 });

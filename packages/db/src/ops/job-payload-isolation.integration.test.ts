@@ -92,7 +92,7 @@ describe('0228: the worker reads no payload across tenants', () => {
     expect(await payloadVia(workerDb, a, randomUUID())).toBeNull();
   });
 
-  it('job_payload is the worker’s and settlement’s only; it is a pinned definer function', async () => {
+  it('job_payload is the worker’s only; it is a pinned definer function', async () => {
     const [fn] = await ownerDb.execute<{ definer: boolean; config: string[] | null }>(sql`
       SELECT prosecdef AS definer, proconfig AS config FROM pg_proc
       WHERE oid = 'public.job_payload(uuid)'::regprocedure`);
@@ -103,7 +103,46 @@ describe('0228: the worker reads no payload across tenants', () => {
     for (const db of [appDb, operatorDb]) {
       expect(await outcome(payloadVia(db, a, job))).toMatch(/^42501 .*permission denied/);
     }
-    expect(await outcome(payloadVia(settlementDb, a, job))).toBe('allowed');
+  });
+
+  /* R01 (second review of #432, Codex P2 on 0228): job_payload runs as the migration owner and checks
+   * only the tenant, so a settlement EXECUTE grant would bypass 0217's job-kind isolation. Since 0231
+   * settlement may not call it at all, and reads payloads only through its own SELECT, which 0217's
+   * restrictive policy limits to `billing.process` and `billing.apply_no_charge`. */
+  it('ATTACK: settlement cannot read a merchant-message job’s payload, by function or directly', async () => {
+    const a = await seedBusiness();
+    const job = await jobWith(a, 'merchant-message-secret');
+    expect(await outcome(payloadVia(settlementDb, a, job))).toMatch(/^42501 .*permission denied/);
+    expect(await outcome(payloadVia(settlementDb, null, job))).toMatch(
+      /^42501 .*permission denied/,
+    );
+    const direct = await withBusiness(settlementDb, a, (tx) =>
+      tx.execute<{ payload: unknown }>(sql`SELECT payload FROM jobs WHERE id = ${job}::uuid`),
+    );
+    expect([...direct]).toEqual([]);
+    const all = await settlementDb.execute<{ n: number }>(
+      sql`SELECT count(*)::int AS n FROM jobs WHERE kind = 'inbound.message'`,
+    );
+    expect([...all][0]!.n).toBe(0);
+  });
+
+  it('settlement still reads its own job’s payload, through the claim, under that job’s pin', async () => {
+    const a = await seedBusiness();
+    const b = await seedBusiness();
+    await jobWith(a, 'not-settlement');
+    await ownerDb.execute(sql`
+      INSERT INTO jobs (business_id, kind, payload)
+      VALUES (${b}::uuid, 'billing.process', ${JSON.stringify({ eventId: 'evt-r01' })}::jsonb)`);
+    const claimed = await jobsRepo.claimNext(settlementDb, 'settlement-r01', {
+      only: jobsRepo.SETTLEMENT_JOB_KINDS,
+    });
+    expect(claimed).toMatchObject({
+      businessId: b,
+      kind: 'billing.process',
+      payload: { eventId: 'evt-r01' },
+    });
+    /* The general claim cannot hand settlement the merchant job either: it sees no such row. */
+    expect(await jobsRepo.claimNext(settlementDb, 'settlement-r01')).toBeNull();
   });
 
   it('the claim still hands the runner its job with the payload, read under that job’s pin', async () => {

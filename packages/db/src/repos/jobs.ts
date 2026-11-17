@@ -533,11 +533,20 @@ export async function markFailed(
  * read what a tenant's job carries. Pins the transaction (savepoint) it runs in.
  */
 async function pinnedPayload(tx: Queryable, jobId: string, businessId: string): Promise<unknown> {
-  await tx.execute(sql`SELECT set_config('app.business_id', ${businessId}, true)`);
-  /* `job_payload` (0228) returns it only where the job's business is the pinned one: the worker
-   * holds no SELECT on the column itself. */
-  const rows = await tx.execute<{ payload: unknown }>(sql`
-    SELECT job_payload(${jobId}::uuid) AS payload`);
+  const [pin] = await tx.execute<{ via_function: boolean }>(sql`
+    SELECT set_config('app.business_id', ${businessId}, true) IS NOT NULL
+       AND has_function_privilege('public.job_payload(uuid)', 'EXECUTE') AS via_function`);
+  /* The worker holds no SELECT on the column (0228): it reads through `job_payload`, which returns
+   * the payload only where the job's business is the pinned one. Settlement may not execute that
+   * definer function (0231, R01): it reads the column itself, and its RLS (0217) shows it only its
+   * own two kinds, so any other job's payload is simply not there for it. */
+  const rows = pin?.via_function
+    ? await tx.execute<{ payload: unknown }>(sql`
+        SELECT job_payload(${jobId}::uuid) AS payload`)
+    : await tx.execute<{ payload: unknown }>(sql`
+        SELECT j.payload FROM jobs j
+        WHERE j.id = ${jobId}::uuid
+          AND j.business_id = nullif(current_setting('app.business_id', true), '')::uuid`);
   return [...rows][0]?.payload ?? null;
 }
 
