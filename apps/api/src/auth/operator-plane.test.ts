@@ -16,6 +16,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { OpsController } from '../health/ops.controller.js';
+import { OpsRefundController } from '../health/ops-refund.controller.js';
 import { DeadJobsController } from '../health/dead-jobs.controller.js';
 import { StagingToolsController } from '../health/staging-tools.controller.js';
 import { BusinessController } from './auth.controller.js';
@@ -51,6 +52,7 @@ describe('every operator route declares the authority it needs', () => {
   it('leaves no route on the ops plane undeclared', () => {
     const undeclared = [
       ...routesOf(OpsController),
+      ...routesOf(OpsRefundController),
       ...routesOf(DeadJobsController),
       ...routesOf(StagingToolsController),
     ]
@@ -62,6 +64,7 @@ describe('every operator route declares the authority it needs', () => {
   it('declares only scopes that exist', () => {
     for (const route of [
       ...routesOf(OpsController),
+      ...routesOf(OpsRefundController),
       ...routesOf(DeadJobsController),
       ...routesOf(StagingToolsController),
     ]) {
@@ -77,7 +80,12 @@ describe('every operator route declares the authority it needs', () => {
    * routes that move money take `ops:payment`.
    */
   it('pins which routes may move money', () => {
-    const byName = new Map(routesOf(OpsController).map((route) => [route.name, route.scopes]));
+    const byName = new Map(
+      [...routesOf(OpsController), ...routesOf(OpsRefundController)].map((route) => [
+        route.name,
+        route.scopes,
+      ]),
+    );
     expect(byName.get('refund')).toEqual(['ops:payment']);
     expect(byName.get('resolveException')).toEqual(['ops:payment']);
     expect(byName.get('health')).toEqual(['ops:read']);
