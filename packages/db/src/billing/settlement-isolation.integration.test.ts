@@ -290,6 +290,8 @@ describe('the settlement role, exactly (0217)', () => {
       dead_job_exceptions: 'INSERT,SELECT,UPDATE',
       external_events: 'SELECT,UPDATE',
       jobs: 'SELECT,UPDATE',
+      /* G4b-2 (0237): read-only, non-secret fingerprints, to refuse a wrong VAULT_KEY at boot. */
+      key_fingerprints: 'SELECT',
       plan_prices: 'SELECT',
       plan_versions: 'SELECT',
       subscription_charge_attempts: 'SELECT,UPDATE',

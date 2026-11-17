@@ -1660,6 +1660,13 @@
       "when": 1796904000013,
       "tag": "0236_dead_job_enrolment_cursor",
       "breakpoints": true
+    },
+    {
+      "idx": 237,
+      "version": "7",
+      "when": 1796904000014,
+      "tag": "0237_settlement_reads_key_fingerprints",
+      "breakpoints": true
     }
   ]
 }

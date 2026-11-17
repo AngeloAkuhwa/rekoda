@@ -21,6 +21,7 @@ import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { addOnReference, usagePeriod } from '@rekoda/core';
 import {
+  bootChecks,
   createDb,
   events,
   identity,
@@ -116,6 +117,8 @@ afterAll(async () => {
 beforeEach(async () => {
   await truncateAll(urls);
   provider.reset();
+  /* The API and the worker enrol the vault key on their boot; settlement only compares (0237). */
+  await bootChecks.assertKeyUnchanged(appDb, 'VAULT_KEY', config.vaultKey);
 });
 
 afterEach(async () => {
@@ -354,6 +357,15 @@ describe('the settlement process (OD-51.2)', () => {
     await expect(startSettlementProcess(settlementEnv(), provider)).rejects.toThrow(
       /pricing source/i,
     );
+  });
+
+  /* G4b-2 (0237): a wrong VAULT_KEY could open no sealed provider event; the process refuses. */
+  it('refuses to start with a vault key the database did not enrol', async () => {
+    await expect(
+      startSettlementProcess(settlementEnv({ VAULT_KEY: testKey('another-vault') }), provider),
+    ).rejects.toThrow(/VAULT_KEY is NOT the key this database was enrolled with/);
+    const started = await startSettlementProcess(settlementEnv(), provider);
+    await started.close();
   });
 });
 

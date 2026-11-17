@@ -337,6 +337,35 @@ export async function assertKeyUnchanged(db: Db, keyName: string, key: string): 
   }
 }
 
+/**
+ * Refuse to run unless this process holds the key the database ENROLLED (G4b-2, migration 0237).
+ *
+ * For a process that may read the fingerprints but not enrol one (settlement): unlike
+ * `assertKeyUnchanged` it never records a first fingerprint, so a database nobody has enrolled
+ * yet is a refusal too (the API and the worker enrol on their boot). The error names fingerprints
+ * only, never a key.
+ */
+export async function assertKeyEnrolled(db: Db, keyName: string, key: string): Promise<void> {
+  const fingerprint = fingerprintKey(key);
+  const rows = await db.execute<{ fingerprint: string }>(sql`
+    SELECT fingerprint FROM key_fingerprints WHERE key_name = ${keyName}
+  `);
+  const enrolled = [...rows][0]?.fingerprint;
+  if (enrolled === undefined) {
+    throw new KeyFingerprintMismatch(
+      `${keyName} has no enrolled fingerprint yet (this process holds ${fingerprint}); the API ` +
+        'and the worker enrol it on their first boot. Start them first.',
+    );
+  }
+  if (enrolled !== fingerprint) {
+    throw new KeyFingerprintMismatch(
+      `${keyName} is NOT the key this database was enrolled with ` +
+        `(enrolled ${enrolled}, this process holds ${fingerprint}). It could not open a single ` +
+        'sealed provider event; fix the deployed secret.',
+    );
+  }
+}
+
 /** The one pricing source in force, as the database records it (OD-51.6, migration 0215). */
 export interface PricingSourceInForce {
   mode: 'catalogue' | 'constants';

@@ -35,6 +35,9 @@ export async function startSettlementProcess(
   try {
     await bootChecks.assertRoleCannotBypassRls(db, 'settlement');
     await bootChecks.assertDatabasePrincipal(db, 'settlement', 'rekoda_settlement');
+    /* G4b-2: a wrong VAULT_KEY opens no sealed provider event, so every payment would retry to
+     * dead while the process looked healthy. Refuse instead, as the API and the worker do. */
+    await bootChecks.assertKeyEnrolled(db, 'VAULT_KEY', config.vaultKey);
     await bootChecks.assertPricingSource(db, 'settlement', {
       mode: config.planCatalogueReads ? 'catalogue' : 'constants',
       constantsFingerprint: pricingConstantsFingerprint(),
