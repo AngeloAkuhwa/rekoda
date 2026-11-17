@@ -347,6 +347,7 @@ describe('the operator process records a refund with ops:payment (0230)', () => 
     reference,
     amountK: 990_000,
     reason: 'duplicate_charge',
+    providerRefundId: `rf-${globalThis.crypto.randomUUID()}`,
   });
 
   it('records it for a verified operator with ops:payment, audited with the token subject', async () => {
@@ -363,10 +364,26 @@ describe('the operator process records a refund with ops:payment (0230)', () => 
       status: 'refunded',
       refundedK: 990_000,
       revokedUnits: 0,
+      replayed: false,
     });
     const [audit] = await ownerDb().execute<{ actor: string }>(sql`
       SELECT actor FROM audit_events WHERE business_id = ${businessId}::uuid AND action = 'refunded'`);
     expect(audit?.actor).toBe('operator:ada@rekoda.app');
+  });
+
+  it('a retried request for the same provider refund is answered as recorded, changing nothing (R06)', async () => {
+    const businessId = await seedBusiness();
+    const reference = await paidPlanCharge(businessId);
+    const body = { ...refundBody(businessId, reference), amountK: 400_000 };
+    const token = bearer(await sign({ sub: 'ada@rekoda.app', scope: 'ops:payment' }));
+    const first = await post('/v1/ops/refund', body, token);
+    const again = await post('/v1/ops/refund', body, token);
+    expect(await first.json()).toMatchObject({ refundedK: 400_000, replayed: false });
+    expect(await again.json()).toMatchObject({ refundedK: 400_000, replayed: true });
+    const [charge] = await ownerDb().execute<{ k: string }>(
+      sql`SELECT refunded_amount_k::text AS k FROM subscription_charges WHERE reference = ${reference}`,
+    );
+    expect(charge!.k).toBe('400000');
   });
 
   it('refuses ops:billing alone, and more than was charged, changing nothing', async () => {

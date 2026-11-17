@@ -540,7 +540,11 @@ describe('the operator billing surface', () => {
     app.inject({
       method: 'POST',
       url: '/v1/ops/refund',
-      payload: payload as Record<string, unknown>,
+      /* Each recorded refund names its own provider refund id (0235), unless the test names one. */
+      payload: {
+        providerRefundId: `rf-${globalThis.crypto.randomUUID()}`,
+        ...(payload as Record<string, unknown>),
+      },
       headers: { 'content-type': 'application/json', ...headers },
     });
 

@@ -508,6 +508,12 @@ export const opsRefundRequest = z.object({
     'unused_add_on',
     'suspension_error',
   ]),
+  /**
+   * The provider's own id for the refund the operator made in Paystack (R06, migration 0235).
+   * Recording the same id again changes nothing; one id cannot be recorded for another charge,
+   * amount or business.
+   */
+  providerRefundId: z.string().regex(/^[A-Za-z0-9_.:-]{1,100}$/),
   /* No `actor`. The audit trail names the VERIFIED operator subject, and a
    * body field here would let whoever held the credential also choose what
    * the record said they were called (ADR 0034). */

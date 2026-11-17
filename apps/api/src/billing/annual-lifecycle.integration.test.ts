@@ -362,6 +362,7 @@ describe('money returned on a yearly charge', () => {
       amountK,
       reason: 'service_failure',
       actor: 'operator:test',
+      providerRefundId: `rf-${globalThis.crypto.randomUUID()}`,
     });
 
   it('a partial refund leaves the charge paid and the year untouched', async () => {

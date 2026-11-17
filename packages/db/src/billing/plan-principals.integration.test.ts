@@ -322,6 +322,7 @@ describe('OD-37: only settlement records a payment (0202)', () => {
       amountK: 1000,
       reason: 'service_failure',
       actor: 'operator:ada',
+      providerRefundId: `rf-${globalThis.crypto.randomUUID()}`,
     });
     expect(refunded.status).toBe('refunded');
     // ...and a refunded charge cannot be made paid again by it.
@@ -414,6 +415,7 @@ describe('OD-37: what a charge buys is frozen from its opening to its end (0205,
           amountK: 1000,
           reason: 'service_failure',
           actor: 'operator:ada',
+          providerRefundId: `rf-${globalThis.crypto.randomUUID()}`,
         });
       }
       expect(
@@ -478,6 +480,7 @@ describe('OD-37: what a charge buys is frozen from its opening to its end (0205,
           amountK: 1000,
           reason: 'service_failure',
           actor: 'operator:ada',
+          providerRefundId: `rf-${globalThis.crypto.randomUUID()}`,
         })
       ).status,
     ).toBe('refunded');

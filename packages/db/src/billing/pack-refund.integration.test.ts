@@ -10,6 +10,7 @@
  * Every refund runs on a live `rekoda_billing_operator` connection; every attack on the role it
  * names; the owner only arranges state and reads it back.
  */
+import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { withBusiness, type Db } from '../client.js';
@@ -74,6 +75,7 @@ const refund = (
     amountK,
     reason,
     actor: 'operator:ada@rekoda.test',
+    providerRefundId: `rf-${globalThis.crypto.randomUUID()}`,
   });
 const bonus = async (businessId: string) =>
   [
@@ -106,6 +108,7 @@ describe('0230: a credited pack is refunded only in full, unused, within seven d
       status: 'refunded',
       refundedK: PACK_K,
       revokedUnits: UNITS,
+      replayed: false,
     });
     expect(await bonus(businessId)).toBe(0);
     expect(await chargeOf(reference)).toEqual({
@@ -121,6 +124,7 @@ describe('0230: a credited pack is refunded only in full, unused, within seven d
           reason: 'unused_add_on',
           status: 'refunded',
           revokedUnits: UNITS,
+          providerRefundId: expect.stringMatching(/^rf-/),
         },
       },
     ]);
@@ -199,6 +203,7 @@ describe('0230: a credited pack is refunded only in full, unused, within seven d
       status: 'refunded',
       refundedK: PACK_K,
       revokedUnits: 0,
+      replayed: false,
     });
   });
 });
@@ -211,7 +216,7 @@ describe('0230: only the billing operator records a refund', () => {
         await outcome(
           withBusiness(db, businessId, (tx) =>
             tx.execute(sql`SELECT * FROM subscription_record_refund(${businessId}::uuid, ${reference},
-                             ${PACK_K}::bigint, 'unused_add_on', 'operator:forged')`),
+                             ${PACK_K}::bigint, 'unused_add_on', 'operator:forged', 'rf-forged')`),
           ),
         ),
       ).toMatch(/^42501 .*permission denied/);
@@ -247,7 +252,7 @@ describe('0230: only the billing operator records a refund', () => {
       await outcome(
         withBusiness(operatorDb, other, (tx) =>
           tx.execute(sql`SELECT * FROM subscription_record_refund(${businessId}::uuid, ${reference},
-                           ${PACK_K}::bigint, 'unused_add_on', 'operator:ada')`),
+                           ${PACK_K}::bigint, 'unused_add_on', 'operator:ada', 'rf-other-pin')`),
         ),
       ),
     ).toMatch(/^42501 .*not the pinned tenant/);
@@ -257,5 +262,235 @@ describe('0230: only the billing operator records a refund', () => {
     await expect(refund(businessId, reference, PACK_K + 1)).rejects.toThrow(
       /cannot be refunded by that amount/,
     );
+  });
+});
+
+/* ── Second independent review of PR #432 (migration 0235) ──────────────────────────────────── */
+
+/** A paid, never-credited plan charge (a duplicate payment set aside): refundable in parts. */
+async function paidPlanCharge(businessId: string, amountK = 990_000): Promise<string> {
+  seq += 1;
+  const reference = `RKD-SUB-20261115-P${String(seq).padStart(5, '0')}`;
+  await ownerDb.execute(sql`
+    INSERT INTO subscription_charges
+      (business_id, kind, plan, amount_k, paid_amount_k, status, reference, period_start,
+       period_end, paid_at, pricing_source, billing_interval, unapplied_at, unapplied_reason)
+    VALUES (${businessId}::uuid, 'renewal', 'chat', ${amountK}, ${amountK}, 'paid', ${reference},
+            now() - interval '400 days', now() - interval '370 days', now(), 'catalogue',
+            'monthly', now(), 'duplicate_payment')`);
+  return reference;
+}
+const record = (
+  businessId: string,
+  reference: string,
+  providerRefundId: string,
+  amountK: number,
+  reason: subscriptionsRepo.RefundReason = 'duplicate_charge',
+  actor = 'operator:ada@rekoda.test',
+) =>
+  subscriptionsRepo.recordRefund(operatorDb, {
+    businessId,
+    reference,
+    amountK,
+    reason,
+    actor,
+    providerRefundId,
+  });
+const refundRows = async (businessId: string) => [
+  ...(await ownerDb.execute<{ provider_refund_id: string; amount_k: string }>(sql`
+      SELECT provider_refund_id, amount_k::text FROM subscription_refunds
+      WHERE business_id = ${businessId}::uuid ORDER BY recorded_at`)),
+];
+
+describe('R06 (0235): one provider refund is recorded once', () => {
+  it('a sequential replay of the same partial refund changes nothing and says so', async () => {
+    const businessId = await seedBusiness();
+    const reference = await paidPlanCharge(businessId);
+    const first = await record(businessId, reference, 'rf-1001', 300_000);
+    expect(first).toEqual({ status: 'paid', refundedK: 300_000, revokedUnits: 0, replayed: false });
+    /* The operator's first call timed out after the provider refund succeeded: they record it again. */
+    const again = await record(businessId, reference, 'rf-1001', 300_000);
+    expect(again).toEqual({ status: 'paid', refundedK: 300_000, revokedUnits: 0, replayed: true });
+    expect(await chargeOf(reference)).toMatchObject({
+      refunded_amount_k: '300000',
+      status: 'paid',
+    });
+    expect(await refundRows(businessId)).toEqual([
+      { provider_refund_id: 'rf-1001', amount_k: '300000' },
+    ]);
+    expect(await refundAudits(businessId)).toHaveLength(1);
+  });
+
+  it('two genuine partial refunds are both recorded, up to the charge and no further', async () => {
+    const businessId = await seedBusiness();
+    const reference = await paidPlanCharge(businessId);
+    await record(businessId, reference, 'rf-2001', 400_000);
+    const second = await record(businessId, reference, 'rf-2002', 590_000);
+    expect(second).toMatchObject({ status: 'refunded', refundedK: 990_000, replayed: false });
+    await expect(record(businessId, reference, 'rf-2003', 1)).rejects.toThrow(
+      /cannot be refunded by that amount/,
+    );
+    expect((await refundRows(businessId)).map((r) => r.amount_k)).toEqual(['400000', '590000']);
+  });
+
+  it('refuses the same provider refund with another amount, another charge or another business', async () => {
+    const businessId = await seedBusiness();
+    const reference = await paidPlanCharge(businessId);
+    const otherCharge = await paidPlanCharge(businessId);
+    const otherBusiness = await seedBusiness();
+    const foreign = await paidPlanCharge(otherBusiness);
+    await record(businessId, reference, 'rf-3001', 100_000);
+    await expect(record(businessId, reference, 'rf-3001', 100_001)).rejects.toThrow(
+      /already recorded with another charge or amount/,
+    );
+    await expect(record(businessId, otherCharge, 'rf-3001', 100_000)).rejects.toThrow(
+      /already recorded with another charge or amount/,
+    );
+    await expect(record(otherBusiness, foreign, 'rf-3001', 100_000)).rejects.toThrow(
+      /already recorded with another charge or amount/,
+    );
+    expect(await chargeOf(otherCharge)).toMatchObject({ refunded_amount_k: '0' });
+    expect(await chargeOf(foreign)).toMatchObject({ refunded_amount_k: '0' });
+    expect(await refundRows(otherBusiness)).toEqual([]);
+  });
+
+  it('refuses a reference of another business, under that other business’s pin, writing nothing', async () => {
+    const businessId = await seedBusiness();
+    const reference = await paidPlanCharge(businessId);
+    const other = await seedBusiness();
+    await expect(record(other, reference, 'rf-4001', 1_000)).rejects.toThrow(
+      /cannot be refunded by that amount/,
+    );
+    expect(await chargeOf(reference)).toMatchObject({ refunded_amount_k: '0' });
+    expect(await refundRows(other)).toEqual([]);
+  });
+
+  it('a concurrent replay of one provider refund records it once', async () => {
+    const businessId = await seedBusiness();
+    const reference = await paidPlanCharge(businessId);
+    const id = `rf-${randomUUID()}`;
+    const results = await Promise.all(
+      Array.from({ length: 4 }, () => record(businessId, reference, id, 250_000)),
+    );
+    expect(results.filter((r) => !r.replayed)).toHaveLength(1);
+    expect(results.filter((r) => r.replayed)).toHaveLength(3);
+    expect(await chargeOf(reference)).toMatchObject({ refunded_amount_k: '250000' });
+    expect(await refundRows(businessId)).toHaveLength(1);
+    expect(await refundAudits(businessId)).toHaveLength(1);
+  });
+
+  it('a credited pack replayed after its refund is answered as recorded, its units revoked once', async () => {
+    const { businessId, reference } = await creditedPack();
+    const first = await record(businessId, reference, 'rf-5001', PACK_K, 'unused_add_on');
+    expect(first).toMatchObject({ status: 'refunded', revokedUnits: UNITS, replayed: false });
+    const again = await record(businessId, reference, 'rf-5001', PACK_K, 'unused_add_on');
+    expect(again).toMatchObject({ status: 'refunded', revokedUnits: UNITS, replayed: true });
+    expect(await bonus(businessId)).toBe(0);
+  });
+
+  it('a malformed provider refund id is refused, writing nothing', async () => {
+    const businessId = await seedBusiness();
+    const reference = await paidPlanCharge(businessId);
+    for (const bad of ['', 'has space', 'x'.repeat(101), "rf'1"]) {
+      await expect(record(businessId, reference, bad, 1_000)).rejects.toThrow(/provider refund id/);
+    }
+    expect(await refundRows(businessId)).toEqual([]);
+  });
+});
+
+describe('R04 (0235): the refund actor follows the operator contract', () => {
+  it('accepts a 255-character operator subject and refuses a 256-character or malformed one', async () => {
+    const businessId = await seedBusiness();
+    const reference = await paidPlanCharge(businessId);
+    const longest = `operator:${'s'.repeat(255)}`;
+    await record(businessId, reference, 'rf-6001', 1_000, 'duplicate_charge', longest);
+    const [audit] = await ownerDb.execute<{ actor: string }>(sql`
+      SELECT actor FROM audit_events WHERE business_id = ${businessId}::uuid AND action = 'refunded'`);
+    expect(audit!.actor).toBe(longest);
+    for (const bad of [`operator:${'s'.repeat(256)}`, 'alice', 'operator:', 'operator:a b']) {
+      await expect(
+        record(businessId, reference, `rf-${randomUUID()}`, 1_000, 'duplicate_charge', bad),
+      ).rejects.toThrow(/operator:<subject> actor/);
+    }
+  });
+});
+
+describe('R09 (0235): a pack judged unused only against the allowance it was credited beside', () => {
+  it('a pack consumed before an upgrade does not look unused after it', async () => {
+    const { businessId, reference } = await creditedPack();
+    /* Consumption on Chat needed 30 of the pack's units... */
+    await withBusiness(ownerDb, businessId, (tx) =>
+      tx.execute(sql`UPDATE usage_counters SET used = usage_entitlement(${businessId}::uuid, 'AI_ACTIONS') + 30
+                     WHERE business_id = ${businessId}::uuid AND unit = 'AI_ACTIONS'`),
+    );
+    /* ...then the merchant upgrades: Complete's larger allowance would cover that consumption. */
+    await withBusiness(appDb, businessId, (tx) =>
+      tx.execute(
+        sql`SELECT test_fixture_set_plan(${businessId}::uuid, 'complete', now() + interval '25 days')`,
+      ),
+    );
+    await expect(refund(businessId, reference)).rejects.toThrow(
+      /needs an owner decision \(OD-55\)/,
+    );
+    expect(await bonus(businessId)).toBe(UNITS);
+    expect(await chargeOf(reference)).toMatchObject({ status: 'paid', revoked: false });
+  });
+
+  it('records the allowance at the credit, and refunds an unused pack while it is unchanged', async () => {
+    const { businessId, reference } = await creditedPack();
+    const [snap] = await ownerDb.execute<{ entitlement: number; unit: string }>(sql`
+      SELECT e.entitlement, e.unit FROM pack_credit_entitlements e
+      JOIN subscription_charges c ON c.id = e.charge_id WHERE c.reference = ${reference}`);
+    const [now] = await withBusiness(appDb, businessId, (tx) =>
+      tx.execute<{ n: number }>(
+        sql`SELECT usage_entitlement(${businessId}::uuid, 'AI_ACTIONS') AS n`,
+      ),
+    );
+    expect(snap).toEqual({ entitlement: now!.n, unit: 'AI_ACTIONS' });
+    expect((await refund(businessId, reference)).revokedUnits).toBe(UNITS);
+  });
+
+  it('ATTACK: no runtime role writes the recorded allowance or a refund row', async () => {
+    const { businessId, reference } = await creditedPack();
+    for (const db of [appDb, workerDb, settlementDb, operatorDb] as Db[]) {
+      for (const write of [
+        sql`UPDATE pack_credit_entitlements SET entitlement = 0`,
+        sql`DELETE FROM pack_credit_entitlements`,
+        sql`INSERT INTO subscription_refunds (business_id, charge_id, provider_refund_id, amount_k, reason, actor)
+            SELECT business_id, id, 'rf-forged', 1, 'duplicate_charge', 'operator:x'
+            FROM subscription_charges WHERE reference = ${reference}`,
+      ]) {
+        expect(await outcome(withBusiness(db, businessId, (tx) => tx.execute(write)))).toMatch(
+          /^42501 /,
+        );
+      }
+    }
+  });
+});
+
+describe('G1-1 (0235): the application never presets a credit or revocation fact', () => {
+  it('ATTACK: a new pending charge with credited_* or units_revoked_at set is refused', async () => {
+    const businessId = await seedBusiness();
+    for (const [column, value] of [
+      ['credited_units', sql`1`],
+      ['credited_unit', sql`'AI_ACTIONS'`],
+      ['credited_period', sql`'2026-11'`],
+      ['units_revoked_at', sql`now()`],
+    ] as const) {
+      seq += 1;
+      expect(
+        await outcome(
+          withBusiness(appDb, businessId, (tx) =>
+            tx.execute(sql`
+              INSERT INTO subscription_charges
+                (business_id, kind, pack_id, quantity, amount_k, status, reference, period_start,
+                 period_end, pricing_source, billing_interval, ${sql.raw(column)})
+              VALUES (${businessId}::uuid, 'add_on', 'messages_100', 1, ${PACK_K}, 'pending',
+                      ${`RKD-PACK-20261115-G${String(seq).padStart(5, '0')}`}, now(),
+                      now() + interval '30 days', 'catalogue', 'monthly', ${value})`),
+          ),
+        ),
+      ).toMatch(/^42501 .*opens only a new pending charge/);
+    }
   });
 });

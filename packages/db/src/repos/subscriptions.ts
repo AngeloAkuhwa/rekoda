@@ -1141,6 +1141,8 @@ export interface RecordedRefund {
   refundedK: number;
   /** Units taken back from a credited pack's meter row (0 for any other charge). */
   revokedUnits: number;
+  /** True when this provider refund was recorded already: nothing changed (R06, 0235). */
+  replayed: boolean;
 }
 
 /**
@@ -1162,6 +1164,8 @@ export async function recordRefund(
     amountK: number;
     reason: RefundReason;
     actor: string;
+    /** The provider's own id for this refund (Paystack's refund id): one refund is recorded once. */
+    providerRefundId: string;
   },
 ): Promise<RecordedRefund> {
   try {
@@ -1170,14 +1174,16 @@ export async function recordRefund(
         status: string;
         refunded_k: string;
         revoked_units: number;
+        replayed: boolean;
       }>(sql`
         SELECT * FROM subscription_record_refund(${input.businessId}::uuid, ${input.reference},
-          ${input.amountK}::bigint, ${input.reason}, ${input.actor})`);
+          ${input.amountK}::bigint, ${input.reason}, ${input.actor}, ${input.providerRefundId})`);
       const row = [...rows][0]!;
       return {
         status: row.status,
         refundedK: Number(row.refunded_k),
         revokedUnits: row.revoked_units,
+        replayed: row.replayed,
       };
     });
   } catch (error) {

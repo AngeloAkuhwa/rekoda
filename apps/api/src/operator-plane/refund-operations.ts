@@ -21,12 +21,18 @@ export async function recordRefundAsOperator(
   operatorDb: Db,
   actor: string,
   body: unknown,
-): Promise<{ refunded: true; status: string; refundedK: number; revokedUnits: number }> {
+): Promise<{
+  refunded: true;
+  status: string;
+  refundedK: number;
+  revokedUnits: number;
+  replayed: boolean;
+}> {
   const input = opsRefundRequest.safeParse(body);
   if (!input.success) {
     throw new OperatorPlaneRefusal(
       400,
-      'businessId, reference, amountK (positive kobo) and reason are required',
+      'businessId, reference, amountK (positive kobo), reason and providerRefundId (the Paystack refund id) are required',
     );
   }
   try {

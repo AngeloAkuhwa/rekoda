@@ -312,6 +312,7 @@ describe('charges', () => {
         amountK,
         reason: 'service_failure',
         actor: 'operator:angelo',
+        providerRefundId: `rf-${globalThis.crypto.randomUUID()}`,
       });
     const half = await refund(490_000);
     // Half back is still a charge that happened, not a charge that did not.
@@ -430,6 +431,7 @@ describe('recording a refund', () => {
       amountK: 990_000,
       reason: 'unused_add_on',
       actor: 'operator:angelo',
+      providerRefundId: `rf-${globalThis.crypto.randomUUID()}`,
     });
 
     const audit = await inTenant(businessId, (tx) =>
@@ -458,6 +460,7 @@ describe('recording a refund', () => {
         amountK: 990_001,
         reason: 'duplicate_charge',
         actor: 'operator:angelo',
+        providerRefundId: `rf-${globalThis.crypto.randomUUID()}`,
       }),
     ).rejects.toThrow(/cannot be refunded by that amount/);
 

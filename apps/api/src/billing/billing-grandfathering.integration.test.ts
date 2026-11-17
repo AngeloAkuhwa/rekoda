@@ -358,6 +358,7 @@ describe('grandfathering through the catalogue (BL2, PR-100)', () => {
       amountK: answer.amountK,
       reason: 'unused_add_on',
       actor: 'operator:test',
+      providerRefundId: `rf-${globalThis.crypto.randomUUID()}`,
     });
 
     const overview = await confirmedBilling().overview(businessId);
