@@ -269,7 +269,8 @@ describe('0229: an operator inspects and requeues a dead-lettered candidate', ()
         WHERE proname IN ('dead_job_enrolment_failed', 'dead_job_enrolment_dead_letters',
                           'dead_job_enrolment_requeue', 'dead_job_unrecorded_candidates')`)),
     ];
-    expect(rows).toHaveLength(4);
+    /* Five: 0236 adds the cursor overload of the discovery function beside the page-size one. */
+    expect(rows).toHaveLength(5);
     for (const row of rows) {
       expect(row.definer).toBe(true);
       expect(row.config).toContain('search_path=pg_catalog, public, pg_temp');
@@ -278,5 +279,93 @@ describe('0229: an operator inspects and requeues a dead-lettered candidate', ()
       SELECT relrowsecurity AS rls, relforcerowsecurity AS forced FROM pg_class
       WHERE oid = 'public.dead_job_enrolment_failures'::regclass`);
     expect(table).toEqual({ rls: true, forced: true });
+  });
+});
+
+/* R08 (second review of #432, 0236): when the failure itself cannot be recorded. */
+describe('0236: enrolment progresses when failure tracking also fails', () => {
+  /** Failure records for `businessId` cannot be written either (a broken tenant). */
+  async function poisonTracking(businessId: string): Promise<void> {
+    await ownerDb.execute(
+      sql.raw(`
+      CREATE OR REPLACE FUNCTION public.test_poison_tracking() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.business_id = '${businessId}'::uuid THEN
+          RAISE EXCEPTION 'test: tracking broken' USING ERRCODE = 'P0002';
+        END IF;
+        RETURN NEW;
+      END $$;
+      DROP TRIGGER IF EXISTS test_poison_tracking ON dead_job_enrolment_failures;
+      CREATE TRIGGER test_poison_tracking BEFORE INSERT ON dead_job_enrolment_failures
+        FOR EACH ROW EXECUTE FUNCTION public.test_poison_tracking();`),
+    );
+  }
+  afterEach(async () => {
+    await ownerDb.execute(
+      sql.raw(`DROP TRIGGER IF EXISTS test_poison_tracking ON dead_job_enrolment_failures;
+               DROP FUNCTION IF EXISTS public.test_poison_tracking();`),
+    );
+  });
+
+  it('reports an untracked failure by SQLSTATE instead of swallowing it', async () => {
+    const broken = await seedBusiness();
+    await deadJobs(broken, 1);
+    await poison(broken);
+    await poisonTracking(broken);
+    const message = await pass();
+    expect(message).toMatch(
+      /enrolment failed for 1 dead job\(s\); 0 enrolled; the failure of 1 could not be recorded \(SQLSTATE P0002\)/,
+    );
+    /* Nothing about the row leaks into the report. */
+    expect(message).not.toMatch(/test: tracking broken|poison/);
+  });
+
+  it('a page full of untrackable failures does not starve a later healthy candidate', async () => {
+    const broken = await seedBusiness();
+    const healthy = await seedBusiness();
+    await deadJobs(broken, 3); // the oldest three: they head the page
+    const [later] = await deadJobs(healthy, 1);
+    await ownerDb.execute(sql`UPDATE jobs SET updated_at = now() WHERE id = ${later!}::uuid`);
+    await poison(broken);
+    await poisonTracking(broken);
+
+    /* The runner's loop, with a page of 3 and the cursor carried between passes. */
+    let after: string | null = null;
+    const first = await jobsRepo.enrolUnrecordedDeathsPage(workerDb, { limit: 3, after });
+    expect(first).toMatchObject({ enrolled: 0, failed: 3 });
+    expect(first.untracked).toHaveLength(3);
+    after = first.next;
+    expect(after).not.toBeNull();
+    const second = await jobsRepo.enrolUnrecordedDeathsPage(workerDb, { limit: 3, after });
+    expect(second).toMatchObject({ enrolled: 1, failed: 0, next: null });
+    expect(await records(healthy)).toBe(1);
+    /* Short page: the next pass starts over and meets the broken ones again (retried, not lost). */
+    const third = await jobsRepo.enrolUnrecordedDeathsPage(workerDb, {
+      limit: 3,
+      after: second.next,
+    });
+    expect(third.failed).toBe(3);
+  });
+
+  it('overlapping passes enrol each candidate once and spend one attempt per failure', async () => {
+    const businessId = await seedBusiness();
+    const healthy = await seedBusiness();
+    const [failing] = await deadJobs(businessId, 1);
+    await deadJobs(healthy, 2);
+    await poison(businessId);
+    const passes = await Promise.all(
+      Array.from({ length: 3 }, () => jobsRepo.enrolUnrecordedDeathsPage(workerDb, { limit: 10 })),
+    );
+    expect(passes.reduce((n, p) => n + p.enrolled, 0)).toBe(2);
+    expect(await records(healthy)).toBe(2);
+    /* Each pass that reached the failing candidate spent one attempt; never more than passes ran,
+     * and the backoff then keeps later passes off it. */
+    const attempts = (await failureOf(failing!))!.attempts;
+    expect(attempts).toBeGreaterThanOrEqual(1);
+    expect(attempts).toBeLessThanOrEqual(3);
+    expect(await jobsRepo.enrolUnrecordedDeathsPage(workerDb, { limit: 10 })).toMatchObject({
+      enrolled: 0,
+      failed: 0,
+    });
   });
 });

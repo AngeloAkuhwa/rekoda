@@ -1653,6 +1653,13 @@
       "when": 1796904000012,
       "tag": "0235_refund_records_and_pack_eligibility",
       "breakpoints": true
+    },
+    {
+      "idx": 236,
+      "version": "7",
+      "when": 1796904000013,
+      "tag": "0236_dead_job_enrolment_cursor",
+      "breakpoints": true
     }
   ]
 }

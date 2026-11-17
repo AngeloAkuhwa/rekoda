@@ -291,6 +291,57 @@ describe('a payment job whose worker dies on every attempt (reclaimStalled)', ()
     expect((await recordsOf(a))[0]!['business_id']).toBe(a);
     expect((await recordsOf(b))[0]!['business_id']).toBe(b);
   });
+
+  /* G2-1 (second review of #432): one record that cannot be written no longer rolls back the whole
+   * cross-tenant pass; its job stays dead without a record, and the enrolment pass records it. */
+  it('one business whose record cannot be written does not stop the reclaim of the others', async () => {
+    const a = await seedBusiness();
+    const b = await seedBusiness();
+    await enqueue(a, 'payment.process', { eventId: await attributedEvent(a) }, 1);
+    await enqueue(b, 'payment.process', { eventId: await attributedEvent(b) }, 1);
+    await ownerDb().execute(
+      sql.raw(`
+      CREATE OR REPLACE FUNCTION public.test_poison_record() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.business_id = '${a}'::uuid THEN
+          RAISE EXCEPTION 'test: poison record' USING ERRCODE = 'P0001';
+        END IF;
+        RETURN NEW;
+      END $$;
+      CREATE TRIGGER test_poison_record BEFORE INSERT ON dead_job_exceptions
+        FOR EACH ROW EXECUTE FUNCTION public.test_poison_record();`),
+    );
+    try {
+      let unrecorded = 0;
+      for (let i = 0; i < 2; i++) {
+        for (const _ of [a, b])
+          expect(await jobsRepo.claimNext(workerDb, `g21-${i}`)).not.toBeNull();
+        await workerDb.execute(
+          sql`UPDATE jobs SET locked_at = now() - interval '10 minutes' WHERE state = 'running'`,
+        );
+        expect(
+          await jobsRepo.reclaimStalled(workerDb, 300_000, {
+            onUnrecorded: (n) => (unrecorded += n),
+          }),
+        ).toBe(2);
+      }
+      expect(unrecorded).toBe(1);
+      expect(await recordsOf(b)).toHaveLength(1);
+      expect(await recordsOf(a)).toHaveLength(0);
+      const [states] = await ownerDb().execute<{ n: number }>(
+        sql`SELECT count(*)::int AS n FROM jobs WHERE state = 'dead'`,
+      );
+      expect(states!.n).toBe(2);
+    } finally {
+      await ownerDb().execute(
+        sql.raw(`DROP TRIGGER IF EXISTS test_poison_record ON dead_job_exceptions;
+                 DROP FUNCTION IF EXISTS public.test_poison_record();`),
+      );
+    }
+    /* The death was not lost: the enrolment pass records it once the cause is gone. */
+    expect(await jobsRepo.enrolUnrecordedDeaths(workerDb)).toBe(1);
+    expect(await recordsOf(a)).toHaveLength(1);
+  });
 });
 
 describe('what a dead job leaves, by kind and by payload', () => {

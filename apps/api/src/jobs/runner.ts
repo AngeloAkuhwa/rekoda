@@ -103,6 +103,8 @@ export class JobRunner {
   private loops: Promise<void>[] = [];
   private readonly claim: jobsRepo.ClaimFilter;
   private readonly enrolDeaths: boolean;
+  /** Where the next dead-job enrolment pass continues (0236). */
+  private enrolmentCursor: jobsRepo.EnrolmentCursor = null;
   /** A second runner driven with this one (development and tests only): see `attach`. */
   private companion: JobRunner | null = null;
 
@@ -261,15 +263,30 @@ export class JobRunner {
 
   /** Requeue jobs whose worker died mid-run. */
   async reclaim(): Promise<number> {
-    const n = await jobsRepo.reclaimStalled(this.workerDb, this.stalledAfterMs);
+    const n = await jobsRepo.reclaimStalled(this.workerDb, this.stalledAfterMs, {
+      /* G2-1: a death whose record could not be written is left for the enrolment pass below. */
+      onUnrecorded: (count) => {
+        if (count > 0) {
+          this.log.warn(`reclaim: ${count} dead job record(s) not written; left for enrolment`);
+        }
+      },
+    });
     if (n > 0) this.log.warn(`reclaimed ${n} stalled job(s)`);
     /* Deaths with no record (from before 0194, or an old worker mid-rollout) get one here. A
      * failure (some business's record could not be written; the rest were) is logged and does not
      * stop the companion's reclaim below; the next pass retries what is left. */
     if (this.enrolDeaths) {
       try {
-        const enrolled = await jobsRepo.enrolUnrecordedDeaths(this.workerDb);
-        if (enrolled > 0) this.log.warn(`enrolled ${enrolled} dead payment or billing job(s)`);
+        /* R08: the page continues where the last pass ended (0236), so candidates that keep
+         * failing, even ones whose failure cannot be recorded, never hold back the rest. */
+        const pass = await jobsRepo.enrolUnrecordedDeathsPage(this.workerDb, {
+          after: this.enrolmentCursor,
+        });
+        this.enrolmentCursor = pass.next;
+        if (pass.enrolled > 0) {
+          this.log.warn(`enrolled ${pass.enrolled} dead payment or billing job(s)`);
+        }
+        jobsRepo.throwIfEnrolmentFailed(pass);
       } catch (error: unknown) {
         this.log.warn(`dead-job enrolment: ${redactForLog(describeFailure(error))}`);
       }

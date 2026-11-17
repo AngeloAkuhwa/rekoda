@@ -593,7 +593,11 @@ const dyingJob = (row: DyingRow): deadJobs.DyingJob => ({
  * unread refund or dispute into a merchant exception there, never a silent dead
  * job). Only if that run dies too does the job go `dead` here.
  */
-export async function reclaimStalled(db: Db, olderThanMs = 300_000): Promise<number> {
+export async function reclaimStalled(
+  db: Db,
+  olderThanMs = 300_000,
+  options: { onUnrecorded?: (count: number) => void } = {},
+): Promise<number> {
   /* An operator's recovery (OWN-73, OWN-76) is ONE attempt: its run already took the
    * last-attempt path, so a crash during it goes straight back to dead (reopening the record)
    * instead of taking the ordinary one-more-run crash allowance without a fresh operator ask. */
@@ -623,17 +627,25 @@ export async function reclaimStalled(db: Db, olderThanMs = 300_000): Promise<num
       RETURNING id, business_id, kind, attempts, state, failure_category
     `);
     const reclaimed = [...rows];
-    /* Each record in its own savepoint: one that fails (a transient lock conflict) rolls back
-     * only itself, not the whole cross-tenant pass. Its job is already dead in this transaction,
-     * so a failure is re-thrown: losing the record would be a silent dead job. */
+    /* Each record in its own savepoint: one that fails rolls back only itself, never the whole
+     * cross-tenant pass (G2-1: re-throwing here rolled every tenant's reclaim back, so one record
+     * that could never be written kept every stalled job of every business `running` for ever).
+     * The job stays dead without a record, which is exactly what the cutover enrolment pass finds
+     * and records, with its own retry and dead-letter policy (0225, 0229): the death is not lost. */
+    let unrecorded = 0;
     for (const row of reclaimed) {
       if (row.state === 'dead' && deadJobs.isDeadJobKind(row.kind) && row.business_id) {
-        await tx.transaction(async (savepoint) => {
-          const payload = await pinnedPayload(savepoint, row.id, row.business_id);
-          await deadJobs.recordDeath(savepoint, dyingJob({ ...row, payload }));
-        });
+        try {
+          await tx.transaction(async (savepoint) => {
+            const payload = await pinnedPayload(savepoint, row.id, row.business_id);
+            await deadJobs.recordDeath(savepoint, dyingJob({ ...row, payload }));
+          });
+        } catch {
+          unrecorded += 1;
+        }
       }
     }
+    options.onUnrecorded?.(unrecorded);
     return reclaimed.length;
   });
 }
@@ -654,31 +666,82 @@ export async function reclaimStalled(db: Db, olderThanMs = 300_000): Promise<num
  * never enrolled twice. Bounded per pass.
  */
 export async function enrolUnrecordedDeaths(db: Db, limit = 100): Promise<number> {
+  const pass = await enrolUnrecordedDeathsPage(db, { limit });
+  throwIfEnrolmentFailed(pass);
+  return pass.enrolled;
+}
+
+/** Where the next enrolment pass continues: the last candidate job the previous pass saw (0236). */
+export type EnrolmentCursor = string | null;
+
+export interface EnrolmentPass {
+  enrolled: number;
+  /** Candidates whose enrolment failed; each failure was recorded (it backs off, 0229)... */
+  failed: number;
+  /** ...except these: the failure itself could not be recorded (R08). By SQLSTATE, never a message. */
+  untracked: { jobId: string; sqlstate: string | null }[];
+  /** The cursor for the next pass; null when this page was the last (the next pass starts over). */
+  next: EnrolmentCursor;
+}
+
+/**
+ * One page of the cutover enrolment, continuing after `after` (R08, migration 0236). The runner
+ * carries `next` from pass to pass, so a page full of candidates that fail, even ones whose failure
+ * cannot be recorded, never stops later candidates from being reached. Nothing is thrown for a
+ * candidate's failure: the caller reports the pass.
+ */
+export async function enrolUnrecordedDeathsPage(
+  db: Db,
+  options: { limit?: number; after?: EnrolmentCursor } = {},
+): Promise<EnrolmentPass> {
+  const limit = options.limit ?? 100;
+  const after = options.after && UUID_TEXT.test(options.after) ? options.after : null;
   const candidates = [
     ...(await db.execute<{ job_id: string; business_id: string }>(
-      sql`SELECT job_id, business_id FROM dead_job_unrecorded_candidates(${limit}::int)`,
+      sql`SELECT job_id, business_id FROM dead_job_unrecorded_candidates(${limit}::int, ${after}::uuid)`,
     )),
   ];
   let enrolled = 0;
   let failed = 0;
+  const untracked: EnrolmentPass['untracked'] = [];
   for (const candidate of candidates) {
     try {
       if (await enrolDeath(db, candidate.job_id, candidate.business_id)) enrolled += 1;
     } catch (error) {
-      /* Not re-thrown yet: the other businesses' candidates still run. Nothing about the failure
-       * (its message may quote a row) is carried out of here but the count and its SQLSTATE. The
-       * database applies the retry policy and dead-letters a candidate whose attempts are spent
-       * (0229), so a poison candidate leaves the page instead of starving the rest. */
+      /* The other businesses' candidates still run. Nothing about the failure (its message may
+       * quote a row) is carried out of here but the count and its SQLSTATE. The database applies
+       * the retry policy and dead-letters a candidate whose attempts are spent (0229). */
       failed += 1;
-      await noteEnrolmentFailure(db, candidate.job_id, candidate.business_id, error).catch(
-        () => undefined,
-      );
+      try {
+        await noteEnrolmentFailure(db, candidate.job_id, candidate.business_id, error);
+      } catch (trackingError) {
+        /* R08: the failure could not be recorded either, so this candidate has no backoff. It is
+         * reported (not swallowed), and the cursor below still moves past it. */
+        untracked.push({ jobId: candidate.job_id, sqlstate: sqlstateOf(trackingError) });
+      }
     }
   }
-  if (failed > 0) {
-    throw new Error(`dead-job enrolment failed for ${failed} dead job(s); ${enrolled} enrolled`);
-  }
-  return enrolled;
+  const last = candidates.at(-1);
+  return {
+    enrolled,
+    failed,
+    untracked,
+    next: candidates.length === limit && last ? last.job_id : null,
+  };
+}
+
+/** The pass as one error, when anything in it failed: counts and SQLSTATEs only. */
+export function throwIfEnrolmentFailed(pass: EnrolmentPass): void {
+  if (pass.failed === 0) return;
+  const untracked =
+    pass.untracked.length > 0
+      ? `; the failure of ${pass.untracked.length} could not be recorded (SQLSTATE ${[
+          ...new Set(pass.untracked.map((u) => u.sqlstate ?? 'unknown')),
+        ].join(', ')})`
+      : '';
+  throw new Error(
+    `dead-job enrolment failed for ${pass.failed} dead job(s); ${pass.enrolled} enrolled${untracked}`,
+  );
 }
 
 /**
