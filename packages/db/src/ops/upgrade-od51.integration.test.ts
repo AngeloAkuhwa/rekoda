@@ -209,6 +209,13 @@ describe('upgrading a database from 0212 through 0230', () => {
       '0228_worker_reads_no_payload_across_tenants',
       '0229_dead_job_enrolment_dead_letter',
       '0230_refund_through_the_operator',
+      '0231_settlement_reads_only_its_kinds_payload',
+      '0232_support_review_prices_like_the_resolver',
+      '0233_operator_actor_contract',
+      '0234_job_payload_live_or_dying_only',
+      '0235_refund_records_and_pack_eligibility',
+      '0236_dead_job_enrolment_cursor',
+      '0237_settlement_reads_key_fingerprints',
     ]);
 
     const after = await snapshot();
@@ -306,6 +313,13 @@ describe('upgrading a database from 0212 through 0230', () => {
       '0228_worker_reads_no_payload_across_tenants',
       '0229_dead_job_enrolment_dead_letter',
       '0230_refund_through_the_operator',
+      '0231_settlement_reads_only_its_kinds_payload',
+      '0232_support_review_prices_like_the_resolver',
+      '0233_operator_actor_contract',
+      '0234_job_payload_live_or_dying_only',
+      '0235_refund_records_and_pack_eligibility',
+      '0236_dead_job_enrolment_cursor',
+      '0237_settlement_reads_key_fingerprints',
     ]) {
       await owner.unsafe(readFileSync(join(MIGRATIONS_DIR, `${tag}.sql`), 'utf8')).simple();
     }

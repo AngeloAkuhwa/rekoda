@@ -88,25 +88,12 @@ clear_compose_overrides() {
   # runs on it.
   for name in "${!COMPOSE_@}"; do unset "$name"; done
 }
-# Whether this release brings in the plan and payment boundary (0196, 0200, 0202 to 0206), so the
-# OWN-86 pre-start smoke applies.
+# Whether the OWN-86 pre-start smoke applies: whenever this release carries ANY compatibility-breaking
+# migration (second review of PR #432, G5-1). It used to list 0196 to 0221 by hand and missed 0228,
+# 0230 and 0235, so a later release carrying only those would stop, migrate and start with no smoke.
+# Every migration the smoke checks is in COMPAT_BREAKING_MIGRATIONS or ships with one of them.
 carries_plan_boundary() {
-  [[ " $BREAKING " == *' 0196_plan_fields_guard '* || " $BREAKING " == *' 0200_plan_writer_boundary '* ||
-     " $BREAKING " == *' 0202_settlement_and_operator_principals '* ||
-     " $BREAKING " == *' 0203_plan_duration_rules '* ||
-     " $BREAKING " == *' 0204_external_events_worker_least_privilege '* ||
-     " $BREAKING " == *' 0205_charge_terms_belong_to_settlement '* ||
-     " $BREAKING " == *' 0206_paid_charge_bound_to_its_cycle '* ||
-     " $BREAKING " == *' 0207_operator_standard_periods '* ||
-     " $BREAKING " == *' 0209_settlement_verifies_the_price '* ||
-     " $BREAKING " == *' 0210_worker_least_privilege '* ||
-     " $BREAKING " == *' 0211_operator_principal_least_privilege '* ||
-     " $BREAKING " == *' 0212_closeout_review_fixes '* ||
-     " $BREAKING " == *' 0216_usage_meter_boundary '* ||
-     " $BREAKING " == *' 0217_settlement_isolation '* ||
-     " $BREAKING " == *' 0218_usage_reservation_closure '* ||
-     " $BREAKING " == *' 0220_job_row_and_grace_review_fixes '* ||
-     " $BREAKING " == *' 0221_operator_writes_only_through_its_functions '* ]]
+  [[ -n "${BREAKING// /}" ]]
 }
 # The OWN-86 pre-start smoke query, printed for an operator fixing forward by hand.
 print_smoke_0196() {
@@ -128,7 +115,7 @@ fail() {
 PHASE=checks
 # Migrations the previous release cannot run against (OD-48): the api and worker are stopped before
 # any of them is applied, and the old release is never restarted against a database that has one.
-COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary 0202_settlement_and_operator_principals 0203_plan_duration_rules 0204_external_events_worker_least_privilege 0205_charge_terms_belong_to_settlement 0206_paid_charge_bound_to_its_cycle 0207_operator_standard_periods 0209_settlement_verifies_the_price 0210_worker_least_privilege 0211_operator_principal_least_privilege 0212_closeout_review_fixes 0216_usage_meter_boundary 0217_settlement_isolation 0218_usage_reservation_closure 0220_job_row_and_grace_review_fixes 0221_operator_writes_only_through_its_functions 0228_worker_reads_no_payload_across_tenants 0230_refund_through_the_operator'
+COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary 0202_settlement_and_operator_principals 0203_plan_duration_rules 0204_external_events_worker_least_privilege 0205_charge_terms_belong_to_settlement 0206_paid_charge_bound_to_its_cycle 0207_operator_standard_periods 0209_settlement_verifies_the_price 0210_worker_least_privilege 0211_operator_principal_least_privilege 0212_closeout_review_fixes 0216_usage_meter_boundary 0217_settlement_isolation 0218_usage_reservation_closure 0220_job_row_and_grace_review_fixes 0221_operator_writes_only_through_its_functions 0228_worker_reads_no_payload_across_tenants 0230_refund_through_the_operator 0235_refund_records_and_pack_eligibility'
 BREAKING=
 BREAKING_APPLIED=false
 # Set once migrate has been entered for a release carrying a breaking migration. migrate applies each
@@ -219,13 +206,47 @@ SMOKE_0196_SQL="SELECT
                   '0227_paid_launch_gate',
                   '0228_worker_reads_no_payload_across_tenants',
                   '0229_dead_job_enrolment_dead_letter',
-                  '0230_refund_through_the_operator')) = 30
-  AND has_function_privilege('rekoda_billing_operator', 'public.subscription_record_refund(uuid,text,bigint,text,text)', 'EXECUTE')
-  AND NOT has_function_privilege('rekoda_app', 'public.subscription_record_refund(uuid,text,bigint,text,text)', 'EXECUTE')
-  AND NOT has_function_privilege('rekoda_worker', 'public.subscription_record_refund(uuid,text,bigint,text,text)', 'EXECUTE')
-  AND NOT has_function_privilege('rekoda_settlement', 'public.subscription_record_refund(uuid,text,bigint,text,text)', 'EXECUTE')
-  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('public.subscription_record_refund(uuid,text,bigint,text,text)'))
-        LIKE '%p_amount <> c.amount_k%interval ''7 days''%has been used%SET bonus = greatest(bonus - c.credited_units, 0)%'
+                  '0230_refund_through_the_operator',
+                  '0231_settlement_reads_only_its_kinds_payload',
+                  '0232_support_review_prices_like_the_resolver',
+                  '0233_operator_actor_contract',
+                  '0234_job_payload_live_or_dying_only',
+                  '0235_refund_records_and_pack_eligibility',
+                  '0236_dead_job_enrolment_cursor',
+                  '0237_settlement_reads_key_fingerprints')) = 37
+  AND has_function_privilege('rekoda_billing_operator', 'public.subscription_record_refund(uuid,text,bigint,text,text,text)', 'EXECUTE')
+  AND NOT has_function_privilege('rekoda_app', 'public.subscription_record_refund(uuid,text,bigint,text,text,text)', 'EXECUTE')
+  AND NOT has_function_privilege('rekoda_worker', 'public.subscription_record_refund(uuid,text,bigint,text,text,text)', 'EXECUTE')
+  AND NOT has_function_privilege('rekoda_settlement', 'public.subscription_record_refund(uuid,text,bigint,text,text,text)', 'EXECUTE')
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('public.subscription_record_refund(uuid,text,bigint,text,text,text)'))
+        LIKE '%operator:[!-~]{1,255}%already recorded with another charge or amount%p_amount <> c.amount_k%interval ''7 days''%pack_credit_entitlements%has been used%SET bonus = greatest(bonus - c.credited_units, 0)%INSERT INTO public.subscription_refunds%'
+  AND to_regprocedure('public.subscription_record_refund(uuid,text,bigint,text,text)') IS NULL
+  AND (SELECT indisunique FROM pg_index WHERE indexrelid = to_regclass('public.subscription_refunds_provider_refund_ux'))
+  AND NOT has_table_privilege('rekoda_app', 'public.subscription_refunds', 'INSERT')
+  AND NOT has_table_privilege('rekoda_billing_operator', 'public.subscription_refunds', 'INSERT')
+  AND NOT has_table_privilege('rekoda_settlement', 'public.pack_credit_entitlements', 'INSERT')
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('public.usage_credit_pack(uuid,text,text,text,integer)'))
+        LIKE '%INSERT INTO public.pack_credit_entitlements%'
+  AND (SELECT prosrc FROM pg_proc
+        WHERE oid = to_regprocedure('rekoda_private.subscription_charges_settlement_guard()'))
+        LIKE '%OR NEW.credited_period IS NOT NULL OR NEW.units_revoked_at IS NOT NULL THEN%'
+  AND NOT has_function_privilege('rekoda_settlement', 'public.job_payload(uuid)', 'EXECUTE')
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('public.job_payload(uuid)'))
+        LIKE '%j.state = ''running''%j.state = ''dead'' AND j.kind IN (''payment.process'', ''billing.process'')%'
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('rekoda_private.review_plan_price(uuid,text,text,timestamp with time zone)'))
+        LIKE '%amount_minor * 10%'
+  AND to_regprocedure('rekoda_private.open_plan_price(text,text)') IS NULL
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('public.dead_job_enrolment_requeue(uuid,uuid,text,text)'))
+        LIKE '%operator:[!-~]{1,255}%'
+  AND has_function_privilege('rekoda_worker', 'public.dead_job_unrecorded_candidates(integer,uuid)', 'EXECUTE')
+  AND NOT has_function_privilege('rekoda_app', 'public.dead_job_unrecorded_candidates(integer,uuid)', 'EXECUTE')
+  AND NOT has_function_privilege('rekoda_settlement', 'public.dead_job_unrecorded_candidates(integer,uuid)', 'EXECUTE')
+  AND (SELECT pg_get_function_result(p.oid) = 'TABLE(job_id uuid, business_id uuid)' AND p.prosecdef
+       FROM pg_proc p WHERE p.oid = to_regprocedure('public.dead_job_unrecorded_candidates(integer,uuid)'))
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('public.dead_job_unrecorded_candidates(integer)'))
+        LIKE '%public.dead_job_unrecorded_candidates(p_limit, NULL::uuid)%'
+  AND has_table_privilege('rekoda_settlement', 'public.key_fingerprints', 'SELECT')
+  AND NOT has_table_privilege('rekoda_settlement', 'public.key_fingerprints', 'INSERT')
   AND (SELECT prosrc FROM pg_proc
         WHERE oid = to_regprocedure('rekoda_private.subscription_charges_settlement_guard()'))
         LIKE '%only settlement moves a charge''''s status; a refund is recorded by the operator (OD-37, 0230)%a refund is recorded by the operator alone (0230)%'
@@ -239,8 +260,8 @@ SMOKE_0196_SQL="SELECT
   AND NOT has_function_privilege('rekoda_worker', 'public.dead_job_enrolment_requeue(uuid,uuid,text,text)', 'EXECUTE')
   AND NOT has_table_privilege('rekoda_app', 'public.dead_job_enrolment_failures', 'INSERT')
   AND NOT has_table_privilege('rekoda_worker', 'public.dead_job_enrolment_failures', 'INSERT')
-  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('public.dead_job_unrecorded_candidates(integer)'))
-        LIKE '%FROM public.dead_job_enrolment_failures f%f.dead_lettered_at IS NOT NULL OR f.next_attempt_at > now()%'
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('public.dead_job_unrecorded_candidates(integer,uuid)'))
+        LIKE '%FROM public.dead_job_enrolment_failures f%f.dead_lettered_at IS NOT NULL OR f.next_attempt_at > now()%(j.updated_at, j.id) >%'
   AND NOT has_column_privilege('rekoda_worker', 'public.jobs', 'payload', 'SELECT')
   AND NOT has_table_privilege('rekoda_worker', 'public.jobs', 'SELECT')
   AND has_column_privilege('rekoda_worker', 'public.jobs', 'business_id', 'SELECT')
@@ -374,7 +395,7 @@ SMOKE_0196_SQL="SELECT
         WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm')
           AND has_table_privilege('rekoda_settlement', c.oid, 'SELECT'))
       = 'add_on_grants,add_ons,billing_pricing_source,business_add_ons,businesses,dead_job_exceptions,'
-        || 'external_events,jobs,plan_prices,plan_versions,subscription_charge_attempts,'
+        || 'external_events,jobs,key_fingerprints,plan_prices,plan_versions,subscription_charge_attempts,'
         || 'subscription_charges,usage_packs'
   AND NOT has_column_privilege('rekoda_settlement', 'public.businesses', 'plan', 'UPDATE')
   AND NOT has_column_privilege('rekoda_settlement', 'public.businesses', 'plan_expires_at', 'UPDATE')
@@ -1178,7 +1199,7 @@ dc run --rm -T migrate
 # Any miss stops the deploy with the api and worker still stopped; the exit handler then prints the
 # fix-forward steps (0196/0200 are applied, so the previous release must not be restarted).
 if carries_plan_boundary; then
-  step 'pre-start database smoke for the plan and payment boundary, 0196/0200/0202-0206 (OWN-86, OD-37): ledger, guard triggers, exact writer set and grants, principals'
+  step 'pre-start database smoke for the plan and payment boundary, 0196/0200/0202-0206 and later (OWN-86, OD-37): ledger, guard triggers, exact writer set and grants, principals'
   smoke_0196=$(dc exec -T postgres psql -U rekoda_owner -d rekoda -v ON_ERROR_STOP=1 -tA -c "$SMOKE_0196_SQL") ||
     fail 'migrations are APPLIED, but the pre-start database smoke for 0196/0200/0202-0206 could not run, so the new release is not started; the api and worker stay stopped'
   [ "$smoke_0196" = t ] ||
