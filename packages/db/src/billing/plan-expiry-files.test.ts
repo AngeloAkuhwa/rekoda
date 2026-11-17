@@ -123,6 +123,12 @@ export const PINS: Readonly<Record<string, Pin>> = {
     businessInserts: 0,
     why: 'OD-51 review fix: the 0207 operator writer re-created with the cycle recorded in SQL; plan and plan_expires_at assigned once each, exactly as before.',
   },
+  'packages/db/migrations/0232_support_review_prices_like_the_resolver.sql': {
+    plan: 1,
+    expiry: 0,
+    businessInserts: 0,
+    why: 'R02 (second review of #432): the 0213 request and the 0219 resolution re-created with only their price lookups changed; the resolution still assigns the reviewed plan once and never the paid-through date.',
+  },
   'packages/db/migrations/0219_support_review_respects_later_schedule.sql': {
     plan: 1,
     expiry: 0,

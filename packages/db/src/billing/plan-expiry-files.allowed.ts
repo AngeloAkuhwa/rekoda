@@ -167,6 +167,10 @@ export const ALLOWED: Readonly<Record<string, Entry>> = {
     role: 'migration',
     why: 'OD-50 review follow-up: re-creates subscription_operator_resolve_review (owned by rekoda_plan_writer, billing operator only) with one more refusal, when the merchant scheduled a plan change after asking for the review. As in 0213 it assigns the plan once and compares plan_expires_at without ever assigning it.',
   },
+  'packages/db/migrations/0232_support_review_prices_like_the_resolver.sql': {
+    role: 'migration',
+    why: 'R02 (second review of #432): re-creates subscription_request_plan_review and subscription_operator_resolve_review (owned by rekoda_plan_writer) with the price lookups of the billing resolver (pinned version, explicit annual price, else monthly x 10). As in 0219 the resolution assigns the plan once and compares plan_expires_at without ever assigning it.',
+  },
   'packages/db/migrations/0222_usage_entitlement_in_the_database.sql': {
     role: 'migration',
     why: 'MVP readiness review: usage_entitlement READS plan and plan_expires_at (a trial past its date meters as expired) to compute the meter ceiling in the database; it writes neither, and re-creates the charge settlement guard unchanged but for provider_reference.',
