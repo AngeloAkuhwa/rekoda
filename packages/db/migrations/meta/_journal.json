@@ -1639,6 +1639,13 @@
       "when": 1796904000010,
       "tag": "0233_operator_actor_contract",
       "breakpoints": true
+    },
+    {
+      "idx": 234,
+      "version": "7",
+      "when": 1796904000011,
+      "tag": "0234_job_payload_live_or_dying_only",
+      "breakpoints": true
     }
   ]
 }

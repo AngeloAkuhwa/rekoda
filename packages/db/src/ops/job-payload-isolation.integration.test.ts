@@ -40,6 +40,9 @@ async function jobWith(businessId: string, secret: string): Promise<string> {
   );
   return row!.id;
 }
+/** Put a job in a state, as the owner (arranging state only). */
+const setState = (jobId: string, state: string) =>
+  ownerDb.execute(sql`UPDATE jobs SET state = ${state} WHERE id = ${jobId}::uuid`);
 const payloadVia = (db: Db, pinned: string | null, jobId: string) => {
   const read = (tx: Db | Parameters<Parameters<typeof withBusiness>[2]>[0]) =>
     tx.execute<{ payload: unknown }>(sql`SELECT job_payload(${jobId}::uuid) AS payload`);
@@ -86,6 +89,7 @@ describe('0228: the worker reads no payload across tenants', () => {
     const a = await seedBusiness();
     const b = await seedBusiness();
     const job = await jobWith(a, 'only-for-a');
+    await setState(job, 'running');
     expect(await payloadVia(workerDb, a, job)).toEqual({ secret: 'only-for-a' });
     expect(await payloadVia(workerDb, b, job)).toBeNull();
     expect(await payloadVia(workerDb, null, job)).toBeNull();
@@ -143,6 +147,68 @@ describe('0228: the worker reads no payload across tenants', () => {
     });
     /* The general claim cannot hand settlement the merchant job either: it sees no such row. */
     expect(await jobsRepo.claimNext(settlementDb, 'settlement-r01')).toBeNull();
+  });
+
+  /* R07 (second review of #432): what job_payload does NOT enforce, pinned as executable fact so the
+   * documentation cannot drift from it (ADR 0035 Amendment 6, rls-exemption-register). The function
+   * checks the pin at each call; the pin is a caller-set GUC that any role may change. So: */
+  /* R07 hardening (0234): the function returns only what the worker is handling. */
+  it('returns no payload for a pending, done or non-payment dead job, even under its own pin', async () => {
+    const a = await seedBusiness();
+    const pending = await jobWith(a, 'pending-secret');
+    const done = await jobWith(a, 'done-secret');
+    const deadMessage = await jobWith(a, 'dead-message-secret');
+    await setState(done, 'done');
+    await setState(deadMessage, 'dead');
+    for (const job of [pending, done, deadMessage]) {
+      expect(await payloadVia(workerDb, a, job)).toBeNull();
+    }
+    const [deadPayment] = await ownerDb.execute<{ id: string }>(sql`
+      INSERT INTO jobs (business_id, kind, payload, state)
+      VALUES (${a}::uuid, 'payment.process', '{"eventId": null, "secret": "dying"}'::jsonb, 'dead')
+      RETURNING id`);
+    expect(await payloadVia(workerDb, a, deadPayment!.id)).toMatchObject({ secret: 'dying' });
+  });
+
+  it('RESIDUAL: under one pin, one statement reads every payload of that business', async () => {
+    const a = await seedBusiness();
+    const b = await seedBusiness();
+    const a1 = await jobWith(a, 'a-one');
+    const a2 = await jobWith(a, 'a-two');
+    const b1 = await jobWith(b, 'b-one');
+    for (const job of [a1, a2, b1]) await setState(job, 'running');
+    const rows = await withBusiness(workerDb, a, (tx) =>
+      tx.execute<{ payload: { secret: string } | null }>(
+        sql`SELECT job_payload(id) AS payload FROM jobs ORDER BY created_at`,
+      ),
+    );
+    const read = [...rows].map((r) => r.payload?.secret ?? null);
+    /* Business A's two payloads are returned in one statement; B's row is NULL, not its payload. */
+    expect(read.filter((x) => x !== null).sort()).toEqual(['a-one', 'a-two']);
+    expect(read).toContain(null);
+    expect([a1, a2]).toHaveLength(2);
+  });
+
+  it('RESIDUAL: re-pinning per row inside one statement reads every tenant’s payload', async () => {
+    const a = await seedBusiness();
+    const b = await seedBusiness();
+    await setState(await jobWith(a, 'tenant-a'), 'running');
+    await setState(await jobWith(b, 'tenant-b'), 'running');
+    /* A pending backlog is not readable this way (0234): only running and dying jobs are. */
+    await jobWith(b, 'tenant-b-pending');
+    /* The worker credential may set app.business_id itself (it must, to run each tenant's job), so
+     * the database cannot stop it pinning each row's own business before the call. This is the
+     * stated boundary: the worker credential is trusted with every tenant's jobs; what 0228 removes
+     * is the plain column read, not that trust. */
+    const rows = await workerDb.transaction((tx) =>
+      tx.execute<{ payload: { secret: string } | null }>(sql`
+        SELECT job_payload(j.id) AS payload
+        FROM (SELECT id, set_config('app.business_id', business_id::text, true) AS pinned
+              FROM jobs ORDER BY created_at) j`),
+    );
+    const secrets = [...rows].map((r) => r.payload?.secret ?? null);
+    expect(secrets.filter((x) => x !== null).sort()).toEqual(['tenant-a', 'tenant-b']);
+    expect(secrets).toContain(null); // the pending one
   });
 
   it('the claim still hands the runner its job with the payload, read under that job’s pin', async () => {
