@@ -1203,7 +1203,7 @@ if [[ " $BREAKING " == *' 0217_settlement_isolation '* ]]; then
   for var in OPERATOR_OIDC_ISSUER OPERATOR_OIDC_JWKS_URL OPERATOR_BILLING_OIDC_AUDIENCE VAULT_KEY \
     SETTLEMENT_DATABASE_URL OPERATOR_DATABASE_URL; do
     [ -n "$(sed -n "s/^${var}=//p" .env | tail -1)" ] ||
-      fail "this release carries 0217 (OD-51) and .env has no ${var}: add it (docs/runbooks/deploy.md, \"Deploy a release carrying 0213 to 0243\"); nothing has been changed"
+      fail "this release carries 0217 (OD-51) and .env has no ${var}: add it (docs/runbooks/deploy.md, \"Deploy a release carrying 0213 to 0245\"); nothing has been changed"
   done
   [ "$(sed -n 's/^OPERATOR_BILLING_OIDC_AUDIENCE=//p' .env | tail -1)" != "$(sed -n 's/^OPERATOR_OIDC_AUDIENCE=//p' .env | tail -1)" ] ||
     fail 'OPERATOR_BILLING_OIDC_AUDIENCE must differ from OPERATOR_OIDC_AUDIENCE: a token the API accepts must not change a plan (OD-51); nothing has been changed'

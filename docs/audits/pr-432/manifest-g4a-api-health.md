@@ -1,6 +1,6 @@
 # PR #432 audit manifest — G4a apps/api health, ops, risk, api
 
-- Group: G4a (apps/api/src/health/_, apps/api/src/api/_)
+- Group: G4a (`apps/api/src/health/*`, `apps/api/src/api/*`)
 - Head SHA: 095ff625cf35c5bb15883a27b30796bfe5e33f09 (merge base 58e6834)
 - Files reviewed: 28 of 28
 - Method: read-only. `git diff 58e6834 095ff62` per file; read the full source of every changed controller and service at head (ops.controller, dead-jobs.controller, dead-job-recovery.service, staging-tools controller and service, staging-boot-check, ops-alerts, merchant-v1 and api-keys controllers); read the guards and helpers they depend on (OperatorGuard, OperatorPlaneServedHere, operatorActor, recordRefundAsOperator, config staging flag, main.ts boot order, Caddyfile operator paths, merchantApiRepo.customerBelongsToBusiness, core evaluateOpsAlerts). Read the test files' cases and looked for skips, assertions that cannot fail, and fixtures left behind. No tests run and no database touched.

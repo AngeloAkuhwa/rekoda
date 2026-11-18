@@ -91,7 +91,11 @@ fixed 10 at 10 lanes, before PR #432), every connection could be held by a lane 
 until the idle-in-transaction timeout killed them all: shown at runtime by
 `apps/api/src/billing/renewal-initiate-pool.integration.test.ts`. Heartbeats, claims and failure
 records use the separate worker pool, and sweep advisory locks the separate lock pool, so neither can
-take an application connection a lane is waiting for.
+take an application connection a lane is waiting for. That argument covers waits for a pool
+connection only: a lane or sweep that waits on a ROW lock while holding connections (for example on
+a customer row another job's tokenisation created and has not yet committed) is bounded by the
+30-second `statement_timeout` and the 60-second idle-in-transaction timeout (`packages/db/src/client.ts`),
+after which the job retries; no money or meter moves on that path.
 
 ## Values the owner supplies
 
@@ -221,7 +225,7 @@ dc build --build-arg REKODA_COMMIT=$(git rev-parse --short HEAD) api   # build B
 dc build --build-arg REKODA_COMMIT=$(git rev-parse --short HEAD) web   # one image at a time: never both at once
 # First PRODUCTION deploy carrying migrations 0175-0178 (G-109): run `dc stop api worker` here first
 # Every deploy carrying 0196 or 0200 (PR B, plan-field boundary, OD-48): run `dc stop api worker` here first, and see "Deploy a release carrying 0196"
-# Every deploy carrying 0216, 0217, 0218, 0220, 0221, 0228, 0230 or 0235 (OD-51, OWN-94; COMPAT_BREAKING_MIGRATIONS; 0222 and 0223 are not breaks and ship in the same stopped window): run `dc stop api worker operator settlement` here first, and see "Deploy a release carrying 0213 to 0243"
+# Every deploy carrying 0216, 0217, 0218, 0220, 0221, 0228, 0230 or 0235 (OD-51, OWN-94; COMPAT_BREAKING_MIGRATIONS; 0222 and 0223 are not breaks and ship in the same stopped window): run `dc stop api worker operator settlement` here first, and see "Deploy a release carrying 0213 to 0245"
 # ...and after migrate, run the step-8 pre-start database smoke (SMOKE_0196_SQL) as the owner: do not `dc up` unless it prints t
 dc run --rm -T migrate                                             # expand-only migrations, as the owner
 dc up -d --wait                                                    # recreates api, worker and web on the new images
