@@ -76,15 +76,24 @@ class DbLifecycle implements OnApplicationShutdown {
  * convention rather than a guarantee.
  */
 /**
- * The application pool's size (Codex review of PR #432). Each runner lane holds its handler's
- * application transaction for the whole job, and a blocked-renewal initiation opens a checkout
- * transaction on the same pool while it does; with a fixed 10 and 10 or more lanes, a backlog of
- * those jobs could hold every connection while each waited for one more. Two per lane plus two for
- * the sweeps, never fewer than the previous 10 (the default concurrency, 4, keeps exactly 10).
+ * The application pool's size (Codex review of PR #432). In a process that runs the job runner, each
+ * lane holds its handler's application transaction for the whole job, and some handlers open one
+ * more transaction on the same pool while they do (a blocked-renewal initiation's checkout, the
+ * message handlers' nested reads). With a fixed 10 and 10 or more lanes, every connection could be
+ * held while each lane waited for one more. One connection more than the lanes rules that out; two
+ * more leave room for the pump and sweeps, which also use this pool but never nest. An API process
+ * runs no lanes and keeps 10, so a high REKODA_WORKER_CONCURRENCY never enlarges it (review of
+ * `9a543ad`: the worker setting reaches the API too, through the shared `.env`).
  */
-export function appPoolSize(workerConcurrency: number): number {
-  return Math.max(10, 2 * workerConcurrency + 2);
+export function appPoolSize(
+  config: Pick<ApiConfig, 'workerEnabled' | 'workerConcurrency'>,
+): number {
+  return config.workerEnabled ? Math.max(10, config.workerConcurrency + 2) : 10;
 }
+
+/** The application pool's handle, sized by `appPoolSize`. Exported for its test. */
+export const appDbHandle = (config: ApiConfig): DbHandle =>
+  createDb(config.databaseUrl, { max: appPoolSize(config) });
 
 @Global()
 @Module({
@@ -93,8 +102,7 @@ export function appPoolSize(workerConcurrency: number): number {
     {
       provide: DB_HANDLE,
       inject: [CONFIG],
-      useFactory: (config: ApiConfig): DbHandle =>
-        createDb(config.databaseUrl, { max: appPoolSize(config.workerConcurrency) }),
+      useFactory: appDbHandle,
     },
     {
       provide: DB,
