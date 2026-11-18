@@ -111,12 +111,13 @@ describe('enrolment reads a payload only under the job’s own tenant pin', () =
 describe('the reclaim pass reads a dying job’s payload only under its own tenant pin', () => {
   it('returns no payload from the cross-tenant update, then reads each dead one pinned', async () => {
     const { db, seen } = recordingDb((text, params) => {
+      if (/^\s*SELECT id FROM jobs WHERE state = 'running'/i.test(text)) {
+        return [{ id: JOB_A }, { id: JOB_B }];
+      }
       if (/^\s*UPDATE jobs SET/i.test(text)) {
-        const row = (id: string, businessId: string) => {
-          const { payload: _payload, ...rest } = jobRow(id, businessId);
-          return rest;
-        };
-        return [row(JOB_A, A), row(JOB_B, B)];
+        const id = params.find((p) => p === JOB_A || p === JOB_B);
+        const { payload: _payload, ...rest } = jobRow(id as string, id === JOB_A ? A : B);
+        return [rest];
       }
       /* The worker credential may execute job_payload (0228): the privilege probe says so. */
       if (/has_function_privilege\('public\.job_payload\(uuid\)'/.test(text)) {
@@ -130,9 +131,15 @@ describe('the reclaim pass reads a dying job’s payload only under its own tena
     });
     await jobsRepo.reclaimStalled(db);
 
+    /* The cross-tenant steps (the stalled list and each job's move) carry no payload. */
     const update = seen.filter((s) => /^\s*UPDATE jobs SET/i.test(s.text));
-    expect(update).toHaveLength(1);
-    expect(update[0]!.text).not.toMatch(/\bpayload\b/);
+    expect(update).toHaveLength(2);
+    for (const step of update) expect(step.text).not.toMatch(/\bpayload\b/);
+    const listed = seen.filter((s) =>
+      /^\s*SELECT id FROM jobs WHERE state = 'running'/i.test(s.text),
+    );
+    expect(listed).toHaveLength(1);
+    expect(listed[0]!.text).not.toMatch(/\bpayload\b/);
     const payloadReads = seen.filter((s) => /\bpayload\b/.test(s.text));
     expect(payloadReads.map((r) => r.pin).sort()).toEqual([A, B]);
     for (const read of payloadReads) {
@@ -148,6 +155,7 @@ describe('the reclaim pass reads a dying job’s payload only under its own tena
    * read, bounded to the pinned tenant; RLS (0217) limits it to settlement's own two kinds. */
   it('on a credential without job_payload, reads the column pinned and bounded to the pin', async () => {
     const { db, seen } = recordingDb((text) => {
+      if (/^\s*SELECT id FROM jobs WHERE state = 'running'/i.test(text)) return [{ id: JOB_A }];
       if (/^\s*UPDATE jobs SET/i.test(text)) {
         const { payload: _payload, ...rest } = jobRow(JOB_A, A);
         return [rest];

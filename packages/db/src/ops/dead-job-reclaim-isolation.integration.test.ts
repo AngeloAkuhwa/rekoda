@@ -4,9 +4,10 @@
  *
  * Before: `reclaimStalled` wrote each record in a savepoint but re-threw a failure, so the whole
  * transaction rolled back and every business's stalled jobs stayed `running`; with a record that
- * could never be written (a poison row), the reclaim never progressed for anyone. Now the failed
- * record rolls back only its savepoint, its job stays dead without a record, and the cutover
- * enrolment pass (0225, 0229, 0236) finds and records it, with its own retry and dead-letter policy.
+ * could never be written (a poison row), the reclaim never progressed for anyone. Now each job's
+ * transition and its record share one savepoint: a job whose record fails stays `running` with
+ * its expired lease and is retried on the next pass, and every other job is reclaimed. A death is
+ * never committed without its record (I1: that could leave a `recovering` record stuck for good).
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
@@ -63,7 +64,7 @@ const unpoison = () =>
 afterEach(unpoison);
 
 describe('G2-1: the reclaim pass survives one unwritable dead-job record', () => {
-  it('reclaims every tenant; the failed record is reported and left for enrolment', async () => {
+  it('reclaims every other tenant; the unwritable job stays running and is retried next pass', async () => {
     const a = await seedBusiness();
     const b = await seedBusiness();
     await stalledLastAttempt(a);
@@ -74,16 +75,49 @@ describe('G2-1: the reclaim pass survives one unwritable dead-job record', () =>
     const reclaimed = await jobsRepo.reclaimStalled(workerDb, 300_000, {
       onUnrecorded: (n) => (unrecorded += n),
     });
-    expect(reclaimed).toBe(2);
+    expect(reclaimed).toBe(1);
     expect(unrecorded).toBe(1);
-    expect(await deadOf(a)).toBe(1);
     expect(await deadOf(b)).toBe(1);
     expect(await recordsOf(b)).toBe(1);
+    /* Neither half of A's death committed: no dead job without its record. */
+    expect(await deadOf(a)).toBe(0);
     expect(await recordsOf(a)).toBe(0);
 
-    /* The death was not lost: once the cause is gone, the enrolment pass records it. */
+    /* Once the cause is gone, the next pass moves it, with its record. */
     await unpoison();
-    expect(await jobsRepo.enrolUnrecordedDeaths(workerDb)).toBe(1);
+    expect(await jobsRepo.reclaimStalled(workerDb, 300_000)).toBe(1);
+    expect(await deadOf(a)).toBe(1);
     expect(await recordsOf(a)).toBe(1);
+  });
+
+  it('I1: a recovery run that crashes is reopened with its job, or not moved at all', async () => {
+    const a = await seedBusiness();
+    await stalledLastAttempt(a);
+    const [job] = await ownerDb.execute<{ id: string }>(
+      sql`SELECT id FROM jobs WHERE business_id = ${a}::uuid`,
+    );
+    /* An operator's recovery is in flight: the record says recovering, the run's lease expired. */
+    await ownerDb.execute(sql`
+      INSERT INTO dead_job_exceptions (job_id, business_id, kind, summary, attempts, status,
+                                       recovery_requested_at, recovery_requested_by, recovery_reason)
+      VALUES (${job!.id}::uuid, ${a}::uuid, 'payment.process', 'stopped', 2, 'recovering', now(),
+              'operator:ada', 'retry now')`);
+    await ownerDb.execute(
+      sql.raw(`
+      CREATE OR REPLACE FUNCTION public.test_poison_reclaim_record() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'test: reopen fails' USING ERRCODE = 'P0001'; END $$;
+      DROP TRIGGER IF EXISTS test_poison_reclaim_record ON dead_job_exceptions;
+      CREATE TRIGGER test_poison_reclaim_record BEFORE UPDATE ON dead_job_exceptions
+        FOR EACH ROW EXECUTE FUNCTION public.test_poison_reclaim_record();`),
+    );
+    expect(await jobsRepo.reclaimStalled(workerDb, 300_000)).toBe(0);
+    /* Not committed as dead behind a record still saying recovering. */
+    expect(await deadOf(a)).toBe(0);
+    await unpoison();
+    expect(await jobsRepo.reclaimStalled(workerDb, 300_000)).toBe(1);
+    const [record] = await ownerDb.execute<{ status: string }>(sql`
+      SELECT status FROM dead_job_exceptions WHERE job_id = ${job!.id}::uuid`);
+    expect(record!.status).toBe('open');
+    expect(await deadOf(a)).toBe(1);
   });
 });

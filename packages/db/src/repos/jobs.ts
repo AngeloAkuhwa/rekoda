@@ -602,51 +602,58 @@ export async function reclaimStalled(
    * last-attempt path, so a crash during it goes straight back to dead (reopening the record)
    * instead of taking the ordinary one-more-run crash allowance without a fresh operator ask. */
   const exhausted = sql`(attempts > max_attempts OR (attempts >= max_attempts AND dead_job_is_recovering(jobs.id)))`;
-  /* One transaction: every payment or billing job this pass sends to `dead` writes its dead-job
-   * record in the same commit (OWN-73, OWN-76). `recordDeath` pins each job's own tenant. */
+  const stale = sql`locked_at < now() - make_interval(secs => ${olderThanMs / 1000})`;
+  /* Each stalled job moves in its own savepoint, together with its dead-job record when it dies
+   * (OWN-73, OWN-76): both commit or neither does. One whose record cannot be written stays
+   * `running` with its expired lease, so the next pass retries both, and no other business's
+   * reclaim waits on it (G2-1: one failure used to roll back the whole cross-tenant pass; I1: a
+   * death committed without its record could leave a `recovering` record stuck for good). */
   return db.transaction(async (tx) => {
-    const rows = await tx.execute<ReclaimedRow>(sql`
-      UPDATE jobs SET
-        state      = CASE WHEN ${exhausted} THEN 'dead' ELSE 'pending' END,
-        locked_at  = NULL,
-        locked_by  = NULL,
-        -- An expired lease says the worker stopped answering, not why, so the message is neutral.
-        -- A dead job's error is fixed text (owner ruling, 4 Nov 2026): no earlier attempt's error
-        -- text is carried into it. That an earlier attempt's handler failed survives only as the
-        -- sanitised category beside it.
-        last_error = CASE WHEN ${exhausted}
-                       THEN 'reclaimed past the last attempt: its lease expired'
-                       ELSE coalesce(last_error, 'reclaimed: lease expired before the worker finished') END,
-        failure_category = CASE WHEN failure_category IN ('handler_error', 'lease_expired_after_handler_error')
-                                THEN 'lease_expired_after_handler_error'
-                                ELSE 'lease_expired' END,
-        updated_at = now()
-      WHERE state = 'running'
-        AND locked_at < now() - make_interval(secs => ${olderThanMs / 1000})
-      -- Coordination columns only: what a job carries is read below, under its own tenant's pin.
-      RETURNING id, business_id, kind, attempts, state, failure_category
+    const stalled = await tx.execute<{ id: string }>(sql`
+      SELECT id FROM jobs WHERE state = 'running' AND ${stale}
+      ORDER BY locked_at, id
+      FOR UPDATE SKIP LOCKED
     `);
-    const reclaimed = [...rows];
-    /* Each record in its own savepoint: one that fails rolls back only itself, never the whole
-     * cross-tenant pass (G2-1: re-throwing here rolled every tenant's reclaim back, so one record
-     * that could never be written kept every stalled job of every business `running` for ever).
-     * The job stays dead without a record, which is exactly what the cutover enrolment pass finds
-     * and records, with its own retry and dead-letter policy (0225, 0229): the death is not lost. */
+    let reclaimed = 0;
     let unrecorded = 0;
-    for (const row of reclaimed) {
-      if (row.state === 'dead' && deadJobs.isDeadJobKind(row.kind) && row.business_id) {
-        try {
-          await tx.transaction(async (savepoint) => {
+    for (const { id } of stalled) {
+      try {
+        const moved = await tx.transaction(async (savepoint) => {
+          const rows = await savepoint.execute<ReclaimedRow>(sql`
+            UPDATE jobs SET
+              state      = CASE WHEN ${exhausted} THEN 'dead' ELSE 'pending' END,
+              locked_at  = NULL,
+              locked_by  = NULL,
+              -- An expired lease says the worker stopped answering, not why, so the message is
+              -- neutral. A dead job's error is fixed text (owner ruling, 4 Nov 2026): no earlier
+              -- attempt's error text is carried into it. That an earlier attempt's handler failed
+              -- survives only as the sanitised category beside it.
+              last_error = CASE WHEN ${exhausted}
+                             THEN 'reclaimed past the last attempt: its lease expired'
+                             ELSE coalesce(last_error, 'reclaimed: lease expired before the worker finished') END,
+              failure_category = CASE WHEN failure_category IN ('handler_error', 'lease_expired_after_handler_error')
+                                      THEN 'lease_expired_after_handler_error'
+                                      ELSE 'lease_expired' END,
+              updated_at = now()
+            WHERE id = ${id}::uuid AND state = 'running' AND ${stale}
+            -- Coordination columns only: what a job carries is read below, under its own pin.
+            RETURNING id, business_id, kind, attempts, state, failure_category
+          `);
+          const row = [...rows][0];
+          if (!row) return false;
+          if (row.state === 'dead' && deadJobs.isDeadJobKind(row.kind) && row.business_id) {
             const payload = await pinnedPayload(savepoint, row.id, row.business_id);
             await deadJobs.recordDeath(savepoint, dyingJob({ ...row, payload }));
-          });
-        } catch {
-          unrecorded += 1;
-        }
+          }
+          return true;
+        });
+        if (moved) reclaimed += 1;
+      } catch {
+        unrecorded += 1;
       }
     }
     options.onUnrecorded?.(unrecorded);
-    return reclaimed.length;
+    return reclaimed;
   });
 }
 

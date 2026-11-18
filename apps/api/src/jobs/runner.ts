@@ -264,10 +264,13 @@ export class JobRunner {
   /** Requeue jobs whose worker died mid-run. */
   async reclaim(): Promise<number> {
     const n = await jobsRepo.reclaimStalled(this.workerDb, this.stalledAfterMs, {
-      /* G2-1: a death whose record could not be written is left for the enrolment pass below. */
+      /* G2-1, I1: a job whose dead-job record could not be written stays running with its
+       * expired lease and is retried on the next pass; the others are reclaimed regardless. */
       onUnrecorded: (count) => {
         if (count > 0) {
-          this.log.warn(`reclaim: ${count} dead job record(s) not written; left for enrolment`);
+          this.log.warn(
+            `reclaim: ${count} stalled job(s) not moved (record not written); retried next pass`,
+          );
         }
       },
     });
