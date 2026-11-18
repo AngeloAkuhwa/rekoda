@@ -98,6 +98,8 @@ change a feature and want to know what to run.
 | e2e         | `apps/web/e2e/billing-journey-no-charge-upgrade.spec.ts`                  |
 | integration | `apps/api/src/billing/no-charge-upgrade-status.integration.test.ts`       |
 | integration | `packages/db/src/billing/pack-refund-concurrency.integration.test.ts`     |
+| integration | `packages/db/src/billing/pack-refund-natural-expiry.integration.test.ts`  |
+| integration | `apps/api/src/billing/renewal-initiate-pool.integration.test.ts`          |
 
 ### Payments, settlement, bank and reconciliation
 

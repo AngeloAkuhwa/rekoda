@@ -7,7 +7,7 @@
 - The working tree also holds UNCOMMITTED edits to `docs/REKODA_LAUNCH_READINESS.md`, ADR 0034/0035,
   `docs/rls-exemption-register.md` and runbooks, made by another process while I worked. Among
   them are the OD-54 and OD-55 rows. Neither row exists at the committed head (`git show
-  HEAD:docs/REKODA_LAUNCH_READINESS.md` has no `| OD-54 |` or `| OD-55 |`), but 0235, ADR 0035
+HEAD:docs/REKODA_LAUNCH_READINESS.md` has no `| OD-54 |` or `| OD-55 |`), but 0235, ADR 0035
   Am. 6 and the exemption register already cite both. I review the committed head and point out
   where the uncommitted text would supersede a finding.
 - Method: read-only. I read the migrations 0193 to 0237 for roles, grants, policies and definer
@@ -54,6 +54,7 @@
     job to `running` and read it"), and pin it with a RESIDUAL test.
 
   (a) is preferred, because the guarantee was the point of 0234.
+
 - **Confidence:** high (privilege chain read in full; not executed).
 
 ### B-2 (IMPORTANT): several operator-actor columns added by the PR do not enforce the operator-actor contract, and the application credential writes them directly

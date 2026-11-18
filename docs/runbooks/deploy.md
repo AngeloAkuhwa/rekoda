@@ -57,6 +57,42 @@ this shape: `scripts/check-deploy.mjs` (ports, the owner secret, networks,
 users, no secret in an image) and `scripts/check-env-example.mjs` (every name
 the deployment reads is documented, and web gets exactly what it reads).
 
+## Connection budget
+
+Each process opens its own pools; the ceilings below are read from the code (`apps/api/src/db/db.module.ts`,
+`settlement-main.ts`, `operator-main.ts`; closeout round G of PR #432). A pool opens connections only as
+it needs them, so these are maximums, not steady use.
+
+| Process                                  | Pools (maximum connections)                                                                                 | Total at the defaults | Worst case allowed by config |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------- | --------------------- | ---------------------------- |
+| `api`                                    | application 10; worker 8 and sweep-lock 4 (it holds `WORKER_DATABASE_URL`)                                  | 22                    | 22                           |
+| `worker`                                 | application `max(10, lanes + 2)`; worker 8; sweep-lock 4. Lanes: `REKODA_WORKER_CONCURRENCY`, 4, at most 16 | 22                    | 30 (16 lanes)                |
+| `settlement`                             | settlement `lanes × 2 + 2`. Lanes: `REKODA_SETTLEMENT_CONCURRENCY`, 2, at most 16                           | 6                     | 34 (16 lanes)                |
+| `operator`                               | operator 4                                                                                                  | 4                     | 4                            |
+| `migrate`, backups, an operator's `psql` | one or two each, only while they run (`migrate` only in a stopped deploy window)                            | 2                     | 3                            |
+| **Estate**                               |                                                                                                             | **56**                | **93**                       |
+
+`docker-compose.prod.yml` does not set `max_connections`, so the image's PostgreSQL default applies:
+100, of which 3 are reserved for superusers (`superuser_reserved_connections`), leaving 97 for the
+runtime roles. The worst case stays inside it; that is why both lane settings are capped at 16 and
+refuse to boot above it. Whether the staging host's PostgreSQL actually runs with these values is a
+fact of the host, not of this repository: read it there with
+`dc exec -T postgres psql -U rekoda_owner -d rekoda -tAc "SHOW max_connections"` (P-checklist,
+`docs/runbooks/staging-first-deploy-pr-b.md`). Raising either lane setting further, or running a second
+replica of any process, needs `max_connections` raised first, with the PostgreSQL memory that implies.
+
+Why `lanes + 2` is enough in the worker: a lane holds its runner transaction for the whole job, and a
+handler may open one more transaction on the same pool while it does (the blocked-renewal initiation's
+checkout, the message handlers' nested reads), never two at once. With one connection more than the
+lanes, at least one lane can always take its second connection, finish and free both, so the lanes
+cannot wait on each other in a circle; the second spare is for the pump and the sweeps, which use the
+pool but never wait on it while holding a connection. With the pool only as large as the lanes (the
+fixed 10 at 10 lanes, before PR #432), every connection could be held by a lane waiting for one more
+until the idle-in-transaction timeout killed them all: shown at runtime by
+`apps/api/src/billing/renewal-initiate-pool.integration.test.ts`. Heartbeats, claims and failure
+records use the separate worker pool, and sweep advisory locks the separate lock pool, so neither can
+take an application connection a lane is waiting for.
+
 ## Values the owner supplies
 
 Nothing below is ever committed. Keep the canonical copy in the host's
@@ -629,10 +665,12 @@ worker or the api. Step 1 below describes the release that carried 0209.
 
    A row with no cycle start (`paid_no_cycle_start`), or one whose start is in the future, cannot
    be corrected this way. Move it with the operator route: `expired`, then a standard period.
-   For `trial_starts_in_future` post `expired` only: the record becomes inactive and passes, and a
-   new trial would again run from the future start (only the owner may change `trial_started_at`,
-   and only on the owner's written decision). `paid_cycle_starts_in_future` clears with `expired`
-   followed by the paid plan, which the writer starts now.
+   `trial_starts_in_future` cannot be cleared by any route: the preflight reports such a row as
+   active whatever its plan (`rekoda_private.subscription_period_preflight`, 0212), so posting
+   `expired` does not make it pass (corrected in closeout round G of PR #432; an earlier revision of
+   this step said it did). Only the owner may change `trial_started_at`, and only on the owner's
+   written decision; until then the release stops at the preflight. `paid_cycle_starts_in_future`
+   clears with `expired` followed by the paid plan, which the writer starts now.
 
 5. **Operator plan changes (OD-50, 0207).** `POST /v1/businesses/plan` takes `expiresAt: null` for
    a paid plan or a trial: the database writer sets exactly one standard period (one Lagos calendar
@@ -642,7 +680,7 @@ worker or the api. Step 1 below describes the release that carried 0209.
 
 Rollback past these migrations is a backup restore (G-02), as for 0196 to 0206 (OWN-86).
 
-### Deploy a release carrying 0213 to 0243 (support-review upgrade, pack purchase identity, pricing source, usage meter boundary, settlement and operator processes, reservation closure; 0227 to 0230: the paid-launch gate, the worker's payload isolation, enrolment dead letters, refunds through the operator; 0231 to 0237: settlement reads only its own kinds' payloads, support-review pricing as the resolver, the operator actor contract, live-or-dying payloads only, one record per provider refund, the enrolment cursor, settlement's vault-key check; 0238 to 0240: the worker's job transitions, operator-actor columns, the pack allowance history; 0241: the worker guard by privilege and a trial's expiry in the allowance history; 0242: settlement's job transitions; 0243: a pack refund judges the allowance after the counter lock)
+### Deploy a release carrying 0213 to 0245 (support-review upgrade, pack purchase identity, pricing source, usage meter boundary, settlement and operator processes, reservation closure; 0227 to 0230: the paid-launch gate, the worker's payload isolation, enrolment dead letters, refunds through the operator; 0231 to 0237: settlement reads only its own kinds' payloads, support-review pricing as the resolver, the operator actor contract, live-or-dying payloads only, one record per provider refund, the enrolment cursor, settlement's vault-key check; 0238 to 0240: the worker's job transitions, operator-actor columns, the pack allowance history; 0241: the worker guard by privilege and a trial's expiry in the allowance history; 0242: settlement's job transitions; 0243: a pack refund judges the allowance after the counter lock; 0244: a pack refund refuses across a time boundary of the allowance; 0245: a usage reservation binds only to its event's own metering job)
 
 0216, 0217, 0218, 0220, 0221, 0228, 0230 and 0235 are compatibility breaks: the previous release writes
 `usage_counters` directly, which no runtime role may do afterwards, and settles charges in the worker
@@ -651,7 +689,7 @@ API refund route (refunds are recorded by the operator process alone); 0235 chan
 function's signature (a sixth argument, the provider refund id). Deploy with every writing process
 stopped; `scripts/deploy-staging.sh` lists them (`COMPAT_BREAKING_MIGRATIONS`), stops `api`,
 `worker`, `operator` and `settlement`, and enforces the order. 0213 to 0215, 0219, 0222 to 0227,
-0229, 0231 to 0234 and 0236 to 0243 are additive and ship in the same stopped release (every
+0229, 0231 to 0234 and 0236 to 0245 are additive and ship in the same stopped release (every
 migration after 0192 is in exactly one of `COMPAT_BREAKING_MIGRATIONS` and `ADDITIVE_MIGRATIONS`,
 checked by `scripts/deploy-staging-classes.test.mjs`). Rollback past
 0216 is a backup restore (G-02).
@@ -769,10 +807,14 @@ This release starts two more services. Before deploying:
    - the two allowance-change triggers are enabled, the businesses trigger also records a trial's
      expiry change, the history time never moves backwards, the refund function reads
      `business_allowance_changes`, the application cannot insert its rows and settlement cannot delete them (0240, 0241);
-   - a credited pack's refund judges the allowance after it holds the usage counter, and the refund
-     function and both job transition guards match their reviewed bodies exactly (md5), as plpgsql
-     with their attributes (0241, 0242, 0243);
-   - the ledger carries 43 tags, 0196 to 0243 (the list in `SMOKE_0196_SQL`).
+   - a credited pack's refund judges the allowance after it holds the usage counter and refuses
+     across a time boundary of the allowance, and the refund function and both job transition
+     guards match their reviewed bodies exactly (md5), as plpgsql with their attributes (0241, 0242,
+     0243, 0244); the boundary function matches its body, owner and attributes and has no grant
+     (0244);
+   - a usage reservation binds only to its event's own live `inbound.message` or `customer.message`
+     job, by a payload the closure trigger can read (0245; 0227's stripped-text match refused);
+   - the ledger carries 45 tags, 0196 to 0245 (the list in `SMOKE_0196_SQL`).
 
    Re-running an earlier migration by hand after a later one (for example 0228, 0229 or 0230 after
    0231 to 0236) puts back its weaker definitions, whatever its header says about re-running; the

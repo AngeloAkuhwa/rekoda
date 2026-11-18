@@ -107,6 +107,16 @@ verifies, and records in its handoff:
 5. **The owner's approval names that exact candidate.** An approval, P12 or otherwise, given for a
    different SHA does not carry over. Where an owner ruling keeps the merge with the owner (OWN-94
    P12 for #432), the routine never merges, whatever its general OWN-26 authority.
+6. **Every review receipt names that exact candidate (closeout round G, 18 Nov 2026).** A Codex
+   "no major issues" receipt, a Qodo update or an independent review covers the commit it names;
+   for a later head it is history. A skipped or unavailable reviewer (CodeRabbit's file limit, a
+   Codex quota message) is recorded as such, never as approval. Unresolved threads are read from
+   GitHub's `isResolved` state on the candidate, and a resolved thread is not by itself proof that
+   its defect was fixed: the register names the fixing commit and test.
+7. **Owner-reserved decisions stay the owner's.** The routine never accepts an ADR or amendment that
+   an owner ruling reserves (ADR 0035 Amendment 6 for #432), never treats a permission to merge as
+   such an acceptance, never enables auto-merge, and never approves a gate (P12 or any other) on the
+   owner's behalf.
 
 The single-flight rule is unchanged: one implementation PR at a time.
 

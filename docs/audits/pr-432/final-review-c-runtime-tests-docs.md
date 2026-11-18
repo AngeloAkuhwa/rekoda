@@ -222,6 +222,7 @@ The `gh api ... pulls/432 .body` text must change in at least these places:
   - 0230 recreates the 5-argument refund function.
 
   The smoke catches all three. Say so once in deploy.md.
+
 - **M8.** `docs/rls-exemption-register.md:234` names `jobsRepo.enrolUnrecordedDeaths` as the caller. The runner calls
   `enrolUnrecordedDeathsPage` (0236).
 - **M9.** `runner.ts` carrying the cursor (`this.enrolmentCursor = pass.next`) and the outer catch have no runner-level

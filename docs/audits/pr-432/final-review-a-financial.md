@@ -30,6 +30,7 @@
   2. The existing call, which then only attaches the provider refund id and the amount, and cannot be refused on usage grounds.
 
   If that is not done, at least add an eligibility read for the operator and record this race in OD-55 as a paid-launch item.
+
 - **Confidence:** high.
 
 ### A-3 IMPORTANT: a withdrawn zero-priced upgrade is announced to the merchant as "We are switching your plan on now" (merchant copy truth; regression of the G3-1 intent)
@@ -49,18 +50,23 @@
 - **Confidence:** high on the divergence. Medium on which side the owner wants.
 
 ### A-5 MINOR: a `price_not_verified` zero-priced upgrade (a possible forged charge, OD-51) now leaves only an audit row and a log line
+
 `apply-no-charge-upgrade.handler.ts:88-93`. Before G3-1 it appeared in the operator's paid-but-not-applied queue. Now it is `ALERT billing_no_charge_price_not_verified …` on `log.error`, and that string is not wired to the ops-alert pipeline (`apps/api/src/health/ops-alerts.ts:131` is the routed path; no reference to it exists outside the handler). The settlement refusal itself still holds. Suggested fix: raise it through `ops-alerts`, or list `no_charge_upgrade_withdrawn` with reason `price_not_verified` on an operator work list.
 
 ### A-6 MINOR: the public `/refunds` promise is wider than the mechanism
+
 `apps/web/src/app/refunds/page.tsx:60-62,103-106` says "Untouched within 7 days, we refund it". Since 0235, an untouched pack is refused whenever the allowance changed (a trial conversion, any plan move). OD-55 records the `/refunds` mismatch only for the "incorrect charge" and "service failure" rows (ii), not for (i). Add (i) to the copy alignment in OD-55, option B or C.
 
 ### A-7 MINOR: the refund cap and replay details
+
 `0235:470` caps refunds at `amount_k`, not `paid_amount_k`. A verified overpayment's excess (G-107) can only be recorded as a refund of the charge itself, which inflates `refunded_amount_k` and can mark a delivered charge `refunded`. Also, `0235:462` treats a replay with a different `reason` as a silent success. Suggested fix: refuse a reason mismatch on replay. Record overpayment excess separately, or keep it with the OD-53 (5) record-only path.
 
 ### A-8 MINOR: a support-reviewed upgrade changes the plan with no Rekoda charge on record
+
 `0232` `subscription_operator_resolve_review` moves the plan and keeps the paid-through date, but it opens no charge. Any difference the operator collects is outside `subscription_charges`. The test uses the free-text reason "paid the difference". This follows the OD-50/OWN-91 ruling, but nothing records how the difference is collected or recorded. Record it as an open owner question next to OD-53.
 
 ### A-9 MINOR: a transient settlement failure at the Lagos month boundary
+
 `billing.service.ts` `applySettledCharge` passes `usagePeriod(input.when)`, where `when` is `new Date()` taken after the transaction started (`process-billing-charge.handler.ts:244`). `usage_credit_pack` (`0235:381-386`) compares against `now()`, which is the transaction start. A settlement whose transaction straddles midnight Lagos raises "not the meter row in use", rolls back and retries. It heals itself, but it uses up an attempt. Fix: let the database choose the row, or derive `when` from the database clock.
 
 ## Checked and found sound
