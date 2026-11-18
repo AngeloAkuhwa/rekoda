@@ -25,6 +25,14 @@ export interface OpsSnapshot {
     oldestDueSeconds: number;
     /** Seconds since the oldest still-pending job was QUEUED, due or not (G-63). */
     oldestQueuedSeconds: number;
+    /**
+     * Jobs still running long after their lease expired, by kind (E-F4): the reclaim has passed over
+     * them several times and could not move them (for a payment or billing job, typically because
+     * its dead-job record cannot be written). Absent when unknown.
+     */
+    stuckRunning?: { payment: number; billing: number; other: number };
+    /** Seconds since the oldest stuck job's lease was last renewed. */
+    oldestStuckSeconds?: number;
   } | null;
   meta: EventCounts | null;
   paystack: EventCounts | null;
@@ -104,6 +112,22 @@ export function evaluateOpsAlerts(
         key: 'jobs.overdue',
         severity: 'critical',
         summary: `Due work has waited ${queue.oldestDueSeconds} s unclaimed (limit ${limits.overdueSeconds} s): the worker is down or not keeping up`,
+      });
+    }
+    /* A job the reclaim cannot move stays running for ever and never reaches the operator's
+     * dead-job queue (E-F4). Payment and billing first: they are money the books or the plan may
+     * not reflect. Active while any job is stuck; cleared only when the job itself moves. */
+    const stuck = queue.stuckRunning;
+    if (stuck && stuck.payment + stuck.billing + stuck.other > 0) {
+      const parts = [
+        stuck.payment > 0 ? `${stuck.payment} customer-payment` : null,
+        stuck.billing > 0 ? `${stuck.billing} Rekoda billing` : null,
+        stuck.other > 0 ? `${stuck.other} other` : null,
+      ].filter((part): part is string => part !== null);
+      alerts.push({
+        key: 'jobs.stuck_running',
+        severity: stuck.payment + stuck.billing > 0 ? 'critical' : 'warning',
+        summary: `${parts.join(', ')} job(s) have stayed running past their lease for ${queue.oldestStuckSeconds ?? 0} s and the reclaim cannot move them; see the worker and settlement logs (reclaim: ... not moved) and runbook dead-jobs "Stuck running jobs"`,
       });
     }
     if (queue.oldestQueuedSeconds > limits.backlogSeconds) {

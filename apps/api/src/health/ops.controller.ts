@@ -152,6 +152,8 @@ export class OpsController {
           running: queue.running,
           oldestDueSeconds: queue.oldestPendingSeconds,
           oldestQueuedSeconds: queue.oldestQueuedSeconds,
+          stuckRunning: queue.stuckRunning,
+          oldestStuckSeconds: queue.oldestStuckSeconds,
         },
         meta,
         paystack,

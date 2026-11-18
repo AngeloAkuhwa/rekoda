@@ -266,10 +266,17 @@ export class JobRunner {
     const n = await jobsRepo.reclaimStalled(this.workerDb, this.stalledAfterMs, {
       /* G2-1, I1: a job whose dead-job record could not be written stays running with its
        * expired lease and is retried on the next pass; the others are reclaimed regardless. */
-      onUnrecorded: (count) => {
+      onUnrecorded: (count, jobs) => {
         if (count > 0) {
           this.log.warn(
             `reclaim: ${count} stalled job(s) not moved (record not written); retried next pass`,
+          );
+        }
+        /* E-F4: one line per job, coordination data only (id, kind, SQLSTATE), so the operator can
+         * find what the stuck-job alert counts. Never a payload, a business or an error message. */
+        for (const job of jobs) {
+          this.log.warn(
+            `reclaim: job ${job.kind} ${job.jobId} not moved (sqlstate ${job.sqlstate ?? 'unknown'})`,
           );
         }
       },

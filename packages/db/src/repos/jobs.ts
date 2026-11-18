@@ -578,6 +578,13 @@ const dyingJob = (row: DyingRow): deadJobs.DyingJob => ({
   failureCategory: row.failure_category,
 });
 
+/** A stalled job the reclaim could not move this pass (E-F4). */
+export interface UnrecordedReclaim {
+  jobId: string;
+  kind: string;
+  sqlstate: string | null;
+}
+
 /**
  * Return jobs whose worker died mid-run to the queue.
  *
@@ -596,7 +603,15 @@ const dyingJob = (row: DyingRow): deadJobs.DyingJob => ({
 export async function reclaimStalled(
   db: Db,
   olderThanMs = 300_000,
-  options: { onUnrecorded?: (count: number) => void } = {},
+  options: {
+    /**
+     * Called once per pass with the number of stalled jobs left `running` because their move (and,
+     * for a payment or billing job, its dead-job record) could not be written, and one line per job:
+     * its id, kind and the database's SQLSTATE. Coordination data only, never a payload or a business
+     * (E-F4: the log names what the stuck-job alert counts).
+     */
+    onUnrecorded?: (count: number, jobs: UnrecordedReclaim[]) => void;
+  } = {},
 ): Promise<number> {
   /* An operator's recovery (OWN-73, OWN-76) is ONE attempt: its run already took the
    * last-attempt path, so a crash during it goes straight back to dead (reopening the record)
@@ -609,14 +624,14 @@ export async function reclaimStalled(
    * reclaim waits on it (G2-1: one failure used to roll back the whole cross-tenant pass; I1: a
    * death committed without its record could leave a `recovering` record stuck for good). */
   return db.transaction(async (tx) => {
-    const stalled = await tx.execute<{ id: string }>(sql`
-      SELECT id FROM jobs WHERE state = 'running' AND ${stale}
+    const stalled = await tx.execute<{ id: string; kind: string }>(sql`
+      SELECT id, kind FROM jobs WHERE state = 'running' AND ${stale}
       ORDER BY locked_at, id
       FOR UPDATE SKIP LOCKED
     `);
     let reclaimed = 0;
-    let unrecorded = 0;
-    for (const { id } of stalled) {
+    const unrecorded: UnrecordedReclaim[] = [];
+    for (const { id, kind } of stalled) {
       try {
         const moved = await tx.transaction(async (savepoint) => {
           const rows = await savepoint.execute<ReclaimedRow>(sql`
@@ -648,11 +663,11 @@ export async function reclaimStalled(
           return true;
         });
         if (moved) reclaimed += 1;
-      } catch {
-        unrecorded += 1;
+      } catch (error) {
+        unrecorded.push({ jobId: id, kind, sqlstate: sqlstateOf(error) });
       }
     }
-    options.onUnrecorded?.(unrecorded);
+    options.onUnrecorded?.(unrecorded.length, unrecorded);
     return reclaimed;
   });
 }
@@ -899,7 +914,22 @@ export interface QueueHealth {
    */
   oldestQueuedSeconds: number;
   running: number;
+  /**
+   * Jobs still `running` whose lease expired more than `STUCK_RUNNING_AFTER_SECONDS` ago (E-F4):
+   * several reclaim passes have run and none could move them, typically because a payment or billing
+   * job's dead-job record cannot be written. They persist across restarts (the row is the state) and
+   * leave this count only when the job genuinely moves: reclaimed, recorded dead or completed.
+   */
+  stuckRunning: { payment: number; billing: number; other: number };
+  /** Seconds since the oldest stuck job's lease was last renewed; 0 when none is stuck. */
+  oldestStuckSeconds: number;
 }
+
+/**
+ * When a running job counts as stuck (E-F4): three times the runner's default lease (300 s), so the
+ * reclaim, which runs once per lease window, has had at least two passes to move it and failed.
+ */
+export const STUCK_RUNNING_AFTER_SECONDS = 900;
 
 /**
  * The queue, in a handful of numbers (MASTER-PLAN §6.4). An approved
@@ -913,6 +943,7 @@ export interface QueueHealth {
  * silence rather than an alert.
  */
 export async function queueHealth(db: Db): Promise<QueueHealth> {
+  const stuck = sql`(state = 'running' AND locked_at < now() - make_interval(secs => ${STUCK_RUNNING_AFTER_SECONDS}))`;
   const rows = await db.execute<{
     dead: number;
     dead_recent: number;
@@ -920,6 +951,10 @@ export async function queueHealth(db: Db): Promise<QueueHealth> {
     running: number;
     oldest_seconds: number | null;
     oldest_queued_seconds: number | null;
+    stuck_payment: number;
+    stuck_billing: number;
+    stuck_other: number;
+    oldest_stuck_seconds: number | null;
   }>(sql`
     SELECT
       count(*) FILTER (WHERE state = 'dead')::int    AS dead,
@@ -930,7 +965,14 @@ export async function queueHealth(db: Db): Promise<QueueHealth> {
       EXTRACT(EPOCH FROM (now() - min(run_at) FILTER (WHERE state = 'pending')))::int
         AS oldest_seconds,
       EXTRACT(EPOCH FROM (now() - min(created_at) FILTER (WHERE state = 'pending')))::int
-        AS oldest_queued_seconds
+        AS oldest_queued_seconds,
+      count(*) FILTER (WHERE ${stuck} AND kind = 'payment.process')::int AS stuck_payment,
+      count(*) FILTER (WHERE ${stuck} AND kind IN ('billing.process', 'billing.apply_no_charge'))::int
+        AS stuck_billing,
+      count(*) FILTER (WHERE ${stuck}
+                         AND kind NOT IN ('payment.process', 'billing.process', 'billing.apply_no_charge'))::int
+        AS stuck_other,
+      EXTRACT(EPOCH FROM (now() - min(locked_at) FILTER (WHERE ${stuck})))::int AS oldest_stuck_seconds
     FROM jobs
   `);
   const row = [...rows][0];
@@ -941,5 +983,11 @@ export async function queueHealth(db: Db): Promise<QueueHealth> {
     running: row?.running ?? 0,
     oldestPendingSeconds: Math.max(0, row?.oldest_seconds ?? 0),
     oldestQueuedSeconds: Math.max(0, row?.oldest_queued_seconds ?? 0),
+    stuckRunning: {
+      payment: row?.stuck_payment ?? 0,
+      billing: row?.stuck_billing ?? 0,
+      other: row?.stuck_other ?? 0,
+    },
+    oldestStuckSeconds: Math.max(0, row?.oldest_stuck_seconds ?? 0),
   };
 }

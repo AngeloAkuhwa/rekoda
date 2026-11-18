@@ -58,6 +58,44 @@ SELECT id, kind, state, attempts, last_error
 FROM jobs WHERE state = 'dead' ORDER BY updated_at DESC LIMIT 20;
 ```
 
+## Stuck running jobs (`jobs.stuck_running`, E-F4)
+
+The alert pass raises `jobs.stuck_running` when a job is still `running` more than 15 minutes
+(`STUCK_RUNNING_AFTER_SECONDS`, three lease windows) after its lease was last renewed. Critical when a
+customer-payment (`payment.process`) or Rekoda billing (`billing.process`, `billing.apply_no_charge`)
+job is among them, a warning otherwise. Its summary carries counts by kind and the oldest age only.
+
+What it means: every reclaim pass is trying to move the job and cannot. For a payment or billing job
+on its last attempt, the job dies only together with its dead-job record (OWN-73, OWN-76), so a record
+that cannot be written keeps the job `running`; it does not reach the operator's dead-job queue and the
+merchant gets no notice. Other businesses' jobs keep moving (each job has its own savepoint). The
+condition survives restarts because the job row is the state, and the alert resolves only when the job
+leaves `running`.
+
+1. Find the jobs. The worker's (payment) and the settlement process's (billing) logs carry one line per
+   job each pass: `reclaim: job <kind> <job id> not moved (sqlstate <code>)`. As the owner, read only
+   coordination columns, never the payload:
+
+   ```sql
+   SELECT id, kind, attempts, max_attempts, failure_category,
+          now() - locked_at AS since_lease
+   FROM jobs
+   WHERE state = 'running' AND locked_at < now() - interval '15 minutes'
+   ORDER BY locked_at;
+   ```
+
+2. Read the SQLSTATE. `23xxx` is a constraint on `dead_job_exceptions` (a schema or data defect: fix
+   it in a migration, never by hand-editing the record); `42501` is a privilege or row-level-security
+   refusal (a grant or policy regression: compare with the deploy smoke); `40001`/`40P01` are
+   transient and should clear on their own within two passes; `08xxx`/`57xxx` mean the database or
+   the process connection is failing (see "Is the estate healthy at all?").
+3. Fix the cause and wait one reclaim pass (5 minutes). Do not move the job's `state` by hand and do
+   not insert a dead-job record by hand: the next pass writes the death and its record together, and
+   the alert resolves on the following alert pass. If the settlement process is the one that is down,
+   its billing jobs are stuck for that reason alone: restart it (`dc start settlement`).
+4. Once the job is `dead` with its record, recover it through the normal operator path
+   (`POST /v1/ops/dead-jobs/:jobId/recover`), which verifies the payment with Paystack first.
+
 ## Provider outage
 
 Meta and Paystack both **retry** their webhooks, and every inbound is
