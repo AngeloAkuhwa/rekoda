@@ -26,7 +26,7 @@ environment — so an exfiltrated backup alone exposes no customer identity.
 Corollary: **losing VAULT_KEY loses the vault.** The key custody procedure
 (who holds copies, where) is part of this runbook's checklist, not optional.
 
-## Backup scripts (G-02, CODE COMPLETE 22 Oct 2026; NOT enabled anywhere)
+## Backup scripts (G-02, CODE COMPLETE 22 Oct 2026; enabled on staging only since 18 Nov 2026; not in production)
 
 **Staging, 18 Nov 2026 (owner-reported, OWN-96):** enabled on the staging host only. Destination: the private R2
 bucket `rekoda-staging-backups`, with dedicated backup credentials, a 30-day bucket lock, 90-day lifecycle retention and

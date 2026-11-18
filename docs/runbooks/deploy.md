@@ -164,8 +164,10 @@ treat it as a variable. Every generated value above is hex.
    the secret store. Set `REKODA_RELEASE=vX.Y.Z`. The two database URLs are
    `postgres://rekoda_app:<password>@postgres:5432/rekoda` and
    `postgres://rekoda_worker:<password>@postgres:5432/rekoda`. Leave
-   `REKODA_OPERATOR_SECRET`, `REKODA_LOCAL_STORAGE`, `PAYSTACK_BASE_URL`,
-   `MONO_BASE_URL` and every test hook unset.
+   `REKODA_OPERATOR_SECRET`, `REKODA_LOCAL_STORAGE`, `PAYSTACK_BASE_URL`
+   and every test hook unset. `MONO_BASE_URL` is unset or exactly
+   `https://api.withmono.com`, the only value production boots with (staging
+   keeps that exact value, OWN-96).
 6. **Build.** Before anything starts:
 
    ```bash
@@ -1208,7 +1210,8 @@ switched off.
 - **Never set a test hook or a development switch** on a real deployment:
   `REKODA_E2E_PLACEHOLDER_LEGAL` (switches off the legal-facts gate),
   `REKODA_E2E_REVEAL_OTP`, `REKODA_REVEAL_OTP`, `REKODA_OPERATOR_SECRET`,
-  `REKODA_LOCAL_STORAGE`, `PAYSTACK_BASE_URL`, `MONO_BASE_URL`. The compose
+  `REKODA_LOCAL_STORAGE`, `PAYSTACK_BASE_URL`, or `MONO_BASE_URL` with any value
+  other than exactly `https://api.withmono.com` (OWN-96). The compose
   file names none of them and CI keeps it that way, but `.env` reaches the
   api and the worker whole, so the api and the worker also refuse to boot
   with `REKODA_LOCAL_STORAGE` set, or with either provider URL set to
