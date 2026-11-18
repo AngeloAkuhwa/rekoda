@@ -1695,6 +1695,13 @@
       "when": 1796904000018,
       "tag": "0241_final_review_guards",
       "breakpoints": true
+    },
+    {
+      "idx": 242,
+      "version": "7",
+      "when": 1796904000019,
+      "tag": "0242_settlement_job_transitions",
+      "breakpoints": true
     }
   ]
 }
