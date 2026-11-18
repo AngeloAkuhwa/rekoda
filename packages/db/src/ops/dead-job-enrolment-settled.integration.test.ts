@@ -140,22 +140,50 @@ describe('enrolment skips a settled payment', () => {
     await withBusiness(appDb, businessId, (tx) =>
       events.markProcessed(tx, eventId, null, businessId),
     );
-    await workerDb.transaction((tx) =>
-      deadJobsRepo.recordDeath(
-        tx,
-        {
-          id: job!.id,
-          businessId,
-          kind: 'payment.process',
-          payload: { eventId },
-          attempts: 2,
-          failureCategory: null,
-        },
-        { enrolOnly: true },
-      ),
-    );
+    const dying = {
+      id: job!.id,
+      businessId,
+      kind: 'payment.process',
+      payload: { eventId },
+      attempts: 2,
+      failureCategory: null,
+    } as const;
+    /* It reports that nothing was written, so an enrolment pass never counts it as enrolled. */
+    expect(
+      await workerDb.transaction((tx) => deadJobsRepo.recordDeath(tx, dying, { enrolOnly: true })),
+    ).toBe(false);
     expect(await recordsOf(businessId)).toHaveLength(0);
     expect(await merchantExceptions(businessId)).toHaveLength(0);
+  });
+
+  it('an insert-only enrolment over an existing record writes nothing and reports false (CI run 44211911106)', async () => {
+    /* Two overlapping passes can both lock the same candidate: the second takes the row lock after
+     * the first commits, with a snapshot from before it, and the jobs row was not updated, so its
+     * NOT dead_job_has_record() is not re-checked. Its insert is then a no-op, and it must say so. */
+    const businessId = await seedBusiness();
+    await enqueue(businessId, 'payment.process', { eventId: null });
+    await withBusiness(ownerDb(), businessId, (tx) =>
+      tx.execute(sql`UPDATE jobs SET state = 'dead', attempts = 2`),
+    );
+    const [job] = [
+      ...(await workerDb.execute<{ id: string }>(sql`SELECT id FROM jobs WHERE state = 'dead'`)),
+    ];
+    const dying = {
+      id: job!.id,
+      businessId,
+      kind: 'payment.process',
+      payload: { eventId: null },
+      attempts: 2,
+      failureCategory: null,
+    } as const;
+    expect(
+      await workerDb.transaction((tx) => deadJobsRepo.recordDeath(tx, dying, { enrolOnly: true })),
+    ).toBe(true);
+    expect(
+      await workerDb.transaction((tx) => deadJobsRepo.recordDeath(tx, dying, { enrolOnly: true })),
+    ).toBe(false);
+    expect(await recordsOf(businessId)).toHaveLength(1);
+    expect(await merchantExceptions(businessId)).toHaveLength(1);
   });
 
   it('enrolment skips a death whose event an operator resolved after the candidate was picked', async () => {

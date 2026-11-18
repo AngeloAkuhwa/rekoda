@@ -772,9 +772,9 @@ export async function enrolDeath(db: Db, jobId: string, businessId: string): Pro
     `);
     const row = [...rows][0];
     if (!row) return false;
-    /* Insert only: a record that already exists is never reopened by a stale candidate. */
-    await deadJobs.recordDeath(tx, dyingJob(row), { enrolOnly: true });
-    return true;
+    /* Insert only: a record that already exists is never reopened by a stale candidate, and a
+     * write that did nothing is not counted as an enrolment. */
+    return deadJobs.recordDeath(tx, dyingJob(row), { enrolOnly: true });
   });
 }
 

@@ -86,8 +86,11 @@ export async function recordDeath(
   job: DyingJob,
   /** Enrolment of an unrecorded death: insert only, never reopen an existing record. */
   opts: { enrolOnly?: boolean } = {},
-): Promise<void> {
-  if (!isDeadJobKind(job.kind) || !UUID.test(job.businessId)) return;
+): Promise<boolean> {
+  /* True when a record was opened or reopened; false when nothing was written. An enrolment pass
+   * counts only the true ones: a candidate another pass already recorded (two overlapping passes can
+   * both lock it, CI run 44211911106) or whose event is settled is not an enrolment. */
+  if (!isDeadJobKind(job.kind) || !UUID.test(job.businessId)) return false;
   const kind = job.kind;
   const named = eventIdOf(job.payload);
   const reference = referenceOf(job.payload);
@@ -121,7 +124,7 @@ export async function recordDeath(
    * worker, an operator) is settled work, and enrolling it would raise a merchant exception for
    * money that is already dealt with. A missing or another tenant's event is not "settled": it
    * keeps its existing handling (recorded, no event bound). */
-  if (opts.enrolOnly && ownedEvent?.settled === true) return;
+  if (opts.enrolOnly && ownedEvent?.settled === true) return false;
 
   const rows = await tx.execute<{ inserted: boolean; status: string }>(sql`
     INSERT INTO dead_job_exceptions
@@ -144,7 +147,7 @@ export async function recordDeath(
   `);
   const row = [...rows][0];
   /* No row back: already open (a repeated pass), or closed by an operator. Nothing to do. */
-  if (!row) return;
+  if (!row) return false;
 
   if (kind === 'payment.process') {
     /* One unresolved merchant exception per dead job. A merchant who dismissed the first one
@@ -187,6 +190,7 @@ export async function recordDeath(
             })}::jsonb,
             'system')
   `);
+  return true;
 }
 
 /**
