@@ -247,10 +247,18 @@ describe('the worker leaves settlement jobs alone (0217, 0221)', () => {
     }).catch((error: { message?: string; cause?: { message?: string } }) =>
       String(error.cause?.message ?? error.message),
     );
-    /* USING admits a dead row, so the only right answer is the policy's refusal. */
-    expect(String(moved)).toMatch(/row-level security policy "worker_leaves_settlement_jobs"/);
+    /* Since 0238 the worker transition guard refuses any move of a dead job by the worker before
+     * RLS is checked (BEFORE UPDATE triggers run first); the 0217 policy that also refuses it, for
+     * a settlement kind, stays in place as the second layer and is checked below. */
+    expect(String(moved)).toMatch(
+      /the worker moves a job only through its own transitions \(0238\)/,
+    );
     const state = await owner`SELECT state FROM jobs WHERE id = ${jobId}`;
     expect(state[0]!['state']).toBe('dead');
+    const policy = await owner`
+      SELECT pg_get_expr(polwithcheck, polrelid) AS check FROM pg_policy
+      WHERE polname = 'worker_leaves_settlement_jobs' AND polrelid = 'public.jobs'::regclass`;
+    expect(String(policy[0]!['check'])).toMatch(/billing\.process/);
   });
 });
 
