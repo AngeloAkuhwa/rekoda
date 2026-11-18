@@ -419,6 +419,8 @@ export const billingPlanChangeResponse = z.discriminatedUnion('state', [
       'support_review',
       /** A support review was needed but the database refused to record it: nothing was started. */
       'support_review_unavailable',
+      /** A zero-priced upgrade could no longer be made (its cycle ended first): nothing changed. */
+      'upgrade_withdrawn',
     ]),
   }),
 ]);

@@ -213,7 +213,7 @@ describe('paying, and the gate in front of it', () => {
    * not told a support review was started. The refusal is forced by a test trigger standing in for
    * any fact the database checks that the application did not (a race, a catalogue gap). */
   it('a review the database refuses is not answered as a support review', async () => {
-    const { businessId } = await onboard('+2348177100097');
+    const { businessId } = await onboard('+2348177100081');
     const now = new Date();
     await putOnPlan(
       businessId,
@@ -279,7 +279,13 @@ describe('paying, and the gate in front of it', () => {
     const quote = await billing.quote(businessId, 'complete', new Date());
     expect(quote.supportReview).toBe(true);
     const answer = await billing.changePlan(businessId, 'complete', new Date());
-    expect(answer).toEqual({ state: 'unavailable', reason: 'support_review' });
+    /* R03 (second review of #432): an open-ended plan has no paid-through date to keep, so the
+     * database records no support review (0213). The answer used to be `support_review`, telling
+     * the merchant our team had their upgrade when nothing was recorded; it is now the truth. */
+    expect(answer).toEqual({ state: 'unavailable', reason: 'support_review_unavailable' });
+    const [reviews] = await ownerDb.execute<{ n: number }>(sql`
+      SELECT count(*)::int AS n FROM plan_change_reviews WHERE business_id = ${businessId}::uuid`);
+    expect(reviews!.n).toBe(0);
     const charges = await withBusiness(db, businessId, (tx) =>
       subscriptionsRepo.chargesFor(tx, businessId),
     );

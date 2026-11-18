@@ -550,20 +550,40 @@ export class BillingService {
       };
     });
     if (decided.state !== 'queued') return decided;
-    return (await this.awaitNoCharge(businessId, decided.reference))
-      ? { state: 'applied' as const, plan: decided.plan }
-      : { state: 'processing' as const, plan: decided.plan };
+    const settled = await this.awaitNoCharge(businessId, decided.reference);
+    if (settled === 'applied') return { state: 'applied' as const, plan: decided.plan };
+    /* A-3: the worker withdrew it (the cycle ended while it waited, or it no longer prices at
+     * nothing, G3-1). Saying "switching your plan on now" would be false. */
+    if (settled === 'withdrawn') {
+      return { state: 'unavailable' as const, reason: 'upgrade_withdrawn' as const };
+    }
+    return { state: 'processing' as const, plan: decided.plan };
   }
 
-  /** Whether the worker applied a zero-priced upgrade within the wait (OD-51). */
-  private async awaitNoCharge(businessId: string, reference: string): Promise<boolean> {
+  /** What became of a zero-priced upgrade within the wait (OD-51; G3-1, A-3). */
+  private async awaitNoCharge(
+    businessId: string,
+    reference: string,
+  ): Promise<'applied' | 'withdrawn' | 'pending'> {
     const deadline = Date.now() + this.zeroChargeWaitMs;
     for (;;) {
       const charge = await withBusiness(this.db, businessId, (tx) =>
         subscriptionsRepo.chargeByReference(tx, businessId, reference),
       );
-      if (charge && charge.status !== 'pending') return charge.unappliedAt === null;
-      if (Date.now() >= deadline) return false;
+      if (charge && charge.status !== 'pending') {
+        return charge.unappliedAt === null ? 'applied' : 'withdrawn';
+      }
+      /* Withdrawn by the worker (G3-1), not merely superseded by the merchant's newer request,
+       * whose own job carries on: the worker records the withdrawal. */
+      if (
+        charge?.supersededAt &&
+        (await withBusiness(this.db, businessId, (tx) =>
+          subscriptionsRepo.noChargeWithdrawn(tx, businessId, reference),
+        ))
+      ) {
+        return 'withdrawn';
+      }
+      if (Date.now() >= deadline) return 'pending';
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
   }

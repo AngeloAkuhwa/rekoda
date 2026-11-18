@@ -949,6 +949,20 @@ export async function retireAbandonedPending(
   `);
 }
 
+/** Whether the worker withdrew this zero-priced upgrade because it could no longer apply (G3-1). */
+export async function noChargeWithdrawn(
+  tx: TenantDb,
+  businessId: string,
+  reference: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ n: number }>(sql`
+    SELECT count(*)::int AS n FROM audit_events
+    WHERE business_id = ${businessId}::uuid AND entity = 'subscription_charge'
+      AND entity_id = ${reference} AND action = 'no_charge_upgrade_withdrawn'
+  `);
+  return ([...rows][0]?.n ?? 0) > 0;
+}
+
 /**
  * Retire one pending charge that is no longer what this business would be asked to pay (OD-51): an
  * upgrade prorated on an earlier day, or a pack the catalogue has since repriced. Marked abandoned,

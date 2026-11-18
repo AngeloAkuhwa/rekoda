@@ -173,6 +173,43 @@ describe('an upgrade that costs nothing', () => {
   });
 });
 
+/* A-3 (independent review of the PR #432 remediation): an upgrade the worker withdrew (its cycle
+ * ended while it waited, G3-1) is answered as withdrawn, not "switching your plan on now". */
+describe('a zero-priced upgrade withdrawn within the wait', () => {
+  it('is answered upgrade_withdrawn, and the plan is unchanged', async () => {
+    const businessId = await seedBusiness();
+    await onPlan(businessId, 'chat', 10 * 3_600_000);
+    const service = new BillingService(config as never, appDb);
+    service.zeroChargeWaitMs = 5_000;
+    const answer = service.changePlan(businessId, 'complete');
+    for (let i = 0; i < 50; i += 1) {
+      const [job] = await ownerDb.execute<{ id: string; reference: string }>(sql`
+        SELECT id, payload->>'reference' AS reference FROM jobs
+        WHERE business_id = ${businessId}::uuid AND kind = 'billing.apply_no_charge'`);
+      if (job) {
+        /* A backlog: the job runs after the paid-through date. */
+        await ownerDb.execute(sql`
+          UPDATE businesses SET plan_expires_at = now() - interval '1 minute'
+          WHERE id = ${businessId}::uuid`);
+        await withBusiness(settlementDb(), businessId, (tx) =>
+          applyNoChargeUpgradeHandler({ config: config as never })({
+            tx,
+            jobId: job.id,
+            businessId,
+            payload: { reference: job.reference },
+            attempt: 1,
+            maxAttempts: 5,
+          }),
+        );
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    expect(await answer).toEqual({ state: 'unavailable', reason: 'upgrade_withdrawn' });
+    expect((await subscription(businessId))?.plan).toBe('chat');
+  });
+});
+
 describe('free upgrades repeat', () => {
   it('two businesses can each switch free (the provider reference is unique per charge)', async () => {
     const a = await seedBusiness();
