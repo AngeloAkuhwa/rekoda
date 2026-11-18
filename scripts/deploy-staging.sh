@@ -216,7 +216,8 @@ SMOKE_0196_SQL="SELECT
                   '0237_settlement_reads_key_fingerprints',
                   '0238_worker_job_transitions',
                   '0239_operator_actor_columns',
-                  '0240_pack_refund_allowance_history')) = 40
+                  '0240_pack_refund_allowance_history',
+                  '0241_final_review_guards')) = 41
   AND has_function_privilege('rekoda_billing_operator', 'public.subscription_record_refund(uuid,text,bigint,text,text,text)', 'EXECUTE')
   AND NOT has_function_privilege('rekoda_app', 'public.subscription_record_refund(uuid,text,bigint,text,text,text)', 'EXECUTE')
   AND NOT has_function_privilege('rekoda_worker', 'public.subscription_record_refund(uuid,text,bigint,text,text,text)', 'EXECUTE')
@@ -253,17 +254,24 @@ SMOKE_0196_SQL="SELECT
   AND (SELECT t.tgenabled IN ('O', 'A') FROM pg_trigger t
         WHERE t.tgname = 'jobs_worker_transition_guard' AND t.tgrelid = 'public.jobs'::regclass)
   AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('rekoda_private.jobs_worker_transition_guard()'))
-        LIKE '%current_user <> ''rekoda_worker''%OLD.state = ''pending'' AND NEW.state = ''running''%OLD.state = ''running'' AND NEW.state IN (''done'', ''pending'', ''dead'')%'
+        LIKE '%NOT pg_has_role(current_user, ''rekoda_worker'', ''USAGE'')%pg_has_role(current_user, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), ''USAGE'')%OLD.state = ''pending'' AND NEW.state = ''running''%OLD.state = ''running'' AND NEW.state IN (''done'', ''pending'', ''dead'')%'
   AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('rekoda_private.jobs_worker_transition_guard()'))
         NOT LIKE '%OLD.state = ''dead''%'
-  AND (SELECT count(*) FROM pg_constraint WHERE convalidated IS NOT NULL AND conname IN (
+  AND (SELECT count(*) FROM pg_constraint WHERE contype = 'c' AND conname IN (
         'dead_job_exceptions_recovery_requested_by_actor', 'dead_job_exceptions_closed_by_actor',
         'subscription_charges_blocked_resolved_by_actor', 'subscription_charges_unapplied_resolved_by_actor',
         'staging_test_businesses_designated_by_actor', 'staging_tool_actions_operator_actor',
-        'staging_send_faults_armed_by_actor')) = 7
+        'staging_send_faults_armed_by_actor')
+        AND (pg_get_constraintdef(oid) LIKE '%~ ''^operator:[!-~]{1,255}_''::text)))%'
+             OR pg_get_constraintdef(oid) LIKE '%~ ''^(operator:[!-~]{1,255}|system:[a-z][a-z_-]{0,63})_''::text)))%')) = 7
   AND (SELECT count(*) FROM pg_trigger t WHERE t.tgenabled IN ('O', 'A') AND (t.tgname, t.tgrelid) IN (
         ('businesses_note_allowance_change', 'public.businesses'::regclass),
         ('business_add_ons_note_allowance_change', 'public.business_add_ons'::regclass))) = 2
+  AND (SELECT pg_get_triggerdef(t.oid) FROM pg_trigger t
+        WHERE t.tgname = 'businesses_note_allowance_change' AND t.tgrelid = 'public.businesses'::regclass)
+        LIKE '%AFTER UPDATE OF plan, plan_version_id, plan_expires_at ON public.businesses%(old.plan = ''trial''::text) OR (new.plan = ''trial''::text)%old.plan_expires_at IS DISTINCT FROM new.plan_expires_at%'
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('rekoda_private.note_allowance_change()'))
+        LIKE '%greatest(a.changed_at, excluded.changed_at)%'
   AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('public.subscription_record_refund(uuid,text,bigint,text,text,text)'))
         LIKE '%FROM public.business_allowance_changes a%a.changed_at >= c.units_credited_at%'
   AND NOT has_table_privilege('rekoda_app', 'public.business_allowance_changes', 'INSERT')

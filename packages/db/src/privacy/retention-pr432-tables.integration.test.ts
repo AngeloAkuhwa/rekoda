@@ -16,6 +16,7 @@
  * key order is what is under test.) The singleton tables of the PR (`billing_pricing_source`,
  * `staging_environment`, `renewal_block_close_cursor`) carry no business id and are not tenant data.
  */
+import { readdirSync, readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db } from '../client.js';
@@ -148,12 +149,26 @@ const counts = async (businessId: string): Promise<Record<string, number>> => {
 };
 
 describe('R10: retention deletes every PR #432 tenant table, and only the target’s rows', () => {
-  it('the list above is every new table with a business id', async () => {
+  /* Final review of PR #432 (F3): the candidates come from the migrations themselves, not from the
+   * list under test, so a new tenant table that is left off the list fails here. */
+  it('the list above is every table with a business id created since main (0193 onwards)', async () => {
+    const dir = new URL('../../migrations/', import.meta.url);
+    const created = new Set<string>();
+    for (const file of readdirSync(dir).filter((f) => /^\d{4}_.*\.sql$/.test(f)).sort()) {
+      if (Number(file.slice(0, 4)) < 193) continue;
+      const text = readFileSync(new URL(file, dir), 'utf8');
+      for (const m of text.matchAll(
+        /CREATE TABLE(?: IF NOT EXISTS)?\s+(?:public\.)?"?([a-z_][a-z0-9_]*)"?/gi,
+      )) {
+        created.add(m[1]!.toLowerCase());
+      }
+    }
+    expect(created.size).toBeGreaterThanOrEqual(NEW_TENANT_TABLES.length);
     const rows = await ownerDb.execute<{ table_name: string }>(sql`
       SELECT c.table_name::text AS table_name FROM information_schema.columns c
       WHERE c.table_schema = 'public' AND c.column_name = 'business_id'
         AND c.table_name IN (SELECT tag FROM (VALUES ${sql.join(
-          NEW_TENANT_TABLES.map((t) => sql`(${t})`),
+          [...created].map((t) => sql`(${t})`),
           sql`, `,
         )}) v(tag))`);
     expect([...rows].map((r) => r.table_name).sort()).toEqual([...NEW_TENANT_TABLES].sort());

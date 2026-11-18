@@ -463,6 +463,46 @@ describe('R09 (0235): a pack judged unused only against the allowance it was cre
     expect(await chargeOf(reference)).toMatchObject({ status: 'paid', revoked: false });
   });
 
+  /* Final review of PR #432 (head 0b4956a, F-1): a trial's allowance also follows its expiry
+   * (`usage_entitlement` reads `plan_expires_at` for a trial), so an expiry moved past and back with
+   * `plan` unchanged (the staging date tool, or a re-posted trial) left no history row, and a pack
+   * that paid for the consumption while the trial read expired was refunded in full as unused. 0241
+   * records a trial's expiry change as an allowance change. */
+  it('a pack consumed while a trial read expired is not unused after the expiry returns', async () => {
+    const businessId = await seedBusiness();
+    const setTrial = (expires: ReturnType<typeof sql>) =>
+      withBusiness(appDb, businessId, (tx) =>
+        tx.execute(sql`SELECT test_fixture_set_plan(${businessId}::uuid, 'trial', ${expires})`),
+      );
+    await setTrial(sql`now() + interval '7 days'`);
+    seq += 1;
+    const reference = `RKD-PACK-20261118-T${String(seq).padStart(5, '0')}`;
+    await ownerDb.execute(sql`
+      INSERT INTO subscription_charges
+        (business_id, kind, plan, pack_id, quantity, amount_k, paid_amount_k, status, reference,
+         period_start, period_end, paid_at, pricing_source, billing_interval)
+      VALUES (${businessId}::uuid, 'add_on', NULL, 'messages_100', 1, ${PACK_K}, ${PACK_K}, 'paid',
+              ${reference}, now(), now() + interval '30 days', now(), 'catalogue', 'monthly')`);
+    await withBusiness(settlementDb, businessId, (tx) =>
+      tx.execute(
+        sql`SELECT usage_credit_pack(${businessId}::uuid, ${reference}, 'TRIAL00', 'AI_ACTIONS', ${UNITS}::int)`,
+      ),
+    );
+    /* The trial reads expired (allowance 0); 40 actions can only be paid for by the pack... */
+    await setTrial(sql`now() - interval '1 hour'`);
+    await withBusiness(ownerDb, businessId, (tx) =>
+      tx.execute(sql`UPDATE usage_counters SET used = 40
+                     WHERE business_id = ${businessId}::uuid AND unit = 'AI_ACTIONS'`),
+    );
+    /* ...and the expiry comes back with the plan unchanged: the allowance is equal again. */
+    await setTrial(sql`now() + interval '7 days'`);
+    await expect(refund(businessId, reference)).rejects.toThrow(
+      /needs an owner decision \(OD-55\)/,
+    );
+    expect(await bonus(businessId)).toBe(UNITS);
+    expect(await chargeOf(reference)).toMatchObject({ status: 'paid', revoked: false });
+  });
+
   it('an add-on holding changed after the credit also leaves the decision to the owner', async () => {
     const { businessId, reference } = await creditedPack();
     await ownerDb.execute(sql`INSERT INTO business_add_ons (business_id, add_on_id, version, started_at)

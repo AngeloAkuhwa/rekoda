@@ -90,6 +90,34 @@ describe('the pre-start database smoke, second review (0231 to 0237)', () => {
       )![0],
     ],
     [
+      'the worker transition guard back at 0238 (recognised by name, final review)',
+      migrationText('0238_worker_job_transitions.sql').match(
+        /CREATE OR REPLACE FUNCTION rekoda_private\.jobs_worker_transition_guard\(\)[\s\S]*?END \$\$;/,
+      )![0],
+    ],
+    [
+      'the allowance history trigger back at 0240 (a trial expiry unrecorded, final review F-1)',
+      `CREATE OR REPLACE TRIGGER businesses_note_allowance_change AFTER UPDATE OF plan, plan_version_id ON businesses
+         FOR EACH ROW
+         WHEN (OLD.plan IS DISTINCT FROM NEW.plan OR OLD.plan_version_id IS DISTINCT FROM NEW.plan_version_id)
+         EXECUTE FUNCTION rekoda_private.note_allowance_change()`,
+    ],
+    [
+      'the allowance history time able to move backwards again (0240, final review F-4)',
+      migrationText('0240_pack_refund_allowance_history.sql').match(
+        /CREATE OR REPLACE FUNCTION rekoda_private\.note_allowance_change\(\)[\s\S]*?END \$\$;/,
+      )![0],
+    ],
+    [
+      'an operator-actor check loosened but keeping its name (D-5)',
+      `ALTER TABLE dead_job_exceptions DROP CONSTRAINT dead_job_exceptions_closed_by_actor,
+         ADD CONSTRAINT dead_job_exceptions_closed_by_actor CHECK (closed_by IS NULL OR closed_by ~ '^operator:')`,
+    ],
+    [
+      '0241 not recorded in the ledger',
+      "DELETE FROM rekoda_migrations WHERE tag = '0241_final_review_guards'",
+    ],
+    [
       '0240 not recorded in the ledger',
       "DELETE FROM rekoda_migrations WHERE tag = '0240_pack_refund_allowance_history'",
     ],

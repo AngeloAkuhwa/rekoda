@@ -204,6 +204,36 @@ describe('0228: the worker reads no payload across tenants', () => {
     ).toMatch(/^42501 .*only through its own transitions/);
   });
 
+  /* Final review of PR #432 (head 0b4956a, IMPORTANT): 0238 recognised the worker by NAME, so a role
+   * that only inherits rekoda_worker held every worker grant and policy but skipped the guard. 0241
+   * applies it to any role holding the worker's privileges that is not the table owner, as 0222
+   * (residual 11) does for the application and event guards. The probe role lives only inside a
+   * transaction that always rolls back. */
+  it('ATTACK: a role inheriting rekoda_worker cannot revive a done job to read its payload', async () => {
+    const a = await seedBusiness();
+    const done = await jobWith(a, 'inherited-history-secret');
+    await setState(done, 'done');
+    const hop = `guard_hop_${randomUUID().replaceAll('-', '')}`;
+    const result = await outcome(
+      ownerDb.transaction(async (tx) => {
+        await tx.execute(sql.raw(`CREATE ROLE ${hop} NOLOGIN INHERIT IN ROLE rekoda_worker`));
+        await tx.execute(sql.raw(`SET LOCAL ROLE ${hop}`));
+        await tx.execute(sql`SELECT set_config('app.business_id', ${a}, true)`);
+        await tx.execute(sql`UPDATE jobs SET state = 'running' WHERE id = ${done}::uuid`);
+        const [row] = await tx.execute<{ payload: unknown }>(
+          sql`SELECT job_payload(${done}::uuid) AS payload`,
+        );
+        // Reached only when the guard let the revival through: roll back and report the leak.
+        throw new Error(`revived and read: ${JSON.stringify(row?.payload ?? null)}`);
+      }),
+    );
+    expect(result).toMatch(/^42501 .*only through its own transitions/);
+    const [after] = await ownerDb.execute<{ state: string }>(
+      sql`SELECT state FROM jobs WHERE id = ${done}::uuid`,
+    );
+    expect(after!.state).toBe('done');
+  });
+
   it('RESIDUAL: under one pin, one statement reads every payload of that business', async () => {
     const a = await seedBusiness();
     const b = await seedBusiness();

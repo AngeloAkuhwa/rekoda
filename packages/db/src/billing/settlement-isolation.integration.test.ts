@@ -251,7 +251,7 @@ describe('the worker leaves settlement jobs alone (0217, 0221)', () => {
      * RLS is checked (BEFORE UPDATE triggers run first); the 0217 policy that also refuses it, for
      * a settlement kind, stays in place as the second layer and is checked below. */
     expect(String(moved)).toMatch(
-      /the worker moves a job only through its own transitions \(0238\)/,
+      /the worker moves a job only through its own transitions \(0238, 0241\)/,
     );
     const state = await owner`SELECT state FROM jobs WHERE id = ${jobId}`;
     expect(state[0]!['state']).toBe('dead');
