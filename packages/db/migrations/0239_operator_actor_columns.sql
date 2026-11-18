@@ -8,8 +8,9 @@
 --   dead_job_exceptions.closed_by               an operator's resolution, or system:recovery (0194)
 --   subscription_charges.blocked_resolved_by    an operator's or a sweep's close (0195)
 --   subscription_charges.unapplied_resolved_by  an operator's resolution (main; checked NOT VALID)
---   staging_test_businesses.designated_by, staging_tool_actions.operator,
+--   staging_test_businesses.designated_by,
 --   staging_send_faults.armed_by                the staging tools (0197), operator only
+--   staging_tool_actions.operator               an operator, or system:send consuming a fault
 -- A malformed actor (`alice`, a space, a newline, 256 characters) is now refused. A system actor is
 -- `system:<name>` with a lower-case name, as every system writer in the code spells it.
 --
@@ -34,7 +35,7 @@ BEGIN
       ('subscription_charges', 'blocked_resolved_by', operator_or_system, true),
       ('subscription_charges', 'unapplied_resolved_by', operator_or_system, false),
       ('staging_test_businesses', 'designated_by', operator_only, true),
-      ('staging_tool_actions', 'operator', operator_only, true),
+      ('staging_tool_actions', 'operator', operator_or_system, true),
       ('staging_send_faults', 'armed_by', operator_only, true)
     ) AS v(tbl, col, pattern, validate)
   LOOP

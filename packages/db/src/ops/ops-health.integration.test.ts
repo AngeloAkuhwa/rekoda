@@ -177,7 +177,8 @@ describe('queue health', () => {
     await withBusiness(appDb, ada, (tx) =>
       jobsRepo.enqueue(tx, { businessId: ada, kind: 'inbound.message' }),
     );
-    await workerDb.execute(sql`UPDATE jobs SET state = 'dead'`);
+    /* Staged as the owner: the worker itself never moves a pending job straight to dead (0238). */
+    await ownerDb().execute(sql`UPDATE jobs SET state = 'dead'`);
 
     expect((await jobsRepo.queueHealth(workerDb)).dead).toBe(1);
     expect((await jobsRepo.queueHealth(appDb)).dead).toBe(0);
@@ -195,7 +196,7 @@ describe('queue health', () => {
         jobsRepo.enqueue(tx, { businessId: ada, kind: 'inbound.message' }),
       );
     }
-    await workerDb.execute(sql`UPDATE jobs SET state = 'dead', updated_at = now()`);
+    await ownerDb().execute(sql`UPDATE jobs SET state = 'dead', updated_at = now()`);
     await workerDb.execute(sql`
       UPDATE jobs SET updated_at = now() - interval '3 days'
       WHERE id = (SELECT id FROM jobs ORDER BY id LIMIT 1)

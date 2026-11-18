@@ -91,7 +91,7 @@ const COLUMNS = [
     of: 'business',
     system: false,
   },
-  { table: 'staging_tool_actions', column: 'operator', key: 'id', of: 'action', system: false },
+  { table: 'staging_tool_actions', column: 'operator', key: 'id', of: 'action', system: true },
   { table: 'staging_send_faults', column: 'armed_by', key: 'id', of: 'fault', system: false },
 ] as const;
 
