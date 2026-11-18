@@ -213,7 +213,10 @@ SMOKE_0196_SQL="SELECT
                   '0234_job_payload_live_or_dying_only',
                   '0235_refund_records_and_pack_eligibility',
                   '0236_dead_job_enrolment_cursor',
-                  '0237_settlement_reads_key_fingerprints')) = 37
+                  '0237_settlement_reads_key_fingerprints',
+                  '0238_worker_job_transitions',
+                  '0239_operator_actor_columns',
+                  '0240_pack_refund_allowance_history')) = 40
   AND has_function_privilege('rekoda_billing_operator', 'public.subscription_record_refund(uuid,text,bigint,text,text,text)', 'EXECUTE')
   AND NOT has_function_privilege('rekoda_app', 'public.subscription_record_refund(uuid,text,bigint,text,text,text)', 'EXECUTE')
   AND NOT has_function_privilege('rekoda_worker', 'public.subscription_record_refund(uuid,text,bigint,text,text,text)', 'EXECUTE')
@@ -247,6 +250,22 @@ SMOKE_0196_SQL="SELECT
         LIKE '%public.dead_job_unrecorded_candidates(p_limit, NULL::uuid)%'
   AND has_table_privilege('rekoda_settlement', 'public.key_fingerprints', 'SELECT')
   AND NOT has_table_privilege('rekoda_settlement', 'public.key_fingerprints', 'INSERT')
+  AND (SELECT t.tgenabled IN ('O', 'A') FROM pg_trigger t
+        WHERE t.tgname = 'jobs_worker_transition_guard' AND t.tgrelid = 'public.jobs'::regclass)
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('rekoda_private.jobs_worker_transition_guard()'))
+        LIKE '%current_user <> ''rekoda_worker''%OLD.state = ''pending'' AND NEW.state = ''running''%OLD.kind IN (''payment.process'', ''billing.process'')%'
+  AND (SELECT count(*) FROM pg_constraint WHERE convalidated IS NOT NULL AND conname IN (
+        'dead_job_exceptions_recovery_requested_by_actor', 'dead_job_exceptions_closed_by_actor',
+        'subscription_charges_blocked_resolved_by_actor', 'subscription_charges_unapplied_resolved_by_actor',
+        'staging_test_businesses_designated_by_actor', 'staging_tool_actions_operator_actor',
+        'staging_send_faults_armed_by_actor')) = 7
+  AND (SELECT count(*) FROM pg_trigger t WHERE t.tgenabled IN ('O', 'A') AND (t.tgname, t.tgrelid) IN (
+        ('businesses_note_allowance_change', 'public.businesses'::regclass),
+        ('business_add_ons_note_allowance_change', 'public.business_add_ons'::regclass))) = 2
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('public.subscription_record_refund(uuid,text,bigint,text,text,text)'))
+        LIKE '%FROM public.business_allowance_changes a%a.changed_at >= c.units_credited_at%'
+  AND NOT has_table_privilege('rekoda_app', 'public.business_allowance_changes', 'INSERT')
+  AND NOT has_table_privilege('rekoda_settlement', 'public.business_allowance_changes', 'DELETE')
   AND (SELECT prosrc FROM pg_proc
         WHERE oid = to_regprocedure('rekoda_private.subscription_charges_settlement_guard()'))
         LIKE '%only settlement moves a charge''''s status; a refund is recorded by the operator (OD-37, 0230)%a refund is recorded by the operator alone (0230)%'
@@ -1097,7 +1116,7 @@ if [[ " $BREAKING " == *' 0217_settlement_isolation '* ]]; then
   for var in OPERATOR_OIDC_ISSUER OPERATOR_OIDC_JWKS_URL OPERATOR_BILLING_OIDC_AUDIENCE VAULT_KEY \
     SETTLEMENT_DATABASE_URL OPERATOR_DATABASE_URL; do
     [ -n "$(sed -n "s/^${var}=//p" .env | tail -1)" ] ||
-      fail "this release carries 0217 (OD-51) and .env has no ${var}: add it (docs/runbooks/deploy.md, \"Deploy a release carrying 0213 to 0223\"); nothing has been changed"
+      fail "this release carries 0217 (OD-51) and .env has no ${var}: add it (docs/runbooks/deploy.md, \"Deploy a release carrying 0213 to 0240\"); nothing has been changed"
   done
   [ "$(sed -n 's/^OPERATOR_BILLING_OIDC_AUDIENCE=//p' .env | tail -1)" != "$(sed -n 's/^OPERATOR_OIDC_AUDIENCE=//p' .env | tail -1)" ] ||
     fail 'OPERATOR_BILLING_OIDC_AUDIENCE must differ from OPERATOR_OIDC_AUDIENCE: a token the API accepts must not change a plan (OD-51); nothing has been changed'

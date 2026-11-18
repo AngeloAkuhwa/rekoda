@@ -10,7 +10,7 @@
 -- (HTTP 500 on the requeue route), and a malformed actor (`alice`, `operator:`, one with a space or
 -- a newline) was accepted into the audit trail.
 --
--- Since 0233 both follow the contract exactly. (The refund function, 0230, is aligned in 0234,
+-- Since 0233 both follow the contract exactly. (The refund function, 0230, is aligned in 0235,
 -- which re-creates it.) The remaining owner-run function `rekoda_private.set_pricing_source`
 -- (0215) is called by the owner with a written actor, not by the operator plane, and keeps its own
 -- rule; see the OD-41 row.

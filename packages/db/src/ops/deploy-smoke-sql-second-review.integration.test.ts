@@ -20,13 +20,9 @@ describe('the pre-start database smoke, second review (0231 to 0237)', () => {
     ],
     [
       'job_payload back at 0228 (any state, R07)',
-      readFileSync(
-        new URL(
-          '../../migrations/0228_worker_reads_no_payload_across_tenants.sql',
-          import.meta.url,
-        ),
-        'utf8',
-      ).match(/CREATE OR REPLACE FUNCTION public\.job_payload\([\s\S]*?\$\$;/)![0],
+      migrationText('0228_worker_reads_no_payload_across_tenants.sql').match(
+        /CREATE OR REPLACE FUNCTION public\.job_payload\([\s\S]*?\$\$;/,
+      )![0],
     ],
     [
       'the 0230 refund function back beside the 0235 one (R06)',
@@ -69,6 +65,41 @@ describe('the pre-start database smoke, second review (0231 to 0237)', () => {
       migrationText('0230_refund_through_the_operator.sql').match(
         /CREATE OR REPLACE FUNCTION rekoda_private\.subscription_charges_settlement_guard\(\)[\s\S]*?END \$function\$;/,
       )![0],
+    ],
+    [
+      'the worker transition guard dropped (B-1)',
+      'DROP TRIGGER jobs_worker_transition_guard ON jobs',
+    ],
+    [
+      'the worker transition guard letting a done job run again (B-1)',
+      `CREATE OR REPLACE FUNCTION rekoda_private.jobs_worker_transition_guard() RETURNS trigger
+       LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$ BEGIN RETURN NEW; END $$`,
+    ],
+    [
+      'an operator-actor column check dropped (B-2)',
+      'ALTER TABLE dead_job_exceptions DROP CONSTRAINT dead_job_exceptions_closed_by_actor',
+    ],
+    [
+      'the allowance history trigger dropped (A-1)',
+      'DROP TRIGGER businesses_note_allowance_change ON businesses',
+    ],
+    [
+      'the refund function back at 0235 (no allowance history, A-1)',
+      migrationText('0235_refund_records_and_pack_eligibility.sql').match(
+        /CREATE OR REPLACE FUNCTION public\.subscription_record_refund\([\s\S]*?END \$\$;/,
+      )![0],
+    ],
+    [
+      '0240 not recorded in the ledger',
+      "DELETE FROM rekoda_migrations WHERE tag = '0240_pack_refund_allowance_history'",
+    ],
+    [
+      '0239 not recorded in the ledger',
+      "DELETE FROM rekoda_migrations WHERE tag = '0239_operator_actor_columns'",
+    ],
+    [
+      '0238 not recorded in the ledger',
+      "DELETE FROM rekoda_migrations WHERE tag = '0238_worker_job_transitions'",
     ],
     [
       '0237 not recorded in the ledger',

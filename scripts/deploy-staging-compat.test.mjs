@@ -562,3 +562,31 @@ test('OWN-93: a template check that cannot run refuses the deploy as such, not a
   // The report itself is never printed.
   assert.doesNotMatch(r.stdout + r.stderr, /SLOT META_/);
 });
+
+/* G5-1 (second review of PR #432): the pre-start smoke ran only for releases carrying one of a
+ * hand-written list (0196 to 0221), so a later release carrying only 0228, 0230 or 0235 would have
+ * migrated and started with no smoke. It now runs for any compatibility-breaking migration. */
+for (const breaking of [
+  '0228_worker_reads_no_payload_across_tenants',
+  '0230_refund_through_the_operator',
+  '0235_refund_records_and_pack_eligibility',
+]) {
+  test(`a release carrying only ${breaking} still runs the pre-start smoke`, () => {
+    const h = host([breaking]);
+    const r = h.run();
+    assert.equal(r.status, 0, r.stderr + r.stdout);
+    const migrate = h.at('run --rm -T migrate');
+    const smoke = h.at('exec -T postgres psql');
+    const up = h.at(' up ');
+    assert.ok(smoke >= 0, `the smoke never ran for ${breaking}:\n${h.calls().join('\n')}`);
+    assert.ok(migrate < smoke && smoke < up, h.calls().join('\n'));
+  });
+
+  test(`a failing smoke after ${breaking} starts nothing`, () => {
+    const h = host([breaking]);
+    writeFileSync(join(h.fake, 'smoke-fails'), '');
+    const r = h.run();
+    assert.notEqual(r.status, 0);
+    assert.equal(h.at(' up '), -1, 'the new release must not start');
+  });
+}
