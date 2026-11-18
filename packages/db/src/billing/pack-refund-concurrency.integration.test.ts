@@ -9,20 +9,17 @@
  * Each statement takes a fresh snapshot. The final review recorded a theoretical race (F-3): a plan
  * change committing between S2 and S4. These tests force every interleaving the owner named with
  * separate connections: a third connection holds the exact row lock the refund needs next, the
- * refund is observed blocked on it in `pg_stat_activity` (so the earlier statements have run), the
- * competing write commits, and only then is the lock released.
+ * refund is observed blocked on it in `pg_stat_activity`, the competing write commits, and only then
+ * is the lock released. (Since 0243 S2 runs after S3's lock; the statement order above is 0240's.)
  *
- * What they establish (the conclusion recorded in the audit, `docs/audits/pr-432/README.md`):
- *   - A plan or holding change that commits BEFORE S2 is seen (a fresh snapshot) and the refund is
- *     refused for the owner (OD-55).
- *   - One that commits AFTER S2 is not seen, and the outcome is exactly the serial order "refund,
- *     then plan change": the refund decided on the allowance in force at its own point in the order,
- *     the change applies after it, and the history records the change. No write of either
- *     transaction depends on a value the other wrote, so no anomaly results (the plan writers never
- *     read or write a pack charge or a usage counter).
- *   - Consumption and the refund serialise on the counter row in both orders: `usage_reserve`'s
- *     limit is checked in its `ON CONFLICT DO UPDATE ... WHERE`, which re-reads the locked row, and
- *     the refund's S3 reads the latest `used` after its lock.
+ * What they establish (`docs/audits/pr-432/final-closeout-f.md` §4):
+ *   - A plan or holding change that commits before the refund holds the counter is seen (0243 judges
+ *     the allowance after the counter lock) and the refund goes to the owner (OD-55). Before 0243
+ *     the allowance was judged before the lock, and review A of the closeout round showed a
+ *     downgrade plus consumption spending the pack, both committing while the refund waited, let a
+ *     spent pack be refunded: the RED case below.
+ *   - One that commits after the refund has judged is ordered after it, and recorded in the history.
+ *   - Consumption and the refund serialise on the counter row in both orders.
  *   - Two refunds of one pack serialise on the charge row; two packs on one counter serialise on the
  *     counter row, and the second reads the first's revocation. Every path takes the charge before
  *     the counter (refund, credit) or the counter alone (consumption), so there is no lock cycle.
@@ -220,7 +217,10 @@ describe('F-3: the pack refund under forced interleavings', () => {
     });
   });
 
-  it('a plan change committed after S2 is not seen: the result is exactly "refund, then plan change"', async () => {
+  /* Since 0243 the allowance is judged after the counter lock: a change that commits while the
+   * refund waits for the counter is seen, and the refund goes to the owner, the serial order
+   * "change, then refund". (Before 0243 it was not seen; review A showed that unsafe.) */
+  it('a plan change committed while the refund waits for the counter is seen: refused for the owner', async () => {
     const businessId = await chatBusiness();
     const reference = await creditPack(businessId);
     const blocker = holdOpen(connect(urls.owner, 'f3-counter-holder'), (tx) =>
@@ -228,28 +228,21 @@ describe('F-3: the pack refund under forced interleavings', () => {
     );
     await blocker.held;
     const refunding = refundOn(connect(urls.operator, 'f3-refund-b'), businessId, reference);
-    await blockedOnLock('f3-refund-b'); // S1 and S2 have run; waiting at S3
-    const before = await facts(businessId, reference);
+    await blockedOnLock('f3-refund-b'); // waiting for the counter
     await upgradeToComplete(businessId); // the plan writer commits; it needs neither lock
     blocker.release();
     await blocker.done;
-    expect(await refunding).toBe('refunded');
-    const after = await facts(businessId, reference);
-    /* The serial order "refund first": the pack's units revoked once, the refund recorded once,
-     * the plan changed after it, and the change in the history for any later refund to see. */
-    expect(after).toEqual({
-      ...before,
-      status: 'refunded',
-      refunded: PACK_K,
-      revoked: true,
-      bonus: before.bonus - UNITS,
-      refundRows: 1,
+    expect(await refunding).toMatch(/needs an owner decision \(OD-55\)/);
+    expect(await facts(businessId, reference)).toMatchObject({
+      status: 'paid',
+      revoked: false,
+      bonus: UNITS,
+      refundRows: 0,
       plan: 'complete',
-      historyRows: before.historyRows + (before.historyRows === 0 ? 1 : 0),
     });
   });
 
-  it('an add-on holding change committed after S2 is likewise ordered after the refund', async () => {
+  it('an add-on holding change committed while the refund waits for the counter is likewise seen', async () => {
     const businessId = await chatBusiness();
     const reference = await creditPack(businessId);
     const blocker = holdOpen(connect(urls.owner, 'f3-counter-holder-2'), (tx) =>
@@ -264,12 +257,38 @@ describe('F-3: the pack refund under forced interleavings', () => {
       SELECT ${businessId}, add_on_id, version, now() FROM add_ons ORDER BY add_on_id, version LIMIT 1`;
     blocker.release();
     await blocker.done;
-    expect(await refunding).toBe('refunded');
+    expect(await refunding).toMatch(/needs an owner decision \(OD-55\)/);
+    expect(await facts(businessId, reference)).toMatchObject({
+      status: 'paid',
+      revoked: false,
+      refundRows: 0,
+    });
+  });
+
+  it('a plan change committed after the refund has judged and revoked is ordered after it', async () => {
+    const businessId = await chatBusiness();
+    const reference = await creditPack(businessId);
+    const [{ at: before }] = await owner<{ at: Date }[]>`
+      SELECT changed_at AS at FROM business_allowance_changes WHERE business_id = ${businessId}`;
+    const refund = holdOpen(connect(urls.operator, 'f3-refund-b2'), (tx) =>
+      refundSql(tx, businessId, reference, `rf-b2-${Date.now()}`),
+    );
+    await refund.held; // judged, revoked and recorded; uncommitted, holding the charge and counter
+    await upgradeToComplete(businessId); // needs neither lock: commits now
+    refund.release();
+    await refund.done;
     expect(await facts(businessId, reference)).toMatchObject({
       status: 'refunded',
+      refunded: PACK_K,
       revoked: true,
+      bonus: 0,
       refundRows: 1,
+      plan: 'complete',
     });
+    /* And the change is in the history for any later refund to see. */
+    const [{ at: after }] = await owner<{ at: Date }[]>`
+      SELECT changed_at AS at FROM business_allowance_changes WHERE business_id = ${businessId}`;
+    expect(after.getTime()).toBeGreaterThan(before.getTime());
   });
 
   it('consumption committed while the refund waits at S3 is seen: a pack used meanwhile is not refunded', async () => {
@@ -405,6 +424,58 @@ describe('F-3: the pack refund under forced interleavings', () => {
       bonus: 0,
       refundRows: 1,
       plan: 'chat',
+    });
+  });
+
+  /* Review A of the closeout round (IMPORTANT): an allowance drop that commits after the refund's
+   * allowance check, followed by consumption that spends pack units under the lower allowance, both
+   * committing while the refund waits for the counter. Judged against the allowance read before the
+   * lock, the pack looked unused and was refunded although the merchant had spent 51 of its units. */
+  it('a downgrade and consumption that spends the pack, both while the refund waits at the counter, refuse it', async () => {
+    const businessId = await chatBusiness();
+    await withBusiness(appDb, businessId, (tx) =>
+      tx.execute(
+        sql`SELECT test_fixture_set_plan(${businessId}::uuid, 'complete', now() + interval '25 days')`,
+      ),
+    );
+    const reference = await creditPack(businessId); // credited beside Complete's 1,200
+    await owner.begin(async (tx) => {
+      await tx`SELECT set_config('app.business_id', ${businessId}, true)`;
+      await tx`UPDATE usage_counters SET used = 350
+               WHERE business_id = ${businessId} AND unit = 'AI_ACTIONS'`;
+    });
+    const month = await thisMonth();
+    const reserve = (tx: postgres.TransactionSql, n: number) =>
+      tx`SELECT * FROM usage_reserve(${businessId}::uuid, ${month}, 'AI_ACTIONS', 1000000, ${n}, false)`;
+    let spend!: () => void;
+    const spendNow = new Promise<void>((resolve) => (spend = resolve));
+    let held!: () => void;
+    const holding = new Promise<void>((resolve) => (held = resolve));
+    const consumer = connect(urls.app, 'f3-consumer-down').begin(async (tx) => {
+      await tx`SELECT set_config('app.business_id', ${businessId}, true)`;
+      await reserve(tx, 1); // takes the counter row under Complete
+      held();
+      await spendNow;
+      const [r] = await reserve(tx, 100); // under Chat: 400 + the pack's 100
+      return r!['granted'] as boolean;
+    });
+    await holding;
+    const refunding = refundOn(connect(urls.operator, 'f3-refund-down'), businessId, reference);
+    await blockedOnLock('f3-refund-down'); // past its allowance read, waiting for the counter
+    await withBusiness(appDb, businessId, (tx) =>
+      tx.execute(
+        sql`SELECT test_fixture_set_plan(${businessId}::uuid, 'chat', now() + interval '25 days')`,
+      ),
+    );
+    spend();
+    expect(await consumer).toBe(true); // 451 used: 51 of them are the pack's
+    expect(await refunding).toMatch(/needs an owner decision \(OD-55\)|the pack has been used/);
+    expect(await facts(businessId, reference)).toMatchObject({
+      status: 'paid',
+      revoked: false,
+      used: 451,
+      bonus: UNITS,
+      refundRows: 0,
     });
   });
 

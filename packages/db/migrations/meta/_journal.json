@@ -1702,6 +1702,13 @@
       "when": 1796904000019,
       "tag": "0242_settlement_job_transitions",
       "breakpoints": true
+    },
+    {
+      "idx": 243,
+      "version": "7",
+      "when": 1796904000020,
+      "tag": "0243_refund_judges_the_allowance_after_the_counter_lock",
+      "breakpoints": true
     }
   ]
 }
