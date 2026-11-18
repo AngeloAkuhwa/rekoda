@@ -117,9 +117,10 @@ Do **not** approve the Deploy staging run until every item below is verified:
 6. Close the other unreported parts of §2: P3a's lane-setting line, P4's `/etc/rekoda/backup.env` and `backup.pass`
    at 0600 root, P5 check (1), and P9's itemised criteria (templates Approved, Resend domain Verified, test recipients).
 
-**P12 and the PARTIAL rows.** The runbook's P12 row asks for the merge approval "after P1 to P11". OWN-96 moves the
-items above to "before deployment approval" and does not say whether the PARTIAL rows must also close before P12.
-That is the owner's call; engineering does not assume either reading.
+**P12 and the PARTIAL rows.** The runbook's P12 row asks for the merge approval "after P1 to P11". OWN-96 (6) places
+items 1, 2, 4 and 5 before deployment approval. Item 6 is listed by engineering, not by the ruling: those are
+unreported parts of P3a, P4, P5 and P9, which the runbook places before P12. Whether they may instead close before
+deployment approval is the owner's call; engineering does not assume either reading.
 
 After the deploy: D8 (post-deploy backup and drill of the new schema, 0000 to 0245) and D13 stay required. D9 becomes
 "verify the timer is still enabled".
