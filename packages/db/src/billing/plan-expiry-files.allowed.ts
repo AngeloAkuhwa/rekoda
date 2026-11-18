@@ -171,6 +171,10 @@ export const ALLOWED: Readonly<Record<string, Entry>> = {
     role: 'migration',
     why: 'R02 (second review of #432): re-creates subscription_request_plan_review and subscription_operator_resolve_review (owned by rekoda_plan_writer) with the price lookups of the billing resolver (pinned version, explicit annual price, else monthly x 10). As in 0219 the resolution assigns the plan once and compares plan_expires_at without ever assigning it.',
   },
+  'packages/db/migrations/0241_final_review_guards.sql': {
+    role: 'migration',
+    why: 'Final review of #432 (F-1): the businesses_note_allowance_change trigger now fires on UPDATE OF plan_expires_at and its WHEN clause compares the old and new expiry of a trial; it only records the time of the change in business_allowance_changes and assigns no plan field.',
+  },
   'packages/db/migrations/0222_usage_entitlement_in_the_database.sql': {
     role: 'migration',
     why: 'MVP readiness review: usage_entitlement READS plan and plan_expires_at (a trial past its date meters as expired) to compute the meter ceiling in the database; it writes neither, and re-creates the charge settlement guard unchanged but for provider_reference.',
