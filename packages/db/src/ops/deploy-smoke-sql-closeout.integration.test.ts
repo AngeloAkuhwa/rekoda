@@ -124,7 +124,8 @@ describe('the pre-start database smoke, closeout round (actor constraints, 0242)
     ],
     [
       'an actor check whose end anchor became a literal @ (review B)',
-      `ALTER TABLE subscription_refunds DROP CONSTRAINT subscription_refunds_actor_check,
+      `DELETE FROM subscription_refunds;
+       ALTER TABLE subscription_refunds DROP CONSTRAINT subscription_refunds_actor_check,
          ADD CONSTRAINT subscription_refunds_actor_check CHECK (actor ~ '^operator:[!-~]{1,255}@')`,
     ],
     [
