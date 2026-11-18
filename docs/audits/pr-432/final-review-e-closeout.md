@@ -143,6 +143,14 @@ skipped or todo).
 The full unsharded db and api suites were not re-run on `2be51d1` or `5fee6b2`, because those commits
 change no product code: docs, formatting of one test, and one entry in a test's reviewed list.
 
+**Fresh review of the fix commits (`0b4956a..5fee6b2`)**, by a context that did not write them:
+0 BLOCKING, 0 IMPORTANT, 1 MINOR. It rebuilt a database at 0000–0241, re-ran the touched suites
+(82/82), restored 0238's function and 0240's trigger and saw both new tests fail for the right
+reason, and confirmed the smoke text is unchanged by bash. MINOR (recorded, not fixed): the D-5
+smoke clause binds each actor constraint by name and its regex tail, not by table and full
+definition, so an administrator could pass it with `CHECK (true OR ...)` or a same-named decoy on
+another table.
+
 ## 7. Owner decisions
 
 `owner-decisions-od53-56.md` is the full paper: the problem as the register states it, current
