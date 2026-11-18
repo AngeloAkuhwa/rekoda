@@ -675,8 +675,10 @@ rekoda_owner` in `docker-compose.prod.yml`). A non-superuser migration owner is 
   bootstrap (`DRILL_DATABASE_URL`) and in a real restore, it checks the roles as they are.
 - **The pre-start smoke runs only for a release that carries a compatibility-breaking migration**
   (`carries_plan_boundary`): a later release with only additive guards gets no smoke, so run it by
-  hand after such a deploy (`dc exec -T postgres psql -U rekoda_owner -d rekoda -tA -c "$SMOKE_0196_SQL"`
-  after sourcing the script's definition, or the read-only check). And `migrate` sets no
+  hand after such a deploy. Never `source` `scripts/deploy-staging.sh` to get the query: sourcing it
+  runs the deploy. Extract the string exactly as the test harness does and pass it to psql:
+  `sql=$(node -e 'const t=require("fs").readFileSync("scripts/deploy-staging.sh","utf8");process.stdout.write(/^SMOKE_0196_SQL="([\s\S]*?)"$/m.exec(t)[1])')`
+  then `dc exec -T postgres psql -U rekoda_owner -d rekoda -tA -v ON_ERROR_STOP=1 -c "$sql"` (expect `t`). And `migrate` sets no
   `lock_timeout`: an additive trigger migration applied with everything running (0242) can wait
   behind a long transaction that wrote to `jobs`, holding queue writes behind it for that time; it
   cannot corrupt anything. This release applies with everything stopped, so neither applies to it.

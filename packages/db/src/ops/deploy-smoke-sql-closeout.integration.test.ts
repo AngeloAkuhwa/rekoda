@@ -171,6 +171,30 @@ describe('the pre-start database smoke, closeout round (actor constraints, 0242)
       )![0],
     ],
     [
+      'the worker transition guard rebound as AFTER INSERT (delta review)',
+      `DROP TRIGGER jobs_worker_transition_guard ON jobs;
+       CREATE TRIGGER jobs_worker_transition_guard AFTER INSERT ON jobs
+         FOR EACH ROW EXECUTE FUNCTION rekoda_private.jobs_worker_transition_guard()`,
+    ],
+    [
+      'the settlement transition guard firing only for an update of payload (delta review)',
+      `DROP TRIGGER jobs_settlement_transition_guard ON jobs;
+       CREATE TRIGGER jobs_settlement_transition_guard BEFORE UPDATE OF payload ON jobs
+         FOR EACH ROW EXECUTE FUNCTION rekoda_private.jobs_settlement_transition_guard()`,
+    ],
+    [
+      'the settlement transition guard with WHEN (false) (delta review)',
+      `DROP TRIGGER jobs_settlement_transition_guard ON jobs;
+       CREATE TRIGGER jobs_settlement_transition_guard BEFORE UPDATE ON jobs
+         FOR EACH ROW WHEN (false) EXECUTE FUNCTION rekoda_private.jobs_settlement_transition_guard()`,
+    ],
+    [
+      'the worker transition guard bound to the settlement function (delta review)',
+      `DROP TRIGGER jobs_worker_transition_guard ON jobs;
+       CREATE TRIGGER jobs_worker_transition_guard BEFORE UPDATE ON jobs
+         FOR EACH ROW EXECUTE FUNCTION rekoda_private.jobs_settlement_transition_guard()`,
+    ],
+    [
       '0243 not recorded in the ledger',
       "DELETE FROM rekoda_migrations WHERE tag = '0243_refund_judges_the_allowance_after_the_counter_lock'",
     ],

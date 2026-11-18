@@ -5,7 +5,7 @@
 -- allowance history BEFORE it locked the counter row. Each PL/pgSQL statement takes its own READ
 -- COMMITTED snapshot, so while the refund waited for the counter (held by a consumer):
 --   1. the refund read the allowance: unchanged since the credit, so it went on;
---   2. a downgrade (or an add-on holding ending, or a trial expiring) committed;
+--   2. a downgrade (or an add-on holding written to end) committed;
 --   3. consumption, metered by `usage_reserve` against the lower allowance plus the pack's bonus,
 --      spent pack units and committed;
 --   4. the refund took the counter, judged `used` against the allowance recorded at the credit,
@@ -16,6 +16,10 @@
 -- The allowance checks now run after the counter `FOR UPDATE`: any consumption committed before the
 -- lock was granted is in `used`, any allowance change it relied on committed before it and is in the
 -- later statement's snapshot, and no consumption can commit after the lock until the refund ends.
+-- Residual (stated, as in 0240): an allowance that ends by TIME with no write (a trial's
+-- `plan_expires_at`, an add-on's `ends_at` passing) is judged by `usage_entitlement` at the refund
+-- transaction's `now()`, its start; a consumer that starts after that instant and commits before the
+-- lock is granted (milliseconds) meters against the lower allowance the refund does not see.
 -- Nothing else changes: the lock order is still the charge, then the counter (no new lock, no new
 -- cycle); owner, grants, signature, messages and every other rule are unchanged.
 --
@@ -96,9 +100,9 @@ BEGIN
     WHERE business_id = p_business AND period = c.credited_period AND unit = c.credited_unit
     FOR UPDATE;
     -- 0243 (review A of the closeout round, IMPORTANT): the allowance is judged AFTER the counter
-    -- lock. Read before it, a downgrade (or a holding ending, or a trial expiring) committing while
-    -- this refund waited for the counter, and consumption that then spent pack units under the lower
-    -- allowance, were both invisible: the pack looked unused and was refunded. Every consumption
+    -- lock. Read before it, a downgrade or holding change committing while this refund waited for
+    -- the counter, and consumption that then spent pack units under the lower allowance, were both
+    -- invisible: the pack looked unused and was refunded. Every consumption
     -- that committed before this lock was granted is now in `used`, and any allowance change it
     -- relied on committed before it, so the next statement's fresh snapshot sees that change.
     -- R09: "unused" is judged against the allowance the pack was credited beside, and only while the

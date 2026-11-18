@@ -186,7 +186,8 @@ UP_ENTERED=false
 #     now with one more attempt, and a settlement job is enqueued with its full retry budget (0223);
 #   * settlement moves its jobs only through its runner's transitions (claim, renewal, retry,
 #     deferral, completion, death; never out of done or dead; never its retry budget back), for any
-#     role holding its privileges (0242); both transition guards (0241, 0242) are pinned by the md5
+#     role holding its privileges (0242); both transition guards (0241, 0242) are BEFORE UPDATE row
+#     triggers on every column with no WHEN clause, bound to their functions, pinned by the md5
 #     of their exact body, plpgsql, not SECURITY DEFINER, with their search_path (a definer guard
 #     would run as its owner, whom the guard exempts);
 #   * a credited pack's refund judges the allowance after it holds the usage counter: the refund
@@ -269,13 +270,18 @@ SMOKE_0196_SQL="SELECT
         LIKE '%public.dead_job_unrecorded_candidates(p_limit, NULL::uuid)%'
   AND has_table_privilege('rekoda_settlement', 'public.key_fingerprints', 'SELECT')
   AND NOT has_table_privilege('rekoda_settlement', 'public.key_fingerprints', 'INSERT')
-  AND (SELECT t.tgenabled IN ('O', 'A') FROM pg_trigger t
-        WHERE t.tgname = 'jobs_worker_transition_guard' AND t.tgrelid = 'public.jobs'::regclass)
+  AND (SELECT count(*) FROM pg_trigger t
+        WHERE t.tgrelid = 'public.jobs'::regclass AND t.tgenabled IN ('O', 'A')
+          AND t.tgtype = 19 AND t.tgattr = ''::int2vector AND t.tgqual IS NULL
+          AND ((t.tgname = 'jobs_worker_transition_guard'
+                AND t.tgfoid = to_regprocedure('rekoda_private.jobs_worker_transition_guard()'))
+            OR (t.tgname = 'jobs_settlement_transition_guard'
+                AND t.tgfoid = to_regprocedure('rekoda_private.jobs_settlement_transition_guard()')))) = 2
   AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('rekoda_private.jobs_worker_transition_guard()'))
         LIKE '%NOT pg_has_role(current_user, ''rekoda_worker'', ''USAGE'')%pg_has_role(current_user, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), ''USAGE'')%OLD.state = ''pending'' AND NEW.state = ''running''%OLD.state = ''running'' AND NEW.state IN (''done'', ''pending'', ''dead'')%'
   AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('rekoda_private.jobs_worker_transition_guard()'))
         NOT LIKE '%OLD.state = ''dead''%'
-  AND (SELECT md5(p.prosrc) = '49ead9ad4aff3f9bb8beb1ce5f0a9c08' AND p.prosecdef
+  AND (SELECT md5(p.prosrc) = 'faaf104243048ba4143317c2a93f030d' AND p.prosecdef
          AND p.proconfig = ARRAY['search_path=pg_catalog, public, pg_temp']
        FROM pg_proc p WHERE p.oid = to_regprocedure('public.subscription_record_refund(uuid,text,bigint,text,text,text)'))
   AND (SELECT count(*) FROM pg_proc p JOIN pg_language l ON l.oid = p.prolang
@@ -285,9 +291,6 @@ SMOKE_0196_SQL="SELECT
                 AND md5(p.prosrc) = '9b1f25164868ffaa77c3c0e9c5eedf29')
             OR (p.oid = to_regprocedure('rekoda_private.jobs_settlement_transition_guard()')
                 AND md5(p.prosrc) = '9c347c83519b1b913e0b7fc1361629da'))) = 2
-  AND (SELECT t.tgenabled IN ('O', 'A') AND t.tgtype & 19 = 19 FROM pg_trigger t
-        WHERE t.tgname = 'jobs_settlement_transition_guard' AND t.tgrelid = 'public.jobs'::regclass
-          AND t.tgfoid = to_regprocedure('rekoda_private.jobs_settlement_transition_guard()'))
   AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('rekoda_private.jobs_settlement_transition_guard()'))
         LIKE '%NOT pg_has_role(current_user, ''rekoda_settlement'', ''USAGE'')%pg_has_role(current_user, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), ''USAGE'')%interval ''10 minutes''%OLD.state = ''pending'' AND NEW.state = ''running'' AND NEW.attempts = OLD.attempts + 1%OLD.state = ''running'' AND NEW.state IN (''done'', ''dead'') AND NEW.attempts = OLD.attempts%'
   AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('rekoda_private.jobs_settlement_transition_guard()'))

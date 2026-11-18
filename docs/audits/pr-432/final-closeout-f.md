@@ -116,5 +116,15 @@ and the CI run; it is the record the owner reviews. A run on an earlier SHA is h
 Five fresh read-only reviews of `d976b21..2a6fa1c`, one per risk domain (financial, security,
 runtime and deploy, tests and docs, product and copy). BLOCKING 0. IMPORTANT 6, all fixed above
 (review A: F-3; review B: two smoke gaps; review D: the run-time test and the verification record;
-review E: the ₦0 pay card). Review C found none. The changed head after these fixes gets its own review, recorded in the
-PR description.
+review E: the ₦0 pay card). Review C found none. A fresh read-only review of the fix delta `2a6fa1c..b1896d6` found 0 BLOCKING and 1 IMPORTANT:
+the smoke pinned the guard functions but not their trigger bindings (`AFTER INSERT`, `UPDATE OF
+payload` or `WHEN (false)` still printed `t`). Fixed: both triggers must be `BEFORE UPDATE` row
+triggers on every column, with no `WHEN`, bound to their own functions (four tampers, RED with the
+previous smoke, GREEN 178/178 smoke tests). Its MINORs: 0243's comments overstated what it closes
+for an allowance that ends by time with no write (corrected; the millisecond residual is stated in
+the migration, as it was for 0240); the runbook's hand-run smoke step said to source the deploy
+script, which runs the deploy (replaced with an exact extraction); the refund function pin does not
+cover `STRICT` (no effect: every argument is already checked). That review also, by following a
+command in its brief, sourced `scripts/deploy-staging.sh` locally: the only effect was a
+`git fetch --prune` of remote-tracking refs; no branch, checkout, file, database or service was
+changed (remote branches verified).
