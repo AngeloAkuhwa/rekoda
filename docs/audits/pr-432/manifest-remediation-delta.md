@@ -55,3 +55,34 @@ table.
 | apps/api/src/operator-plane/operator-process.integration.test.ts | test | R06 | HTTP replay answered `replayed: true`, recorded once | itself | none | no finding | GREEN |
 | apps/api/src/auth/operator-plane-served.guard.test.ts | unit test | G4a-1 | Refund route guard order; no class-level guard | itself | none | no finding | 4/4 |
 | apps/api/src/settlement/settlement-process.integration.test.ts | test | G4b-2 | Wrong key refused; enrolment as the API does | itself | none | no finding | 12/12 |
+
+## Second round (after the independent reviews A, B and C; `6cf9d45..` final head)
+
+Files changed after `6cf9d45` (code and tests; documentation is listed in `README.md` §6). Files
+already in the table above appear again only where this round changed them.
+
+| File | Change category | Requirements / decisions / ADRs | Behavioural and security implications | Applicable tests | Findings | Disposition | Verification evidence |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| packages/db/migrations/0238_worker_job_transitions.sql | migration | B-1; R07; ADR 0035 Am. 6 | Worker state changes limited to pending->running, running->done/pending/dead, dead->pending (payment/billing only) | job-payload-isolation "ATTACK: the worker cannot move a done or dead message job..."; smoke tamper x2 | B-1 | fixed | RED at 0237: allowed; GREEN |
+| packages/db/migrations/0239_operator_actor_columns.sql | migration | B-2; R04/R05/R11; OD-54 | CHECK `operator:<1-255>` (or `system:<name>`) on seven actor columns; `unapplied_resolved_by` NOT VALID (exists on main) | operator-actor-columns (7); smoke tamper | B-2 | fixed for format; identity residual is OD-54 | RED at 0238: malformed allowed; GREEN 7/7 |
+| packages/db/migrations/0240_pack_refund_allowance_history.sql | migration | A-1; R09; OD-55 | `business_allowance_changes` by trigger on plan/plan_version_id and add-on holdings; refund refused after any change since the credit | pack-refund A-1 cases (2); retention-pr432-tables; smoke tamper x2 | A-1 | fixed | RED at 0239: both refunded; GREEN 31/31 in three suites |
+| packages/db/migrations/0233_operator_actor_contract.sql | migration (comment) | docs truth | Header names 0235, not 0234; no SQL change | none | C-minor | fixed | diff is comment-only |
+| packages/db/migrations/meta/_journal.json | journal | ordering | Entries 238 to 240 appended | upgrade tests | none | no finding | contiguous |
+| packages/db/src/repos/jobs.ts | repo | I1; G2-1 | Reclaim selects stalled jobs `FOR UPDATE SKIP LOCKED`, then moves each with its record in one savepoint; a failed record leaves the job running and retried | dead-job-reclaim-isolation (2); dead-job-enrolment-pin (4); jobs suites | I1 | fixed | RED (previous code): death committed without record; GREEN |
+| packages/db/src/repos/subscriptions.ts | repo | A-3 | `noChargeWithdrawn`: the worker's withdrawal audit row | retry-and-zero-charge A-3 | none | no finding | GREEN |
+| apps/api/src/billing/billing.service.ts | service | A-3 | `awaitNoCharge` answers applied / withdrawn / pending; withdrawn -> `upgrade_withdrawn` | retry-and-zero-charge "is answered upgrade_withdrawn" | A-3 | fixed | RED: processing; GREEN |
+| packages/contracts/src/billing-api.ts | contract | A-3 | New reason `upgrade_withdrawn` | typecheck; above | none | no finding | GREEN |
+| apps/web/src/app/app/billing/page.tsx | web copy | A-3 | "That change could not be made in time, so your plan has not changed. Nothing was charged..." | check-ui-copy | none | no finding | OK |
+| apps/api/src/jobs/runner.ts | runner | I1 | Warning text for jobs not moved | jobs suites | none | no finding | GREEN |
+| scripts/deploy-staging.sh | deploy script | 0238-0240; G5-1 | Ledger 40 tags; new checks; runbook heading reference | deploy-smoke-sql suites; scripts 454/454 | none | no finding | smoke `t` on a migrated database |
+| scripts/deploy-staging-compat.test.mjs | script test | G5-1 (I7) | Releases carrying only 0228/0230/0235 run the smoke; a failing smoke starts nothing | itself | I7 | fixed | RED with the old gate: 6 failures; GREEN 36/36 |
+| packages/db/src/ops/deploy-smoke-sql-second-review.integration.test.ts | test | 0231-0240 | Compile error fixed (`migrationText`); tampers for 0238-0240 | itself | C BLOCKING (compile) | fixed | typecheck; GREEN |
+| packages/db/src/ops/job-payload-isolation.integration.test.ts | test | B-1 | ATTACK case | itself | none | no finding | GREEN |
+| packages/db/src/ops/operator-actor-columns.integration.test.ts | test (new) | B-2 | Seven columns: 255-char accepted, 256 and malformed refused, system actor where allowed | itself | none | no finding | 7/7 |
+| packages/db/src/ops/dead-job-reclaim-isolation.integration.test.ts | test | I1, G2-1 | Unwritable job stays running; recovering record reopened with its job | itself | none | no finding | 2/2 |
+| packages/db/src/ops/dead-job-enrolment-pin.test.ts | unit test | statement shapes | Mock answers the stalled list and per-job moves; no payload in cross-tenant steps | itself | none | no finding | 4/4 |
+| packages/db/src/billing/pack-refund.integration.test.ts | test | A-1 | Down-and-back plan; add-on holding change | itself | none | no finding | GREEN |
+| packages/db/src/privacy/retention-pr432-tables.integration.test.ts | test | R10 | Adds `business_allowance_changes` | itself | B-6 (list guard circular) | MINOR recorded | 2/2 |
+| packages/db/src/ops/upgrade-od51.integration.test.ts, upgrade-from-main.integration.test.ts | tests | migration compatibility | Through 0240 | themselves | none | no finding | GREEN |
+| apps/api/src/billing/billing-paying.integration.test.ts | test | R03 | Open-ended plan case asserted the defect; now the truthful answer and no review row | itself | R03 | fixed | GREEN |
+| apps/api/src/billing/retry-and-zero-charge.integration.test.ts | test | A-3 | Withdrawn-within-wait case | itself | none | no finding | GREEN |
