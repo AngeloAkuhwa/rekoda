@@ -18,9 +18,9 @@
     "lint": "prettier --check src"
   },
   "devDependencies": {
-    "prettier": "^3.9.10",
+    "prettier": "^3.10.1",
     "typescript": "^7.0.2",
     "vite": "^8",
-    "vitest": "^5.0.5"
+    "vitest": "^5.1.0"
   }
 }
