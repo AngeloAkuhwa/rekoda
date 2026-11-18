@@ -1501,8 +1501,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
      * a handler transaction. Raise it with the pool, not instead of it.
      */
     /* The old `Math.max(1, Number(...))` was a floor that could not hold:
-     * `Math.max(1, NaN)` is NaN. */
-    workerConcurrency: positiveInteger(env, 'REKODA_WORKER_CONCURRENCY', 4),
+     * `Math.max(1, NaN)` is NaN. At most 16 (closeout round G): a worker's application pool is
+     * max(10, lanes + 2) (`appPoolSize`), and the estate's worst case must stay inside
+     * PostgreSQL's connection limit (docs/runbooks/deploy.md, "Connection budget"). */
+    workerConcurrency: numericEnv(
+      env,
+      'REKODA_WORKER_CONCURRENCY',
+      4,
+      'a whole number from 1 to 16, written in plain digits',
+      (v, raw) => PLAIN_DIGITS.test(raw) && Number.isInteger(v) && v >= 1 && v <= 16,
+    ),
     commandRecordSale: commandRolloutFlag(env, 'REKODA_COMMAND_RECORD_SALE'),
     commandIssueInvoice: commandRolloutFlag(env, 'REKODA_COMMAND_ISSUE_INVOICE'),
     commandRecordPayment: commandRolloutFlag(env, 'REKODA_COMMAND_RECORD_PAYMENT'),

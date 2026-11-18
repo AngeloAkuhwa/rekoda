@@ -52,6 +52,23 @@ describe('numeric configuration fails closed (launch closeout)', () => {
     );
   });
 
+  /* Closeout round G (owner instruction, 18 Nov 2026, §4.4): a worker process's application pool is
+   * max(10, lanes + 2) (db.module.ts appPoolSize), so the lane count sets a connection budget.
+   * PostgreSQL's default of 100 connections (97 for non-superusers) must hold the API, worker,
+   * settlement and operator processes together (docs/runbooks/deploy.md, "Connection budget"); at
+   * 16 lanes the estate's worst case is 91. Beyond 16 refuses to boot, as settlement's own lane
+   * setting already does. */
+  it('REKODA_WORKER_CONCURRENCY above 16 refuses to boot; 16 is accepted', () => {
+    expect(() => loadConfig({ ...BASE, REKODA_WORKER_CONCURRENCY: '17' })).toThrow(
+      /REKODA_WORKER_CONCURRENCY must be a whole number from 1 to 16/,
+    );
+    expect(() => loadConfig({ ...BASE, REKODA_WORKER_CONCURRENCY: '64' })).toThrow(
+      /REKODA_WORKER_CONCURRENCY/,
+    );
+    expect(loadConfig({ ...BASE, REKODA_WORKER_CONCURRENCY: '16' }).workerConcurrency).toBe(16);
+    expect(loadConfig({ ...BASE }).workerConcurrency).toBe(4);
+  });
+
   it('zero is a VALUE for the brakes - a kill switch, never unlimited', () => {
     /* PR-014's rule holds at the config boundary too: an operator halting
      * AI spend with AI_DAILY_CALLS_GLOBAL=0 gets zero calls, and the
