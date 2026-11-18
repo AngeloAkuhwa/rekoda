@@ -65,4 +65,6 @@ by the remediating engineer; the independent reviews (`final-review-*.md`) re-re
 | 237 | `23ba6bd` | 2026-11-18 | docs(audit): register and readiness entries for the delta review | docs only | see `git show` | closeout F |
 | 238 | `ebf0613` | 2026-11-18 | test(db): 0243 on the G-62 reviewed list; the literal-@ tamper clears refund rows first | test-only; found by the final local run on `23ba6bd` | see `git show` | closeout F |
 | 239 | `9a543ad7` | 2026-11-18 | fix(api): the application pool leaves a connection per runner lane for a second transaction | RED `app-pool-size.test.ts` (no sizing); GREEN | see `git show` | Codex thread on `initiate-blocked-renewal.handler.ts` |
-| 240 | the record commit after `9a543ad7` | 2026-11-18 | docs(audit): Codex threads and the final delta review recorded | docs only | see `git show` | closeout F |
+| 240 | `dbdbd98` | 2026-11-18 | docs(audit): Codex threads and the final delta review recorded | docs only | see `git show` | closeout F |
+| 241 | `04dd32fa` | 2026-11-18 | fix(api): size the application pool by lanes only in a worker process | review of `9a543ad` (IMPORTANT: the API pool grew with the worker setting); `app-pool-size.test.ts` 3/3 incl. the wiring | see `git show` | closeout F |
+| 242 | the record commit after `04dd32fa` | 2026-11-18 | docs(audit): the pool fix as narrowed | docs only | see `git show` | closeout F |

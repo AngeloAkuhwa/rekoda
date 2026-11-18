@@ -139,5 +139,7 @@ command assumes `node` on the host (it fails safe: no `t`).
 Codex: no major issues on `23ba6bd` (09:19 UTC) and on `ebf0613` (10:08 UTC). Two Codex inline
 threads were open: the pack-refund serialisation (posted 08:25 on an earlier head; the race review A
 found, fixed in 0243, `7a712b9`) and application-pool exhaustion by blocked-renewal initiation at 10
-or more runner lanes (REAL, MINOR at the default 4 lanes; fixed by sizing the pool from the
-concurrency, `app-pool-size.test.ts`). Both are answered on their threads.
+or more runner lanes (REAL, MINOR at the default 4 lanes; fixed: a worker process's application pool holds
+max(10, lanes + 2), an API process keeps 10. A review of the first version, which also enlarged
+the API's pool, found it could exceed PostgreSQL's 100 connections at 16 lanes; narrowed in the
+next commit; `app-pool-size.test.ts` checks the size and its wiring). Both are answered on their threads.
