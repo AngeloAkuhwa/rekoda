@@ -86,3 +86,15 @@ already in the table above appear again only where this round changed them.
 | packages/db/src/ops/upgrade-od51.integration.test.ts, upgrade-from-main.integration.test.ts | tests | migration compatibility | Through 0240 | themselves | none | no finding | GREEN |
 | apps/api/src/billing/billing-paying.integration.test.ts | test | R03 | Open-ended plan case asserted the defect; now the truthful answer and no review row | itself | R03 | fixed | GREEN |
 | apps/api/src/billing/retry-and-zero-charge.integration.test.ts | test | A-3 | Withdrawn-within-wait case | itself | none | no finding | GREEN |
+
+## Third round (CI runs 44209538852 and 44211911106; `df1319d..` final head)
+
+| File | Category | Requirement | Implication | Tests | Finding | Disposition | Evidence |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| packages/db/src/testing.ts | test harness | CI 44209538852 issue 1 | `resetKeyEnrolment()` deletes every `key_fingerprints` row on the owner connection; test-only, no production path | every integration file (through the setup files) | file-order dependence on the first-enrolled key | fixed | 90/90 across 5 file-shuffle seeds; production fingerprint check unchanged |
+| packages/db/src/integration-setup.ts, apps/api/src/integration-setup.ts | test harness | as above | Each file starts with no enrolled key, so `createApp` enrols its own; the settlement wrong-key refusal test still enrols and then refuses | settlement-process "refuses to start with a vault key the database did not enrol" (kept) | as above | fixed | shard 2/2 reproduced RED, GREEN after |
+| apps/api/src/billing/billing.service.ts | service | CI 44209538852 issue 2; OWN-33, OWN-34, OD-50, R03 | An open-ended operator plan (no expiry) answers `support_review` without requesting a review row (OWN-34: custom cycles are never prorated; OD-50: a review needs a paid-through date); a review the database refuses still answers `support_review_unavailable` (R03 kept) | billing-paying open-ended case; retry-and-zero-charge R03 case | reconciliation | fixed | GREEN |
+| apps/api/src/billing/billing-paying.integration.test.ts | test | as above | Open-ended case asserts `support_review`, no review row, no charge, subscription unchanged (stronger than before) | itself | none | no finding | GREEN |
+| packages/db/src/repos/dead-jobs.ts | repo | CI 44211911106 | `recordDeath` returns whether it opened or reopened a record (false for a settled event, an existing record or a non-payment kind) | dead-job-enrolment-settled (2 new RED cases) | over-count of enrolments under overlapping passes | fixed | RED: `expected undefined to be false/true`; GREEN |
+| packages/db/src/repos/jobs.ts | repo | as above | `enrolDeath` returns `recordDeath`'s result, so a pass counts only records it wrote | dead-job-enrolment-dead-letter "overlapping passes" (15/15 repeated runs) | as above | fixed | GREEN |
+| packages/db/src/ops/dead-job-enrolment-settled.integration.test.ts | test | as above | Settled-after-pick case now also asserts `false`; new insert-only-over-existing case | itself | none | no finding | GREEN |

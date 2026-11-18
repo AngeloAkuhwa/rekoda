@@ -39,7 +39,10 @@ description.
 
 Further defects found by the audit and reviews and fixed in this round: G1-1, G2-1, G2-7, G3-1,
 G4a-1, G4b-2, G5-1, G5-4; reviewers' B-1, B-2, A-1, A-3, I1, I7, D-1, D-2, D-4; a date-dependent
-test (`subscription-journey`) and a CI compile failure (run 44203109258). Every Codex finding on
+test (`subscription-journey`), a CI compile failure (run 44203109258), a test-harness key-enrolment
+order dependence (run 44209538852) and an enrolment over-count under overlapping passes (run
+44211911106: two passes could both lock one candidate; the second's insert was a no-op but was
+counted; no duplicate record was ever written). Every Codex finding on
 the PR (0228 settlement kinds, 0213 annual fallback, 0230 actor length) is resolved (review D,
 confirmation table).
 
@@ -98,6 +101,8 @@ confirmation table).
 | A-1 | pack-refund "consumed while the plan was lower"; add-on holding change | at 0239: refunded | 0240 |
 | G5-1 / I7 | deploy-staging-compat "a release carrying only 0228/0230/0235 runs the smoke" | old gate: 6 failures | `1376d7e`, `69d2065` |
 | subscription-journey | the existing journey test at Lagos month-end | expected 1, got undefined | `6cf9d45` |
+| CI 44209538852 (1) | api shard 2/2: billing-grace, meta-consent-trial, meta-purchase-truth-3 after a file that enrolled another key | `KeyFingerprintMismatch` | `df1319d` (harness only) |
+| CI 44211911106 | dead-job-enrolment-settled: insert-only record over an existing one; settled event | `expected undefined to be false` | `91de525` |
 
 No test was skipped, removed or weakened to pass. Three existing assertions were changed because
 they asserted a defect (R03 open-ended plan, G3-1 forged ₦0 charge recorded as paid) or a refusal
