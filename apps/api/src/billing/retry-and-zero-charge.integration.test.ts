@@ -210,6 +210,49 @@ describe('a zero-priced upgrade withdrawn within the wait', () => {
   });
 });
 
+/* R03 (second review of PR #432): when the database refuses to record a support review it was
+ * asked for, the merchant is not told one was started. The refusal is forced by a test trigger
+ * standing in for any fact the database checks that the application did not (a race, a catalogue
+ * gap). An operator-granted half-year cycle is custom (OWN-33, OWN-34), so the upgrade goes to
+ * review. */
+describe('a support review the database refuses', () => {
+  it('is answered support_review_unavailable, recording and changing nothing', async () => {
+    const businessId = await seedBusiness();
+    await setPlanForTest(appDb, {
+      businessId,
+      plan: 'chat',
+      expiresAt: new Date(Date.now() + 120 * DAY),
+      actor: 'operator:test-r03',
+    });
+    const before = await subscription(businessId);
+    await ownerDb.execute(sql`
+      CREATE OR REPLACE FUNCTION public.test_refuse_plan_review() RETURNS trigger
+      LANGUAGE plpgsql AS $$ BEGIN
+        RAISE EXCEPTION 'test: review refused' USING ERRCODE = '22023';
+      END $$`);
+    await ownerDb.execute(sql`
+      CREATE TRIGGER test_refuse_plan_review BEFORE INSERT ON plan_change_reviews
+      FOR EACH ROW EXECUTE FUNCTION public.test_refuse_plan_review()`);
+    try {
+      const service = new BillingService(config as never, appDb);
+      expect(await service.changePlan(businessId, 'complete')).toEqual({
+        state: 'unavailable',
+        reason: 'support_review_unavailable',
+      });
+      const [n] = await ownerDb.execute<{ n: number }>(sql`
+        SELECT count(*)::int AS n FROM plan_change_reviews WHERE business_id = ${businessId}::uuid`);
+      expect(n!.n).toBe(0);
+      expect(await chargesOf(businessId)).toEqual([]);
+      expect(await subscription(businessId)).toEqual(before);
+    } finally {
+      await ownerDb.execute(
+        sql`DROP TRIGGER IF EXISTS test_refuse_plan_review ON plan_change_reviews`,
+      );
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS public.test_refuse_plan_review()`);
+    }
+  });
+});
+
 describe('free upgrades repeat', () => {
   it('two businesses can each switch free (the provider reference is unique per charge)', async () => {
     const a = await seedBusiness();

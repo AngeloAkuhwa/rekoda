@@ -209,44 +209,6 @@ describe('paying, and the gate in front of it', () => {
     expect(after).toEqual(before);
   });
 
-  /* R03 (second review of #432): when the database refuses to record the review, the merchant is
-   * not told a support review was started. The refusal is forced by a test trigger standing in for
-   * any fact the database checks that the application did not (a race, a catalogue gap). */
-  it('a review the database refuses is not answered as a support review', async () => {
-    const { businessId } = await onboard('+2348177100081');
-    const now = new Date();
-    await putOnPlan(
-      businessId,
-      'chat',
-      new Date(now.getTime() - 182 * 86_400_000),
-      new Date(now.getTime() + 183 * 86_400_000),
-    );
-    await ownerDb.execute(sql`
-      CREATE OR REPLACE FUNCTION public.test_refuse_plan_review() RETURNS trigger
-      LANGUAGE plpgsql AS $$ BEGIN
-        RAISE EXCEPTION 'test: review refused' USING ERRCODE = '22023';
-      END $$`);
-    await ownerDb.execute(sql`
-      CREATE TRIGGER test_refuse_plan_review BEFORE INSERT ON plan_change_reviews
-      FOR EACH ROW EXECUTE FUNCTION public.test_refuse_plan_review()`);
-    try {
-      const answer = await confirmedBilling().changePlan(businessId, 'complete', now);
-      expect(answer).toEqual({ state: 'unavailable', reason: 'support_review_unavailable' });
-      const [n] = await ownerDb.execute<{ n: number }>(sql`
-        SELECT count(*)::int AS n FROM plan_change_reviews WHERE business_id = ${businessId}::uuid`);
-      expect(n!.n).toBe(0);
-      const charges = await withBusiness(db, businessId, (tx) =>
-        subscriptionsRepo.chargesFor(tx, businessId),
-      );
-      expect(charges.count).toBe(0);
-    } finally {
-      await ownerDb.execute(
-        sql`DROP TRIGGER IF EXISTS test_refuse_plan_review ON plan_change_reviews`,
-      );
-      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS public.test_refuse_plan_review()`);
-    }
-  });
-
   it('treats a dated plan with no recorded cycle start as custom, not prorated (OWN-33)', async () => {
     const { businessId } = await onboard('+2348177100098');
     const now = new Date();
@@ -274,15 +236,18 @@ describe('paying, and the gate in front of it', () => {
       expiresAt: null,
       actor: 'operator:test-g115',
     });
+    const before = await withBusiness(db, businessId, (tx) =>
+      subscriptionsRepo.subscriptionFor(tx, businessId),
+    );
 
     const billing = confirmedBilling();
     const quote = await billing.quote(businessId, 'complete', new Date());
     expect(quote.supportReview).toBe(true);
     const answer = await billing.changePlan(businessId, 'complete', new Date());
-    /* R03 (second review of #432): an open-ended plan has no paid-through date to keep, so the
-     * database records no support review (0213). The answer used to be `support_review`, telling
-     * the merchant our team had their upgrade when nothing was recorded; it is now the truth. */
-    expect(answer).toEqual({ state: 'unavailable', reason: 'support_review_unavailable' });
+    /* OWN-34: a cycle with a missing expiry answers support_review, with no charge and no change.
+     * OD-50 records a review only against a paid-through date (0213), so none exists here, and the
+     * answer claims none (R03): the copy asks the merchant to contact us. */
+    expect(answer).toEqual({ state: 'unavailable', reason: 'support_review' });
     const [reviews] = await ownerDb.execute<{ n: number }>(sql`
       SELECT count(*)::int AS n FROM plan_change_reviews WHERE business_id = ${businessId}::uuid`);
     expect(reviews!.n).toBe(0);
@@ -290,6 +255,10 @@ describe('paying, and the gate in front of it', () => {
       subscriptionsRepo.chargesFor(tx, businessId),
     );
     expect(charges.count).toBe(0);
+    const after = await withBusiness(db, businessId, (tx) =>
+      subscriptionsRepo.subscriptionFor(tx, businessId),
+    );
+    expect(after).toEqual(before);
   });
 
   describe('an operator-defined arrangement is never prorated, whatever its length (OWN-33 Option B)', () => {

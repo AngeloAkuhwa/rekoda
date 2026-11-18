@@ -417,9 +417,17 @@ export class BillingService {
       /* OWN-33 (G-115): an operator arrangement that is not a standard monthly
        * cycle is never prorated automatically. No charge is opened and no plan changes. */
       if (charge.kind === 'upgrade' && isCustomCycle(subscription)) {
+        /* OWN-34: a cycle with no paid-through date (an open-ended legacy plan) answers
+         * support_review: no charge, no change, the merchant is asked to message us. OD-50 records
+         * a review only against a paid-through date to keep (0213), so none can exist here and none
+         * is attempted; the answer claims none (the copy asks the merchant to contact us, and the
+         * billing page shows no pending review). */
+        if (!subscription?.planExpiresAt) {
+          return { state: 'unavailable' as const, reason: 'support_review' as const };
+        }
         /* OD-50 (0213): the request is recorded, so an operator can resolve exactly this upgrade
          * with the paid-through date kept. The database checks the facts itself; a request it
-         * refuses (nothing to review) records nothing. No charge, no plan change. */
+         * refuses records nothing. No charge, no plan change. */
         const reviewId = await subscriptionsRepo.requestPlanReview(tx, businessId, to);
         /* R03: the merchant is told a review was started only when one exists. A refusal (the
          * database's own facts disagree with ours: a race, a catalogue gap) records nothing, and
