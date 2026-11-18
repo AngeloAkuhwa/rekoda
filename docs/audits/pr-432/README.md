@@ -22,6 +22,7 @@ description.
 | `final-review-e-closeout.md`                                                | The final closeout review of 18 Nov 2026 on `0b4956a`: five independent read-only reviews (audit coverage, database security, financial, release engineering, owner decisions), the findings, the fixes in `692fbb5` (0241) and the exact-head verification                                                    |
 | `final-closeout-f.md`                                                       | Closeout round F (owner instructions of 18 Nov 2026): the branch reconciliation, S-1 (0242), E-F4, F-2, F-3 (forced interleavings, not reproducible), the exact actor smoke, E-F1 and E-F5 to E-F10, RED evidence                                                                                              |
 | `final-closeout-g.md`                                                       | Closeout round G (owner instruction of 18 Nov 2026): natural expiry during a pack refund (0244), the pool's runtime proof, connection budget and lane cap, two three-connection paths, Qodo 12 and 13 (0245), every Qodo finding dispositioned, the exact-head verification and the round's independent review |
+| `pre-merge-host-evidence.md`                                                | Owner-reported staging host checks P1 to P12 and decisions OWN-96 (18 Nov 2026): P1 skipped, P2 not rescaled, P7 off-box drill PASS; outstanding evidence; what must be verified before deployment approval; workstreams G-126 to G-133                                                                        |
 | `owner-decisions-od53-56.md`                                                | The OD-53 to OD-56 decision paper; the implementation sequence is `docs/plans/paid-launch-plan.md`                                                                                                                                                                                                             |
 
 ## 2. The owner's findings R01 to R18: dispositions
@@ -54,6 +55,8 @@ confirmation table).
 
 - **P12**: the merge itself, on the exact head you review. P12 is not acceptance of ADR 0035
   Amendment 6.
+- **Deployment approval** of the first Deploy staging run (P11 gate, OWN-96): held until P9a, the obsolete-setting
+  removal, the backup evidence and the image check in `pre-merge-host-evidence.md` §5 are verified.
 - **ADR 0035 Amendment 6 for paid production.** Decided for isolated test-mode staging only
   (OWN-95, 18 Nov 2026); paid-production acceptance is still the owner's open decision.
 - **OD-53** (1) refund authority, (2) merchant wording for a duplicate payment, (3) the seven-day

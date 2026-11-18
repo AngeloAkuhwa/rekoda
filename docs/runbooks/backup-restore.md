@@ -28,6 +28,13 @@ Corollary: **losing VAULT_KEY loses the vault.** The key custody procedure
 
 ## Backup scripts (G-02, CODE COMPLETE 22 Oct 2026; NOT enabled anywhere)
 
+**Staging, 18 Nov 2026 (owner-reported, OWN-96):** enabled on the staging host only. Destination: the private R2
+bucket `rekoda-staging-backups`, with dedicated backup credentials, a 30-day bucket lock, 90-day lifecycle retention and
+1-day incomplete-multipart cleanup. The nightly timer runs at 01:00 UTC. The first off-box drill passed (drill log).
+**Outstanding:** the first unattended nightly run, the restored copy's migration count, and off-server custody of the
+passphrase and `VAULT_KEY` (`docs/audits/pr-432/pre-merge-host-evidence.md` §3). Production: not enabled; no production
+host. PITR (OD-7) is G-131. Backup alerts are G-130.
+
 `scripts/backup-db.sh` takes a `pg_dump -Fc`, encrypts it (AES-256, PBKDF2,
 passphrase from `BACKUP_PASSPHRASE_FILE`), writes a `.sha256`, uploads to
 `BACKUP_DEST` (a mounted off-box directory or `s3://bucket/prefix`, with
@@ -209,7 +216,8 @@ against production. A green build is a passed run of that integration test only;
 
 ## Drill log
 
-| Date                                                     | Dump                      | Duration | Result | Operator            |
-| -------------------------------------------------------- | ------------------------- | -------- | ------ | ------------------- |
-| Continuous                                               | CI, per push (§32-shaped) | ~6s      | PASS   | recovery-drill test |
-| _(first off-box drill due before first paying merchant)_ |                           |          |        |                     |
+| Date                                                                | Dump                                                                                                                                                      | Duration                  | Result | Operator            |
+| ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- | ------ | ------------------- |
+| Continuous                                                          | CI, per push (§32-shaped)                                                                                                                                 | ~6s                       | PASS   | recovery-drill test |
+| 18 Nov 2026 (staging, release `staging-58e6834`, off-box R2)        | `rekoda-20261118T223639Z-1783012.dump.enc`, 746800 bytes; 1 business, 77 ledger entries, 15 invoices, 0 unbalanced; restored migration count NOT RECORDED | restore 14s (backup ~12s) | PASS   | owner (OWN-96)      |
+| _(first production off-box drill due before first paying merchant)_ |                                                                                                                                                           |                           |        |                     |
