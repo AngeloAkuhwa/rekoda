@@ -642,7 +642,7 @@ worker or the api. Step 1 below describes the release that carried 0209.
 
 Rollback past these migrations is a backup restore (G-02), as for 0196 to 0206 (OWN-86).
 
-### Deploy a release carrying 0213 to 0240 (support-review upgrade, pack purchase identity, pricing source, usage meter boundary, settlement and operator processes, reservation closure; 0227 to 0230: the paid-launch gate, the worker's payload isolation, enrolment dead letters, refunds through the operator; 0231 to 0237: settlement reads only its own kinds' payloads, support-review pricing as the resolver, the operator actor contract, live-or-dying payloads only, one record per provider refund, the enrolment cursor, settlement's vault-key check; 0238 to 0240: the worker's job transitions, operator-actor columns, the pack allowance history)
+### Deploy a release carrying 0213 to 0240 (support-review upgrade, pack purchase identity, pricing source, usage meter boundary, settlement and operator processes, reservation closure; 0227 to 0230: the paid-launch gate, the worker's payload isolation, enrolment dead letters, refunds through the operator; 0231 to 0237: settlement reads only its own kinds' payloads, support-review pricing as the resolver, the operator actor contract, live-or-dying payloads only, one record per provider refund, the enrolment cursor, settlement's vault-key check; 0238 to 0240: the worker's job transitions, operator-actor columns, the pack allowance history; 0241: the worker guard by privilege and a trial's expiry in the allowance history)
 
 0216, 0217, 0218, 0220, 0221, 0228, 0230 and 0235 are compatibility breaks: the previous release writes
 `usage_counters` directly, which no runtime role may do afterwards, and settles charges in the worker
@@ -651,7 +651,7 @@ API refund route (refunds are recorded by the operator process alone); 0235 chan
 function's signature (a sixth argument, the provider refund id). Deploy with every writing process
 stopped; `scripts/deploy-staging.sh` lists them (`COMPAT_BREAKING_MIGRATIONS`), stops `api`,
 `worker`, `operator` and `settlement`, and enforces the order. 0213 to 0215, 0219, 0222 to 0227,
-0229, 0231 to 0234 and 0236 to 0240 are additive and ship in the same stopped release. Rollback past
+0229, 0231 to 0234 and 0236 to 0241 are additive and ship in the same stopped release. Rollback past
 0216 is a backup restore (G-02).
 
 This release starts two more services. Before deploying:
@@ -725,13 +725,16 @@ This release starts two more services. Before deploying:
    - `review_plan_price` carries the annual monthly x 10 fallback and `open_plan_price` is gone
      (0232);
    - settlement may read `key_fingerprints` and may not write them (0237);
-   - the worker's transition guard `jobs_worker_transition_guard` is present and enabled, and lets
-     the worker move a job only pending -> running, running -> done, pending or dead, and dead ->
-     pending for `payment.process` and `billing.process` (0238);
-   - the seven operator-actor CHECK constraints exist (0239);
-   - the two allowance-change triggers are enabled, the refund function reads
-     `business_allowance_changes`, the application cannot insert its rows and settlement cannot delete them (0240);
-   - the ledger carries 40 tags, 0196 to 0240 (the list in `SMOKE_0196_SQL`).
+   - the worker's transition guard `jobs_worker_transition_guard` is present and enabled, applies to
+     any role holding the worker's privileges (not only a role named `rekoda_worker`), and lets the
+     worker move a job only pending -> running and running -> done, pending or dead; it never moves a
+     dead job (0238, 0241);
+   - the seven operator-actor CHECK constraints exist with the reviewed actor rule in their
+     definitions, not only their names (0239; checked by definition since 0241);
+   - the two allowance-change triggers are enabled, the businesses trigger also records a trial's
+     expiry change, the history time never moves backwards, the refund function reads
+     `business_allowance_changes`, the application cannot insert its rows and settlement cannot delete them (0240, 0241);
+   - the ledger carries 41 tags, 0196 to 0241 (the list in `SMOKE_0196_SQL`).
 
    Re-running an earlier migration by hand after a later one (for example 0228, 0229 or 0230 after
    0231 to 0236) puts back its weaker definitions, whatever its header says about re-running; the

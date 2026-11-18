@@ -154,7 +154,9 @@ describe('R10: retention deletes every PR #432 tenant table, and only the target
   it('the list above is every table with a business id created since main (0193 onwards)', async () => {
     const dir = new URL('../../migrations/', import.meta.url);
     const created = new Set<string>();
-    for (const file of readdirSync(dir).filter((f) => /^\d{4}_.*\.sql$/.test(f)).sort()) {
+    for (const file of readdirSync(dir)
+      .filter((f) => /^\d{4}_.*\.sql$/.test(f))
+      .sort()) {
       if (Number(file.slice(0, 4)) < 193) continue;
       const text = readFileSync(new URL(file, dir), 'utf8');
       for (const m of text.matchAll(

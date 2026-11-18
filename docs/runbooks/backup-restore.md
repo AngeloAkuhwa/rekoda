@@ -172,7 +172,18 @@ switch the application over; do not restore over a database you may still need.
 
 Same as the drill against the production server, plus: stop the app first
 (`docker compose --env-file .env -f docker-compose.prod.yml stop api worker web operator settlement`), restore,
-run integrity checks, put back the application release the backup was taken under (its checkout and its
+run integrity checks, re-apply the database-level revokes 0109 made (`pg_restore` without `--create`
+does not carry database ACLs into a new database, so they are lost by a restore into a fresh
+`rekoda`; final review of PR #432, E-F5):
+
+```sh
+docker compose --env-file .env -f docker-compose.prod.yml exec -T postgres psql -U rekoda_owner -d rekoda \
+  -c 'REVOKE TEMPORARY ON DATABASE rekoda FROM PUBLIC' \
+  -c 'REVOKE TEMPORARY ON DATABASE rekoda FROM rekoda_app' \
+  -c 'REVOKE TEMPORARY ON DATABASE rekoda FROM rekoda_worker'
+```
+
+then put back the application release the backup was taken under (its checkout and its
 `REKODA_RELEASE` in `.env`; `deploy.md`, "Roll back"), start, then
 verify webhooks re-deliver (Meta and Paystack both retry) — idempotency
 keys make replays safe.

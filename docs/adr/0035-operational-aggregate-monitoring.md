@@ -364,7 +364,12 @@ other's enrolment. Since migration 0225:
    enforces is exactly: (a) no SELECT on `jobs.payload` for the worker, so a statement naming the
    column, the whole row or a filter on it is refused; (b) `job_payload` checks the pin at each
    call; (c) only running or dying jobs are readable; (d) the worker moves a job only through its
-   own transitions (0238). It does **not** refuse a bulk or a
+   own transitions (0238; since 0241 the guard applies to any role holding the worker's
+   privileges that is not the table owner, not only to a role named `rekoda_worker`, so a role
+   that merely inherits the worker cannot skip it). Settlement is not under that guard: it holds
+   UPDATE on `jobs.state` for its own two kinds and can move a done or dead `billing.process` job
+   back to pending and re-run it without an operator, gaining no payload it could not already read
+   (stated, not fixed; OD-54). It does **not** refuse a bulk or a
    cross-tenant read through the function: under one pin, one statement reads every running or
    dying payload of that business, and a statement that re-pins per row with
    `set_config('app.business_id', ..., true)` reads every tenant's running or dying payloads (both

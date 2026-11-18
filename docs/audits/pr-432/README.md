@@ -5,7 +5,7 @@ APPROVED. ADR 0035 Amendment 6 NOT ACCEPTED.** Nothing in this folder authorises
 deploy.
 
 Reviewed head before this round: `095ff625cf35c5bb15883a27b30796bfe5e33f09` (394 files, 180
-commits, +46,258 / -3,555). The final head and its CI run are recorded in §7 and in the PR
+commits, +46,258 / -3,555). The final head and its CI run are recorded in `final-review-e-closeout.md` and in the PR
 description.
 
 ## 1. Contents of this folder
@@ -13,12 +13,13 @@ description.
 | File | What it is |
 | --- | --- |
 | `manifest-g1-migrations.md` ... `manifest-g6-docs.md` | One row per changed file at `095ff62` (394 files in seven groups): category, requirements, implications, tests, findings, disposition, evidence |
-| `manifest-remediation-delta.md` | One row per code and test file the remediation changed after `095ff62` (two rounds) |
+| `manifest-remediation-delta.md` | One row per code and test file the remediation changed after `095ff62` (four rounds; the fourth is the final review of 18 Nov 2026) |
 | `commit-register.md` | One row per commit `58e6834..095ff62` (180), with migration amendments, test weakening checks and reconciliation |
 | `commit-register-remediation.md` | One row per commit after `095ff62` (numbered 181 onward) |
 | `documentation-audit.md` | The documentation audit: every canonical document, runbook and ADR traced to code, and 18 numbered corrections |
 | `final-review-a-financial.md`, `-b-security.md`, `-c-runtime-tests-docs.md` | Independent read-only reviews of the first remediation round, by risk domain |
 | `final-review-d-fresh.md` | A fresh independent review of the final implementation, with a confirmation table for every earlier finding |
+| `final-review-e-closeout.md` | The final closeout review of 18 Nov 2026 on `0b4956a`: five independent read-only reviews (audit coverage, database security, financial, release engineering, owner decisions), the findings, the fixes in `692fbb5` (0241) and the exact-head verification |
 
 ## 2. The owner's findings R01 to R18: dispositions
 
@@ -71,10 +72,15 @@ confirmation table).
 - Under the `constants` pricing source the support-review functions read the catalogue (seeded
   with the same figures).
 - MINORs deferred with reasons in the OD-41 row of `REKODA_LAUNCH_READINESS.md` (among them G3-4:
-  no merchant notice after the wait when a zero-priced upgrade is withdrawn later; B-6: the
-  retention list guard is circular; D-5: the smoke checks the 0239 constraints exist, not their
-  patterns).
-- Databases that applied earlier drafts of PR #432 migrations must be rebuilt (CR-1).
+  no merchant notice after the wait when a zero-priced upgrade is withdrawn later, and the billing
+  page's "switching your plan on now" strip that persists after it; E-F4: no alert for a reclaimed
+  job whose death cannot be recorded). B-6 (the circular retention list guard) and D-5 (the smoke
+  checked the 0239 constraints by name only) were fixed in the final review (`692fbb5`).
+- Databases that applied earlier drafts of PR #432 migrations must be rebuilt (CR-1). The runner
+  records tags, not content hashes, so a draft is not detected; besides the drafts listed earlier,
+  0238 (4d2df58 had a dead->pending branch) and 0239 (ebb8d79 refused `system:` actors on
+  `staging_tool_actions`) were edited after first commit, and only the 0238 draft is caught by the
+  pre-start smoke.
 - Verification limits: no Docker deployment smoke, no Playwright and no backup/restore drill were
   run in this environment; those ran in CI (Deployment (Docker), End-to-end, the scripts' backup
   tests) and on staging only after deploy. No live Paystack, Meta or Resend call was made.
@@ -85,7 +91,7 @@ confirmation table).
 | --- | --- | --- | --- |
 | R01 | job-payload-isolation "ATTACK: settlement cannot read a merchant-message job's payload" | at 0230: allowed | 0231 |
 | R02 | support-review-pricing (annual fallback; grandfathered) | at 0231: 22023 not an upgrade | 0232 |
-| R03 | retry-and-zero-charge "a review the database refuses is not answered as a support review" (moved from billing-paying in `39ad27d`) | `support_review` | `bab4045` |
+| R03 | retry-and-zero-charge "a support review the database refuses" > "is answered support_review_unavailable, recording and changing nothing" (moved from billing-paying in `39ad27d`) | `support_review` | `bab4045` |
 | R05 | dead-job-enrolment-dead-letter "accepts a 255-character operator subject" | at 0232: refused | 0233 |
 | R07 | job-payload-isolation "returns no payload for a pending, done or non-payment dead job" | at 0233: returned | 0234 |
 | R06 | probe on 0234: one 300,000 refund recorded twice | 600,000 recorded | 0235 |
@@ -103,6 +109,16 @@ confirmation table).
 | subscription-journey | the existing journey test at Lagos month-end | expected 1, got undefined | `6cf9d45` |
 | CI 44209538852 (1) | api shard 2/2: billing-grace, meta-consent-trial, meta-purchase-truth-3 after a file that enrolled another key | `KeyFingerprintMismatch` | `df1319d` (harness only) |
 | CI 44211911106 | dead-job-enrolment-settled: insert-only record over an existing one; settled event | `expected undefined to be false` | `91de525` |
+| E-1 (final review) | job-payload-isolation "ATTACK: a role inheriting rekoda_worker cannot revive a done job to read its payload" | at 0240: `revived and read: {"secret":"inherited-history-secret"}` | 0241 (`692fbb5`) |
+| E-2 (final review, F-1) | pack-refund "a pack consumed while a trial read expired is not unused after the expiry returns" | at 0240: refund resolved `refunded` | 0241 (`692fbb5`) |
+
+D-1, D-2 and D-4 have no dedicated RED row: D-1 (0239's `staging_tool_actions` rule refusing
+`system:send`) is covered by the existing api staging-tools fault-consumption test and the
+operator-actor-columns `system:` cases, which were not shown failing first in a recorded run; D-2
+(ops-health staged as the owner) and D-4 (0238's dead->pending branch removed) changed test
+arrangements and an existing assertion, not production behaviour that a new test could fail on.
+The statement "every fix has a test shown failing first" is therefore true of every row above and
+not of D-1, D-2 and D-4.
 
 No test was skipped, removed or weakened to pass. Two existing assertions were changed because
 they asserted a defect (G3-1 forged ₦0 charge recorded as paid) or a refusal now made earlier by a
@@ -118,15 +134,9 @@ ADR 0035 (Amendment 6, still PROPOSED), ADR 0034 (cross-reference), the RLS exem
 `TEST_MAP.md`, `plans/PR-B-plan.md`, runbooks (deploy, staging-first-deploy-pr-b, staging-acceptance-handoff,
 billing-duplicate-payments, incident, backup-restore, README), `CLAUDE.md` (two factual lines), `README.md`.
 
-## 7. Final verification (local, Node 24.22.3, PostgreSQL 16, fresh database migrated 0000 to 0240, 241 migrations)
+## 7. Final verification
 
-| Check | Result |
-| --- | --- |
-| `pnpm install --frozen-lockfile` | ok |
-| `pnpm turbo typecheck lint test build --force` (at `738d8cb`) | 24/24 tasks |
-| Architectural guards: boundaries, openapi, retired-claims, staging-deploy, ui-copy, env-example, deploy, node-version | all OK |
-| `node --test scripts/*.test.mjs` | 454/454, 0 skipped |
-| db integration, full, serial (at `083b8e1`, fresh database) | 2241/2241 (165 files) |
-| api integration, full, serial (at `738d8cb`; later commits change no api code) | 2808/2808 (188 files) |
-| Deploy smoke SQL (both suites), upgrade from main 0192 to 0240, re-run of 0231 to 0240 | included in db integration; GREEN |
-| Foreign-owner migrations, Docker deployment, Playwright, gitleaks | CI on the final head |
+The final verification is recorded in `final-review-e-closeout.md` §6, on the exact head it names.
+The local runs this section previously listed (turbo at `738d8cb`, db at `083b8e1`, api at
+`738d8cb`) are history: `39ad27d`, `df1319d` and `91de525` changed api and db code after them, and
+the final review's run supersedes them.

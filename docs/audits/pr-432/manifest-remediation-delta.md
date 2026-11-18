@@ -98,3 +98,39 @@ already in the table above appear again only where this round changed them.
 | packages/db/src/repos/dead-jobs.ts | repo | CI 44211911106 | `recordDeath` returns whether it opened or reopened a record (false for a settled event, an existing record or a non-payment kind) | dead-job-enrolment-settled (2 new RED cases) | over-count of enrolments under overlapping passes | fixed | RED: `expected undefined to be false/true`; GREEN |
 | packages/db/src/repos/jobs.ts | repo | as above | `enrolDeath` returns `recordDeath`'s result, so a pass counts only records it wrote | dead-job-enrolment-dead-letter "overlapping passes" (15/15 repeated runs) | as above | fixed | GREEN |
 | packages/db/src/ops/dead-job-enrolment-settled.integration.test.ts | test | as above | Settled-after-pick case now also asserts `false`; new insert-only-over-existing case | itself | none | no finding | GREEN |
+
+## Fourth round (final closeout review, 18 Nov 2026; `0b4956a` -> `692fbb5`)
+
+This round also closes the gaps the final review's coverage audit found in the rounds above.
+
+**Backfilled rows** (files changed after `095ff62` that had no row):
+
+| File | Category | Requirement | Implication | Tests | Finding | Disposition | Evidence |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| apps/api/src/auth/operator-plane.test.ts | unit test | `5d901dc` | Operator-plane route and scope assertions | itself | none | no finding | api unit 1146/1146 |
+| packages/db/src/billing/plan-fields-guard.integration.test.ts | test | `1af146b` | Plan-field guard cases | itself | none | no finding | db integration GREEN |
+| packages/db/src/billing/subscription-journey.integration.test.ts | test | `6cf9d45` | Lagos month-end journey (cited in README §5) | itself | none | no finding | db integration GREEN |
+| packages/db/src/ops/deploy-smoke-sql.fixtures.ts | test harness | `95d4479` | Shared smoke harness (`smokeAfter`, `migrationText`) | both smoke suites | none | no finding | GREEN |
+| packages/db/src/ops/ops-health.integration.test.ts | test | `40a25fb` (D-2) | Staged as the owner | itself | D-2 | fixed | GREEN |
+| scripts/lib/job-payload-reads.mjs | script library | `1af146b` | The boundary rule's list of payload reads | scripts 454/454 | none | no finding | OK |
+
+**Corrections:** `packages/db/src/ops/dead-job-exceptions.integration.test.ts` has a net-zero diff over
+the PR (changed in `5a905a2`, moved out in `95d4479`); its row is history. The second-round 0238
+row ("dead->pending (payment/billing only)") is **superseded** by `738d8cb` (D-4: 0238 has no
+dead->pending branch) and by 0241 below. `40a25fb` (0239 `staging_tool_actions` widened to
+`operator_or_system`; ops-health) and `083b8e1` (settlement-isolation) are recorded in the commit
+register.
+
+**This round's files:**
+
+| File | Category | Requirement | Implication | Tests | Finding | Disposition | Evidence |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| packages/db/migrations/0241_final_review_guards.sql | migration (new, additive) | E-1; E-2 (F-1); F-4 | Worker guard by `pg_has_role` with owner exemption; trial `plan_expires_at` change recorded in `business_allowance_changes`; history time never moves backwards | job-payload-isolation; pack-refund; both smoke suites | E-1 IMPORTANT; F-1, F-4 MINOR | fixed | RED then GREEN (README §5) |
+| packages/db/migrations/meta/_journal.json | journal | 0241 | One entry appended (idx 241) | migration-journal-order | none | no finding | GREEN |
+| scripts/deploy-staging.sh | deploy script | 0241; D-5 | Ledger 41 tags; guard text by privilege; trigger and history definitions; actor constraints checked by definition | deploy-smoke-sql suites; scripts tests | D-5 | fixed | smoke `t` on a migrated database; `f` for each tamper |
+| packages/db/src/ops/deploy-smoke-sql-second-review.integration.test.ts | test | 0241; D-5 | Tampers: guard back at 0238, trigger back at 0240, history function back at 0240, actor check loosened under its name, 0241 missing from the ledger | itself | none | no finding | GREEN |
+| packages/db/src/ops/job-payload-isolation.integration.test.ts | test | E-1 | ATTACK: a role inheriting `rekoda_worker` | itself | E-1 | fixed | RED at 0240, GREEN at 0241 |
+| packages/db/src/billing/pack-refund.integration.test.ts | test | E-2 (F-1) | Trial expiry moved past and back | itself | F-1 | fixed | RED at 0240, GREEN at 0241 |
+| packages/db/src/billing/settlement-isolation.integration.test.ts | test | 0241 | Error text "(0238, 0241)" | itself | none | no finding (retargeted, not weakened) | GREEN |
+| packages/db/src/ops/upgrade-od51.integration.test.ts, upgrade-from-main.integration.test.ts | tests | 0241 | Through 0241; the re-run ends on 0241 | themselves | none | no finding | GREEN |
+| packages/db/src/privacy/retention-pr432-tables.integration.test.ts | test | B-6 / F3 | Candidates derived from `CREATE TABLE` in migrations 0193 onwards | itself | B-6 | fixed | GREEN; a mutant missing one table fails |
