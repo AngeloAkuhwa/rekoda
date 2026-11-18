@@ -351,6 +351,31 @@ const SEEDED_TABLES = [
  * If it ever is not, `SET session_replication_role` raises rather than
  * silently leaving the guards on: a loud failure, not a quiet half-teardown.
  */
+/**
+ * Start a test FILE with no enrolled key fingerprint (0120), as a fresh deployment does.
+ *
+ * Processes enrol `VAULT_KEY` and `MATCH_KEY` on their first boot and refuse a different key after
+ * (`bootChecks.assertKeyUnchanged`). Each integration file is its own "deployment" with its own
+ * random keys, and boots its app in `beforeAll`, BEFORE its first `truncateAll`. So whatever a
+ * previous file left enrolled decided whether the next one booted: a file that enrolled after its
+ * last truncate (the settlement suite since 0237, enrolling as the API would) made the next file
+ * fail with KeyFingerprintMismatch, in an order-dependent way. Run once per file, before the file's
+ * own hooks (`apps/api/src/integration-setup.ts`). Test databases only; the production check is
+ * unchanged.
+ */
+export async function resetKeyEnrolment(): Promise<void> {
+  /* The owner URL captured at load: a previous file in this worker may have pointed DATABASE_URL
+   * at the application role, which may not delete an enrolled fingerprint (0120). */
+  const owner = OWNER_URL_AT_LOAD;
+  if (!owner) throw new Error('resetKeyEnrolment needs DATABASE_URL (the owner) at load');
+  const sql = postgres(owner, { max: 1, onnotice: () => {} });
+  try {
+    await sql.unsafe(`DELETE FROM key_fingerprints`);
+  } finally {
+    await sql.end();
+  }
+}
+
 export async function truncateAll(urls: Urls): Promise<void> {
   const sql = postgres(urls.owner, { max: 1, onnotice: () => {} });
   try {
