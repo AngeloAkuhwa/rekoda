@@ -192,7 +192,8 @@ describe('0228: the worker reads no payload across tenants', () => {
         ),
       ).toMatch(/^42501 .*only through its own transitions/);
     }
-    /* A dead payment job may still be requeued (recovery), and a pending job claimed. */
+    /* Not a dead payment job either: recovery requeues on the application credential, never the
+     * worker's, so the worker cannot re-run a dead payment job without an operator (D-4). */
     const [payment] = await ownerDb.execute<{ id: string }>(sql`
       INSERT INTO jobs (business_id, kind, payload, state)
       VALUES (${a}::uuid, 'payment.process', '{"eventId": null}'::jsonb, 'dead') RETURNING id`);
@@ -200,7 +201,7 @@ describe('0228: the worker reads no payload across tenants', () => {
       await outcome(
         workerDb.execute(sql`UPDATE jobs SET state = 'pending' WHERE id = ${payment!.id}::uuid`),
       ),
-    ).toBe('allowed');
+    ).toMatch(/^42501 .*only through its own transitions/);
   });
 
   it('RESIDUAL: under one pin, one statement reads every payload of that business', async () => {

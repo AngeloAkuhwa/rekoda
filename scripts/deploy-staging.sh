@@ -253,7 +253,9 @@ SMOKE_0196_SQL="SELECT
   AND (SELECT t.tgenabled IN ('O', 'A') FROM pg_trigger t
         WHERE t.tgname = 'jobs_worker_transition_guard' AND t.tgrelid = 'public.jobs'::regclass)
   AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('rekoda_private.jobs_worker_transition_guard()'))
-        LIKE '%current_user <> ''rekoda_worker''%OLD.state = ''pending'' AND NEW.state = ''running''%OLD.kind IN (''payment.process'', ''billing.process'')%'
+        LIKE '%current_user <> ''rekoda_worker''%OLD.state = ''pending'' AND NEW.state = ''running''%OLD.state = ''running'' AND NEW.state IN (''done'', ''pending'', ''dead'')%'
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('rekoda_private.jobs_worker_transition_guard()'))
+        NOT LIKE '%OLD.state = ''dead''%'
   AND (SELECT count(*) FROM pg_constraint WHERE convalidated IS NOT NULL AND conname IN (
         'dead_job_exceptions_recovery_requested_by_actor', 'dead_job_exceptions_closed_by_actor',
         'subscription_charges_blocked_resolved_by_actor', 'subscription_charges_unapplied_resolved_by_actor',

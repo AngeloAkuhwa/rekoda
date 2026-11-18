@@ -355,9 +355,9 @@ other's enrolment. Since migration 0225:
    job's history are not returned to any caller. That last property holds only since 0238: before
    it the worker could set a finished job back to `running`, read it and roll back. Since 0238 a
    `BEFORE UPDATE` trigger (`jobs_worker_transition_guard`) lets the worker change `state` only
-   `pending -> running`, `running -> done | pending | dead` and `dead -> pending` (for
-   `payment.process` and `billing.process` only), so it cannot revive a done job, or a dead job of
-   any other kind, to read its payload. Settlement does not execute the function (0231):
+   `pending -> running` and `running -> done | pending | dead` (an operator's recovery requeues a
+   dead job on the application credential), so it cannot revive a done or dead job to read its
+   payload, nor re-run a dead payment job without an operator. Settlement does not execute the function (0231):
    it reads a payload only through its own SELECT on `jobs`, which 0217's restrictive policy
    `settlement_only_its_kinds` limits to `billing.process` and `billing.apply_no_charge`
    (`jobsRepo` `pinnedPayload` chooses the path by `has_function_privilege`). What the database

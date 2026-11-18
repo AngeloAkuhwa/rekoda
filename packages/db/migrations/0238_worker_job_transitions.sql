@@ -11,8 +11,10 @@
 -- Since 0238 a BEFORE UPDATE trigger refuses the worker any change of `state` other than:
 --   pending -> running                 the claim
 --   running -> done | pending | dead   completion, retry, deferral, reclaim, death
---   dead    -> pending                 only for payment.process and billing.process (recovery)
--- A completed job, and a dead job of any other kind, can no longer be moved by the worker at all,
+-- (An operator's recovery requeues a dead job on the APPLICATION credential, under its own pin,
+-- `deadJobsRepo.beginRecovery`; the worker never moves a dead job.) A completed or dead job can
+-- no longer be moved by the worker at all, so a holder of its credential can neither read such a
+-- job's payload nor re-run a dead payment job without an operator,
 -- so their payloads stay unreadable to it. What remains (stated in ADR 0035 Amendment 6): the
 -- worker can still claim a PENDING job of any tenant and read its payload, because running every
 -- tenant's pending work is its job.
@@ -29,9 +31,7 @@ BEGIN
     RETURN NEW;
   END IF;
   IF (OLD.state = 'pending' AND NEW.state = 'running')
-     OR (OLD.state = 'running' AND NEW.state IN ('done', 'pending', 'dead'))
-     OR (OLD.state = 'dead' AND NEW.state = 'pending'
-         AND OLD.kind IN ('payment.process', 'billing.process')) THEN
+     OR (OLD.state = 'running' AND NEW.state IN ('done', 'pending', 'dead')) THEN
     RETURN NEW;
   END IF;
   RAISE EXCEPTION 'the worker moves a job only through its own transitions (0238): % to % is refused',
