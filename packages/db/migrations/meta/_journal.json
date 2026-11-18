@@ -1674,6 +1674,13 @@
       "when": 1796904000015,
       "tag": "0238_worker_job_transitions",
       "breakpoints": true
+    },
+    {
+      "idx": 239,
+      "version": "7",
+      "when": 1796904000016,
+      "tag": "0239_operator_actor_columns",
+      "breakpoints": true
     }
   ]
 }
