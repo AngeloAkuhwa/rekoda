@@ -170,6 +170,39 @@ describe('0228: the worker reads no payload across tenants', () => {
     expect(await payloadVia(workerDb, a, deadPayment!.id)).toMatchObject({ secret: 'dying' });
   });
 
+  /* B-1 (independent review of the remediation, 0238): the worker cannot revive a job to read it. */
+  it('ATTACK: the worker cannot move a done or dead message job back to read its payload', async () => {
+    const a = await seedBusiness();
+    const done = await jobWith(a, 'history-secret');
+    const dead = await jobWith(a, 'dead-message-secret');
+    await setState(done, 'done');
+    await setState(dead, 'dead');
+    for (const [job, to] of [
+      [done, 'running'],
+      [done, 'pending'],
+      [dead, 'running'],
+      [dead, 'pending'],
+    ] as const) {
+      expect(
+        await outcome(
+          withBusiness(workerDb, a, async (tx) => {
+            await tx.execute(sql`UPDATE jobs SET state = ${to} WHERE id = ${job}::uuid`);
+            return tx.execute(sql`SELECT job_payload(${job}::uuid) AS payload`);
+          }),
+        ),
+      ).toMatch(/^42501 .*only through its own transitions/);
+    }
+    /* A dead payment job may still be requeued (recovery), and a pending job claimed. */
+    const [payment] = await ownerDb.execute<{ id: string }>(sql`
+      INSERT INTO jobs (business_id, kind, payload, state)
+      VALUES (${a}::uuid, 'payment.process', '{"eventId": null}'::jsonb, 'dead') RETURNING id`);
+    expect(
+      await outcome(
+        workerDb.execute(sql`UPDATE jobs SET state = 'pending' WHERE id = ${payment!.id}::uuid`),
+      ),
+    ).toBe('allowed');
+  });
+
   it('RESIDUAL: under one pin, one statement reads every payload of that business', async () => {
     const a = await seedBusiness();
     const b = await seedBusiness();
