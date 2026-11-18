@@ -949,7 +949,6 @@ export async function retireAbandonedPending(
   `);
 }
 
-/** Whether the worker withdrew this zero-priced upgrade because it could no longer apply (G3-1). */
 /**
  * The latest zero-priced upgrade this business asked for, with its `billing.apply_no_charge` job's
  * state (F-2): what the billing page says after the API answered `processing`, read from the charge
@@ -998,6 +997,7 @@ export async function latestNoChargeUpgrade(
   };
 }
 
+/** Whether settlement withdrew this zero-priced upgrade because it could no longer apply (G3-1). */
 export async function noChargeWithdrawn(
   tx: TenantDb,
   businessId: string,

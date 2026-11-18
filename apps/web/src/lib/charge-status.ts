@@ -17,7 +17,18 @@ const LABELS: Record<BillingChargeStatus, string> = {
   refunded: 'Refunded',
 };
 
-/** A pending charge the account has replaced can no longer be paid, so it is not "awaiting payment". */
-export function chargeStatusLabel(status: BillingChargeStatus, superseded = false): string {
-  return status === 'pending' && superseded ? 'Replaced by a newer choice' : LABELS[status];
+/**
+ * A pending charge the account has replaced can no longer be paid, so it is not "awaiting payment".
+ * A ₦0 charge (a zero-priced upgrade) never waits for money and is never "paid": it is a plan
+ * switch (F-2 review).
+ */
+export function chargeStatusLabel(
+  status: BillingChargeStatus,
+  superseded = false,
+  amountK?: number,
+): string {
+  if (status === 'pending' && superseded) return 'Replaced by a newer choice';
+  if (amountK === 0 && status === 'pending') return 'Switching plan';
+  if (amountK === 0 && status === 'paid') return 'No charge';
+  return LABELS[status];
 }

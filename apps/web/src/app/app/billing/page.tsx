@@ -166,6 +166,10 @@ export default async function BillingPage({
     : null;
   const waiting = pendingCharge(overview.charges, params.pay);
   const lastFailed = waiting ? null : lastPaymentFailed(overview.charges);
+  const noChargeUpgradeText = noChargeUpgradeCopy(
+    overview.noChargeUpgrade,
+    (plan) => PLAN_NAMES[plan] ?? plan,
+  );
   const firstPurchase = overview.plan === 'trial' || overview.plan === 'expired';
   const paidPlan = !firstPurchase;
 
@@ -240,9 +244,9 @@ export default async function BillingPage({
       {/* Not beside a processing problem: the two would say opposite things. */}
       {/* F-2: what became of it, from the overview, so a refresh never repeats "switching it on
           now" after the switch happened, was withdrawn or stopped. */}
-      {params.done === 'processing' && !overview.processingIssue ? (
+      {params.done === 'processing' && !overview.processingIssue && noChargeUpgradeText ? (
         <div className="rk-attention-strip" role="status" data-no-charge-upgrade>
-          {noChargeUpgradeCopy(overview.noChargeUpgrade)}
+          {noChargeUpgradeText}
         </div>
       ) : null}
 
@@ -771,7 +775,7 @@ export default async function BillingPage({
                         {charge.reference}
                       </Link>
                     </td>
-                    <td>{chargeStatusLabel(charge.status, charge.superseded)}</td>
+                    <td>{chargeStatusLabel(charge.status, charge.superseded, charge.amountK)}</td>
                     <td>
                       <Money kobo={charge.amountK} />
                       {partlyRefunded(charge.refundedAmountK, charge.status) ? (

@@ -127,7 +127,7 @@ export function evaluateOpsAlerts(
       alerts.push({
         key: 'jobs.stuck_running',
         severity: stuck.payment + stuck.billing > 0 ? 'critical' : 'warning',
-        summary: `${parts.join(', ')} job(s) have stayed running past their lease for ${queue.oldestStuckSeconds ?? 0} s and the reclaim cannot move them; see the worker and settlement logs (reclaim: ... not moved) and runbook dead-jobs "Stuck running jobs"`,
+        summary: `${parts.join(', ')} job(s) have stayed running past their lease for ${queue.oldestStuckSeconds ?? 0} s and the reclaim cannot move them; see the worker and settlement logs ("reclaim: job ... not moved (sqlstate ...)") and docs/runbooks/incident.md "Stuck running jobs"`,
       });
     }
     if (queue.oldestQueuedSeconds > limits.backlogSeconds) {

@@ -101,6 +101,12 @@ test('a refresh while settlement has not run says so, and once it has, says the 
     'We are switching your plan on now. Nothing was charged and your renewal date stays the same. Refresh this page in a moment to see your new plan.',
   );
   await expect(page.locator('.rk-plan-current')).toContainText('Rekoda Chat');
+  // Nothing is owed: no pay card, and the history names a plan switch, not a payment (F-2 review).
+  await expect(page.locator('#pay')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Pay with Paystack' })).toHaveCount(0);
+  await expect(page.getByRole('row').filter({ hasText: reference })).toContainText(
+    'Switching plan',
+  );
 
   // Settlement gets to it after the API's wait has ended.
   await sql`UPDATE jobs SET run_at = now() WHERE singleton_key = ${'no-charge:' + reference}`;
@@ -116,9 +122,10 @@ test('a refresh while settlement has not run says so, and once it has, says the 
 
   await page.reload();
   await expect(strip(page)).toHaveText(
-    'Done. Your new plan is on now. Nothing was charged and your renewal date has not changed.',
+    'Done. You are on Rekoda Complete now. Nothing was charged and your renewal date has not changed.',
   );
   await expect(page.locator('.rk-plan-current')).toContainText('Rekoda Complete');
+  await expect(page.getByRole('row').filter({ hasText: reference })).toContainText('No charge');
 });
 
 test('a refresh after the request stopped, or was withdrawn, says the plan has not changed', async ({
@@ -129,8 +136,9 @@ test('a refresh after the request stopped, or was withdrawn, says the plan has n
 
   await page.goto('/app/billing?done=processing');
   await expect(strip(page)).toHaveText(
-    'We could not switch your plan on, so your plan has not changed. Nothing was charged. You can choose the plan again below, or message us on WhatsApp if it happens again.',
+    'We could not switch your plan on, so your plan has not changed. Nothing was charged. Choose the plan again below, or message upgrade on WhatsApp and we will do it for you.',
   );
+  await expect(page.locator('#pay')).toHaveCount(0);
   await expect(page.getByText(/switching your plan on now/)).toHaveCount(0);
   await expect(page.locator('.rk-plan-current')).toContainText('Rekoda Chat');
 

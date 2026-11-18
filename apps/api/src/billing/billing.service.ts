@@ -1180,9 +1180,12 @@ async function noChargeUpgradeView(
     plan: latest.plan,
     state,
   });
-  if (latest.status !== 'pending') {
+  /* Only a paid (settled, not set aside) charge is applied. Any other settled status (none is
+   * reachable for a ₦0 charge, which never meets a provider) never claims the plan is on. */
+  if (latest.status === 'paid') {
     return view(latest.unappliedAt === null ? 'applied' : 'withdrawn');
   }
+  if (latest.status !== 'pending') return view('failed');
   if (latest.supersededAt) {
     /* Withdrawn by settlement (G3-1), or replaced by the merchant's newer request, whose own
      * answer the page shows instead. */
