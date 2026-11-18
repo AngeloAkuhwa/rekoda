@@ -180,6 +180,13 @@ UP_ENTERED=false
 #   * settlement sees and settles only the Paystack events its own billing.process jobs name, and
 #     touches only billing.process dead-job records; every application requeue of a dead job is due
 #     now with one more attempt, and a settlement job is enqueued with its full retry budget (0223);
+#   * settlement moves its jobs only through its runner's transitions (claim, renewal, retry,
+#     deferral, completion, death; never out of done or dead; never its retry budget back), for any
+#     role holding its privileges (0242);
+#   * each of the nine operator-actor constraints of PR B is the named CHECK on its own table and
+#     column, with its exact definition, validated (0239's intentionally NOT VALID one on main's
+#     subscription_charges.unapplied_resolved_by excepted); `@` stands in for the regex end anchor,
+#     which this double-quoted shell string cannot carry;
 #   * the worker reads but cannot write other businesses' events (its estate policy is SELECT only,
 #     no table-level INSERT, UPDATE or DELETE), and the application cannot record an add-on holding.
 # The expected list is the contract; a new writer is a deliberate edit of this list in its PR.
@@ -217,7 +224,8 @@ SMOKE_0196_SQL="SELECT
                   '0238_worker_job_transitions',
                   '0239_operator_actor_columns',
                   '0240_pack_refund_allowance_history',
-                  '0241_final_review_guards')) = 41
+                  '0241_final_review_guards',
+                  '0242_settlement_job_transitions')) = 42
   AND has_function_privilege('rekoda_billing_operator', 'public.subscription_record_refund(uuid,text,bigint,text,text,text)', 'EXECUTE')
   AND NOT has_function_privilege('rekoda_app', 'public.subscription_record_refund(uuid,text,bigint,text,text,text)', 'EXECUTE')
   AND NOT has_function_privilege('rekoda_worker', 'public.subscription_record_refund(uuid,text,bigint,text,text,text)', 'EXECUTE')
@@ -257,13 +265,42 @@ SMOKE_0196_SQL="SELECT
         LIKE '%NOT pg_has_role(current_user, ''rekoda_worker'', ''USAGE'')%pg_has_role(current_user, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), ''USAGE'')%OLD.state = ''pending'' AND NEW.state = ''running''%OLD.state = ''running'' AND NEW.state IN (''done'', ''pending'', ''dead'')%'
   AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('rekoda_private.jobs_worker_transition_guard()'))
         NOT LIKE '%OLD.state = ''dead''%'
-  AND (SELECT count(*) FROM pg_constraint WHERE contype = 'c' AND conname IN (
-        'dead_job_exceptions_recovery_requested_by_actor', 'dead_job_exceptions_closed_by_actor',
-        'subscription_charges_blocked_resolved_by_actor', 'subscription_charges_unapplied_resolved_by_actor',
-        'staging_test_businesses_designated_by_actor', 'staging_tool_actions_operator_actor',
-        'staging_send_faults_armed_by_actor')
-        AND (pg_get_constraintdef(oid) LIKE '%~ ''^operator:[!-~]{1,255}_''::text)))%'
-             OR pg_get_constraintdef(oid) LIKE '%~ ''^(operator:[!-~]{1,255}|system:[a-z][a-z_-]{0,63})_''::text)))%')) = 7
+  AND (SELECT t.tgenabled IN ('O', 'A') AND t.tgtype & 19 = 19 FROM pg_trigger t
+        WHERE t.tgname = 'jobs_settlement_transition_guard' AND t.tgrelid = 'public.jobs'::regclass
+          AND t.tgfoid = to_regprocedure('rekoda_private.jobs_settlement_transition_guard()'))
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('rekoda_private.jobs_settlement_transition_guard()'))
+        LIKE '%NOT pg_has_role(current_user, ''rekoda_settlement'', ''USAGE'')%pg_has_role(current_user, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), ''USAGE'')%interval ''10 minutes''%OLD.state = ''pending'' AND NEW.state = ''running'' AND NEW.attempts = OLD.attempts + 1%OLD.state = ''running'' AND NEW.state IN (''done'', ''dead'') AND NEW.attempts = OLD.attempts%'
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('rekoda_private.jobs_settlement_transition_guard()'))
+        NOT LIKE '%OLD.state = ''dead''%'
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('rekoda_private.jobs_settlement_transition_guard()'))
+        NOT LIKE '%OLD.state = ''done''%'
+  AND (SELECT count(*) FROM (VALUES
+        ('public', 'dead_job_exceptions', 'dead_job_exceptions_recovery_requested_by_actor', 'recovery_requested_by', true,
+         'CHECK (((recovery_requested_by IS NULL) OR (recovery_requested_by ~ ''^operator:[!-~]{1,255}@''::text)))'),
+        ('public', 'dead_job_exceptions', 'dead_job_exceptions_closed_by_actor', 'closed_by', true,
+         'CHECK (((closed_by IS NULL) OR (closed_by ~ ''^(operator:[!-~]{1,255}|system:[a-z][a-z_-]{0,63})@''::text)))'),
+        ('public', 'subscription_charges', 'subscription_charges_blocked_resolved_by_actor', 'blocked_resolved_by', true,
+         'CHECK (((blocked_resolved_by IS NULL) OR (blocked_resolved_by ~ ''^(operator:[!-~]{1,255}|system:[a-z][a-z_-]{0,63})@''::text)))'),
+        ('public', 'subscription_charges', 'subscription_charges_unapplied_resolved_by_actor', 'unapplied_resolved_by', false,
+         'CHECK (((unapplied_resolved_by IS NULL) OR (unapplied_resolved_by ~ ''^(operator:[!-~]{1,255}|system:[a-z][a-z_-]{0,63})@''::text)))'),
+        ('public', 'staging_test_businesses', 'staging_test_businesses_designated_by_actor', 'designated_by', true,
+         'CHECK (((designated_by IS NULL) OR (designated_by ~ ''^operator:[!-~]{1,255}@''::text)))'),
+        ('public', 'staging_tool_actions', 'staging_tool_actions_operator_actor', 'operator', true,
+         'CHECK (((operator IS NULL) OR (operator ~ ''^(operator:[!-~]{1,255}|system:[a-z][a-z_-]{0,63})@''::text)))'),
+        ('public', 'staging_send_faults', 'staging_send_faults_armed_by_actor', 'armed_by', true,
+         'CHECK (((armed_by IS NULL) OR (armed_by ~ ''^operator:[!-~]{1,255}@''::text)))'),
+        ('public', 'dead_job_enrolment_failures', 'dead_job_enrolment_failures_requeued_by_operator', 'requeued_by', true,
+         'CHECK (((requeued_by IS NULL) OR (requeued_by ~ ''^operator:[!-~]{1,255}@''::text)))'),
+        ('public', 'subscription_refunds', 'subscription_refunds_actor_check', 'actor', true,
+         'CHECK ((actor ~ ''^operator:[!-~]{1,255}@''::text))')
+        ) AS e(nsp, rel, con, col, must_validate, def)
+        JOIN pg_namespace n ON n.nspname = e.nsp
+        JOIN pg_class c ON c.relnamespace = n.oid AND c.relname = e.rel AND c.relkind = 'r'
+        JOIN pg_constraint k ON k.conrelid = c.oid AND k.conname = e.con AND k.contype = 'c'
+        JOIN pg_attribute a ON a.attrelid = c.oid AND a.attname = e.col AND NOT a.attisdropped
+       WHERE k.conkey = ARRAY[a.attnum]
+         AND (k.convalidated OR NOT e.must_validate)
+         AND regexp_replace(replace(pg_get_constraintdef(k.oid), chr(36), '@'), ' NOT VALID', '') = e.def) = 9
   AND (SELECT count(*) FROM pg_trigger t WHERE t.tgenabled IN ('O', 'A') AND (t.tgname, t.tgrelid) IN (
         ('businesses_note_allowance_change', 'public.businesses'::regclass),
         ('business_add_ons_note_allowance_change', 'public.business_add_ons'::regclass))) = 2
