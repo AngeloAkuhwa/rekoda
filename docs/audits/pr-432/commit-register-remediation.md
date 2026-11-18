@@ -62,4 +62,7 @@ by the remediating engineer; the independent reviews (`final-review-*.md`) re-re
 | 234 | `b1896d6` | 2026-11-18 | docs(audit): record the closeout round's independent review, 0243 and the corrected F-3 analysis | docs only | see `git show` | closeout F |
 | 235 | `2008741` | 2026-11-18 | test(db): the F-3 history assertion reads its rows without destructuring an undefined (typecheck) | typecheck fix in a test; no assertion changed | 1 file changed | closeout F |
 | 236 | `aa628f4` | 2026-11-18 | fix(deploy): the smoke pins how both job transition guards fire; 0243 states its time-based residual | RED: 4 trigger-binding tampers printed `t` with the previous smoke; GREEN 178/178 | see `git show` | closeout F (delta review) |
-| 237 | the record commit after `aa628f4` | 2026-11-18 | docs(audit): register and readiness entries for the delta review | docs only | see `git show` | closeout F |
+| 237 | `23ba6bd` | 2026-11-18 | docs(audit): register and readiness entries for the delta review | docs only | see `git show` | closeout F |
+| 238 | `ebf0613` | 2026-11-18 | test(db): 0243 on the G-62 reviewed list; the literal-@ tamper clears refund rows first | test-only; found by the final local run on `23ba6bd` | see `git show` | closeout F |
+| 239 | `9a543ad7` | 2026-11-18 | fix(api): the application pool leaves a connection per runner lane for a second transaction | RED `app-pool-size.test.ts` (no sizing); GREEN | see `git show` | Codex thread on `initiate-blocked-renewal.handler.ts` |
+| 240 | the record commit after `9a543ad7` | 2026-11-18 | docs(audit): Codex threads and the final delta review recorded | docs only | see `git show` | closeout F |

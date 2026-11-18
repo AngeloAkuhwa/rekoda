@@ -128,3 +128,16 @@ cover `STRICT` (no effect: every argument is already checked). That review also,
 command in its brief, sourced `scripts/deploy-staging.sh` locally: the only effect was a
 `git fetch --prune` of remote-tracking refs; no branch, checkout, file, database or service was
 changed (remote branches verified).
+
+A fresh read-only review of `b1896d6..ebf0613` found 0 BLOCKING and 0 IMPORTANT. Its MINORs, recorded
+and not fixed: an additional BEFORE UPDATE trigger on `jobs` that rewrites `NEW` after the guards
+would still print `t` (owner-level DDL; the 51.5 administrator boundary); a persistent
+`ALTER ROLE ... SET session_replication_role = replica` would silence every origin trigger for that
+role and the smoke does not read `pg_db_role_setting` (superuser only; 51.5); the hand-run smoke
+command assumes `node` on the host (it fails safe: no `t`).
+
+Codex: no major issues on `23ba6bd` (09:19 UTC) and on `ebf0613` (10:08 UTC). Two Codex inline
+threads were open: the pack-refund serialisation (posted 08:25 on an earlier head; the race review A
+found, fixed in 0243, `7a712b9`) and application-pool exhaustion by blocked-renewal initiation at 10
+or more runner lanes (REAL, MINOR at the default 4 lanes; fixed by sizing the pool from the
+concurrency, `app-pool-size.test.ts`). Both are answered on their threads.
