@@ -1,7 +1,8 @@
 /**
  * The staging pre-start smoke for the closeout round of PR #432 (owner instruction, 18 Nov 2026): the
  * operator-actor constraints are checked one by one (schema, owning table, name, constrained column,
- * validation and exact definition), and 0242's settlement transition guard is pinned. The harness is
+ * validation and exact definition), 0242's settlement transition guard is pinned, and (round G) the
+ * refund function of 0244 and its boundary function are pinned. The harness is
  * shared with `deploy-smoke-sql.integration.test.ts`.
  *
  * Review D (D-5) found the actor check counting seven names with a tautological validation test; the
@@ -15,7 +16,7 @@ useSmokeHarness();
 
 const CLOSED_BY = `closed_by IS NULL OR closed_by ~ '^(operator:[!-~]{1,255}|system:[a-z][a-z_-]{0,63})$'`;
 
-describe('the pre-start database smoke, closeout round (actor constraints, 0242)', () => {
+describe('the pre-start database smoke, closeout round (actor constraints, 0242, 0244)', () => {
   it('prints t for the migrated boundary', async () => {
     expect(await smokeAfter('')).toBe('t');
   });
@@ -194,6 +195,42 @@ describe('the pre-start database smoke, closeout round (actor constraints, 0242)
       `DROP TRIGGER jobs_worker_transition_guard ON jobs;
        CREATE TRIGGER jobs_worker_transition_guard BEFORE UPDATE ON jobs
          FOR EACH ROW EXECUTE FUNCTION rekoda_private.jobs_settlement_transition_guard()`,
+    ],
+    [
+      'the refund function back at 0243, blind to a time boundary of the allowance (round G)',
+      migrationText('0243_refund_judges_the_allowance_after_the_counter_lock.sql').match(
+        /CREATE OR REPLACE FUNCTION public\.subscription_record_refund\([\s\S]*?END \$function\$;/,
+      )![0],
+    ],
+    [
+      'the boundary function answering false, its rules kept in a comment (round G)',
+      `CREATE OR REPLACE FUNCTION rekoda_private.pack_allowance_boundary_between(
+         p_business uuid, p_unit text, p_from timestamptz, p_to timestamptz) RETURNS boolean
+       LANGUAGE plpgsql STABLE SET search_path = pg_catalog, public, pg_temp AS $f$
+       BEGIN
+         RETURN false; /* b.plan_expires_at > p_from h.ends_at > p_from pv.effective_to > p_from */
+       END $f$`,
+    ],
+    [
+      'the boundary function made SECURITY DEFINER (round G)',
+      'ALTER FUNCTION rekoda_private.pack_allowance_boundary_between(uuid, text, timestamptz, timestamptz) SECURITY DEFINER',
+    ],
+    [
+      'the boundary function executable by the application (round G)',
+      `GRANT USAGE ON SCHEMA rekoda_private TO rekoda_app;
+       GRANT EXECUTE ON FUNCTION rekoda_private.pack_allowance_boundary_between(uuid, text, timestamptz, timestamptz) TO rekoda_app`,
+    ],
+    [
+      'the boundary function executable by PUBLIC (round G)',
+      'GRANT EXECUTE ON FUNCTION rekoda_private.pack_allowance_boundary_between(uuid, text, timestamptz, timestamptz) TO PUBLIC',
+    ],
+    [
+      'the boundary function made VOLATILE with its body unchanged (round G)',
+      'ALTER FUNCTION rekoda_private.pack_allowance_boundary_between(uuid, text, timestamptz, timestamptz) VOLATILE',
+    ],
+    [
+      '0244 not recorded in the ledger',
+      "DELETE FROM rekoda_migrations WHERE tag = '0244_refund_refuses_across_a_time_boundary'",
     ],
     [
       '0243 not recorded in the ledger',

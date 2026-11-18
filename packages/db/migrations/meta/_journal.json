@@ -1709,6 +1709,13 @@
       "when": 1796904000020,
       "tag": "0243_refund_judges_the_allowance_after_the_counter_lock",
       "breakpoints": true
+    },
+    {
+      "idx": 244,
+      "version": "7",
+      "when": 1796904000021,
+      "tag": "0244_refund_refuses_across_a_time_boundary",
+      "breakpoints": true
     }
   ]
 }

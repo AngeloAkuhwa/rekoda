@@ -175,6 +175,10 @@ export const ALLOWED: Readonly<Record<string, Entry>> = {
     role: 'migration',
     why: 'Closeout round F (review A): only its header comment names plan_expires_at, to state the time-based residual; the refund function it replaces reads no plan field itself (it calls usage_entitlement, 0222) and writes none.',
   },
+  'packages/db/migrations/0244_refund_refuses_across_a_time_boundary.sql': {
+    role: 'migration',
+    why: "Closeout round G: rekoda_private.pack_allowance_boundary_between READS a trial's plan_expires_at (with plan and plan_version_id) to find a time boundary of the allowance between a pack credit and its refund; it writes no plan field, and the refund it re-creates writes none either.",
+  },
   'packages/db/migrations/0241_final_review_guards.sql': {
     role: 'migration',
     why: 'Final review of #432 (F-1): the businesses_note_allowance_change trigger now fires on UPDATE OF plan_expires_at and its WHEN clause compares the old and new expiry of a trial; it only records the time of the change in business_allowance_changes and assigns no plan field.',

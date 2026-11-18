@@ -119,7 +119,7 @@ COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary 020
 # Every other migration after main's 0192: the previous release keeps working against it, so it is
 # applied with everything running (E-F8). Each new migration goes in exactly one of the two lists:
 # scripts/deploy-staging-classes.test.mjs fails a migration that is in neither, or in both.
-ADDITIVE_MIGRATIONS='0193_charge_provider_times 0194_dead_job_exceptions 0195_renewal_blocked 0197_staging_test_business_tools 0198_blocked_renewal_close_order 0199_blocked_renewal_close_cursor 0201_blocked_renewal_close_heartbeat 0208_subscription_period_preflight 0213_support_review_plan_change 0214_pack_purchase_identity 0215_pricing_source_authority 0219_support_review_respects_later_schedule 0222_usage_entitlement_in_the_database 0223_settlement_scope_and_dead_job_requeue 0224_pack_credit_derives_from_the_charge 0225_dead_job_enrolment_discovery 0226_settlement_holds_no_add_on 0227_paid_launch_gate 0229_dead_job_enrolment_dead_letter 0231_settlement_reads_only_its_kinds_payload 0232_support_review_prices_like_the_resolver 0233_operator_actor_contract 0234_job_payload_live_or_dying_only 0236_dead_job_enrolment_cursor 0237_settlement_reads_key_fingerprints 0238_worker_job_transitions 0239_operator_actor_columns 0240_pack_refund_allowance_history 0241_final_review_guards 0242_settlement_job_transitions 0243_refund_judges_the_allowance_after_the_counter_lock'
+ADDITIVE_MIGRATIONS='0193_charge_provider_times 0194_dead_job_exceptions 0195_renewal_blocked 0197_staging_test_business_tools 0198_blocked_renewal_close_order 0199_blocked_renewal_close_cursor 0201_blocked_renewal_close_heartbeat 0208_subscription_period_preflight 0213_support_review_plan_change 0214_pack_purchase_identity 0215_pricing_source_authority 0219_support_review_respects_later_schedule 0222_usage_entitlement_in_the_database 0223_settlement_scope_and_dead_job_requeue 0224_pack_credit_derives_from_the_charge 0225_dead_job_enrolment_discovery 0226_settlement_holds_no_add_on 0227_paid_launch_gate 0229_dead_job_enrolment_dead_letter 0231_settlement_reads_only_its_kinds_payload 0232_support_review_prices_like_the_resolver 0233_operator_actor_contract 0234_job_payload_live_or_dying_only 0236_dead_job_enrolment_cursor 0237_settlement_reads_key_fingerprints 0238_worker_job_transitions 0239_operator_actor_columns 0240_pack_refund_allowance_history 0241_final_review_guards 0242_settlement_job_transitions 0243_refund_judges_the_allowance_after_the_counter_lock 0244_refund_refuses_across_a_time_boundary'
 BREAKING=
 BREAKING_APPLIED=false
 # Set once migrate has been entered for a release carrying a breaking migration. migrate applies each
@@ -190,8 +190,10 @@ UP_ENTERED=false
 #     triggers on every column with no WHEN clause, bound to their functions, pinned by the md5
 #     of their exact body, plpgsql, not SECURITY DEFINER, with their search_path (a definer guard
 #     would run as its owner, whom the guard exempts);
-#   * a credited pack's refund judges the allowance after it holds the usage counter: the refund
-#     function is pinned by the md5 of its exact body (0243);
+#   * a credited pack's refund judges the allowance after it holds the usage counter (0243) and
+#     refuses across a time boundary of the allowance (a trial expiring, a catalogue version or a
+#     holding starting or ending; 0244): the refund function is pinned by the md5 of its exact body,
+#     and the boundary function by its body, owner, attributes and the absence of any grant;
 #   * each of the nine operator-actor constraints of PR B is the named CHECK on its own table and
 #     column, with its exact definition, validated (0239's intentionally NOT VALID one on main's
 #     subscription_charges.unapplied_resolved_by excepted); `@` in the expected text stands in for the
@@ -236,7 +238,8 @@ SMOKE_0196_SQL="SELECT
                   '0240_pack_refund_allowance_history',
                   '0241_final_review_guards',
                   '0242_settlement_job_transitions',
-                  '0243_refund_judges_the_allowance_after_the_counter_lock')) = 43
+                  '0243_refund_judges_the_allowance_after_the_counter_lock',
+                  '0244_refund_refuses_across_a_time_boundary')) = 44
   AND has_function_privilege('rekoda_billing_operator', 'public.subscription_record_refund(uuid,text,bigint,text,text,text)', 'EXECUTE')
   AND NOT has_function_privilege('rekoda_app', 'public.subscription_record_refund(uuid,text,bigint,text,text,text)', 'EXECUTE')
   AND NOT has_function_privilege('rekoda_worker', 'public.subscription_record_refund(uuid,text,bigint,text,text,text)', 'EXECUTE')
@@ -281,9 +284,18 @@ SMOKE_0196_SQL="SELECT
         LIKE '%NOT pg_has_role(current_user, ''rekoda_worker'', ''USAGE'')%pg_has_role(current_user, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), ''USAGE'')%OLD.state = ''pending'' AND NEW.state = ''running''%OLD.state = ''running'' AND NEW.state IN (''done'', ''pending'', ''dead'')%'
   AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('rekoda_private.jobs_worker_transition_guard()'))
         NOT LIKE '%OLD.state = ''dead''%'
-  AND (SELECT md5(p.prosrc) = 'faaf104243048ba4143317c2a93f030d' AND p.prosecdef
+  AND (SELECT md5(p.prosrc) = '5d939e8f3bddf1fa67f4225463b12a46' AND p.prosecdef
          AND p.proconfig = ARRAY['search_path=pg_catalog, public, pg_temp']
        FROM pg_proc p WHERE p.oid = to_regprocedure('public.subscription_record_refund(uuid,text,bigint,text,text,text)'))
+  AND (SELECT md5(p.prosrc) = 'dbca515f6e41fa98f679930f00b3af4f' AND NOT p.prosecdef
+         AND p.provolatile = 's' AND l.lanname = 'plpgsql'
+         AND p.proconfig = ARRAY['search_path=pg_catalog, public, pg_temp']
+         AND p.proowner = (SELECT r.proowner FROM pg_proc r
+                           WHERE r.oid = to_regprocedure('public.subscription_record_refund(uuid,text,bigint,text,text,text)'))
+         AND NOT EXISTS (SELECT 1 FROM aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+                         WHERE a.grantee <> p.proowner)
+       FROM pg_proc p JOIN pg_language l ON l.oid = p.prolang
+       WHERE p.oid = to_regprocedure('rekoda_private.pack_allowance_boundary_between(uuid,text,timestamptz,timestamptz)'))
   AND (SELECT count(*) FROM pg_proc p JOIN pg_language l ON l.oid = p.prolang
         WHERE l.lanname = 'plpgsql' AND NOT p.prosecdef
           AND p.proconfig = ARRAY['search_path=pg_catalog, public, pg_temp']

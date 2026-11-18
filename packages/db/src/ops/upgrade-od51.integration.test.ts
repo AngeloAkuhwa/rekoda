@@ -176,7 +176,7 @@ afterAll(async () => {
   }
 });
 
-describe('upgrading a database from 0212 through 0243', () => {
+describe('upgrading a database from 0212 through 0244', () => {
   it('starts from the boundary the previous release had', async () => {
     expect(before.charges).toHaveLength(3);
     expect(await facts()).toEqual({
@@ -222,6 +222,7 @@ describe('upgrading a database from 0212 through 0243', () => {
       '0241_final_review_guards',
       '0242_settlement_job_transitions',
       '0243_refund_judges_the_allowance_after_the_counter_lock',
+      '0244_refund_refuses_across_a_time_boundary',
     ]);
 
     const after = await snapshot();
@@ -332,6 +333,7 @@ describe('upgrading a database from 0212 through 0243', () => {
       '0241_final_review_guards',
       '0242_settlement_job_transitions',
       '0243_refund_judges_the_allowance_after_the_counter_lock',
+      '0244_refund_refuses_across_a_time_boundary',
     ]) {
       await owner.unsafe(readFileSync(join(MIGRATIONS_DIR, `${tag}.sql`), 'utf8')).simple();
     }
