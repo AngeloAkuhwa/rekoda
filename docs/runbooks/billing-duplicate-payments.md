@@ -1,7 +1,8 @@
 # Runbook: a merchant paid twice for one pack, or for one charge
 
 Status: written in the MVP readiness review of PR #432 (13 Nov 2026); refund recording updated for
-migration 0230 (15 Nov 2026, OWN-94). Nothing here moves money automatically: Rekoda never refunds on its own, and the
+migration 0230 (15 Nov 2026, OWN-94) and for migration 0235 (17 Nov 2026: one record per Paystack refund, keyed by
+its refund id; PR #432, CODE COMPLETE, not merged, not deployed). Nothing here moves money automatically: Rekoda never refunds on its own, and the
 refund itself is a Paystack dashboard action taken by a person (ADR 0024, `docs/safety-review.md`).
 
 ## When this happens
@@ -91,6 +92,15 @@ the owner.
 
 ## 5. Refund and record
 
+> **Before refunding a CREDITED pack in Paystack, check that Rekoda can record it (OD-55 (iv)).**
+> Eligibility is judged only when the refund is recorded, and the recording needs the Paystack
+> refund id, so the money goes back first. If the pack is not eligible at that moment the
+> recording is refused for good while the money is already back. Check, immediately before
+> refunding: the pack is unused, it was credited less than seven days ago, and nothing changed the
+> business's plan, plan version or add-on holdings since the credit (0240). Type the amount once,
+> exactly: a corrected second call conflicts with the recorded refund id. Until the owner rules
+> OD-55, a pack refund is an owner-supervised manual procedure.
+
 1. Refund the second transaction in the Paystack dashboard (full amount). This is the only step that
    moves money.
 2. **`duplicate_payment` only: do NOT call `POST /v1/ops/refund`.** The only charge it can name is
@@ -99,17 +109,39 @@ the owner.
    record instead; Rekoda has no record-only entry for a second payment of the same charge yet
    (OD-53 (5)). Skip to section 6.
 3. `duplicate_purchase`: record it in Rekoda: `POST /v1/ops/refund` with `businessId`, `reference` (the set-aside
-   reference), `amountK` (the kobo refunded) and `reason` (one of `duplicate_charge`,
+   reference), `amountK` (the kobo refunded), `reason` (one of `duplicate_charge`,
    `incorrect_amount`, `service_failure`, `unused_add_on`, `suspension_error`; use
-   `duplicate_charge` here). Since migration 0230 this route is served by the **operator
+   `duplicate_charge` here) and `providerRefundId` (the refund id Paystack shows for the refund
+   made in step 1; required since 0235):
+
+   ```sh
+   curl -sS -X POST https://<api host>/v1/ops/refund \
+     -H "authorization: Bearer <billing-audience token with ops:payment>" \
+     -H 'content-type: application/json' \
+     -d '{"businessId":"<business id>","reference":"<set-aside reference>","amountK":<kobo refunded>,"reason":"duplicate_charge","providerRefundId":"<Paystack refund id>"}'
+   ```
+
+   A repeat with the same `providerRefundId`, charge and amount is safe: it records nothing new and
+   answers `"replayed":true` with what was recorded, so if the first call's outcome is unknown (a
+   timeout), send it again. The same id with another amount, charge or business is refused. Two
+   genuine partial refunds have two Paystack ids and are both recorded, up to the charge. Since migration 0230 this route is served by the **operator
    process** (Caddy sends it to `operator:3002`): the token must be issued for
    `OPERATOR_BILLING_OIDC_AUDIENCE` and carry `ops:payment`; an API-audience token is refused,
    and an API host answers 404. It writes the refunded amount, moves the charge to `refunded`
    when the whole amount is back, and writes an audit row naming the verified operator. It does
    not move money and does not touch the plan. The set-aside charge was never credited, so no
    units are revoked. (A refund of a CREDITED pack is a different case: only in full, of an
-   unused pack, within seven days of its credit, and its units are revoked in the same step;
-   anything else is refused. A partial refund of a pack is not approved: OWN-94.)
+   unused pack, within seven days of its credit, and since 0235 and 0240 only while the plan
+   allowance is the one recorded when the pack was credited and no plan, plan-version or add-on
+   change has been recorded since; its units are revoked in the same step;
+   anything else is refused. A partial refund of a pack is not approved: OWN-94. A refused
+   credited-pack refund, a pack whose allowance changed since its credit, a used or older pack
+   refunded under the "incorrect charge" or "service failure" terms, or a pack credited before
+   0235 **cannot be recorded in Rekoda** until the owner rules OD-55
+   (`docs/REKODA_LAUNCH_READINESS.md`): do not refund such a pack in Paystack without the owner's
+   written instruction, and if one has been refunded, record the Paystack refund id in the
+   incident note, because Rekoda's record will still show the pack paid with its units.)
+
 4. Close the exception: `POST /v1/ops/exceptions/charges/<reference>/resolve` with a resolution that
    names the Paystack refund id.
 

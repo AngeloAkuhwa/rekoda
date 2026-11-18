@@ -28,6 +28,14 @@ change a feature and want to know what to run.
 | integration | `apps/api/src/billing/annual-billing.integration.test.ts`                 |
 | integration | `apps/api/src/billing/annual-lifecycle.integration.test.ts`               |
 | integration | `apps/api/src/billing/api-product.integration.test.ts`                    |
+| integration | `apps/api/src/billing/settlement-verifies-price.integration.test.ts`      |
+| integration | `apps/api/src/settlement/settlement-process.integration.test.ts`          |
+| integration | `apps/api/src/operator-plane/operator-process.integration.test.ts`        |
+| integration | `packages/db/src/billing/pack-credit-terms.integration.test.ts`           |
+| integration | `packages/db/src/billing/pack-refund.integration.test.ts`                 |
+| integration | `packages/db/src/billing/plan-principals.integration.test.ts`             |
+| integration | `packages/db/src/billing/settlement-isolation.integration.test.ts`        |
+| integration | `packages/db/src/billing/support-review-pricing.integration.test.ts`      |
 | integration | `apps/api/src/billing/billing-charge.integration.test.ts`                 |
 | integration | `apps/api/src/billing/billing-checkout-guards.integration.test.ts`        |
 | integration | `apps/api/src/billing/billing-checkout-recovery.integration.test.ts`      |
@@ -248,6 +256,7 @@ change a feature and want to know what to run.
 | integration | `packages/db/src/privacy/object-deletions.integration.test.ts`         |
 | integration | `packages/db/src/tenancy/provision.integration.test.ts`                |
 | integration | `packages/db/src/privacy/retention.integration.test.ts`                |
+| integration | `packages/db/src/privacy/retention-pr432-tables.integration.test.ts`   |
 | integration | `packages/db/src/tenancy/rls-invariants.integration.test.ts`           |
 | integration | `packages/db/src/tenancy/tenancy.integration.test.ts`                  |
 | integration | `packages/db/src/tenancy/tenant-fk-group-a.integration.test.ts`        |
@@ -408,41 +417,56 @@ change a feature and want to know what to run.
 
 ### Jobs, outbox, health and operations
 
-| Layer       | Test file                                                       |
-| ----------- | --------------------------------------------------------------- |
-| integration | `apps/api/src/health/ops.integration.test.ts`                   |
-| integration | `apps/api/src/jobs/jobs-chat-roles-1.integration.test.ts`       |
-| integration | `apps/api/src/jobs/jobs-chat-roles-2.integration.test.ts`       |
-| integration | `apps/api/src/jobs/jobs-chat-roles-3.integration.test.ts`       |
-| integration | `apps/api/src/jobs/jobs-documents.integration.test.ts`          |
-| integration | `apps/api/src/jobs/jobs-lanes.integration.test.ts`              |
-| integration | `apps/api/src/jobs/jobs-lease.integration.test.ts`              |
-| integration | `apps/api/src/jobs/jobs.integration.test.ts`                    |
-| integration | `apps/api/src/observability/logs.integration.test.ts`           |
-| integration | `apps/api/src/http/rate-limit.integration.test.ts`              |
-| integration | `apps/api/src/risk/risk-policy.integration.test.ts`             |
-| integration | `packages/db/src/tenancy/boot-checks.integration.test.ts`       |
-| integration | `packages/db/src/ops/idempotency.integration.test.ts`           |
-| integration | `packages/db/src/ops/jobs.integration.test.ts`                  |
-| integration | `packages/db/src/ops/load.integration.test.ts`                  |
-| integration | `packages/db/src/ops/ops-health.integration.test.ts`            |
-| integration | `packages/db/src/ops/outbox.integration.test.ts`                |
-| integration | `packages/db/src/channels/preview-delivery.integration.test.ts` |
-| integration | `packages/db/src/ops/recovery-drill.integration.test.ts`        |
-| integration | `packages/db/src/ops/risk.integration.test.ts`                  |
-| integration | `packages/db/src/ops/service-window.integration.test.ts`        |
-| integration | `packages/db/src/ops/status-drift.integration.test.ts`          |
-| integration | `packages/db/src/tenancy/testing.integration.test.ts`           |
-| unit        | `apps/api/src/edge-check.test.ts`                               |
-| unit        | `apps/api/src/edge-proxies.test.ts`                             |
-| unit        | `apps/api/src/health/health.test.ts`                            |
-| unit        | `apps/api/src/health/ops-alerts.test.ts`                        |
-| unit        | `apps/api/src/jobs/sweep-schedule.test.ts`                      |
-| unit        | `apps/api/src/http/client-address.test.ts`                      |
-| unit        | `apps/api/src/http/rate-limit-exempt.test.ts`                   |
-| unit        | `packages/core/src/ops-alerts.test.ts`                          |
-| unit        | `packages/core/src/risk.test.ts`                                |
-| unit        | `packages/db/src/ops/entrypoint.test.ts`                        |
+| Layer       | Test file                                                                |
+| ----------- | ------------------------------------------------------------------------ |
+| integration | `apps/api/src/health/ops.integration.test.ts`                            |
+| integration | `apps/api/src/jobs/jobs-chat-roles-1.integration.test.ts`                |
+| integration | `apps/api/src/jobs/jobs-chat-roles-2.integration.test.ts`                |
+| integration | `apps/api/src/jobs/jobs-chat-roles-3.integration.test.ts`                |
+| integration | `apps/api/src/jobs/jobs-documents.integration.test.ts`                   |
+| integration | `apps/api/src/jobs/jobs-lanes.integration.test.ts`                       |
+| integration | `apps/api/src/jobs/jobs-lease.integration.test.ts`                       |
+| integration | `apps/api/src/jobs/jobs.integration.test.ts`                             |
+| integration | `apps/api/src/observability/logs.integration.test.ts`                    |
+| integration | `apps/api/src/http/rate-limit.integration.test.ts`                       |
+| integration | `apps/api/src/risk/risk-policy.integration.test.ts`                      |
+| integration | `packages/db/src/tenancy/boot-checks.integration.test.ts`                |
+| integration | `packages/db/src/ops/idempotency.integration.test.ts`                    |
+| integration | `packages/db/src/ops/jobs.integration.test.ts`                           |
+| integration | `packages/db/src/ops/load.integration.test.ts`                           |
+| integration | `packages/db/src/ops/ops-health.integration.test.ts`                     |
+| integration | `packages/db/src/ops/outbox.integration.test.ts`                         |
+| integration | `packages/db/src/channels/preview-delivery.integration.test.ts`          |
+| integration | `packages/db/src/ops/recovery-drill.integration.test.ts`                 |
+| integration | `packages/db/src/ops/risk.integration.test.ts`                           |
+| integration | `packages/db/src/ops/service-window.integration.test.ts`                 |
+| integration | `packages/db/src/ops/status-drift.integration.test.ts`                   |
+| integration | `packages/db/src/tenancy/testing.integration.test.ts`                    |
+| integration | `apps/api/src/health/dead-job-enrolment-routes.integration.test.ts`      |
+| integration | `apps/api/src/health/staging-tools.integration.test.ts`                  |
+| integration | `packages/db/src/ops/paid-launch-gate.integration.test.ts`               |
+| integration | `packages/db/src/ops/job-payload-isolation.integration.test.ts`          |
+| integration | `packages/db/src/ops/dead-job-enrolment-scope.integration.test.ts`       |
+| integration | `packages/db/src/ops/dead-job-enrolment-dead-letter.integration.test.ts` |
+| integration | `packages/db/src/ops/deploy-smoke-sql.integration.test.ts`               |
+| integration | `packages/db/src/ops/deploy-smoke-sql-second-review.integration.test.ts` |
+| integration | `packages/db/src/ops/dead-job-reclaim-isolation.integration.test.ts`     |
+| integration | `packages/db/src/ops/operator-actor-columns.integration.test.ts`         |
+| integration | `packages/db/src/ops/staging-tools.integration.test.ts`                  |
+| integration | `packages/db/src/ops/upgrade-from-main.integration.test.ts`              |
+| integration | `packages/db/src/ops/upgrade-od51.integration.test.ts`                   |
+| unit        | `apps/api/src/auth/operator-plane-served.guard.test.ts`                  |
+| unit        | `packages/db/src/ops/dead-job-enrolment-pin.test.ts`                     |
+| unit        | `apps/api/src/edge-check.test.ts`                                        |
+| unit        | `apps/api/src/edge-proxies.test.ts`                                      |
+| unit        | `apps/api/src/health/health.test.ts`                                     |
+| unit        | `apps/api/src/health/ops-alerts.test.ts`                                 |
+| unit        | `apps/api/src/jobs/sweep-schedule.test.ts`                               |
+| unit        | `apps/api/src/http/client-address.test.ts`                               |
+| unit        | `apps/api/src/http/rate-limit-exempt.test.ts`                            |
+| unit        | `packages/core/src/ops-alerts.test.ts`                                   |
+| unit        | `packages/core/src/risk.test.ts`                                         |
+| unit        | `packages/db/src/ops/entrypoint.test.ts`                                 |
 
 ### Other
 

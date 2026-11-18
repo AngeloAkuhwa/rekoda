@@ -77,7 +77,7 @@ session never starts a capability from zero.
   worker processes alike (both load `.env`; the worker does its work on the application
   connection, and the ops routes read on the worker credential). `rekoda_settlement`
   (records Rekoda's own payments, applies paid plans, credits packs) and
-  `rekoda_billing_operator` (plan changes) are each held only by their own process
+  `rekoda_billing_operator` (plan changes and, since 0230, the only refund record) are each held only by their own process
   (`settlement`, `operator`): the API and worker refuse them in production, neither is a
   member of `rekoda_app` or of the other, and each refuses a credential that belongs to
   another process. Four NOLOGIN roles exist only to own `SECURITY DEFINER` functions or
@@ -181,7 +181,7 @@ session never starts a capability from zero.
 Monorepo (pnpm + turbo, Node from `.nvmrc`): `apps/api` (NestJS on
 Fastify: webhooks, `/v1`, auth, jobs), `apps/web` (Next.js: marketing,
 legal, dashboard `/app`, storefront `/s/[slug]`), `packages/core` (pure
-rules, no IO), `packages/db` (Drizzle schema, SQL migrations `0000`–`0230`,
+rules, no IO), `packages/db` (Drizzle schema, SQL migrations `0000`–`0240`,
 RLS, repos in `src/repos/`), `packages/contracts` (zod borders),
 `packages/shared` (branded types).
 

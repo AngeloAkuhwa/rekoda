@@ -185,7 +185,7 @@ dc build --build-arg REKODA_COMMIT=$(git rev-parse --short HEAD) api   # build B
 dc build --build-arg REKODA_COMMIT=$(git rev-parse --short HEAD) web   # one image at a time: never both at once
 # First PRODUCTION deploy carrying migrations 0175-0178 (G-109): run `dc stop api worker` here first
 # Every deploy carrying 0196 or 0200 (PR B, plan-field boundary, OD-48): run `dc stop api worker` here first, and see "Deploy a release carrying 0196"
-# Every deploy carrying 0216, 0217, 0218, 0220, 0221, 0222, 0223, 0228 or 0230 (OD-51, OWN-94): run `dc stop api worker operator settlement` here first, and see "Deploy a release carrying 0213 to 0230"
+# Every deploy carrying 0216, 0217, 0218, 0220, 0221, 0228, 0230 or 0235 (OD-51, OWN-94; COMPAT_BREAKING_MIGRATIONS; 0222 and 0223 are not breaks and ship in the same stopped window): run `dc stop api worker operator settlement` here first, and see "Deploy a release carrying 0213 to 0240"
 # ...and after migrate, run the step-8 pre-start database smoke (SMOKE_0196_SQL) as the owner: do not `dc up` unless it prints t
 dc run --rm -T migrate                                             # expand-only migrations, as the owner
 dc up -d --wait                                                    # recreates api, worker and web on the new images
@@ -642,13 +642,17 @@ worker or the api. Step 1 below describes the release that carried 0209.
 
 Rollback past these migrations is a backup restore (G-02), as for 0196 to 0206 (OWN-86).
 
-### Deploy a release carrying 0213 to 0230 (support-review upgrade, pack purchase identity, pricing source, usage meter boundary, settlement and operator processes, reservation closure; 0227 to 0230: the paid-launch gate, the worker's payload isolation, enrolment dead letters, refunds through the operator)
+### Deploy a release carrying 0213 to 0240 (support-review upgrade, pack purchase identity, pricing source, usage meter boundary, settlement and operator processes, reservation closure; 0227 to 0230: the paid-launch gate, the worker's payload isolation, enrolment dead letters, refunds through the operator; 0231 to 0237: settlement reads only its own kinds' payloads, support-review pricing as the resolver, the operator actor contract, live-or-dying payloads only, one record per provider refund, the enrolment cursor, settlement's vault-key check; 0238 to 0240: the worker's job transitions, operator-actor columns, the pack allowance history)
 
-0216, 0217, 0218, 0220 and 0221 are compatibility breaks: the previous release writes `usage_counters`
-directly, which no runtime role may do afterwards, and settles charges in the worker on a role
-0217 narrows. Deploy with every writing process stopped; `scripts/deploy-staging.sh` lists them,
-stops `api`, `worker`, `operator` and `settlement`, and enforces the order. 0213 to 0215 and 0219
-are additive and ship in the same stopped release. Rollback past 0216 is a backup restore (G-02).
+0216, 0217, 0218, 0220, 0221, 0228, 0230 and 0235 are compatibility breaks: the previous release writes
+`usage_counters` directly, which no runtime role may do afterwards, and settles charges in the worker
+on a role 0217 narrows; 0228 takes the worker's SELECT on `jobs.payload` away; 0230 refuses the old
+API refund route (refunds are recorded by the operator process alone); 0235 changes the refund
+function's signature (a sixth argument, the provider refund id). Deploy with every writing process
+stopped; `scripts/deploy-staging.sh` lists them (`COMPAT_BREAKING_MIGRATIONS`), stops `api`,
+`worker`, `operator` and `settlement`, and enforces the order. 0213 to 0215, 0219, 0222 to 0227,
+0229, 0231 to 0234 and 0236 to 0240 are additive and ship in the same stopped release. Rollback past
+0216 is a backup restore (G-02).
 
 This release starts two more services. Before deploying:
 
@@ -663,7 +667,10 @@ This release starts two more services. Before deploying:
    requires all three, `VAULT_KEY`, `SETTLEMENT_DATABASE_URL` and `OPERATOR_DATABASE_URL`, and
    refuses every command while one is missing; the staging deploy checks them first, before
    anything is changed. Operators who change plans need a token for the new audience carrying
-   `ops:billing`.
+   `ops:billing`; operators who record refunds need a token for the same audience carrying
+   `ops:payment` (`POST /v1/ops/refund`, served by the operator process since 0230). Every refund
+   request carries `providerRefundId`, the Paystack refund id (required since 0235); a repeat with
+   the same id, charge and amount records nothing new (`docs/runbooks/billing-duplicate-payments.md`).
 
 2. **No new connection string, and nothing else moves in `.env`.** It still holds
    `SETTLEMENT_DATABASE_URL` and `OPERATOR_DATABASE_URL` (the `migrate` job sets those roles'
@@ -700,7 +707,38 @@ This release starts two more services. Before deploying:
    - a pack charge credits exactly the unit, quantity and meter row it bought, derived in the
      database, for an amount that is its price; settlement moves a status only out of pending and
      cannot put a set-aside paid charge back (0224);
-   - the ledger carries the tags 0213 to 0226.
+   - the cutover enrolment discovers dead jobs only through worker-only, id-only definer functions
+     (0225, and the keyset form of 0236) and its failures and dead letters through worker-only
+     functions (0229); the requeue is the application's alone and its actor follows the operator
+     contract `^operator:[!-~]{1,255}$` (0233);
+   - the application cannot reschedule or retry-budget a job, and `usage_bind_event` binds only to
+     an event of the same business whose job is running (0227);
+   - the worker holds no SELECT on `jobs` as a whole or on `jobs.payload`, reads a payload only
+     through the pinned definer `job_payload`, which returns only running jobs and dead
+     `payment.process` / `billing.process` jobs (0228, 0234), and settlement may not execute it
+     (0231);
+   - refunds are recorded only through the six-argument `subscription_record_refund` on the billing
+     operator, with one row per provider refund under a unique index, no runtime writer of the
+     refund or pack-allowance rows, the pack rule and the actor contract in its body; the
+     five-argument form is gone; the charge guard refuses an application insert with the credit
+     columns preset (0230, 0235);
+   - `review_plan_price` carries the annual monthly x 10 fallback and `open_plan_price` is gone
+     (0232);
+   - settlement may read `key_fingerprints` and may not write them (0237);
+   - the worker's transition guard `jobs_worker_transition_guard` is present and enabled, and lets
+     the worker move a job only pending -> running, running -> done, pending or dead, and dead ->
+     pending for `payment.process` and `billing.process` (0238);
+   - the seven operator-actor CHECK constraints exist (0239);
+   - the two allowance-change triggers are enabled, the refund function reads
+     `business_allowance_changes`, the application cannot insert its rows and settlement cannot delete them (0240);
+   - the ledger carries 40 tags, 0196 to 0240 (the list in `SMOKE_0196_SQL`).
+
+   Re-running an earlier migration by hand after a later one (for example 0228, 0229 or 0230 after
+   0231 to 0236) puts back its weaker definitions, whatever its header says about re-running; the
+   runner never does this, and the smoke refuses the result.
+
+   Since G5-1 the smoke runs for any release that carries a compatibility-breaking migration
+   (`carries_plan_boundary`), not only for one carrying 0196 to 0221.
 
 4. 0223 is not a compatibility break either: it narrows only the settlement process this release
    introduces, and an application write no release makes. It ships in the same stopped window.
@@ -739,7 +777,9 @@ subscription_charges WHERE status = 'pending'`). A charge opened before 0209 has
    the source is switched (next section). Staging runs the default and needs nothing.
 
 8. `dc up -d --wait --wait-timeout 300` starts `operator` and `settlement` with the rest. Check:
-   - `dc logs settlement` says `[settlement] job runner started`;
+   - `dc logs settlement` says `[settlement] job runner started` (since 0237 settlement refuses to
+     start with a `VAULT_KEY` whose fingerprint is not the enrolled one; on a fresh database it
+     waits, through its restart policy, until the API or the worker has enrolled the key);
    - `dc logs operator` says `identity: verified tokens`;
    - `POST https://<api host>/v1/businesses/plan` with no token answers 401 (the operator process
      answered; Caddy routes `/v1/businesses/plan` and `/v1/businesses/plan/*` there, and the API
@@ -763,7 +803,7 @@ subscription_charges WHERE status = 'pending'`). A charge opened before 0209 has
 
 **If settlement is down,** paid charges wait as `billing.process` jobs and nothing is lost: the
 worker cannot claim them (the database refuses it), and they run when `settlement` is back.
-**If the operator process is down,** plan changes answer 502 from Caddy; nothing else is affected. Caddy does not wait for it, so a deploy whose operator will not start (a wrong role, an audience equal to the API's) reports the deploy failed (`up --wait` fails) while the site, the API and the webhooks keep serving: fix the operator's configuration and run `up` again.
+**If the operator process is down,** plan changes and refund records answer 502 from Caddy; nothing else is affected. Caddy does not wait for it, so a deploy whose operator will not start (a wrong role, an audience equal to the API's) reports the deploy failed (`up --wait` fails) while the site, the API and the webhooks keep serving: fix the operator's configuration and run `up` again.
 
 **Before checking out this release,** add the new `.env` values first: compose refuses every command (`dc ps` and `dc logs` included) while a name the file requires is missing.
 

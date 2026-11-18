@@ -308,9 +308,22 @@ Amendment 1 and the rules of Amendments 2 to 4 are unchanged.
 
 ## Amendment 6 (14 Nov 2026, final review of PR #432): the cutover enrolment of dead jobs discovers ids only
 
-Status: **PROPOSED with PR #432.** It narrows an existing read and grants nothing new, but it names
-one more operation under Amendment 1, class 2, whose rule is that each operation is approved and
-listed here; it takes effect with the owner's acceptance of the PR (P12), not before.
+Status: **PROPOSED with PR #432; NOT ACCEPTED.** It names further operations under Amendment 1,
+class 2, whose rule is that each operation is approved and listed here, and it adds EXECUTE grants
+(listed below); it takes effect with the owner's acceptance of the PR (P12), not before. Text
+reconciled with migrations 0225 to 0240 on 18 Nov 2026 (second independent review of PR #432,
+R01, R07, R08, and the review of its remediation, B-1 and I1; PR OPEN, not merged, not deployed).
+
+**EXECUTE grants this amendment covers:**
+
+| Migration | Function                                                        | EXECUTE for                                                                                                                            |
+| --------- | --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| 0225      | `dead_job_unrecorded_candidates(integer)`                       | `rekoda_worker`                                                                                                                        |
+| 0228      | `job_payload(uuid)`                                             | `rekoda_worker` and `rekoda_settlement`; settlement's grant revoked by 0231, so since 0231 (and as re-granted by 0234) the worker only |
+| 0229      | `dead_job_enrolment_failed(uuid, uuid, text)`                   | `rekoda_worker`                                                                                                                        |
+| 0229      | `dead_job_enrolment_dead_letters(integer, uuid)`                | `rekoda_worker`                                                                                                                        |
+| 0229      | `dead_job_enrolment_requeue(uuid, uuid, text, text)`            | `rekoda_app` (actor contract tightened by 0233)                                                                                        |
+| 0236      | `dead_job_unrecorded_candidates(integer, uuid)` (keyset cursor) | `rekoda_worker`                                                                                                                        |
 
 The cutover enrolment of unrecorded dead jobs (`jobsRepo.enrolUnrecordedDeaths`, OWN-73 and
 OWN-76) was recorded in the rls-exemption register beside the Amendment 2 work lists, but it was not
@@ -332,27 +345,62 @@ other's enrolment. Since migration 0225:
 4. The reclaim pass (`jobsRepo.reclaimStalled`) likewise returns coordination columns only from its
    cross-tenant update and reads a dying job's payload under that job's own pin.
 
-5. **The worker reads no payload across tenants (0228, owner brief 15 Nov 2026: database-level
-   enforcement where feasible).** `rekoda_worker` holds SELECT on every column of `jobs` except
-   `payload`, and reads a payload only through `job_payload(job)`: SECURITY DEFINER, `search_path`
-   pinned, EXECUTE for the worker and settlement, returning one job's payload only where that
-   job's business is the pinned tenant (NULL otherwise). An unpinned, cross-tenant or bulk payload
-   read on the worker credential is refused by the database.
+5. **The worker's payload reads go through one pinned function (0228, 0231, 0234; owner brief
+   15 Nov 2026: database-level enforcement where feasible).** `rekoda_worker` holds SELECT on every
+   column of `jobs` except `payload`, and reads a payload only through `job_payload(job)`:
+   SECURITY DEFINER, `search_path` pinned, EXECUTE for the worker only since 0231. It returns a
+   job's payload only where that job's business is the tenant pinned at that call (NULL
+   otherwise) and, since 0234, only for a job in state `running` or a dead `payment.process` or
+   `billing.process` job (the reads the worker's code makes); a pending backlog and a finished
+   job's history are not returned to any caller. That last property holds only since 0238: before
+   it the worker could set a finished job back to `running`, read it and roll back. Since 0238 a
+   `BEFORE UPDATE` trigger (`jobs_worker_transition_guard`) lets the worker change `state` only
+   `pending -> running`, `running -> done | pending | dead` and `dead -> pending` (for
+   `payment.process` and `billing.process` only), so it cannot revive a done job, or a dead job of
+   any other kind, to read its payload. Settlement does not execute the function (0231):
+   it reads a payload only through its own SELECT on `jobs`, which 0217's restrictive policy
+   `settlement_only_its_kinds` limits to `billing.process` and `billing.apply_no_charge`
+   (`jobsRepo` `pinnedPayload` chooses the path by `has_function_privilege`). What the database
+   enforces is exactly: (a) no SELECT on `jobs.payload` for the worker, so a statement naming the
+   column, the whole row or a filter on it is refused; (b) `job_payload` checks the pin at each
+   call; (c) only running or dying jobs are readable; (d) the worker moves a job only through its
+   own transitions (0238). It does **not** refuse a bulk or a
+   cross-tenant read through the function: under one pin, one statement reads every running or
+   dying payload of that business, and a statement that re-pins per row with
+   `set_config('app.business_id', ..., true)` reads every tenant's running or dying payloads (both
+   proved as "RESIDUAL" cases in `packages/db/src/ops/job-payload-isolation.integration.test.ts`).
+   Nor does it stop the worker claiming a **pending** job of any tenant (moving it to `running`)
+   and reading its payload: running every tenant's pending work is the worker's job. The worker
+   credential is trusted with every tenant's jobs (it claims and runs them, class 2).
 6. **The enrolment dead letters (0229)** are a further operator work list of the Amendment 2
    shape: `dead_job_enrolment_dead_letters(page_size, job)`, worker-only, read-only, fixed
    columns (job id, business id, kind, attempts, last SQLSTATE, times, requeue count; never a
    payload or an error text), 1 to 200 rows, reached from `GET /v1/ops/dead-jobs/enrolment-failures`
    (`ops:read`). A requeue runs under `withBusiness()` for the record's own business, through a
-   definer that requires that pin, with its own scope (`ops:payment`) and an audit event.
+   definer that requires that pin, with its own scope (`ops:payment`) and an audit event. Since
+   0233 the actor and the `requeued_by` column must match `^operator:[!-~]{1,255}$`. The function is
+   executable by `rekoda_app` and takes the actor from its caller, so the operator identity is
+   asserted by the application's OIDC check, not by the database (OD-54).
+7. **The enrolment makes progress whatever fails (0236).** Discovery also has a keyset form,
+   `dead_job_unrecorded_candidates(page_size, after)`, worker-only, the same id-only result; the
+   worker carries the cursor between passes and wraps when a page comes back short. A failure to
+   record a candidate's failure is reported by SQLSTATE. The reclaim pass moves each stalled job in
+   its own savepoint together with its dead-job record: a job whose record cannot be written stays
+   `running` with its expired lease and is retried on the next pass, every other job is reclaimed
+   regardless, and no death is committed without its record (`8e263c5`; tested in
+   `packages/db/src/ops/dead-job-reclaim-isolation.integration.test.ts`).
 
-**What the database still cannot enforce (after 0228):** the tenant pin is set by the caller (a
+**What the database still cannot enforce (after 0238):** the tenant pin is set by the caller (a
 scoping device, not an authentication), and the worker process legitimately runs every tenant's
-jobs, so a holder of the worker credential can still pin each business in turn and read its jobs
-one at a time; and the worker still reads the coordination columns of every tenant's jobs, because
-the claim works across tenants (Amendment 1, class 2; invariant 3). Before 0228, "a payload is read
-only under its own tenant's pin" was a property of the repository code alone, proved statement by statement
-(`packages/db/src/ops/dead-job-enrolment-pin.test.ts`) and held by the boundary check
-(`scripts/check-boundaries.mjs`, rule "cross-tenant job payload read"). The function's grants,
+jobs. A holder of the worker credential can therefore claim any tenant's pending job and read its
+payload, read every running or dying payload of a business in one statement, and every tenant's
+running or dying payloads in one statement by re-pinning per row; and the worker still reads the coordination columns of every tenant's jobs,
+because the claim works across tenants (Amendment 1, class 2; invariant 3). What keeps the
+worker's **own code** to one job, under that job's own pin, is not the database but the
+repository boundary rule (`scripts/lib/job-payload-reads.mjs`, run by `scripts/check-boundaries.mjs`
+as "cross-tenant job payload read") and the statement-level test
+(`packages/db/src/ops/dead-job-enrolment-pin.test.ts`). The residual is accepted only if the owner
+accepts this amendment. The function's grants,
 column set and bound, and the per-business isolation, are proved in
 `packages/db/src/ops/dead-job-enrolment-scope.integration.test.ts` and pinned by the pre-start
 smoke in `scripts/deploy-staging.sh`.

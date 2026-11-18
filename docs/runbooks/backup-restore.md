@@ -15,11 +15,11 @@ Drill cadence: monthly, and before any migration touching financial tables.
 > CI (below). When the timer is enabled, this note is replaced by the
 > evidence (bucket name, first verified upload date, first off-box drill).
 
-| Data                                                    | Method (planned)                        | Frequency (planned) | Destination (planned)   |
-| ------------------------------------------------------- | --------------------------------------- | ------------------- | ----------------------- |
-| Postgres (everything: ledger, vault ciphertexts, audit) | `pg_dump -Fc`                           | nightly 02:00 WAT   | Backblaze B2, encrypted |
-| Generated documents                                     | R2 is primary storage; lifecycle-copied | continuous          | R2 + B2 mirror          |
-| Whole box                                               | Hetzner snapshot                        | weekly              | Hetzner                 |
+| Data                                                    | Method (planned)                        | Frequency (planned) | Destination (planned)                                                                                                                                                                |
+| ------------------------------------------------------- | --------------------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Postgres (everything: ledger, vault ciphertexts, audit) | `pg_dump -Fc`                           | nightly 02:00 WAT   | Backblaze B2, encrypted (production design; not chosen or enabled. Staging's offsite target is Cloudflare R2, owner choice 13 Nov 2026, below and `staging-first-deploy-pr-b.md` §1) |
+| Generated documents                                     | R2 is primary storage; lifecycle-copied | continuous          | R2 + B2 mirror (production design; not enabled)                                                                                                                                      |
+| Whole box                                               | Hetzner snapshot                        | weekly              | Hetzner                                                                                                                                                                              |
 
 Vault ciphertexts are useless without `VAULT_KEY`, which lives ONLY in the
 environment — so an exfiltrated backup alone exposes no customer identity.
