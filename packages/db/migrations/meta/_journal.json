@@ -1681,6 +1681,13 @@
       "when": 1796904000016,
       "tag": "0239_operator_actor_columns",
       "breakpoints": true
+    },
+    {
+      "idx": 240,
+      "version": "7",
+      "when": 1796904000017,
+      "tag": "0240_pack_refund_allowance_history",
+      "breakpoints": true
     }
   ]
 }

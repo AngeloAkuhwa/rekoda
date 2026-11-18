@@ -436,6 +436,45 @@ describe('R09 (0235): a pack judged unused only against the allowance it was cre
     expect(await chargeOf(reference)).toMatchObject({ status: 'paid', revoked: false });
   });
 
+  /* A-1 (independent review of the remediation, 0240): equal now is not unchanged throughout. */
+  it('a pack consumed while the plan was lower is not unused after the plan returns', async () => {
+    const { businessId, reference } = await creditedPack(); // credited on Chat
+    /* Down to the trial-sized plan... (any lower allowance) */
+    await withBusiness(appDb, businessId, (tx) =>
+      tx.execute(
+        sql`SELECT test_fixture_set_plan(${businessId}::uuid, 'expired', now() + interval '25 days')`,
+      ),
+    );
+    /* ...consumption that needed the pack's units while it was lower... */
+    await withBusiness(ownerDb, businessId, (tx) =>
+      tx.execute(sql`UPDATE usage_counters SET used = usage_entitlement(${businessId}::uuid, 'AI_ACTIONS') + 40
+                     WHERE business_id = ${businessId}::uuid AND unit = 'AI_ACTIONS'`),
+    );
+    /* ...and back to Chat: the allowance is equal again, the consumption looks covered. */
+    await withBusiness(appDb, businessId, (tx) =>
+      tx.execute(
+        sql`SELECT test_fixture_set_plan(${businessId}::uuid, 'chat', now() + interval '25 days')`,
+      ),
+    );
+    await expect(refund(businessId, reference)).rejects.toThrow(
+      /needs an owner decision \(OD-55\)/,
+    );
+    expect(await bonus(businessId)).toBe(UNITS);
+    expect(await chargeOf(reference)).toMatchObject({ status: 'paid', revoked: false });
+  });
+
+  it('an add-on holding changed after the credit also leaves the decision to the owner', async () => {
+    const { businessId, reference } = await creditedPack();
+    await ownerDb.execute(sql`INSERT INTO business_add_ons (business_id, add_on_id, version, started_at)
+                              VALUES (${businessId}::uuid, 'developer_api_starter', 1, now())`);
+    await ownerDb.execute(
+      sql`DELETE FROM business_add_ons WHERE business_id = ${businessId}::uuid`,
+    );
+    await expect(refund(businessId, reference)).rejects.toThrow(
+      /needs an owner decision \(OD-55\)/,
+    );
+  });
+
   it('records the allowance at the credit, and refunds an unused pack while it is unchanged', async () => {
     const { businessId, reference } = await creditedPack();
     const [snap] = await ownerDb.execute<{ entitlement: number; unit: string }>(sql`

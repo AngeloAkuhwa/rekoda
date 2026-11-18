@@ -9,7 +9,7 @@
  *
  *   dead_job_exceptions (0194), staging_test_businesses / staging_tool_actions / staging_send_faults
  *   (0197), plan_change_reviews (0213), usage_reservations (0216), dead_job_enrolment_failures
- *   (0229), subscription_refunds and pack_credit_entitlements (0235).
+ *   (0229), subscription_refunds and pack_credit_entitlements (0235), business_allowance_changes (0240).
  *
  * (A business that ever paid is never deleted by retention, so the refund and pack rows here hang
  * off a failed charge, which is the only charge an abandoned trial can hold; the deletion's foreign
@@ -32,6 +32,7 @@ const NEW_TENANT_TABLES = [
   'usage_reservations',
   'subscription_refunds',
   'pack_credit_entitlements',
+  'business_allowance_changes',
 ] as const;
 
 let urls: Urls;
@@ -129,6 +130,9 @@ async function populate(businessId: string): Promise<void> {
     await tx.execute(sql`
       INSERT INTO pack_credit_entitlements (charge_id, business_id, unit, period, entitlement)
       VALUES (${charge!.id}::uuid, ${businessId}::uuid, 'AI_ACTIONS', 'TRIAL00', 50)`);
+    await tx.execute(sql`
+      INSERT INTO business_allowance_changes (business_id, changed_at)
+      VALUES (${businessId}::uuid, now()) ON CONFLICT (business_id) DO NOTHING`);
   });
 }
 
