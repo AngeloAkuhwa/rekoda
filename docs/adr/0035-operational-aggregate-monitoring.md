@@ -375,7 +375,11 @@ other's enrolment. Since migration 0225:
    `running -> done | dead`, never a run time more than ten minutes ahead. It can no longer move a
    done or dead job back to the queue, hand a failing job its retry budget back or park it, so a
    dead settlement job returns only through the operator's recovery (OWN-76: on the application
-   credential, verified with Paystack, audited, exactly one more attempt). It does **not** refuse a bulk or a
+   credential, verified with Paystack, audited, exactly one more attempt). One limit the guard
+   cannot see (review B of the closeout round): a claim (+1) followed by a deferral (−1) leaves the
+   attempts unchanged, so a holder of the settlement credential could keep a job cycling without
+   it ever dying; that is no more than declining to run the job, which that credential can always
+   do, and the stuck-job and overdue alerts make a job that never completes visible. It does **not** refuse a bulk or a
    cross-tenant read through the function: under one pin, one statement reads every running or
    dying payload of that business, and a statement that re-pins per row with
    `set_config('app.business_id', ..., true)` reads every tenant's running or dying payloads (both
@@ -435,7 +439,7 @@ it accepts exactly the following; nothing else is accepted by implication.
 - **Restrictions the database enforces:** no SELECT on `jobs.payload` for the worker (0228);
   `job_payload` checks the pin per call and returns only running or dying payloads (0234); the
   worker moves a job only through its own transitions and never out of done or dead (0238, 0241);
-  settlement does the same for its two kinds, with its retry budget and run time bounded (0242);
+  settlement does the same for its two kinds, with its retry budget and run time bounded (0242; a claim followed by a deferral is the one move that leaves the budget unchanged);
   every guard recognises its principal by privilege, not by name, and exempts only the table owner.
 - **Settlement isolation:** settlement sees, claims and writes only `billing.process` and
   `billing.apply_no_charge` jobs (0217), reads their payloads through its own SELECT and never

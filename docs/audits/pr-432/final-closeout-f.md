@@ -8,90 +8,113 @@ an ADR or makes an owner decision.
 
 ## 1. Branch reconciliation
 
-| Step                                              | Result                                                                                                |
-| ------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `angelo/magical-bell-s81mqc` (PR head) before     | `0b4956ab985009291f3e3aaa4136516e0839d6e5`, unchanged on the remote when re-fetched                   |
-| `angelo/magical-bell-2ht8ys` (engineering branch) | `d976b21a06aaef4d5e3939bdd32a717cce4b21ef`                                                            |
-| Relationship                                      | `git merge-base --is-ancestor` true; `rev-list --left-right --count` 0 behind, 5 ahead                |
-| The five commits                                  | `692fbb5` (0241), `2be51d1`, `5fee6b2`, `84399be`, `d976b21`; author and committer the owner          |
-| Push                                              | ordinary fast-forward `0b4956a..d976b21` (owner authorisation of 18 Nov 2026); no force, no rewrite   |
-| This round's commits                              | on top of `d976b21`, pushed as fast-forwards; listed in `commit-register-remediation.md` #221 onwards |
+| Step                                          | Result                                                                                                        |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `angelo/magical-bell-s81mqc` (PR head) before | `0b4956ab985009291f3e3aaa4136516e0839d6e5`, unchanged on the remote when re-fetched                           |
+| `angelo/magical-bell-2ht8ys` (engineering)    | `d976b21a06aaef4d5e3939bdd32a717cce4b21ef`                                                                    |
+| Relationship                                  | `git merge-base --is-ancestor` true; `rev-list --left-right --count` 0 behind, 5 ahead                        |
+| The five commits                              | `692fbb5` (0241), `2be51d1`, `5fee6b2`, `84399be`, `d976b21`; author and committer the owner                  |
+| Push                                          | ordinary fast-forward `0b4956a..d976b21` (owner authorisation of 18 Nov 2026); no force, no rewrite           |
+| This round's commits                          | fast-forwards on top of `d976b21`; `commit-register-remediation.md` #224 onwards (#220 to #223 are round E's) |
 
 Preserved and not reopened: E-1 (inherited worker privilege, 0241), F-1 (trial-expiry history,
-0241), F-4 (monotonic history time, 0241), D-5 (constraint verification; extended below, not
-reverted) and B-6/F3 (independent retention inventory). Their regression tests are unchanged.
+0241), F-4 (monotonic history time, 0241), D-5 (constraint verification; extended below) and B-6/F3
+(independent retention inventory). Their regression tests are unchanged.
 
-## 2. Findings of this round and their disposition
+## 2. Findings and their disposition
 
-| ID          | Severity (owner)                   | Finding                                                                                                                                                                                                                      | Disposition                                                                                                                                                                                                                                                                                              | Commit    |
-| ----------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
-| S-1         | **IMPORTANT** (raised from MINOR)  | Settlement could move done or dead billing jobs back to pending (and reset a job's retry budget or park it), outside OWN-73/OWN-76 recovery                                                                                  | **FIXED** (0242): `jobs_settlement_transition_guard`, by privilege (`pg_has_role`), owner exempt; claim +1, renewal, retry/reclaim, deferral −1, completion, death; run time ≤ 10 min ahead. Operator recovery (application credential) unchanged and tested                                             | `e25702b` |
-| E-F4        | **IMPORTANT**                      | A reclaimed job whose death cannot be recorded stays `running` with only a count                                                                                                                                             | **FIXED**: `queueHealth.stuckRunning` (payment / billing / other) and `oldestStuckSeconds`; the G-26 alert `jobs.stuck_running` (critical for money kinds) once per cooldown, resolved only when the job moves; reclaim logs id, kind, SQLSTATE; incident runbook procedure                              | `08c8b6e` |
-| F-3         | owner: do not dismiss              | Refund vs concurrent plan change (and the other interleavings)                                                                                                                                                               | **NOT REPRODUCIBLE; evidence recorded** (§4): nine forced interleavings on separate connections; the result always equals a serial order; no code change. A mutation (no counter `FOR UPDATE`) fails two of them                                                                                         | `7090101` |
-| F-2         | user-facing correctness            | The billing page kept saying "switching your plan on now" after a withdrawal or a stopped job                                                                                                                                | **FIXED**: overview `noChargeUpgrade` (`processing`, `applied`, `withdrawn`, `failed`, from the charge and its job; defaults to null); the page notice follows it                                                                                                                                        | `e141258` |
-| D-5 residue | completion of review 6's MINOR     | The smoke matched actor constraints by name and a `LIKE` on the definition: a decoy on another table or schema, `CHECK (true OR ...)`, another column, `NOT VALID`, and a dropped refund or enrolment actor check all passed | **FIXED**: nine constraints matched by schema, table, name, `conkey` column, validation and exact definition; 0239's intentionally NOT VALID one may be validated later. 0242 pinned (42 tags)                                                                                                           | `f3e3fb0` |
-| E-F1        | MINOR                              | The 0239 draft (`ebb8d79`) was not detected                                                                                                                                                                                  | **FIXED** by the exact smoke (tamper case "the 0239 draft"); 0238's draft was already caught                                                                                                                                                                                                             | `2d6f02c` |
-| E-F5        | MINOR (pre-existing)               | A restore into a new database drops 0109's `REVOKE TEMPORARY`                                                                                                                                                                | **FIXED in the drill**: re-applied from `BACKUP_DATABASE_REVOKES_SQL` and checked (no runtime role keeps TEMP); the real restore's commands are tied to 0109 by a script test                                                                                                                            | `2d6f02c` |
-| E-F6        | MINOR                              | The drill's BYPASSRLS check proves nothing in container mode                                                                                                                                                                 | **DOCUMENTED, bounded**: the container creates the roles itself; the check is meaningful with `DRILL_DATABASE_URL` and in a real restore (`deploy.md`, supported configuration)                                                                                                                          | `2d6f02c` |
-| E-F7        | MINOR                              | A non-superuser migration owner is untested                                                                                                                                                                                  | **DOCUMENTED, unsupported configuration**: the owner is the image's superuser (`POSTGRES_USER: rekoda_owner`); CI's foreign-owner job proves no migration names the owner                                                                                                                                | `2d6f02c` |
-| E-F8        | MINOR (material for deploy safety) | No guard forced a new migration to be classified                                                                                                                                                                             | **FIXED**: `ADDITIVE_MIGRATIONS` beside `COMPAT_BREAKING_MIGRATIONS`; `scripts/deploy-staging-classes.test.mjs` (in CI) fails a migration in neither or both; the reviewed breaking set is pinned                                                                                                        | `2d6f02c` |
-| E-F9        | MINOR (docs)                       | Key rotation and settlement                                                                                                                                                                                                  | **ALREADY DOCUMENTED** in `key-rotation.md` (settlement holds `VAULT_KEY` and `PAYSTACK_SECRET_KEY`, never enrols; rotate API first, then settlement)                                                                                                                                                    | —         |
-| E-F10       | MINOR                              | Settlement has no `depends_on: api` on a fresh install                                                                                                                                                                       | **DOCUMENTED, bounded**: settlement refuses to boot until the API or worker enrols the vault key and `restart: unless-stopped` retries it; it settles nothing meanwhile. Fresh-install order stated in `deploy.md`; compose unchanged (a `depends_on` would also start the API with any `up settlement`) | `2d6f02c` |
-| Runbooks    | docs                               | The staging runbook named 0240 beside a count of 242; P7 and D8 did not name their schema                                                                                                                                    | **FIXED**: 0000–0242, 243 migrations, 42 smoke tags; P7 drills the schema staging runs now (193, `0192_…`), D8 the deployed one (243, `0242_…`)                                                                                                                                                          | `2d6f02c` |
-| S-2         | MINOR (on `main`)                  | `email_address_erasures.operator` keeps `^operator:`                                                                                                                                                                         | Unchanged, recorded (OD-41 (xxxi)); outside PR B's actor set                                                                                                                                                                                                                                             | —         |
-| S-3         | MINOR (docs)                       | 0234's header word "dying"                                                                                                                                                                                                   | Unchanged; ADR 0035 Am. 6 states it exactly                                                                                                                                                                                                                                                              | —         |
+| ID          | Severity                       | Finding                                                                                                                                                                                 | Disposition                                                                                                                                                                                                               |
+| ----------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| S-1         | **IMPORTANT** (owner)          | Settlement could move done or dead billing jobs back to pending, reset a job's retry budget, or park it, outside the OWN-73/OWN-76 recovery                                             | **FIXED** (0242): `jobs_settlement_transition_guard`, by privilege, owner exempt; claim +1, renewal, retry/reclaim, deferral −1, completion, death; run time at most 10 min ahead. Operator recovery unchanged and tested |
+| E-F4        | **IMPORTANT** (owner)          | A reclaimed job whose death cannot be recorded stays `running` with only a count                                                                                                        | **FIXED**: `queueHealth.stuckRunning` by kind, `oldestStuckSeconds`; alert `jobs.stuck_running` once per cooldown, resolved only when the job moves; the reclaim logs id, kind, SQLSTATE; `incident.md` procedure         |
+| F-3         | **IMPORTANT** (review A)       | A downgrade (or a holding ending, or a trial expiring) committing while the refund waited for the counter, then consumption spending pack units, let a spent pack be refunded as unused | **FIXED** (0243): the allowance is judged after the counter lock. RED reproduced deterministically; the other forced interleavings recorded (§4). My first conclusion (not reproducible, no change) was wrong             |
+| F-2         | user-facing (owner)            | The billing page kept saying "switching your plan on now" after a withdrawal or a stopped job                                                                                           | **FIXED**: overview `noChargeUpgrade` (`processing`, `applied`, `withdrawn`, `failed`); the notice follows it, says nothing for none or a replaced request, and names the plan once on                                    |
+| F-2 (E-1)   | **IMPORTANT** (review E)       | A pending ₦0 upgrade appeared as "Pay for your plan ₦0" with Paystack buttons and "Awaiting payment", beside "Nothing was charged"                                                      | **FIXED**: a ₦0 charge is never a charge waiting for money; the history says "Switching plan" / "No charge"                                                                                                               |
+| D-5 residue | completion of review 6's MINOR | The smoke matched actor constraints by name and a `LIKE`                                                                                                                                | **FIXED**: nine constraints matched by schema, table, name, column, validation and exact definition                                                                                                                       |
+| B-1 (round) | **IMPORTANT** (review B)       | The exact smoke mapped `$` to `@` on the live side, so a literal-`@` regex passed; the guard pins ignored `SECURITY DEFINER`, `search_path` and comment-padded bodies                   | **FIXED**: the anchor is mapped on the expected side only; both transition guards and the refund function are pinned by md5 of their exact body, language and attributes                                                  |
+| D-I2        | **IMPORTANT** (review D)       | The 10-minute run-time bound of 0242 had no test                                                                                                                                        | **FIXED**: an ATTACK test (11 min, 1 day, infinity; a pending job) and the capped 5-minute backoff passing; a mutation without the clause fails it                                                                        |
+| D-I1        | **IMPORTANT** (review D)       | The verification pointers were circular and the PR description named an older head                                                                                                      | **FIXED**: §5 below records the exact-head evidence; the PR description is rewritten on the final head                                                                                                                    |
+| E-F1        | MINOR                          | The 0239 draft (`ebb8d79`) was not detected                                                                                                                                             | **FIXED** by the exact smoke (tamper case)                                                                                                                                                                                |
+| E-F5        | MINOR (pre-existing)           | A restore into a new database drops 0109's `REVOKE TEMPORARY`                                                                                                                           | **FIXED in the drill**: re-applied from `BACKUP_DATABASE_REVOKES_SQL` and checked; tied to 0109 by a script test                                                                                                          |
+| E-F6        | MINOR                          | The drill's BYPASSRLS check proves nothing in container mode                                                                                                                            | **DOCUMENTED, bounded** (`deploy.md`, supported configuration)                                                                                                                                                            |
+| E-F7        | MINOR                          | A non-superuser migration owner is untested                                                                                                                                             | **DOCUMENTED, unsupported configuration** (the image's superuser `rekoda_owner`)                                                                                                                                          |
+| E-F8        | MINOR (deploy safety)          | No guard forced a new migration to be classified                                                                                                                                        | **FIXED**: `ADDITIVE_MIGRATIONS`; `scripts/deploy-staging-classes.test.mjs` in CI                                                                                                                                         |
+| E-F9        | MINOR (docs)                   | Key rotation and settlement                                                                                                                                                             | **ALREADY DOCUMENTED** in `key-rotation.md`                                                                                                                                                                               |
+| E-F10       | MINOR                          | Settlement has no `depends_on: api` on a fresh install                                                                                                                                  | **DOCUMENTED, bounded**: it refuses to boot until the key is enrolled and is restarted; compose unchanged                                                                                                                 |
+| Runbooks    | docs                           | The staging runbook named 0240 beside 242 migrations; P7 and D8 did not name their schema                                                                                               | **FIXED**: 0000 to 0243, 244 migrations, 43 smoke tags; P7 drills 193/`0192_…`, D8 244/`0243_…`                                                                                                                           |
+
+**Recorded, not fixed (MINOR; none affects financial truth, privacy, authorisation, identity,
+billing, subscription state, metering or a launch-gate claim):** a claim followed by a deferral
+leaves settlement's attempts unchanged (review B; no worse than not running the job; ADR 0035 Am. 6
+states it); the pre-start smoke runs only for a release carrying a breaking migration and `migrate`
+sets no `lock_timeout` (review C; stated in `deploy.md`); `role="status"` on content present at load
+(review E; matches the page's other strips); the F-2 notice is not shown beside the OWN-76 billing
+notice (review E; the two concern different things and do not contradict); S-2
+(`email_address_erasures.operator`, on `main`) and S-3 (0234's header word) as recorded in round E;
+18 audit and canonical files fail `pnpm docs:check` formatting, as before this round (not a CI
+check). Each intermediate commit of this round was not re-run on its own; register rows record the
+evidence, and the head is what CI and §5 verify.
 
 ## 3. RED before GREEN
 
-| Finding | Test (file › title)                                                                                                                                           | RED (at `d976b21` or with the fix removed)                                                                                                                        | GREEN      |
-| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
-| S-1     | `packages/db/src/ops/settlement-job-transitions.integration.test.ts` › three ATTACK tests                                                                     | 3 failed: `done -> pending` allowed for the real role; an inheriting role "revived 1 done job(s)"; a budget reset "allowed"; the two legitimate-path tests passed | 5/5        |
-| E-F4    | `apps/api/src/health/stuck-job-alert.integration.test.ts` (2); `packages/core/src/ops-alerts.test.ts` (2 new)                                                 | api 2/2 failed (no per-job detail: `jobs is not iterable`; `stuckRunning` undefined); core 2 failed (no alert)                                                    | 2/2; 19/19 |
-| F-2     | `apps/api/src/billing/no-charge-upgrade-status.integration.test.ts` (4)                                                                                       | 4/4 failed: `noChargeUpgrade` undefined                                                                                                                           | 4/4        |
-| F-2     | `apps/web/src/lib/billing-pay-copy.test.ts` › `noChargeUpgradeCopy (F-2)` (3); `apps/web/e2e/billing-journey-no-charge-upgrade.spec.ts` (2 × mobile, desktop) | the function and the page notice did not exist                                                                                                                    | 44/44; 4/4 |
-| Smoke   | `packages/db/src/ops/deploy-smoke-sql-closeout.integration.test.ts` (16)                                                                                      | against the `d976b21` smoke: 13 of the 15 tampers then present printed `t`                                                                                        | 16/16      |
-| E-F8    | `scripts/deploy-staging-classes.test.mjs` (2)                                                                                                                 | no `ADDITIVE_MIGRATIONS`: the classification could not be checked                                                                                                 | 2/2        |
-| E-F5    | `scripts/backup-scripts.test.mjs` › "the drill re-applies 0109's database-level revokes" ; a scratch database: 5 runtime roles with TEMP before, 0 after      | the drill applied no revoke                                                                                                                                       | 20/20      |
-| F-3     | `packages/db/src/billing/pack-refund-concurrency.integration.test.ts` (9)                                                                                     | not reproducible on the product; with the counter `FOR UPDATE` removed: 2 failed                                                                                  | 9/9        |
+| Finding    | Test (file › title)                                                                                                                     | RED (before the fix)                                                                                            | GREEN |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ----- |
+| S-1        | `packages/db/src/ops/settlement-job-transitions.integration.test.ts` › three ATTACK tests                                               | 3 failed at 0241: `done -> pending` allowed; an inheriting role "revived 1 done job(s)"; budget reset "allowed" | 6/6   |
+| S-1 (D-I2) | same file › "cannot park a job far ahead"                                                                                               | with the run-time clause removed from the guard: failed                                                         | 6/6   |
+| E-F4       | `apps/api/src/health/stuck-job-alert.integration.test.ts` (2); `packages/core/src/ops-alerts.test.ts` (2 new)                           | api 2/2 and core 2 failed at `d976b21`                                                                          | pass  |
+| F-3        | `packages/db/src/billing/pack-refund-concurrency.integration.test.ts` › "a downgrade and consumption that spends the pack ..."          | at 0242: the refund answered `refunded` with 51 pack units spent                                                | 11/11 |
+| F-2        | `apps/api/src/billing/no-charge-upgrade-status.integration.test.ts` (4)                                                                 | 4/4 failed at `d976b21`                                                                                         | 4/4   |
+| F-2 (E-1)  | `apps/web/src/lib/billing-pay-copy.test.ts` › "a zero-priced upgrade is never offered as a payment" (2)                                 | 2 failed: a ₦0 pending charge was the pay card's charge, labelled "Awaiting payment"                            | pass  |
+| F-2        | `apps/web/e2e/billing-journey-no-charge-upgrade.spec.ts` (2 × mobile, desktop): notices, no pay card, history labels                    | the notice and labels did not exist                                                                             | 4/4   |
+| Smoke      | `packages/db/src/ops/deploy-smoke-sql-closeout.integration.test.ts`                                                                     | 13 of 15 tampers printed `t` with the `d976b21` smoke; review B's 6 printed `t` at `2a6fa1c`                    | 24/24 |
+| E-F8       | `scripts/deploy-staging-classes.test.mjs` (2)                                                                                           | no `ADDITIVE_MIGRATIONS` existed                                                                                | 2/2   |
+| E-F5       | `scripts/backup-scripts.test.mjs` › "the drill re-applies 0109's database-level revokes"; a scratch database: 5 roles with TEMP, then 0 | the drill applied no revoke                                                                                     | 20/20 |
 
-Two existing assertions changed, both to include the new queue fields (`stuckRunning`,
-`oldestStuckSeconds`) in an exact-shape expectation of an empty queue
-(`packages/db/src/ops/ops-health.integration.test.ts`, `apps/api/src/health/ops.integration.test.ts`):
-stronger, not weaker. No test was skipped, removed or weakened.
+Changed existing assertions, none weakened: the empty-queue exact shapes
+(`ops-health.integration.test.ts`, `ops.integration.test.ts`) gained the new zero fields; the reclaim
+statement test (`dead-job-enrolment-pin.test.ts`) matches the new `SELECT id, kind` with every
+assertion kept; the upgrade suites extend to 0243; two F-3 tests written earlier in this round
+asserted that a change committing while the refund waited was ordered after it, which review A
+showed unsafe, and now assert it is seen and refused (a new test covers a change after the refund's
+checks, which is ordered after it and recorded in the history).
 
-## 4. F-3: what PostgreSQL guarantees here, and the evidence
+## 4. F-3: what PostgreSQL guarantees, and the evidence
 
-`subscription_record_refund` runs in READ COMMITTED; PL/pgSQL takes a new snapshot per statement.
-Its order: S1 the charge row `FOR UPDATE`; S2 the recorded allowance, `usage_entitlement` and the
-allowance history (no lock); S3 the period's counter row `FOR UPDATE`, reading `used` and `bonus`
-of the latest committed version; S4 the revocation, the refund row, the charge, the audit row.
+`subscription_record_refund` runs in READ COMMITTED; PL/pgSQL takes a fresh snapshot per statement.
+Since 0243 its order is: lock the charge row (`FOR UPDATE`); lock the period's counter row
+(`FOR UPDATE`) and read `used` and `bonus`; read the recorded allowance, `usage_entitlement` and the
+allowance history; judge; revoke, record, mark, audit.
 
-- A plan or holding change committed before S2 is in S2's snapshot: the refund is refused (OD-55).
-  Forced: the refund held at S1 by a lock on the charge; the plan change commits; refused.
-- One committed after S2 is not seen. The outcome equals the serial order "refund, then change":
-  the plan writers read and write neither the pack charge nor the counter, the refund reads nothing
-  they write after S2, and the change's history row is recorded for any later refund. Forced with the
-  refund held at S3 (plan upgrade, add-on holding, same-plan renewal): the refund records once, the
-  change applies after it, every fact equals the serial result.
-- Consumption: `usage_reserve` checks its limit in `ON CONFLICT DO UPDATE ... WHERE c.used + p_n <=
-ceiling + c.bonus`, evaluated on the locked latest row. A reservation committed while the refund
-  waits at S3 is seen and the pack is refused as used; a reservation waiting behind a refund sees the
-  revocation and is refused. Both forced.
-- Concurrent refunds: one pack serialises on its charge row (the second refused, units revoked once);
-  two packs on one counter serialise on the counter row, and the second reads the first's
-  revocation. Forced.
-- Lock order: refund and pack credit take charge then counter; consumption the counter alone; plan
-  writers neither. No cycle exists, so no deadlock; the forced two-pack case completes.
-- Rollback: a refund in a transaction that rolls back leaves no refund row, no revocation and no
-  charge change. Forced.
-- Why not add a `businesses` lock: none of the above needs it, and it would introduce a lock-order
-  question with every plan writer (which lock `businesses` first) for no correctness gain.
+- **Before 0243** the allowance was read before the counter lock. While the refund waited for the
+  counter, a downgrade could commit and consumption, metered by `usage_reserve` against the lower
+  allowance plus the pack's bonus, could spend pack units and commit; the refund then judged `used`
+  against the allowance recorded at the credit and refunded a spent pack. Reproduced (Complete, a
+  100-unit pack, 350 used; downgrade to Chat; 101 more reserved; refunded).
+- **Now** any consumption committed before the counter lock is granted is in `used`, and any
+  allowance change it relied on committed before it, so the later statement sees it and the refund
+  goes to the owner (OD-55). After the lock no consumption can commit until the refund ends, and a
+  plan change committing then is ordered after the refund and recorded in the history (tested,
+  `changed_at` advances).
+- **Consumption:** `usage_reserve` checks its limit in `ON CONFLICT DO UPDATE ... WHERE`, evaluated on
+  the locked latest row: a reservation waiting behind a refund sees the revocation; a reservation
+  committed first is seen by the refund. Both forced.
+- **Concurrent refunds:** one pack serialises on its charge row; two packs on one counter serialise on
+  the counter row and the second reads the first's revocation. Forced.
+- **Lock order:** refund and pack credit take the charge, then the counter; consumption the counter
+  alone; plan writers neither. 0243 adds no lock, so there is no cycle and no deadlock.
+- **Rollback:** a refund that rolls back leaves no refund row, no revocation and no charge change.
+- **Why not a `businesses` lock:** the counter lock already orders consumption against the refund;
+  a `businesses` lock would add a lock-order question with every plan writer for no gain.
 
 ## 5. Verification on the final candidate
 
-Recorded in `README.md` §7 and in the PR description against the exact final SHA, with commands,
-environment, counts and CI links.
+See the PR description, which names the exact final SHA, the commands, the environment, the counts
+and the CI run; it is the record the owner reviews. A run on an earlier SHA is history.
 
-## 6. Independent review and external reviewers
+## 6. Independent review
 
-Recorded in `README.md` §7 after the review of the final head.
+Five fresh read-only reviews of `d976b21..2a6fa1c`, one per risk domain (financial, security,
+runtime and deploy, tests and docs, product and copy). BLOCKING 0. IMPORTANT 6, all fixed above
+(review A: F-3; review B: two smoke gaps; review D: the run-time test and the verification record;
+review E: the ₦0 pay card). Review C found none. The changed head after these fixes gets its own review, recorded in the
+PR description.

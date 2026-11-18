@@ -165,3 +165,9 @@ register.
 | docs/plans/paid-launch-plan.md | plan (new) | OD-53 to OD-56 | Gates G1 to G3, PRs C1 to C6, rulings needed, proposed ADR 0024 and /refunds text (not applied), Paystack key threat model | — | — | plan only | — |
 | docs/REKODA_MVP_AUTOPILOT_PLAYBOOK.md | playbook | owner instruction 7 | Release-candidate verification before any merge recommendation | — | — | documented | — |
 | docs/audits/pr-432/final-closeout-f.md, README.md, commit-register-remediation.md, manifest-remediation-delta.md; HANDOFF, CURRENT_STATE, LAUNCH_READINESS, TEST_MAP, PR-B-plan | docs | closeout F | Record of this round | — | — | documented | — |
+| packages/db/src/ops/dead-job-enrolment-pin.test.ts | unit test | E-F4 | The fake executor matches the reclaim's new `SELECT id, kind`; every assertion kept | itself | none | retargeted, not weakened | GREEN |
+| packages/db/migrations/0243_refund_judges_the_allowance_after_the_counter_lock.sql | migration (new, additive) | F-3 (review A) | `subscription_record_refund` judges the allowance after the counter `FOR UPDATE`; same signature, owner, grants | pack-refund-concurrency; pack-refund; deploy-smoke-sql-closeout | F-3 | fixed | RED at 0242, GREEN 11/11 |
+| apps/web/src/lib/charge-status.ts | web | F-2 (review E) | A ₦0 charge reads "Switching plan" or "No charge" | billing-pay-copy; e2e | review E | fixed | GREEN |
+| apps/api/src/billing/billing.service.ts (second change) | api | F-2 (review A MINOR) | Only a paid ₦0 charge reads as applied | no-charge-upgrade-status | review A | fixed | GREEN |
+| packages/db/src/repos/subscriptions.ts (second change) | repo | review D MINOR | The `noChargeWithdrawn` doc comment back above its function | — | review D | fixed | — |
+| docs/REKODA_REFERENCE_MANIFEST.md, README.md | docs | review C M3 | Migrations 0000 to 0243; plans count | — | review C | fixed | — |
