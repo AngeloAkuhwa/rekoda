@@ -26,7 +26,7 @@ description.
 | --- | --- | --- | --- |
 | R01 BLOCKING | Settlement could read any job kind's payload through `job_payload()` | **Fixed**: settlement has no EXECUTE; it reads payloads through its RLS-limited SELECT (two kinds) | 0231; `jobs.ts` `pinnedPayload` |
 | R02 | Support-review pricing lacked the annual fallback; grandfathered versions compared at open prices | **Fixed**: `review_plan_price` mirrors `planPriceKFor` (pinned version, explicit price wins, annual = monthly x 10, else NULL); paid-through date kept | 0232 |
-| R03 | `support_review` answered when no review was recorded | **Fixed**: `support_review_unavailable`; an existing test that asserted the defect corrected | `billing.service.ts` |
+| R03 | `support_review` answered when no review was recorded | **Fixed**: a review the database refuses answers `support_review_unavailable`. An open-ended operator plan (no expiry) answers `support_review` with no review row, as OWN-34 rules (`39ad27d`; the open-ended test keeps its original answer, strengthened) | `billing.service.ts` |
 | R04/R05 | Operator actor capped at 200 characters | **Fixed** in every operator function and actor column: `^operator:[!-~]{1,255}$` (or `system:<name>` where a system writer acts) | 0233, 0235, 0239 |
 | R06 | Refund replay inflated the refunded amount | **Fixed**: one row per provider refund (unique id), replay idempotent, conflicts refused, partials recorded up to the charge; no money moves | 0235 |
 | R07 | `job_payload` guarantees overstated | **Fixed and stated exactly**: running and dying jobs only (0234), the worker cannot revive a job (0238); residual (bulk under one pin, per-row re-pin, claiming any pending job) pinned by RESIDUAL tests and written in ADR 0035 Am. 6 | 0234, 0238 |
@@ -85,7 +85,7 @@ confirmation table).
 | --- | --- | --- | --- |
 | R01 | job-payload-isolation "ATTACK: settlement cannot read a merchant-message job's payload" | at 0230: allowed | 0231 |
 | R02 | support-review-pricing (annual fallback; grandfathered) | at 0231: 22023 not an upgrade | 0232 |
-| R03 | billing-paying "a review the database refuses is not answered as a support review" | `support_review` | `bab4045` |
+| R03 | retry-and-zero-charge "a review the database refuses is not answered as a support review" (moved from billing-paying in `39ad27d`) | `support_review` | `bab4045` |
 | R05 | dead-job-enrolment-dead-letter "accepts a 255-character operator subject" | at 0232: refused | 0233 |
 | R07 | job-payload-isolation "returns no payload for a pending, done or non-payment dead job" | at 0233: returned | 0234 |
 | R06 | probe on 0234: one 300,000 refund recorded twice | 600,000 recorded | 0235 |
@@ -104,9 +104,11 @@ confirmation table).
 | CI 44209538852 (1) | api shard 2/2: billing-grace, meta-consent-trial, meta-purchase-truth-3 after a file that enrolled another key | `KeyFingerprintMismatch` | `df1319d` (harness only) |
 | CI 44211911106 | dead-job-enrolment-settled: insert-only record over an existing one; settled event | `expected undefined to be false` | `91de525` |
 
-No test was skipped, removed or weakened to pass. Three existing assertions were changed because
-they asserted a defect (R03 open-ended plan, G3-1 forged ₦0 charge recorded as paid) or a refusal
-now made earlier by a stronger layer (0238 before the 0217 policy, which is still asserted).
+No test was skipped, removed or weakened to pass. Two existing assertions were changed because
+they asserted a defect (G3-1 forged ₦0 charge recorded as paid) or a refusal now made earlier by a
+stronger layer (0238 before the 0217 policy, which is still asserted). The R03 open-ended plan case
+was changed in the second round and restored in `39ad27d` to its original `support_review` answer
+(OWN-34), with added assertions (no review row, no charge, subscription unchanged).
 
 ## 6. Documentation changed
 

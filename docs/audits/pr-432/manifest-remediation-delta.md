@@ -84,7 +84,7 @@ already in the table above appear again only where this round changed them.
 | packages/db/src/billing/pack-refund.integration.test.ts | test | A-1 | Down-and-back plan; add-on holding change | itself | none | no finding | GREEN |
 | packages/db/src/privacy/retention-pr432-tables.integration.test.ts | test | R10 | Adds `business_allowance_changes` | itself | B-6 (list guard circular) | MINOR recorded | 2/2 |
 | packages/db/src/ops/upgrade-od51.integration.test.ts, upgrade-from-main.integration.test.ts | tests | migration compatibility | Through 0240 | themselves | none | no finding | GREEN |
-| apps/api/src/billing/billing-paying.integration.test.ts | test | R03 | Open-ended plan case asserted the defect; now the truthful answer and no review row | itself | R03 | fixed | GREEN |
+| apps/api/src/billing/billing-paying.integration.test.ts | test | R03 | Open-ended plan case asserted the defect; now the truthful answer and no review row (**superseded** in the third round by `39ad27d`: the open-ended case answers `support_review` per OWN-34; see the third-round row) | itself | R03 | superseded | GREEN |
 | apps/api/src/billing/retry-and-zero-charge.integration.test.ts | test | A-3 | Withdrawn-within-wait case | itself | none | no finding | GREEN |
 
 ## Third round (CI runs 44209538852 and 44211911106; `df1319d..` final head)
