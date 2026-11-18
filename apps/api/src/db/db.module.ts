@@ -75,6 +75,17 @@ class DbLifecycle implements OnApplicationShutdown {
  * keeps that true (MASTER-PLAN 4.4 #1) — without it `withBusiness` is a
  * convention rather than a guarantee.
  */
+/**
+ * The application pool's size (Codex review of PR #432). Each runner lane holds its handler's
+ * application transaction for the whole job, and a blocked-renewal initiation opens a checkout
+ * transaction on the same pool while it does; with a fixed 10 and 10 or more lanes, a backlog of
+ * those jobs could hold every connection while each waited for one more. Two per lane plus two for
+ * the sweeps, never fewer than the previous 10 (the default concurrency, 4, keeps exactly 10).
+ */
+export function appPoolSize(workerConcurrency: number): number {
+  return Math.max(10, 2 * workerConcurrency + 2);
+}
+
 @Global()
 @Module({
   providers: [
@@ -82,7 +93,8 @@ class DbLifecycle implements OnApplicationShutdown {
     {
       provide: DB_HANDLE,
       inject: [CONFIG],
-      useFactory: (config: ApiConfig): DbHandle => createDb(config.databaseUrl),
+      useFactory: (config: ApiConfig): DbHandle =>
+        createDb(config.databaseUrl, { max: appPoolSize(config.workerConcurrency) }),
     },
     {
       provide: DB,
