@@ -9,7 +9,7 @@
  * pass. Each tamper below must print `f`.
  */
 import { describe, expect, it } from 'vitest';
-import { smokeAfter, useSmokeHarness } from './deploy-smoke-sql.fixtures.js';
+import { migrationText, smokeAfter, useSmokeHarness } from './deploy-smoke-sql.fixtures.js';
 
 useSmokeHarness();
 
@@ -49,7 +49,9 @@ describe('the pre-start database smoke, closeout round (actor constraints, 0242)
     ],
     [
       'an actor check renamed onto another column of its table',
-      `ALTER TABLE dead_job_exceptions DROP CONSTRAINT dead_job_exceptions_recovery_requested_by_actor,
+      /* Rows other suites left are cleared first (the transaction rolls back), so the tamper applies. */
+      `DELETE FROM dead_job_exceptions;
+       ALTER TABLE dead_job_exceptions DROP CONSTRAINT dead_job_exceptions_recovery_requested_by_actor,
          ADD CONSTRAINT dead_job_exceptions_recovery_requested_by_actor
            CHECK (recovery_reason IS NULL OR recovery_reason ~ '^operator:[!-~]{1,255}$')`,
     ],
@@ -119,6 +121,58 @@ describe('the pre-start database smoke, closeout round (actor constraints, 0242)
          END IF;
          RAISE EXCEPTION 'refused' USING ERRCODE = '42501';
        END $$`,
+    ],
+    [
+      'an actor check whose end anchor became a literal @ (review B)',
+      `ALTER TABLE subscription_refunds DROP CONSTRAINT subscription_refunds_actor_check,
+         ADD CONSTRAINT subscription_refunds_actor_check CHECK (actor ~ '^operator:[!-~]{1,255}@')`,
+    ],
+    [
+      'the settlement transition guard made SECURITY DEFINER, so its owner exemption covers everyone (review B)',
+      'ALTER FUNCTION rekoda_private.jobs_settlement_transition_guard() SECURITY DEFINER',
+    ],
+    [
+      'the settlement transition guard with another search_path (review B)',
+      'ALTER FUNCTION rekoda_private.jobs_settlement_transition_guard() SET search_path = public, pg_catalog',
+    ],
+    [
+      'the worker transition guard made SECURITY DEFINER (review B)',
+      'ALTER FUNCTION rekoda_private.jobs_worker_transition_guard() SECURITY DEFINER',
+    ],
+    [
+      'the settlement transition guard returning early, with the pinned text kept in a comment (review B)',
+      `CREATE OR REPLACE FUNCTION rekoda_private.jobs_settlement_transition_guard() RETURNS trigger
+       LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $f$
+       BEGIN
+         RETURN NEW;
+         /* NOT pg_has_role(current_user, 'rekoda_settlement', 'USAGE')
+            pg_has_role(current_user, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), 'USAGE')
+            interval '10 minutes'
+            OLD.state = 'pending' AND NEW.state = 'running' AND NEW.attempts = OLD.attempts + 1
+            OLD.state = 'running' AND NEW.state IN ('done', 'dead') AND NEW.attempts = OLD.attempts */
+       END $f$`,
+    ],
+    [
+      'the worker transition guard returning early, with the pinned text kept in a comment (review B)',
+      `CREATE OR REPLACE FUNCTION rekoda_private.jobs_worker_transition_guard() RETURNS trigger
+       LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $f$
+       BEGIN
+         RETURN NEW;
+         /* NOT pg_has_role(current_user, 'rekoda_worker', 'USAGE')
+            pg_has_role(current_user, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), 'USAGE')
+            OLD.state = 'pending' AND NEW.state = 'running'
+            OLD.state = 'running' AND NEW.state IN ('done', 'pending', 'dead') */
+       END $f$`,
+    ],
+    [
+      'the refund function back at 0240, judging the allowance before the counter lock (review A)',
+      migrationText('0240_pack_refund_allowance_history.sql').match(
+        /CREATE OR REPLACE FUNCTION public\.subscription_record_refund\([\s\S]*?END \$function\$;/,
+      )![0],
+    ],
+    [
+      '0243 not recorded in the ledger',
+      "DELETE FROM rekoda_migrations WHERE tag = '0243_refund_judges_the_allowance_after_the_counter_lock'",
     ],
     [
       '0242 not recorded in the ledger',

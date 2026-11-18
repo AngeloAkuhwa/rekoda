@@ -29,7 +29,7 @@ import {
 
 usePlanWriterHarness();
 
-const GUARD = /^42501 .*moves a job only through its own transitions/;
+const GUARD = /^42501 settlement moves a job only through its own transitions \(0242\)/;
 
 /** A settlement job in a given state, written by the owner (arranging state only). */
 async function billingJob(
@@ -133,6 +133,40 @@ describe('0242: settlement moves its jobs only through its own transitions', () 
     ).toMatch(GUARD);
     expect(await stateOf(running)).toEqual({ state: 'running', attempts: 4 });
     expect(await stateOf(pending)).toEqual({ state: 'pending', attempts: 4 });
+  });
+
+  it("ATTACK: settlement cannot park a job far ahead; the runner's own five-minute backoff still passes", async () => {
+    const a = await seedBusiness();
+    const running = await billingJob(a, 'running', 1);
+    for (const ahead of ['11 minutes', '1 day', 'infinity']) {
+      const at =
+        ahead === 'infinity' ? sql`'infinity'::timestamptz` : sql`now() + ${ahead}::interval`;
+      expect(
+        await outcome(
+          settlementDb.execute(sql`UPDATE jobs SET state = 'pending', run_at = ${at}, locked_at = NULL,
+                                     locked_by = NULL WHERE id = ${running}::uuid`),
+        ),
+        ahead,
+      ).toMatch(GUARD);
+    }
+    const pending = await billingJob(a, 'pending', 1);
+    expect(
+      await outcome(
+        settlementDb.execute(
+          sql`UPDATE jobs SET run_at = now() + interval '1 day' WHERE id = ${pending}::uuid`,
+        ),
+      ),
+    ).toMatch(GUARD);
+    expect(await stateOf(running)).toEqual({ state: 'running', attempts: 1 });
+    // The longest legitimate retry: markFailed with the capped backoff (300 s).
+    const retried = await jobsRepo.markFailed(
+      settlementDb,
+      { id: running, attempts: 1, maxAttempts: 5 },
+      'transient',
+      jobsRepo.backoffMs(99),
+      'settlement-probe',
+    );
+    expect(retried.state).toBe('pending');
   });
 
   it('keeps every move the settlement runner makes: claim, renew, defer, retry, complete, die, reclaim', async () => {
