@@ -216,6 +216,8 @@ describe('queue health', () => {
       running: 0,
       oldestPendingSeconds: 0,
       oldestQueuedSeconds: 0,
+      stuckRunning: { payment: 0, billing: 0, other: 0 },
+      oldestStuckSeconds: 0,
     });
   });
 });

@@ -134,3 +134,34 @@ register.
 | packages/db/src/billing/settlement-isolation.integration.test.ts | test | 0241 | Error text "(0238, 0241)" | itself | none | no finding (retargeted, not weakened) | GREEN |
 | packages/db/src/ops/upgrade-od51.integration.test.ts, upgrade-from-main.integration.test.ts | tests | 0241 | Through 0241; the re-run ends on 0241 | themselves | none | no finding | GREEN |
 | packages/db/src/privacy/retention-pr432-tables.integration.test.ts | test | B-6 / F3 | Candidates derived from `CREATE TABLE` in migrations 0193 onwards | itself | B-6 | fixed | GREEN; a mutant missing one table fails |
+
+## Fifth round: closeout F (`d976b21..` final head, 18 Nov 2026)
+
+| File | Category | Requirement | Implication | Tests | Finding | Disposition | Evidence |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| packages/db/migrations/0242_settlement_job_transitions.sql | migration (new, additive) | S-1 | `jobs_settlement_transition_guard` BEFORE UPDATE: settlement moves its jobs only through its runner's transitions, by privilege, owner exempt | settlement-job-transitions; deploy-smoke-sql-closeout | S-1 | fixed | RED at 0241, GREEN at 0242 |
+| packages/db/migrations/meta/_journal.json | journal | 0242 | One entry appended (idx 242) | migration-journal-order | none | no finding | GREEN |
+| packages/db/src/ops/settlement-job-transitions.integration.test.ts | test (new) | S-1 | ATTACKs by the real role and an inheriting role; every legitimate move; operator recovery | itself | S-1 | fixed | RED 3, GREEN 5/5 |
+| packages/db/src/repos/jobs.ts | repo | E-F4 | `reclaimStalled` reports each unmoved job (id, kind, SQLSTATE); `queueHealth` counts stuck running jobs by kind with the oldest age | stuck-job-alert; ops-health | E-F4 | fixed | GREEN |
+| packages/core/src/ops-alerts.ts, ops-alerts.test.ts | core rule + unit | E-F4 | `jobs.stuck_running` (critical for payment or billing, warning otherwise), counts and age only | itself | E-F4 | fixed | RED 2, GREEN 19/19 |
+| apps/api/src/health/ops-alerts.ts, ops.controller.ts, apps/api/src/jobs/runner.ts | api | E-F4 | Snapshot carries the stuck counts; the reclaim logs each unmoved job | stuck-job-alert; ops | E-F4 | fixed | GREEN |
+| apps/api/src/health/stuck-job-alert.integration.test.ts | test (new) | E-F4 | Fault-injected record refusal; alert once, survives restart, resolves on recovery, tenant isolation | itself | E-F4 | fixed | RED 2/2, GREEN 2/2 |
+| packages/db/src/ops/ops-health.integration.test.ts, apps/api/src/health/ops.integration.test.ts | tests | E-F4 | Exact-shape expectations of an empty queue include the new zero fields | themselves | none | strengthened, not weakened | GREEN |
+| docs/runbooks/incident.md | runbook | E-F4 | "Stuck running jobs" operator procedure | — | E-F4 | documented | — |
+| packages/db/src/billing/pack-refund-concurrency.integration.test.ts | test (new) | F-3 | Nine forced interleavings on separate connections | itself | F-3 | not reproducible; evidence | 9/9; mutation fails 2 |
+| packages/db/src/repos/subscriptions.ts | repo | F-2 | `latestNoChargeUpgrade` (charge and its job's state, coordination columns only) | no-charge-upgrade-status | F-2 | fixed | GREEN |
+| packages/contracts/src/billing-api.ts | contract | F-2 | `noChargeUpgrade` on the overview, nullable, default null | no-charge-upgrade-status | F-2 | fixed | GREEN |
+| apps/api/src/billing/billing.service.ts | api | F-2 | `noChargeUpgradeView` classifies as `awaitNoCharge`; pending behind a dead, missing or finished job is failed | no-charge-upgrade-status | F-2 | fixed | RED 4/4, GREEN 4/4 |
+| apps/api/src/billing/no-charge-upgrade-status.integration.test.ts | test (new) | F-2 | processing, delayed completion, withdrawn, last-attempt failure, dead job, a newer request | itself | F-2 | fixed | RED 4/4, GREEN |
+| apps/web/src/lib/billing-pay-copy.ts, billing-pay-copy.test.ts, apps/web/src/app/app/billing/page.tsx | web | F-2 | `noChargeUpgradeCopy`; the notice follows the overview; no payment, job or error words | billing-pay-copy; e2e | F-2 | fixed | 44/44 |
+| apps/web/e2e/billing-journey-no-charge-upgrade.spec.ts | e2e (new) | F-2 | Refresh while pending, after the real settlement runner applies it, after a stopped job and a withdrawal | itself | F-2 | fixed | 4/4 (mobile, desktop) |
+| scripts/deploy-staging.sh | deploy script | D-5 residue; 0242; E-F8 | Nine actor constraints matched exactly; 0242 pins (42 tags); `ADDITIVE_MIGRATIONS` | deploy-smoke-sql suites; classes test | D-5, E-F8 | fixed | RED 13/15 tampers at `d976b21` |
+| packages/db/src/ops/deploy-smoke-sql-closeout.integration.test.ts | test (new) | D-5; S-1; E-F1 | 16 cases including the 0239 draft and a validated NOT VALID constraint staying `t` | itself | D-5, E-F1 | fixed | 16/16 |
+| packages/db/src/ops/upgrade-od51.integration.test.ts, upgrade-from-main.integration.test.ts | tests | 0242 | Through 0242 | themselves | none | no finding | GREEN |
+| scripts/deploy-staging-classes.test.mjs; .github/workflows/ci.yml | script test (new); CI | E-F8 | Every migration after 0192 in exactly one class; reviewed breaking set pinned; run in the staging-deploy step | itself | E-F8 | fixed | 2/2 |
+| scripts/lib/backup-common.sh, scripts/restore-drill.sh, scripts/backup-scripts.test.mjs | backup scripts | E-F5 | The drill re-applies 0109's revokes and fails if TEMP remains | backup-scripts | E-F5 | fixed | 20/20; scratch db 5 -> 0 |
+| docs/runbooks/deploy.md, staging-first-deploy-pr-b.md, backup-restore.md | runbooks | 0242; P7/D8; E-F6, E-F7, E-F10 | Final schema 0000–0242 (243); P7 current schema, D8 new; supported configuration | — | runbook refs | fixed / documented | — |
+| docs/adr/0035-operational-aggregate-monitoring.md | ADR (PROPOSED amendment) | S-1; E-F4 | Am. 6 text for 0242 and the stuck counts; the amendment as presented for acceptance | — | — | documented; NOT ACCEPTED | — |
+| docs/plans/paid-launch-plan.md | plan (new) | OD-53 to OD-56 | Gates G1 to G3, PRs C1 to C6, rulings needed, proposed ADR 0024 and /refunds text (not applied), Paystack key threat model | — | — | plan only | — |
+| docs/REKODA_MVP_AUTOPILOT_PLAYBOOK.md | playbook | owner instruction 7 | Release-candidate verification before any merge recommendation | — | — | documented | — |
+| docs/audits/pr-432/final-closeout-f.md, README.md, commit-register-remediation.md, manifest-remediation-delta.md; HANDOFF, CURRENT_STATE, LAUNCH_READINESS, TEST_MAP, PR-B-plan | docs | closeout F | Record of this round | — | — | documented | — |

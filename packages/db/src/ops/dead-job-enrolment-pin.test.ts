@@ -111,8 +111,11 @@ describe('enrolment reads a payload only under the job’s own tenant pin', () =
 describe('the reclaim pass reads a dying job’s payload only under its own tenant pin', () => {
   it('returns no payload from the cross-tenant update, then reads each dead one pinned', async () => {
     const { db, seen } = recordingDb((text, params) => {
-      if (/^\s*SELECT id FROM jobs WHERE state = 'running'/i.test(text)) {
-        return [{ id: JOB_A }, { id: JOB_B }];
+      if (/^\s*SELECT id, kind FROM jobs WHERE state = 'running'/i.test(text)) {
+        return [
+          { id: JOB_A, kind: 'payment.process' },
+          { id: JOB_B, kind: 'payment.process' },
+        ];
       }
       if (/^\s*UPDATE jobs SET/i.test(text)) {
         const id = params.find((p) => p === JOB_A || p === JOB_B);
@@ -136,7 +139,7 @@ describe('the reclaim pass reads a dying job’s payload only under its own tena
     expect(update).toHaveLength(2);
     for (const step of update) expect(step.text).not.toMatch(/\bpayload\b/);
     const listed = seen.filter((s) =>
-      /^\s*SELECT id FROM jobs WHERE state = 'running'/i.test(s.text),
+      /^\s*SELECT id, kind FROM jobs WHERE state = 'running'/i.test(s.text),
     );
     expect(listed).toHaveLength(1);
     expect(listed[0]!.text).not.toMatch(/\bpayload\b/);
@@ -155,7 +158,8 @@ describe('the reclaim pass reads a dying job’s payload only under its own tena
    * read, bounded to the pinned tenant; RLS (0217) limits it to settlement's own two kinds. */
   it('on a credential without job_payload, reads the column pinned and bounded to the pin', async () => {
     const { db, seen } = recordingDb((text) => {
-      if (/^\s*SELECT id FROM jobs WHERE state = 'running'/i.test(text)) return [{ id: JOB_A }];
+      if (/^\s*SELECT id, kind FROM jobs WHERE state = 'running'/i.test(text))
+        return [{ id: JOB_A, kind: 'billing.process' }];
       if (/^\s*UPDATE jobs SET/i.test(text)) {
         const { payload: _payload, ...rest } = jobRow(JOB_A, A);
         return [rest];

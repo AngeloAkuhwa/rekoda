@@ -84,6 +84,32 @@ This section is the single statement of the review order; it supersedes any earl
 
 At invocation start: read the rules, review previous handoff and check live status; select **one** highest-priority unblocked item. If an existing open PR has pending CI or reviews, investigate progress and perform useful independent permitted checks; do not create an equivalent PR. Before finishing, persist a compact handoff: `timestamp`, `main SHA`, `current branch/PR`, `last verified head SHA`, `CI/review status`, `specific remaining work`, `owner decisions needed`, `staging actual SHA`, and `next safe command`. Future runs must resume from it instead of starting over. Avoid churn that changes the head merely to re-trigger CI or reviews.
 
+### Release-candidate verification before any merge recommendation or merge (owner instruction, 18 Nov 2026)
+
+A green CI run, a Codex receipt, resolved threads or an owner approval each belong to one SHA. Before
+the routine reports a PR ready for merge, asks for a merge decision, or merges under OWN-26, it
+verifies, and records in its handoff:
+
+1. **The designated release candidate.** The exact SHA the owner or the latest engineering report
+   named as the candidate (the PR description's "Final PR head", the newest dated HANDOFF note, or an
+   owner instruction). If none is named, the candidate is the PR head and the report says so.
+2. **No authorised engineering branch holds outstanding remediation.** List the remote branches whose
+   commits are not in the PR (`git fetch origin '+refs/heads/*:refs/remotes/origin/*'`, then for each
+   `angelo/*`, `feat/*`, `fix/*` branch updated since the PR's last push:
+   `git rev-list --count <pr-head>..origin/<branch>`). A branch ahead of the PR with commits for the
+   same work (named in HANDOFF, the audit folder or an owner instruction) means the PR is NOT the
+   candidate: stop, report it, and do not recommend a merge.
+3. **Those fixes are in the PR.** When the owner authorises bringing them in, fast-forward only
+   (`git merge-base --is-ancestor <pr-head> <branch-head>`), after re-fetching and checking the PR
+   head has not moved; never force-push or rewrite.
+4. **CI covers the actual final candidate.** Every required check is green on that exact SHA; a run
+   on an earlier SHA is history, never evidence.
+5. **The owner's approval names that exact candidate.** An approval, P12 or otherwise, given for a
+   different SHA does not carry over. Where an owner ruling keeps the merge with the owner (OWN-94
+   P12 for #432), the routine never merges, whatever its general OWN-26 authority.
+
+The single-flight rule is unchanged: one implementation PR at a time.
+
 ---
 
 Claude, continue Rekoda development from the latest `main` branch.

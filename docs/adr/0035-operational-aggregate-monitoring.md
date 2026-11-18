@@ -311,8 +311,9 @@ Amendment 1 and the rules of Amendments 2 to 4 are unchanged.
 Status: **PROPOSED with PR #432; NOT ACCEPTED.** It names further operations under Amendment 1,
 class 2, whose rule is that each operation is approved and listed here, and it adds EXECUTE grants
 (listed below); it takes effect with the owner's acceptance of the PR (P12), not before. Text
-reconciled with migrations 0225 to 0240 on 18 Nov 2026 (second independent review of PR #432,
-R01, R07, R08, and the review of its remediation, B-1 and I1; PR OPEN, not merged, not deployed).
+reconciled with migrations 0225 to 0242 on 18 Nov 2026 (second independent review of PR #432,
+R01, R07, R08, the review of its remediation, B-1 and I1, the final closeout review, E-1, and the
+owner's closeout instruction of 18 Nov 2026, S-1 and E-F4; PR OPEN, not merged, not deployed).
 
 **EXECUTE grants this amendment covers:**
 
@@ -366,10 +367,15 @@ other's enrolment. Since migration 0225:
    call; (c) only running or dying jobs are readable; (d) the worker moves a job only through its
    own transitions (0238; since 0241 the guard applies to any role holding the worker's
    privileges that is not the table owner, not only to a role named `rekoda_worker`, so a role
-   that merely inherits the worker cannot skip it). Settlement is not under that guard: it holds
-   UPDATE on `jobs.state` for its own two kinds and can move a done or dead `billing.process` job
-   back to pending and re-run it without an operator, gaining no payload it could not already read
-   (stated, not fixed; OD-54). It does **not** refuse a bulk or a
+   that merely inherits the worker cannot skip it). Since 0242 settlement is under its own guard
+   (`jobs_settlement_transition_guard`, the same privilege test, so a role inheriting
+   `rekoda_settlement` is covered too): it moves its two kinds only `pending -> running` (one
+   attempt counted), `running -> running` (lease renewal, attempts unchanged), `running -> pending`
+   (a retry or reclaim, attempts unchanged, or a deferral handing the claim's attempt back) and
+   `running -> done | dead`, never a run time more than ten minutes ahead. It can no longer move a
+   done or dead job back to the queue, hand a failing job its retry budget back or park it, so a
+   dead settlement job returns only through the operator's recovery (OWN-76: on the application
+   credential, verified with Paystack, audited, exactly one more attempt). It does **not** refuse a bulk or a
    cross-tenant read through the function: under one pin, one statement reads every running or
    dying payload of that business, and a statement that re-pins per row with
    `set_config('app.business_id', ..., true)` reads every tenant's running or dying payloads (both
@@ -395,6 +401,13 @@ other's enrolment. Since migration 0225:
    regardless, and no death is committed without its record (`8e263c5`; tested in
    `packages/db/src/ops/dead-job-reclaim-isolation.integration.test.ts`).
 
+8. **A job the reclaim cannot move is visible (E-F4).** The queue aggregate (`jobsRepo.queueHealth`,
+   the OWN-36 class) also counts jobs still `running` more than 15 minutes after their lease was last
+   renewed, split into three kinds (customer payment, Rekoda billing, other), with the oldest age:
+   counts and an age only, no business, no job id, no payload. The G-26 alert pass raises
+   `jobs.stuck_running` from it and resolves it when the count is zero. The job ids reach the
+   operator only through the reclaim's log line (id, kind, SQLSTATE), never through the alert.
+
 **What the database still cannot enforce (after 0238):** the tenant pin is set by the caller (a
 scoping device, not an authentication), and the worker process legitimately runs every tenant's
 jobs. A holder of the worker credential can therefore claim any tenant's pending job and read its
@@ -409,3 +422,45 @@ accepts this amendment. The function's grants,
 column set and bound, and the per-business isolation, are proved in
 `packages/db/src/ops/dead-job-enrolment-scope.integration.test.ts` and pinned by the pre-start
 smoke in `scripts/deploy-staging.sh`.
+
+**The amendment as presented for acceptance (18 Nov 2026, final candidate of PR #432).** Accepting
+it accepts exactly the following; nothing else is accepted by implication.
+
+- **Trusted-worker privileges (class 2, necessary to run every tenant's queue):** read the
+  coordination columns of every tenant's jobs; claim any tenant's pending job and run it; read a
+  running or dying job's payload through `job_payload`, which can be called once per row under a
+  re-set pin, so one statement can read every tenant's running or dying payloads; kill a running
+  job; write the coordination columns; discover unrecorded dead payment and billing jobs by id
+  (0225, 0236) and record their deaths under each job's own pin; read the enrolment dead letters.
+- **Restrictions the database enforces:** no SELECT on `jobs.payload` for the worker (0228);
+  `job_payload` checks the pin per call and returns only running or dying payloads (0234); the
+  worker moves a job only through its own transitions and never out of done or dead (0238, 0241);
+  settlement does the same for its two kinds, with its retry budget and run time bounded (0242);
+  every guard recognises its principal by privilege, not by name, and exempts only the table owner.
+- **Settlement isolation:** settlement sees, claims and writes only `billing.process` and
+  `billing.apply_no_charge` jobs (0217), reads their payloads through its own SELECT and never
+  through `job_payload` (0231), touches only the Paystack events its own jobs name and only
+  `billing.process` dead-job records (0223), holds no add-on write (0226), and refuses to boot with
+  a vault key the database did not enrol (0237).
+- **Operator recovery boundaries:** a dead payment or billing job returns to the queue only through
+  `deadJobsRepo.beginRecovery` on the application credential, due now, with exactly one more attempt
+  (0223), after the reference is verified with Paystack; an enrolment requeue goes through
+  `dead_job_enrolment_requeue` with the `operator:` actor contract (0233); refunds are recorded only
+  by the billing operator (0230, 0235).
+- **Remaining application-plane audit limitations (OD-54, not closed):** the operator identity on
+  the API's own operator routes (dead jobs, enrolment requeues, exceptions, staging tools) is
+  asserted by the API's OIDC check, not by the database; the actor columns check the format of an
+  actor (0233, 0239), not who it was, so a holder of the application credential can write a
+  well-formed false actor. The worker and API processes hold both the `rekoda_app` and the
+  `rekoda_worker` credentials and the platform Paystack secret key.
+- **Compensating controls:** the operator routes require verified OIDC tokens with per-route
+  scopes; every operator action writes an audit event; the repository boundary rule and the
+  statement-level tests keep the worker's own code to one job under its own pin; the pre-start smoke
+  pins every guard, grant and constraint above on the deployed database; off-box backups and the
+  restore drill (G-02); the host access list and the secret files' permissions (51.5).
+- **Paid-launch security requirements (not met by this amendment, owner decisions open):** move the
+  privileged operator writes to the operator process and credential and revoke the application's
+  remaining grants for them (OD-54); a settlement-only reconciliation of pending charges and a
+  duplicate-payment operator surface (OD-53 (4), (5)); a refund workflow that reserves before the
+  provider refund and verifies after it (OD-55); a threat model for the Paystack secret key held by
+  the API and worker processes, with the safest available Paystack account permissions (OD-54).

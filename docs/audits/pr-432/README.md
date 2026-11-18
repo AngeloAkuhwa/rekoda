@@ -13,13 +13,15 @@ description.
 | File | What it is |
 | --- | --- |
 | `manifest-g1-migrations.md` ... `manifest-g6-docs.md` | One row per changed file at `095ff62` (394 files in seven groups): category, requirements, implications, tests, findings, disposition, evidence |
-| `manifest-remediation-delta.md` | One row per code and test file the remediation changed after `095ff62` (four rounds; the fourth is the final review of 18 Nov 2026) |
+| `manifest-remediation-delta.md` | One row per code and test file the remediation changed after `095ff62` (five rounds; the fifth is closeout round F of 18 Nov 2026) |
 | `commit-register.md` | One row per commit `58e6834..095ff62` (180), with migration amendments, test weakening checks and reconciliation |
 | `commit-register-remediation.md` | One row per commit after `095ff62` (numbered 181 onward) |
 | `documentation-audit.md` | The documentation audit: every canonical document, runbook and ADR traced to code, and 18 numbered corrections |
 | `final-review-a-financial.md`, `-b-security.md`, `-c-runtime-tests-docs.md` | Independent read-only reviews of the first remediation round, by risk domain |
 | `final-review-d-fresh.md` | A fresh independent review of the final implementation, with a confirmation table for every earlier finding |
 | `final-review-e-closeout.md` | The final closeout review of 18 Nov 2026 on `0b4956a`: five independent read-only reviews (audit coverage, database security, financial, release engineering, owner decisions), the findings, the fixes in `692fbb5` (0241) and the exact-head verification |
+| `final-closeout-f.md` | Closeout round F (owner instructions of 18 Nov 2026): the branch reconciliation, S-1 (0242), E-F4, F-2, F-3 (forced interleavings, not reproducible), the exact actor smoke, E-F1 and E-F5 to E-F10, RED evidence |
+| `owner-decisions-od53-56.md` | The OD-53 to OD-56 decision paper; the implementation sequence is `docs/plans/paid-launch-plan.md` |
 
 ## 2. The owner's findings R01 to R18: dispositions
 
@@ -136,7 +138,9 @@ billing-duplicate-payments, incident, backup-restore, README), `CLAUDE.md` (two 
 
 ## 7. Final verification
 
-The final verification is recorded in `final-review-e-closeout.md` §6, on the exact head it names.
+The final verification of the final candidate is recorded in the PR description and summarised in
+`final-closeout-f.md` §5, on the exact head it names. `final-review-e-closeout.md` §6 (heads
+`692fbb5` and `5fee6b2`) is history: 0242 and the closeout commits changed code after it.
 The local runs this section previously listed (turbo at `738d8cb`, db at `083b8e1`, api at
 `738d8cb`) are history: `39ad27d`, `df1319d` and `91de525` changed api and db code after them, and
 the final review's run supersedes them.

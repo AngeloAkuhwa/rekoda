@@ -95,6 +95,9 @@ change a feature and want to know what to run.
 | unit        | `packages/core/src/payment-record.test.ts`                                |
 | unit        | `packages/db/src/billing/plan-expiry-files.test.ts`                       |
 | unit        | `packages/db/src/billing/plan-expiry-files.patterns.test.ts`              |
+| e2e         | `apps/web/e2e/billing-journey-no-charge-upgrade.spec.ts`                  |
+| integration | `apps/api/src/billing/no-charge-upgrade-status.integration.test.ts`       |
+| integration | `packages/db/src/billing/pack-refund-concurrency.integration.test.ts`     |
 
 ### Payments, settlement, bank and reconciliation
 
@@ -467,6 +470,9 @@ change a feature and want to know what to run.
 | unit        | `packages/core/src/ops-alerts.test.ts`                                   |
 | unit        | `packages/core/src/risk.test.ts`                                         |
 | unit        | `packages/db/src/ops/entrypoint.test.ts`                                 |
+| integration | `apps/api/src/health/stuck-job-alert.integration.test.ts`                |
+| integration | `packages/db/src/ops/settlement-job-transitions.integration.test.ts`     |
+| integration | `packages/db/src/ops/deploy-smoke-sql-closeout.integration.test.ts`      |
 
 ### Other
 

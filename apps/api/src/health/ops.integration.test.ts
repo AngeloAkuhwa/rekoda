@@ -152,6 +152,8 @@ describe('what the operator health surface says', () => {
         running: 0,
         oldestPendingSeconds: 0,
         oldestQueuedSeconds: 0,
+        stuckRunning: { payment: 0, billing: 0, other: 0 },
+        oldestStuckSeconds: 0,
       },
       meta: {
         unprocessed: 0,
