@@ -20,13 +20,9 @@ describe('the pre-start database smoke, second review (0231 to 0237)', () => {
     ],
     [
       'job_payload back at 0228 (any state, R07)',
-      readFileSync(
-        new URL(
-          '../../migrations/0228_worker_reads_no_payload_across_tenants.sql',
-          import.meta.url,
-        ),
-        'utf8',
-      ).match(/CREATE OR REPLACE FUNCTION public\.job_payload\([\s\S]*?\$\$;/)![0],
+      migrationText('0228_worker_reads_no_payload_across_tenants.sql').match(
+        /CREATE OR REPLACE FUNCTION public\.job_payload\([\s\S]*?\$\$;/,
+      )![0],
     ],
     [
       'the 0230 refund function back beside the 0235 one (R06)',
