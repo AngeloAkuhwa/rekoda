@@ -1,8 +1,8 @@
 # PR #432 second review: remediation, audit and release evidence
 
 Status: **CODE COMPLETE, PR OPEN, NOT MERGED, NOT DEPLOYED. STAGING ACCEPTANCE PENDING. P12 NOT
-APPROVED. ADR 0035 Amendment 6 NOT ACCEPTED.** Nothing in this folder authorises a merge or a
-deploy.
+APPROVED. ADR 0035 Amendment 6 ACCEPTED FOR ISOLATED TEST-MODE STAGING ONLY (OWN-95, 18 Nov 2026);
+paid-production acceptance PENDING.** Nothing in this folder authorises a merge or a deploy.
 
 Reviewed head before this round: `095ff625cf35c5bb15883a27b30796bfe5e33f09` (394 files, 180
 commits, +46,258 / -3,555). The final head and its CI run are recorded in `final-review-e-closeout.md` and in the PR
@@ -52,7 +52,10 @@ confirmation table).
 
 ## 3. Outstanding owner decisions
 
-- **P12**: the merge itself, on the exact head you review. **ADR 0035 Amendment 6** acceptance.
+- **P12**: the merge itself, on the exact head you review. P12 is not acceptance of ADR 0035
+  Amendment 6.
+- **ADR 0035 Amendment 6 for paid production.** Decided for isolated test-mode staging only
+  (OWN-95, 18 Nov 2026); paid-production acceptance is still the owner's open decision.
 - **OD-53** (1) refund authority, (2) merchant wording for a duplicate payment, (3) the seven-day
   prior-month metering default, (4) daily reconciliation of pending charges against Paystack
   verify, (5) the duplicate-payment operator surface and record-only refund. (4) and (5) are
@@ -131,7 +134,7 @@ was changed in the second round and restored in `39ad27d` to its original `suppo
 
 ## 6. Documentation changed
 
-ADR 0035 (Amendment 6, still PROPOSED), ADR 0034 (cross-reference), the RLS exemption register,
+ADR 0035 (Amendment 6; since OWN-95 accepted for isolated test-mode staging only), ADR 0034 (cross-reference), the RLS exemption register,
 `REKODA_LAUNCH_READINESS.md` (OD-41, OD-51, OD-53 status, OD-54, OD-55, OD-56), `HANDOFF.md`,
 `REKODA_CURRENT_STATE.md`, `REKODA_OWNER_DECISIONS.md` (status lines only), `REKODA_REFERENCE_MANIFEST.md`,
 `TEST_MAP.md`, `plans/PR-B-plan.md`, runbooks (deploy, staging-first-deploy-pr-b, staging-acceptance-handoff,

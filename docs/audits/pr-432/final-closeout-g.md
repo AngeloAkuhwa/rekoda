@@ -234,3 +234,18 @@ It also verified:
 - **CodeRabbit:** skipped itself on every head (the file limit). That is not a review.
 - **Qodo:** last updated 10:21 UTC on `bfa00cf`. §2 dispositions every finding.
 - **Threads:** 47, 0 unresolved, on `bfa00cf`. Re-read on the final head before any merge.
+
+## 7. Owner decisions after this round (OWN-95, 18 Nov 2026)
+
+Recorded after round G, on top of `92b5790b5cfb35b28ea1f838b8eeb4c59933487a`, in a docs-only
+commit. The implementation and its evidence above are unchanged.
+
+- ADR 0035 Amendment 6 is **accepted for isolated test-mode staging only**. Paid-production
+  acceptance is PENDING. The residuals of §2 and of the ADR are accepted within that scope only.
+- The ADR no longer says it "takes effect with the owner's acceptance of the PR (P12)". P12
+  authorises merging one exact candidate and is not architectural acceptance. The privileges apply
+  wherever the migrations are applied.
+- P11 (the deployment approval gate) is to be enabled for the first deploy. Initial staging keeps
+  4 worker lanes and 2 settlement lanes.
+- OD-53 to OD-56 and C1 to C6 are unchanged; OD-53 (4) and (5) remain paid-launch blockers.
+- **P12 NOT given.** The final candidate is the head named in the PR description.

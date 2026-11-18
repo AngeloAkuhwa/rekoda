@@ -308,9 +308,16 @@ Amendment 1 and the rules of Amendments 2 to 4 are unchanged.
 
 ## Amendment 6 (14 Nov 2026, final review of PR #432): the cutover enrolment of dead jobs discovers ids only
 
-Status: **PROPOSED with PR #432; NOT ACCEPTED.** It names further operations under Amendment 1,
+Status: **ACCEPTED FOR ISOLATED TEST-MODE STAGING ONLY (OWN-95, 18 Nov 2026); PAID-PRODUCTION
+ACCEPTANCE PENDING.** The owner's scoped decision, its conditions and what it does not accept are in
+"Owner decision (OWN-95)" at the end of this amendment. It names further operations under Amendment 1,
 class 2, whose rule is that each operation is approved and listed here, and it adds EXECUTE grants
-(listed below); it takes effect with the owner's acceptance of the PR (P12), not before. Text
+(listed below). Those grants, and every privilege and restriction below, are in force wherever
+migrations 0225 to 0245 are applied, whatever this document's status says: the database does not
+read this ADR. P12 (`docs/runbooks/staging-first-deploy-pr-b.md` §7) authorises merging one exact
+release candidate of PR #432; it is not, and does not imply, architectural acceptance of this
+amendment, and it does not authorise a deployment outside the environment and scope the owner has
+approved (isolated test-mode staging). Text
 reconciled with migrations 0225 to 0242 on 18 Nov 2026 (second independent review of PR #432,
 R01, R07, R08, the review of its remediation, B-1 and I1, the final closeout review, E-1, and the
 owner's closeout instruction of 18 Nov 2026, S-1 and E-F4; PR OPEN, not merged, not deployed).
@@ -421,8 +428,8 @@ because the claim works across tenants (Amendment 1, class 2; invariant 3). What
 worker's **own code** to one job, under that job's own pin, is not the database but the
 repository boundary rule (`scripts/lib/job-payload-reads.mjs`, run by `scripts/check-boundaries.mjs`
 as "cross-tenant job payload read") and the statement-level test
-(`packages/db/src/ops/dead-job-enrolment-pin.test.ts`). The residual is accepted only if the owner
-accepts this amendment. The function's grants,
+(`packages/db/src/ops/dead-job-enrolment-pin.test.ts`). The residual is accepted only as OWN-95
+records it: for isolated test-mode staging, not for paid production. The function's grants,
 column set and bound, and the per-business isolation, are proved in
 `packages/db/src/ops/dead-job-enrolment-scope.integration.test.ts` and pinned by the pre-start
 smoke in `scripts/deploy-staging.sh`.
@@ -468,3 +475,31 @@ it accepts exactly the following; nothing else is accepted by implication.
   duplicate-payment operator surface (OD-53 (4), (5)); a refund workflow that reserves before the
   provider refund and verifies after it (OD-55); a threat model for the Paystack secret key held by
   the API and worker processes, with the safest available Paystack account permissions (OD-54).
+
+### Owner decision (OWN-95, 18 Nov 2026): accepted for isolated test-mode staging only
+
+The owner accepted this amendment **for the limited purpose of isolated, test-mode staging and
+acceptance testing**, and not for paid production (`docs/REKODA_OWNER_DECISIONS.md`, OWN-95). This
+is a scoped status, recorded here because ADR statuses are otherwise ACCEPTED, PROPOSED or
+SUPERSEDED: within the scope below the amendment is accepted; outside it, it is still PROPOSED.
+
+- **Accepted, for isolated test-mode staging only:** the trusted-worker privileges, the database
+  restrictions, the settlement isolation, the operator recovery boundaries and the compensating
+  controls listed in "The amendment as presented for acceptance" above; and the residuals stated
+  there: the worker's cross-tenant privileges, the caller-set tenant pin, a compromised worker
+  credential's access to eligible running or dying job payloads across tenants, the app-plane
+  operator audit identity (OD-54), the Paystack secret key held by the API, worker and settlement
+  processes, the remaining settlement and worker trust boundaries, and the difference between what
+  the database enforces and what rests on trusted application code.
+- **Not accepted:** any of those residuals for paid production. Paid-production acceptance of this
+  amendment is PENDING and needs a separate, explicit owner decision.
+- **Conditions (mandatory):** every database restriction and every security and financial
+  regression test in this amendment stays; least privilege and the separation of the application,
+  worker, settlement and operator credentials stay; tenant isolation, confidentiality, financial
+  correctness, monitoring and alerting, audit records and verified backup and recovery stay;
+  staging acceptance uses synthetic or isolated test data and Paystack TEST credentials only.
+- **Unchanged by this decision:** the paid-launch security requirements above, OD-53 to OD-56
+  (`docs/plans/paid-launch-plan.md`, C1 to C6). OD-53 (4) pending-charge reconciliation and OD-53
+  (5) individual duplicate-payment recovery remain mandatory paid-launch blockers.
+- **Separate from P12:** this decision does not approve the merge of PR #432 (P12 is the owner's
+  alone, on an exact SHA) and does not approve any deployment.

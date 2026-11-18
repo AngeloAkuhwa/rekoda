@@ -8,14 +8,15 @@ Q22); the owner's preferred directions of 18 Nov 2026 are restated here as direc
 
 ## 1. Three gates, kept apart
 
-| Gate                                 | What must be true                                                                                                                                                                                                                                                | Where it is decided                  |
-| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
-| **G1. PR #432 merges**               | Exact-head CI green; 0 unresolved threads; no known BLOCKING or IMPORTANT in-scope defect; P1 to P11 done by the owner; **P12 given by the owner on the exact final SHA**; ADR 0035 Amendment 6 accepted or the owner's written choice to merge with it PROPOSED | the owner (P12)                      |
-| **G2. Test-mode staging acceptance** | G1; deploy D1 to D13 green; the staging acceptance journeys run on Paystack TEST keys, Meta templates approved where a step needs one; the D8 drill passes on the new schema                                                                                     | the owner, on staging evidence       |
-| **G3. Paid production launch**       | G2; every item in §3 ruled and, where ruled to build, merged, deployed to staging and accepted there; live-provider verification (G-05, G-06) with explicit `LIVE_MODE_ALLOWED = YES`; production deploy only on an explicit owner instruction                   | the owner, separately from G1 and G2 |
+| Gate                                 | What must be true                                                                                                                                                                                                                                                                                                        | Where it is decided                  |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------ |
+| **G1. PR #432 merges**               | Exact-head CI green; 0 unresolved threads; no known BLOCKING or IMPORTANT in-scope defect; P1 to P11 done by the owner; **P12 given by the owner on the exact final SHA**; ADR 0035 Amendment 6 decided by the owner: accepted for isolated test-mode staging only (OWN-95, 18 Nov 2026), which is not acceptance for G3 | the owner (P12)                      |
+| **G2. Test-mode staging acceptance** | G1; deploy D1 to D13 green; the staging acceptance journeys run on Paystack TEST keys, Meta templates approved where a step needs one; the D8 drill passes on the new schema                                                                                                                                             | the owner, on staging evidence       |
+| **G3. Paid production launch**       | G2; every item in §3 ruled and, where ruled to build, merged, deployed to staging and accepted there; live-provider verification (G-05, G-06) with explicit `LIVE_MODE_ALLOWED = YES`; production deploy only on an explicit owner instruction                                                                           | the owner, separately from G1 and G2 |
 
 No item in §3 is marked complete because PR #432 merges. OD-53 (4) pending-charge reconciliation
-and OD-53 (5) individual duplicate-payment recovery are **mandatory G3 blockers**.
+and OD-53 (5) individual duplicate-payment recovery are **mandatory G3 blockers**. G3 also needs the owner's
+separate paid-production decision on ADR 0035 Amendment 6, which OWN-95 left PENDING.
 
 ## 2. Rulings needed before any G3 work starts
 
