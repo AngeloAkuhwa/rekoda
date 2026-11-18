@@ -159,7 +159,7 @@ beforeAll(async () => {
   await owner`
     INSERT INTO jobs (business_id, kind, payload)
     VALUES (${businessId}, 'billing.process', '{"eventId":"00000000-0000-4000-8000-000000000001"}'::jsonb),
-           (${businessId}, 'message.inbound', '{}'::jsonb)`;
+           (${businessId}, 'inbound.message', '{}'::jsonb)`;
   before = await snapshot();
 });
 
@@ -176,7 +176,7 @@ afterAll(async () => {
   }
 });
 
-describe('upgrading a database from 0212 through 0244', () => {
+describe('upgrading a database from 0212 through 0245', () => {
   it('starts from the boundary the previous release had', async () => {
     expect(before.charges).toHaveLength(3);
     expect(await facts()).toEqual({
@@ -223,6 +223,7 @@ describe('upgrading a database from 0212 through 0244', () => {
       '0242_settlement_job_transitions',
       '0243_refund_judges_the_allowance_after_the_counter_lock',
       '0244_refund_refuses_across_a_time_boundary',
+      '0245_usage_binds_only_to_the_events_own_job',
     ]);
 
     const after = await snapshot();
@@ -267,7 +268,7 @@ describe('upgrading a database from 0212 through 0244', () => {
     const settlement = scratchDb(urls.settlement);
 
     const general = await jobsRepo.claimNext(worker, 'worker:upgrade');
-    expect(general?.kind).toBe('message.inbound');
+    expect(general?.kind).toBe('inbound.message');
     expect(await jobsRepo.claimNext(worker, 'worker:upgrade')).toBeNull();
 
     const settling = await jobsRepo.claimNext(settlement, 'settlement:upgrade');
@@ -334,6 +335,7 @@ describe('upgrading a database from 0212 through 0244', () => {
       '0242_settlement_job_transitions',
       '0243_refund_judges_the_allowance_after_the_counter_lock',
       '0244_refund_refuses_across_a_time_boundary',
+      '0245_usage_binds_only_to_the_events_own_job',
     ]) {
       await owner.unsafe(readFileSync(join(MIGRATIONS_DIR, `${tag}.sql`), 'utf8')).simple();
     }

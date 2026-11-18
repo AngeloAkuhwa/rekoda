@@ -62,7 +62,7 @@ async function message(businessId: string): Promise<{ eventId: string; jobId: st
   const rows = await withBusiness(appDb, businessId, (tx) =>
     tx.execute<{ id: string }>(sql`
       INSERT INTO jobs (business_id, kind, payload)
-      VALUES (${businessId}::uuid, 'message.inbound',
+      VALUES (${businessId}::uuid, 'inbound.message',
               jsonb_build_object('eventId', ${recorded.id}::text))
       RETURNING id`),
   );
@@ -215,7 +215,7 @@ describe('a unit still goes back while its job has not finished (0218)', () => {
     const forged = await withBusiness(appDb, theirs, (tx) =>
       tx.execute<{ id: string }>(sql`
         INSERT INTO jobs (business_id, kind, payload)
-        VALUES (${theirs}::uuid, 'message.inbound', jsonb_build_object('eventId', ${eventId}::text))
+        VALUES (${theirs}::uuid, 'inbound.message', jsonb_build_object('eventId', ${eventId}::text))
         RETURNING id`),
     );
     await setJob(theirs, [...forged][0]!.id, 'running');

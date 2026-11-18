@@ -229,6 +229,16 @@ describe('the pre-start database smoke, closeout round (actor constraints, 0242,
       'ALTER FUNCTION rekoda_private.pack_allowance_boundary_between(uuid, text, timestamptz, timestamptz) VOLATILE',
     ],
     [
+      'the reservation binder back at 0227, matching any job kind by stripped text (round G)',
+      migrationText('0227_paid_launch_gate.sql').match(
+        /CREATE OR REPLACE FUNCTION public\.usage_bind_event\([\s\S]*?END \$function\$;/,
+      )![0],
+    ],
+    [
+      '0245 not recorded in the ledger',
+      "DELETE FROM rekoda_migrations WHERE tag = '0245_usage_binds_only_to_the_events_own_job'",
+    ],
+    [
       '0244 not recorded in the ledger',
       "DELETE FROM rekoda_migrations WHERE tag = '0244_refund_refuses_across_a_time_boundary'",
     ],

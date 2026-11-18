@@ -49,7 +49,7 @@ async function jobFor(businessId: string, eventIdText: string): Promise<string> 
   const rows = await withBusiness(appDb, businessId, (tx) =>
     tx.execute<{ id: string }>(sql`
       INSERT INTO jobs (business_id, kind, payload)
-      VALUES (${businessId}::uuid, 'message.inbound', jsonb_build_object('eventId', ${eventIdText}::text))
+      VALUES (${businessId}::uuid, 'inbound.message', jsonb_build_object('eventId', ${eventIdText}::text))
       RETURNING id`),
   );
   const id = [...rows][0]!.id;

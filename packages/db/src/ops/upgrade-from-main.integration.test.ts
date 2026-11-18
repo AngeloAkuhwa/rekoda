@@ -1,9 +1,9 @@
 /**
- * Migration safety for the whole of PR B (0193 to 0244): an UPGRADE of the database `main` leaves
+ * Migration safety for the whole of PR B (0193 to 0245): an UPGRADE of the database `main` leaves
  * behind, which is what the staging deploy actually applies.
  *
  * `upgrade-od51.integration.test.ts` starts from 0212, the last PR B migration before OWN-91. `main`
- * itself stops at 0192, so the staging database will take 0193 to 0244 in one stopped window. This
+ * itself stops at 0192, so the staging database will take 0193 to 0245 in one stopped window. This
  * suite migrates a scratch database to 0192, seeds it as that release would have left it (a paying
  * business, a settled plan charge, a credited pack, an open pack checkout, a consumed meter, a
  * Paystack event, a settlement job and a general job still queued), then migrates forward. The
@@ -148,7 +148,7 @@ beforeAll(async () => {
   await owner`
     INSERT INTO jobs (business_id, kind, payload)
     VALUES (${businessId}, 'billing.process', '{"eventId":"00000000-0000-4000-8000-000000000002"}'::jsonb),
-           (${businessId}, 'message.inbound', '{}'::jsonb)`;
+           (${businessId}, 'inbound.message', '{}'::jsonb)`;
   before = await snapshot();
 });
 
@@ -165,15 +165,15 @@ afterAll(async () => {
   }
 });
 
-describe('upgrading the database main leaves (0192) through 0244', () => {
+describe('upgrading the database main leaves (0192) through 0245', () => {
   it('starts at 0192 with the release seeded', () => {
     expect(pending[0]).toBe('0193_charge_provider_times');
-    expect(pending.at(-1)).toBe('0244_refund_refuses_across_a_time_boundary');
+    expect(pending.at(-1)).toBe('0245_usage_binds_only_to_the_events_own_job');
     expect(before.charges).toHaveLength(3);
     expect(before.charges[0]).not.toHaveProperty('provider_paid_at');
   });
 
-  it('applies 0193 to 0244 in order and rewrites no column the old release wrote', async () => {
+  it('applies 0193 to 0245 in order and rewrites no column the old release wrote', async () => {
     const applied = await applyMigrations(scratchUrl(urls.owner));
     expect(applied).toEqual(pending);
 
@@ -214,7 +214,7 @@ describe('upgrading the database main leaves (0192) through 0244', () => {
     const settlement = scratchDb(urls.settlement);
 
     const general = await jobsRepo.claimNext(worker, 'worker:upgrade-main');
-    expect(general?.kind).toBe('message.inbound');
+    expect(general?.kind).toBe('inbound.message');
     expect(await jobsRepo.claimNext(worker, 'worker:upgrade-main')).toBeNull();
 
     const settling = await jobsRepo.claimNext(settlement, 'settlement:upgrade-main');

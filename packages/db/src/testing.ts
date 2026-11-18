@@ -114,7 +114,7 @@ export const ownerDb = (): Db =>
 export async function runningJobForEvent(
   businessId: string,
   eventId: string,
-  kind = 'message.inbound',
+  kind = 'inbound.message',
 ): Promise<string> {
   const rows = await withBusiness(ownerDb(), businessId, (tx) =>
     tx.execute<{ id: string }>(drizzleSql`

@@ -119,7 +119,7 @@ COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary 020
 # Every other migration after main's 0192: the previous release keeps working against it, so it is
 # applied with everything running (E-F8). Each new migration goes in exactly one of the two lists:
 # scripts/deploy-staging-classes.test.mjs fails a migration that is in neither, or in both.
-ADDITIVE_MIGRATIONS='0193_charge_provider_times 0194_dead_job_exceptions 0195_renewal_blocked 0197_staging_test_business_tools 0198_blocked_renewal_close_order 0199_blocked_renewal_close_cursor 0201_blocked_renewal_close_heartbeat 0208_subscription_period_preflight 0213_support_review_plan_change 0214_pack_purchase_identity 0215_pricing_source_authority 0219_support_review_respects_later_schedule 0222_usage_entitlement_in_the_database 0223_settlement_scope_and_dead_job_requeue 0224_pack_credit_derives_from_the_charge 0225_dead_job_enrolment_discovery 0226_settlement_holds_no_add_on 0227_paid_launch_gate 0229_dead_job_enrolment_dead_letter 0231_settlement_reads_only_its_kinds_payload 0232_support_review_prices_like_the_resolver 0233_operator_actor_contract 0234_job_payload_live_or_dying_only 0236_dead_job_enrolment_cursor 0237_settlement_reads_key_fingerprints 0238_worker_job_transitions 0239_operator_actor_columns 0240_pack_refund_allowance_history 0241_final_review_guards 0242_settlement_job_transitions 0243_refund_judges_the_allowance_after_the_counter_lock 0244_refund_refuses_across_a_time_boundary'
+ADDITIVE_MIGRATIONS='0193_charge_provider_times 0194_dead_job_exceptions 0195_renewal_blocked 0197_staging_test_business_tools 0198_blocked_renewal_close_order 0199_blocked_renewal_close_cursor 0201_blocked_renewal_close_heartbeat 0208_subscription_period_preflight 0213_support_review_plan_change 0214_pack_purchase_identity 0215_pricing_source_authority 0219_support_review_respects_later_schedule 0222_usage_entitlement_in_the_database 0223_settlement_scope_and_dead_job_requeue 0224_pack_credit_derives_from_the_charge 0225_dead_job_enrolment_discovery 0226_settlement_holds_no_add_on 0227_paid_launch_gate 0229_dead_job_enrolment_dead_letter 0231_settlement_reads_only_its_kinds_payload 0232_support_review_prices_like_the_resolver 0233_operator_actor_contract 0234_job_payload_live_or_dying_only 0236_dead_job_enrolment_cursor 0237_settlement_reads_key_fingerprints 0238_worker_job_transitions 0239_operator_actor_columns 0240_pack_refund_allowance_history 0241_final_review_guards 0242_settlement_job_transitions 0243_refund_judges_the_allowance_after_the_counter_lock 0244_refund_refuses_across_a_time_boundary 0245_usage_binds_only_to_the_events_own_job'
 BREAKING=
 BREAKING_APPLIED=false
 # Set once migrate has been entered for a release carrying a breaking migration. migrate applies each
@@ -194,6 +194,8 @@ UP_ENTERED=false
 #     refuses across a time boundary of the allowance (a trial expiring, a catalogue version or a
 #     holding starting or ending; 0244): the refund function is pinned by the md5 of its exact body,
 #     and the boundary function by its body, owner, attributes and the absence of any grant;
+#   * a usage reservation binds only to its event's own live metering job, by a payload the closure
+#     trigger can read, never by the stripped-text match of 0227 (0245);
 #   * each of the nine operator-actor constraints of PR B is the named CHECK on its own table and
 #     column, with its exact definition, validated (0239's intentionally NOT VALID one on main's
 #     subscription_charges.unapplied_resolved_by excepted); `@` in the expected text stands in for the
@@ -239,7 +241,8 @@ SMOKE_0196_SQL="SELECT
                   '0241_final_review_guards',
                   '0242_settlement_job_transitions',
                   '0243_refund_judges_the_allowance_after_the_counter_lock',
-                  '0244_refund_refuses_across_a_time_boundary')) = 44
+                  '0244_refund_refuses_across_a_time_boundary',
+                  '0245_usage_binds_only_to_the_events_own_job')) = 45
   AND has_function_privilege('rekoda_billing_operator', 'public.subscription_record_refund(uuid,text,bigint,text,text,text)', 'EXECUTE')
   AND NOT has_function_privilege('rekoda_app', 'public.subscription_record_refund(uuid,text,bigint,text,text,text)', 'EXECUTE')
   AND NOT has_function_privilege('rekoda_worker', 'public.subscription_record_refund(uuid,text,bigint,text,text,text)', 'EXECUTE')
@@ -376,7 +379,9 @@ SMOKE_0196_SQL="SELECT
         WHERE oid = to_regprocedure('rekoda_private.jobs_application_transition_guard()'))
         LIKE '%no lease and no attempt spent (OWN-92, 0227)%NEW.run_at IS DISTINCT FROM OLD.run_at OR NEW.max_attempts IS DISTINCT FROM OLD.max_attempts%only the worker schedules or retries a job%'
   AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('public.usage_bind_event(uuid,uuid,uuid)'))
-        LIKE '%FROM public.external_events e%e.business_id = p_business%j.state = ''running''%not an event of this business whose job is running%'
+        LIKE '%FROM public.external_events e%e.business_id = p_business%j.kind IN (''inbound.message'', ''customer.message'')%pg_input_is_valid(j.payload ->> ''eventId'', ''uuid'')%THEN (j.payload ->> ''eventId'')::uuid END = p_event) <> 1%j.state = ''running''%not an event of this business whose job is running%'
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('public.usage_bind_event(uuid,uuid,uuid)'))
+        NOT LIKE '%translate(%'
   AND (SELECT p.prosecdef AND p.proconfig @> ARRAY['search_path=pg_catalog, public, pg_temp']
          AND pg_get_function_result(p.oid) = 'TABLE(job_id uuid, business_id uuid)'
        FROM pg_proc p WHERE p.oid = to_regprocedure('public.dead_job_unrecorded_candidates(integer)'))

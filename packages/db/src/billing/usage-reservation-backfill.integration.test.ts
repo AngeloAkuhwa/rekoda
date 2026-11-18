@@ -91,7 +91,7 @@ async function oldReleaseEvent(
   await withBusiness(db, businessId, (tx) =>
     tx.execute(sql`
       INSERT INTO jobs (business_id, kind, payload)
-      VALUES (${businessId}::uuid, 'message.inbound',
+      VALUES (${businessId}::uuid, 'inbound.message',
               jsonb_build_object('eventId', ${recorded.id}::text))`),
   );
   return recorded.id;

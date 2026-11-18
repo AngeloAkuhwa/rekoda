@@ -178,7 +178,7 @@ describe('0222: the guards hold for a login that only inherits the restricted ro
     const rows = await withBusiness(ownerDb, businessId, (tx) =>
       tx.execute<{ id: string }>(sql`
         INSERT INTO jobs (business_id, kind, payload, state, locked_by, locked_at)
-        VALUES (${businessId}::uuid, 'message.inbound', '{}'::jsonb, 'running', 'w:1', now())
+        VALUES (${businessId}::uuid, 'inbound.message', '{}'::jsonb, 'running', 'w:1', now())
         RETURNING id`),
     );
     return [...rows][0]!.id;
