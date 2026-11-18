@@ -39,6 +39,7 @@ import {
   trialCopy,
   trialDaysLeft,
   billingProcessingCopy,
+  noChargeUpgradeCopy,
 } from '@/lib/billing-pay-copy';
 import { EmailForm } from './EmailForm';
 import { PayForms } from './PayForms';
@@ -237,10 +238,11 @@ export default async function BillingPage({
       ) : null}
 
       {/* Not beside a processing problem: the two would say opposite things. */}
+      {/* F-2: what became of it, from the overview, so a refresh never repeats "switching it on
+          now" after the switch happened, was withdrawn or stopped. */}
       {params.done === 'processing' && !overview.processingIssue ? (
-        <div className="rk-attention-strip" role="status">
-          We are switching your plan on now. Nothing was charged and your renewal date stays the
-          same. Refresh this page in a moment to see your new plan.
+        <div className="rk-attention-strip" role="status" data-no-charge-upgrade>
+          {noChargeUpgradeCopy(overview.noChargeUpgrade)}
         </div>
       ) : null}
 

@@ -12,6 +12,7 @@ import type {
   BillingCheckoutResponse,
   BillingEmailConfirmResponse,
   BillingEmailVerifyResponse,
+  BillingOverviewResponse,
 } from '@rekoda/contracts';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -388,3 +389,22 @@ export function billingProcessingCopy(
 /** The dashboard's one-line pointer to the notice above. */
 export const BILLING_PROCESSING_STRIP =
   'We are checking a recent update about your Rekoda payment. See billing for what this means.';
+
+/**
+ * F-2: the notice after a zero-priced upgrade the API answered `processing`, from what the billing
+ * overview says became of it, never from the page's address alone. A refresh after settlement ran
+ * says the plan is on; a withdrawal or a job that stopped says the plan has not changed. Nothing is
+ * ever charged for this change, so no copy mentions a payment, and none names a job or an error.
+ */
+export function noChargeUpgradeCopy(view: BillingOverviewResponse['noChargeUpgrade']): string {
+  switch (view?.state) {
+    case 'applied':
+      return 'Done. Your new plan is on now. Nothing was charged and your renewal date has not changed.';
+    case 'withdrawn':
+      return 'That change could not be made in time, so your plan has not changed. Nothing was charged. Choose the plan again to see what it costs now.';
+    case 'failed':
+      return 'We could not switch your plan on, so your plan has not changed. Nothing was charged. You can choose the plan again below, or message us on WhatsApp if it happens again.';
+    default:
+      return 'We are switching your plan on now. Nothing was charged and your renewal date stays the same. Refresh this page in a moment to see your new plan.';
+  }
+}

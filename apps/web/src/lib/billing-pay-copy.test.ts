@@ -4,6 +4,7 @@ import {
   BILLING_PROCESSING_STRIP,
   billingProcessingCopy,
   lapsedPlanCopy,
+  noChargeUpgradeCopy,
   checkoutInputProblem,
   checkoutRefusalCopy,
   confirmCopy,
@@ -399,5 +400,29 @@ describe('billingProcessingCopy (OWN-76)', () => {
   it('the dashboard strip points to billing and claims nothing about money', () => {
     expect(BILLING_PROCESSING_STRIP).toMatch(/See billing/);
     expect(BILLING_PROCESSING_STRIP).not.toMatch(/fail|paid|declined/i);
+  });
+});
+
+describe('noChargeUpgradeCopy (F-2)', () => {
+  const at = (state: 'processing' | 'applied' | 'withdrawn' | 'failed') =>
+    noChargeUpgradeCopy({ plan: 'complete', state });
+  it('says the plan is being switched on only while it is, and that it is on once it is', () => {
+    expect(at('processing')).toMatch(/^We are switching your plan on now/);
+    expect(noChargeUpgradeCopy(null)).toBe(at('processing'));
+    expect(at('applied')).toMatch(/^Done\. Your new plan is on now/);
+  });
+  it('after a withdrawal or a stopped request, says the plan has not changed and offers the way on', () => {
+    for (const text of [at('withdrawn'), at('failed')]) {
+      expect(text).toMatch(/your plan has not changed/);
+      expect(text).toMatch(/Choose the plan again|choose the plan again/);
+      expect(text).not.toMatch(/switching your plan on now|is on now/);
+    }
+  });
+  it('never mentions a payment, a failure of a payment, a job or an error', () => {
+    for (const state of ['processing', 'applied', 'withdrawn', 'failed'] as const) {
+      const text = at(state);
+      expect(text).toMatch(/Nothing was charged/);
+      expect(text).not.toMatch(/payment|did not go through|declined|job|error|worker|settlement/i);
+    }
   });
 });

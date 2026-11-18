@@ -950,6 +950,54 @@ export async function retireAbandonedPending(
 }
 
 /** Whether the worker withdrew this zero-priced upgrade because it could no longer apply (G3-1). */
+/**
+ * The latest zero-priced upgrade this business asked for, with its `billing.apply_no_charge` job's
+ * state (F-2): what the billing page says after the API answered `processing`, read from the charge
+ * and the job rather than from the page's address. Coordination columns only (never a payload).
+ */
+export interface NoChargeUpgradeRow {
+  reference: string;
+  plan: string | null;
+  status: string;
+  unappliedAt: Date | null;
+  supersededAt: Date | null;
+  /** Null when no job exists for it (it can then never be applied). */
+  jobState: string | null;
+}
+
+export async function latestNoChargeUpgrade(
+  tx: TenantDb,
+  businessId: string,
+): Promise<NoChargeUpgradeRow | null> {
+  const rows = await tx.execute<{
+    reference: string;
+    plan: string | null;
+    status: string;
+    unapplied_at: Date | string | null;
+    superseded_at: Date | string | null;
+    job_state: string | null;
+  }>(sql`
+    SELECT c.reference, c.plan, c.status, c.unapplied_at, c.superseded_at, j.state AS job_state
+    FROM subscription_charges c
+    LEFT JOIN jobs j ON j.business_id = c.business_id AND j.kind = 'billing.apply_no_charge'
+                    AND j.singleton_key = 'no-charge:' || c.reference
+    WHERE c.business_id = ${businessId}::uuid AND c.kind = 'upgrade' AND c.amount_k = 0
+    ORDER BY c.created_at DESC, c.id DESC
+    LIMIT 1
+  `);
+  const row = [...rows][0];
+  if (!row) return null;
+  const at = (value: Date | string | null) => (value === null ? null : new Date(value));
+  return {
+    reference: row.reference,
+    plan: row.plan,
+    status: row.status,
+    unappliedAt: at(row.unapplied_at),
+    supersededAt: at(row.superseded_at),
+    jobState: row.job_state,
+  };
+}
+
 export async function noChargeWithdrawn(
   tx: TenantDb,
   businessId: string,

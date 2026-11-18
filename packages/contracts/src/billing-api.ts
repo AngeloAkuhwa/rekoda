@@ -221,6 +221,21 @@ export const billingOverviewResponse = z.object({
    * Rekoda's team (a dead `billing.process` job). Null when there is none. It is a billing notice,
    * never a payment-reconciliation exception, and it claims nothing about whether money moved.
    */
+  /**
+   * F-2: the latest zero-priced upgrade the merchant asked for and what became of it, so the page
+   * never keeps saying "switching your plan on now" after it was switched on, withdrawn or could
+   * not run. `processing` while settlement has yet to run it; `applied` once the plan is on;
+   * `withdrawn` when it could no longer apply (nothing was charged); `failed` when its job stopped
+   * for good. Null when there is none, or when a newer request replaced it. Defaults to null so a
+   * page reading an older API still parses.
+   */
+  noChargeUpgrade: z
+    .object({
+      plan: z.string().nullable(),
+      state: z.enum(['processing', 'applied', 'withdrawn', 'failed']),
+    })
+    .nullable()
+    .default(null),
   processingIssue: z
     .object({
       since: isoDate,

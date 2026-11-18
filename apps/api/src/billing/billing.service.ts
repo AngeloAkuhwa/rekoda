@@ -184,6 +184,7 @@ export class BillingService {
         processingIssue: stuck
           ? { since: stuck.openedAt.toISOString(), recovering: stuck.status === 'recovering' }
           : null,
+        noChargeUpgrade: await noChargeUpgradeView(tx, businessId),
         chargesTotal: charges.count,
         charges: await Promise.all(
           chargeRows.map(async (charge) => ({
@@ -1161,4 +1162,37 @@ function intervalFor(
  */
 function pricingIntervalFor(from: string, interval: BillingInterval): BillingInterval {
   return from === 'trial' || from === 'expired' ? interval : 'monthly';
+}
+
+/**
+ * F-2: what became of the latest zero-priced upgrade, from the charge and its job, classified as the
+ * synchronous wait classifies it (`awaitNoCharge`). A job that will not run it again can never apply
+ * it: the plan is unchanged and nothing was charged, and the page says so instead of "switching it
+ * on now".
+ */
+async function noChargeUpgradeView(
+  tx: TenantDb,
+  businessId: string,
+): Promise<BillingOverviewResponse['noChargeUpgrade']> {
+  const latest = await subscriptionsRepo.latestNoChargeUpgrade(tx, businessId);
+  if (!latest) return null;
+  const view = (state: NonNullable<BillingOverviewResponse['noChargeUpgrade']>['state']) => ({
+    plan: latest.plan,
+    state,
+  });
+  if (latest.status !== 'pending') {
+    return view(latest.unappliedAt === null ? 'applied' : 'withdrawn');
+  }
+  if (latest.supersededAt) {
+    /* Withdrawn by settlement (G3-1), or replaced by the merchant's newer request, whose own
+     * answer the page shows instead. */
+    return (await subscriptionsRepo.noChargeWithdrawn(tx, businessId, latest.reference))
+      ? view('withdrawn')
+      : null;
+  }
+  /* Still pending behind a job that will not run it again: dead, missing, or done after its last
+   * attempt failed (the handler records `no_charge_upgrade_failed` and finishes the job, so the
+   * merchant can simply choose the plan again). */
+  if (latest.jobState === 'pending' || latest.jobState === 'running') return view('processing');
+  return view('failed');
 }
