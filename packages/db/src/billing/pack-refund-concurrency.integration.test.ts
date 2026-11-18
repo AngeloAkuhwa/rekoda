@@ -268,7 +268,7 @@ describe('F-3: the pack refund under forced interleavings', () => {
   it('a plan change committed after the refund has judged and revoked is ordered after it', async () => {
     const businessId = await chatBusiness();
     const reference = await creditPack(businessId);
-    const [{ at: before }] = await owner<{ at: Date }[]>`
+    const [beforeRow] = await owner<{ at: Date }[]>`
       SELECT changed_at AS at FROM business_allowance_changes WHERE business_id = ${businessId}`;
     const refund = holdOpen(connect(urls.operator, 'f3-refund-b2'), (tx) =>
       refundSql(tx, businessId, reference, `rf-b2-${Date.now()}`),
@@ -286,9 +286,9 @@ describe('F-3: the pack refund under forced interleavings', () => {
       plan: 'complete',
     });
     /* And the change is in the history for any later refund to see. */
-    const [{ at: after }] = await owner<{ at: Date }[]>`
+    const [afterRow] = await owner<{ at: Date }[]>`
       SELECT changed_at AS at FROM business_allowance_changes WHERE business_id = ${businessId}`;
-    expect(after.getTime()).toBeGreaterThan(before.getTime());
+    expect(afterRow!.at.getTime()).toBeGreaterThan(beforeRow!.at.getTime());
   });
 
   it('consumption committed while the refund waits at S3 is seen: a pack used meanwhile is not refunded', async () => {
