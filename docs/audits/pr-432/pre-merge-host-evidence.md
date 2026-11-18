@@ -31,7 +31,7 @@ engineering. Evidence the owner did not report is listed as **OUTSTANDING**, not
 | P3  | DONE                                                                                          | available disk 20 GB, against the ≥ 8 GiB requirement                                                                                                                   | none                                                                                                                                                                            |
 | P3a | **PARTIAL**: connection budget OK                                                             | `max_connections` 100, reserved 3: 97 for the runtime roles, against the estate's worst case of 93                                                                      | the lane-setting line (`REKODA_WORKER_CONCURRENCY` / `REKODA_SETTLEMENT_CONCURRENCY` absent or at the defaults 4 and 2, OWN-95 (6)) was not reported                            |
 | P4  | **PARTIAL**: bucket, credentials, lock and lifecycle done                                     | dedicated private bucket `rekoda-staging-backups`; dedicated backup API credentials; 30-day bucket lock; 90-day lifecycle retention; 1-day incomplete-multipart cleanup | **off-server custody of the backup passphrase** (`backup.pass` copy outside the host) not evidenced; `/etc/rekoda/backup.env` and `backup.pass` at 0600 root **not reported**   |
-| P5  | DONE (checks 2 and 3)                                                                         | Paystack **TEST** key verified; `REKODA_PAYSTACK_PLATFORM_CONFIRMED` absent                                                                                             | check (1), both names on one plain line (`PLAIN`), not reported separately; the deploy re-checks it and refuses before changing anything                                        |
+| P5  | DONE as reported (checks 2 and 3)                                                             | Paystack **TEST** key verified; `REKODA_PAYSTACK_PLATFORM_CONFIRMED` absent                                                                                             | check (1), both names on one plain line (`PLAIN`), not reported separately; the deploy re-checks it and refuses before changing anything                                        |
 | P6  | DONE                                                                                          | one pending first purchase: `RKD-SUB-20261114-ZVQQTA`                                                                                                                   | none for the merge (see §3)                                                                                                                                                     |
 | P7  | **PARTIAL**: backup and off-box restore drill **PASS**; migration-count criterion outstanding | see §3                                                                                                                                                                  | **the restored copy's migration count and last tag** (`193`, `0192_reminder_reply_notices` expected) were not recorded                                                          |
 | P8  | DONE                                                                                          | all four database connection strings validated, with correct principals and distinct passwords; `VAULT_KEY` format and distinct OIDC audiences validated                | none                                                                                                                                                                            |
@@ -92,8 +92,8 @@ Do **not** approve the Deploy staging run until every item below is verified:
      when either is set to a non-empty value (`REKODA_LOCAL_STORAGE` after trimming): `apps/api/src/config.ts`
      (`operatorSecret`, `localStorageRoot`). At the PR head the new operator process
      (`apps/api/src/operator-plane/config.ts`, added by #432) refuses the secret too.
-   - So the running release can only hold them blank (or whitespace) or absent, and such a line behaves exactly like
-     an absent one.
+   - So the running release can only hold them blank or absent (whitespace is tolerated only for
+     `REKODA_LOCAL_STORAGE`, which is trimmed), and such a line behaves exactly like an absent one.
    - Compose passes neither name to `settlement` or `operator`. Settlement would refuse a non-empty `REKODA_OPERATOR_SECRET` (`FOREIGN_SECRETS`).
    - Removing the lines therefore changes no behaviour of either release. Documents use R2 (`R2_*`), never the
      container's disk.
@@ -114,7 +114,12 @@ Do **not** approve the Deploy staging run until every item below is verified:
    - `scripts/staging-readonly-check.sh` reports it as `api and worker image` `SAME` / `DIFFERENT`. It compares tags,
      not image ids.
    - Record the cause and the fix here before approval. The durable remedy is G-129.
-6. Re-confirm P3a's lane-setting line (§2).
+6. Close the other unreported parts of §2: P3a's lane-setting line, P4's `/etc/rekoda/backup.env` and `backup.pass`
+   at 0600 root, P5 check (1), and P9's itemised criteria (templates Approved, Resend domain Verified, test recipients).
+
+**P12 and the PARTIAL rows.** The runbook's P12 row asks for the merge approval "after P1 to P11". OWN-96 moves the
+items above to "before deployment approval" and does not say whether the PARTIAL rows must also close before P12.
+That is the owner's call; engineering does not assume either reading.
 
 After the deploy: D8 (post-deploy backup and drill of the new schema, 0000 to 0245) and D13 stay required. D9 becomes
 "verify the timer is still enabled".
