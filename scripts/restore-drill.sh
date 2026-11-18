@@ -106,4 +106,9 @@ if [ -n "$MISOWNED" ]; then
   printf '%s\n' "$MISOWNED" | sed -e 's/^\t/  restored database has: /' -e 't' -e 's/^/  archive has: /' >&2
   backup_die "DRILL FAILED: $(printf '%s\n' "$MISOWNED" | grep -c .) function owner line(s) differ between the archive and the restored database"
 fi
+# 0109's database-level revokes are not in the archive (E-F5): apply them as the real restore does,
+# then prove no runtime role can create a temporary table.
+"${PSQL[@]}" -c "$BACKUP_DATABASE_REVOKES_SQL" >/dev/null
+TEMPGRANTED=$("${PSQL[@]}" -c "$BACKUP_TEMP_GRANTED_SQL")
+[ "$TEMPGRANTED" = "0" ] || backup_die "DRILL FAILED: $TEMPGRANTED runtime role(s) can still create temporary tables after the database-level revokes (0109)"
 echo "restore-drill: PASS"

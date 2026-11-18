@@ -172,7 +172,9 @@ switch the application over; do not restore over a database you may still need.
 
 Same as the drill against the production server, plus: stop the app first
 (`docker compose --env-file .env -f docker-compose.prod.yml stop api worker web operator settlement`), restore,
-run integrity checks, re-apply the database-level revokes 0109 made (`pg_restore` without `--create`
+run integrity checks, re-apply the database-level revokes 0109 made (the drill applies the same
+three from `BACKUP_DATABASE_REVOKES_SQL` in `scripts/lib/backup-common.sh` and fails if any runtime
+role can still create a temporary table; `pg_restore` without `--create`
 does not carry database ACLs into a new database, so they are lost by a restore into a fresh
 `rekoda`; final review of PR #432, E-F5):
 

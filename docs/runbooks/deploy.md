@@ -185,7 +185,7 @@ dc build --build-arg REKODA_COMMIT=$(git rev-parse --short HEAD) api   # build B
 dc build --build-arg REKODA_COMMIT=$(git rev-parse --short HEAD) web   # one image at a time: never both at once
 # First PRODUCTION deploy carrying migrations 0175-0178 (G-109): run `dc stop api worker` here first
 # Every deploy carrying 0196 or 0200 (PR B, plan-field boundary, OD-48): run `dc stop api worker` here first, and see "Deploy a release carrying 0196"
-# Every deploy carrying 0216, 0217, 0218, 0220, 0221, 0228, 0230 or 0235 (OD-51, OWN-94; COMPAT_BREAKING_MIGRATIONS; 0222 and 0223 are not breaks and ship in the same stopped window): run `dc stop api worker operator settlement` here first, and see "Deploy a release carrying 0213 to 0240"
+# Every deploy carrying 0216, 0217, 0218, 0220, 0221, 0228, 0230 or 0235 (OD-51, OWN-94; COMPAT_BREAKING_MIGRATIONS; 0222 and 0223 are not breaks and ship in the same stopped window): run `dc stop api worker operator settlement` here first, and see "Deploy a release carrying 0213 to 0242"
 # ...and after migrate, run the step-8 pre-start database smoke (SMOKE_0196_SQL) as the owner: do not `dc up` unless it prints t
 dc run --rm -T migrate                                             # expand-only migrations, as the owner
 dc up -d --wait                                                    # recreates api, worker and web on the new images
@@ -642,7 +642,7 @@ worker or the api. Step 1 below describes the release that carried 0209.
 
 Rollback past these migrations is a backup restore (G-02), as for 0196 to 0206 (OWN-86).
 
-### Deploy a release carrying 0213 to 0240 (support-review upgrade, pack purchase identity, pricing source, usage meter boundary, settlement and operator processes, reservation closure; 0227 to 0230: the paid-launch gate, the worker's payload isolation, enrolment dead letters, refunds through the operator; 0231 to 0237: settlement reads only its own kinds' payloads, support-review pricing as the resolver, the operator actor contract, live-or-dying payloads only, one record per provider refund, the enrolment cursor, settlement's vault-key check; 0238 to 0240: the worker's job transitions, operator-actor columns, the pack allowance history; 0241: the worker guard by privilege and a trial's expiry in the allowance history)
+### Deploy a release carrying 0213 to 0242 (support-review upgrade, pack purchase identity, pricing source, usage meter boundary, settlement and operator processes, reservation closure; 0227 to 0230: the paid-launch gate, the worker's payload isolation, enrolment dead letters, refunds through the operator; 0231 to 0237: settlement reads only its own kinds' payloads, support-review pricing as the resolver, the operator actor contract, live-or-dying payloads only, one record per provider refund, the enrolment cursor, settlement's vault-key check; 0238 to 0240: the worker's job transitions, operator-actor columns, the pack allowance history; 0241: the worker guard by privilege and a trial's expiry in the allowance history; 0242: settlement's job transitions)
 
 0216, 0217, 0218, 0220, 0221, 0228, 0230 and 0235 are compatibility breaks: the previous release writes
 `usage_counters` directly, which no runtime role may do afterwards, and settles charges in the worker
@@ -651,8 +651,31 @@ API refund route (refunds are recorded by the operator process alone); 0235 chan
 function's signature (a sixth argument, the provider refund id). Deploy with every writing process
 stopped; `scripts/deploy-staging.sh` lists them (`COMPAT_BREAKING_MIGRATIONS`), stops `api`,
 `worker`, `operator` and `settlement`, and enforces the order. 0213 to 0215, 0219, 0222 to 0227,
-0229, 0231 to 0234 and 0236 to 0241 are additive and ship in the same stopped release. Rollback past
+0229, 0231 to 0234 and 0236 to 0242 are additive and ship in the same stopped release (every
+migration after 0192 is in exactly one of `COMPAT_BREAKING_MIGRATIONS` and `ADDITIVE_MIGRATIONS`,
+checked by `scripts/deploy-staging-classes.test.mjs`). Rollback past
 0216 is a backup restore (G-02).
+
+**Supported configuration, and what the deploy does not check for you (final closeout review of
+PR #432, E-F6, E-F7, E-F10):**
+
+- **The migration owner is the cluster superuser** the `postgres` image creates (`POSTGRES_USER:
+rekoda_owner` in `docker-compose.prod.yml`). A non-superuser migration owner is not a supported
+  configuration and is not tested: the migrations create roles and rely on the owner bypassing row-level
+  security. CI's "Migrations (foreign owner)" job proves only that no migration names the owner role.
+- **First start of a fresh database:** settlement reads the enrolled `VAULT_KEY` fingerprint and never
+  enrols one (0237); the API and the worker enrol it on their first boot. If settlement starts first it
+  refuses to boot and exits, and `restart: unless-stopped` restarts it until the fingerprint exists
+  (seconds after the API is healthy). It settles nothing meanwhile. On a fresh install, start `api`
+  first and `settlement` after it is healthy, or expect those restarts in `dc logs settlement`; on an
+  existing database the fingerprint is already enrolled.
+- **The drill's BYPASSRLS check** proves something only against roles the drill did not create itself:
+  in its throwaway container the drill creates `rekoda_provenance_owner` and `rekoda_owner` with
+  BYPASSRLS, so the check passes by construction. Against a server whose roles came from the real
+  bootstrap (`DRILL_DATABASE_URL`) and in a real restore, it checks the roles as they are.
+- **Database-level revokes after a restore** (0109's `REVOKE TEMPORARY`, E-F5): not carried by
+  `pg_restore`; the drill re-applies and checks them, and a real restore re-applies them
+  (`backup-restore.md`, "Real restore").
 
 This release starts two more services. Before deploying:
 
@@ -729,12 +752,15 @@ This release starts two more services. Before deploying:
      any role holding the worker's privileges (not only a role named `rekoda_worker`), and lets the
      worker move a job only pending -> running and running -> done, pending or dead; it never moves a
      dead job (0238, 0241);
-   - the seven operator-actor CHECK constraints exist with the reviewed actor rule in their
-     definitions, not only their names (0239; checked by definition since 0241);
+   - settlement moves its jobs only through its runner's transitions, for any role holding its
+     privileges: never out of done or dead, never its retry budget back (0242);
+   - each of the nine operator-actor CHECK constraints is the named constraint on its own table and
+     column, validated, with its exact definition (0239's NOT VALID one on `main`'s
+     `subscription_charges.unapplied_resolved_by` excepted);
    - the two allowance-change triggers are enabled, the businesses trigger also records a trial's
      expiry change, the history time never moves backwards, the refund function reads
      `business_allowance_changes`, the application cannot insert its rows and settlement cannot delete them (0240, 0241);
-   - the ledger carries 41 tags, 0196 to 0241 (the list in `SMOKE_0196_SQL`).
+   - the ledger carries 42 tags, 0196 to 0242 (the list in `SMOKE_0196_SQL`).
 
    Re-running an earlier migration by hand after a later one (for example 0228, 0229 or 0230 after
    0231 to 0236) puts back its weaker definitions, whatever its header says about re-running; the

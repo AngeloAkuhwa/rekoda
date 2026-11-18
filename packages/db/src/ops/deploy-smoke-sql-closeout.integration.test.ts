@@ -60,6 +60,12 @@ describe('the pre-start database smoke, closeout round (actor constraints, 0242)
            CHECK (armed_by IS NULL OR armed_by ~ '^operator:[!-~]{1,255}$') NOT VALID`,
     ],
     [
+      'the 0239 draft (ebb8d79): staging_tool_actions.operator refusing system: actors (E-F1)',
+      `ALTER TABLE staging_tool_actions DROP CONSTRAINT staging_tool_actions_operator_actor,
+         ADD CONSTRAINT staging_tool_actions_operator_actor
+           CHECK (operator IS NULL OR operator ~ '^operator:[!-~]{1,255}$')`,
+    ],
+    [
       'the refund actor check dropped',
       'ALTER TABLE subscription_refunds DROP CONSTRAINT subscription_refunds_actor_check',
     ],

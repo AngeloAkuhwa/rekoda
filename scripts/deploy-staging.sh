@@ -116,6 +116,10 @@ PHASE=checks
 # Migrations the previous release cannot run against (OD-48): the api and worker are stopped before
 # any of them is applied, and the old release is never restarted against a database that has one.
 COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary 0202_settlement_and_operator_principals 0203_plan_duration_rules 0204_external_events_worker_least_privilege 0205_charge_terms_belong_to_settlement 0206_paid_charge_bound_to_its_cycle 0207_operator_standard_periods 0209_settlement_verifies_the_price 0210_worker_least_privilege 0211_operator_principal_least_privilege 0212_closeout_review_fixes 0216_usage_meter_boundary 0217_settlement_isolation 0218_usage_reservation_closure 0220_job_row_and_grace_review_fixes 0221_operator_writes_only_through_its_functions 0228_worker_reads_no_payload_across_tenants 0230_refund_through_the_operator 0235_refund_records_and_pack_eligibility'
+# Every other migration after main's 0192: the previous release keeps working against it, so it is
+# applied with everything running (E-F8). Each new migration goes in exactly one of the two lists:
+# scripts/deploy-staging-classes.test.mjs fails a migration that is in neither, or in both.
+ADDITIVE_MIGRATIONS='0193_charge_provider_times 0194_dead_job_exceptions 0195_renewal_blocked 0197_staging_test_business_tools 0198_blocked_renewal_close_order 0199_blocked_renewal_close_cursor 0201_blocked_renewal_close_heartbeat 0208_subscription_period_preflight 0213_support_review_plan_change 0214_pack_purchase_identity 0215_pricing_source_authority 0219_support_review_respects_later_schedule 0222_usage_entitlement_in_the_database 0223_settlement_scope_and_dead_job_requeue 0224_pack_credit_derives_from_the_charge 0225_dead_job_enrolment_discovery 0226_settlement_holds_no_add_on 0227_paid_launch_gate 0229_dead_job_enrolment_dead_letter 0231_settlement_reads_only_its_kinds_payload 0232_support_review_prices_like_the_resolver 0233_operator_actor_contract 0234_job_payload_live_or_dying_only 0236_dead_job_enrolment_cursor 0237_settlement_reads_key_fingerprints 0238_worker_job_transitions 0239_operator_actor_columns 0240_pack_refund_allowance_history 0241_final_review_guards 0242_settlement_job_transitions'
 BREAKING=
 BREAKING_APPLIED=false
 # Set once migrate has been entered for a release carrying a breaking migration. migrate applies each
@@ -1163,7 +1167,7 @@ if [[ " $BREAKING " == *' 0217_settlement_isolation '* ]]; then
   for var in OPERATOR_OIDC_ISSUER OPERATOR_OIDC_JWKS_URL OPERATOR_BILLING_OIDC_AUDIENCE VAULT_KEY \
     SETTLEMENT_DATABASE_URL OPERATOR_DATABASE_URL; do
     [ -n "$(sed -n "s/^${var}=//p" .env | tail -1)" ] ||
-      fail "this release carries 0217 (OD-51) and .env has no ${var}: add it (docs/runbooks/deploy.md, \"Deploy a release carrying 0213 to 0240\"); nothing has been changed"
+      fail "this release carries 0217 (OD-51) and .env has no ${var}: add it (docs/runbooks/deploy.md, \"Deploy a release carrying 0213 to 0242\"); nothing has been changed"
   done
   [ "$(sed -n 's/^OPERATOR_BILLING_OIDC_AUDIENCE=//p' .env | tail -1)" != "$(sed -n 's/^OPERATOR_OIDC_AUDIENCE=//p' .env | tail -1)" ] ||
     fail 'OPERATOR_BILLING_OIDC_AUDIENCE must differ from OPERATOR_OIDC_AUDIENCE: a token the API accepts must not change a plan (OD-51); nothing has been changed'

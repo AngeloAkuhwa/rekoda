@@ -70,7 +70,7 @@ MERGED, NOT DEPLOYED; the owner merges after the pre-merge steps, including the 
   - review and approve the merge of #432;
   - add `OPERATOR_BILLING_OIDC_AUDIENCE` to the staging `.env`;
   - confirm a fresh off-box backup;
-  - run the stopped-window deploy ("Deploy a release carrying 0213 to 0240");
+  - run the stopped-window deploy ("Deploy a release carrying 0213 to 0242");
   - run the acceptance walkthrough;
   - rule OD-53 before paid launch.
 
@@ -130,7 +130,7 @@ MERGED, NOT DEPLOYED; the owner merges after the pre-merge steps, including the 
 - **Two sessions worked on this branch on 12 Nov.** The engineering session holding the owner's instruction wrote 0213 to 0219 (and later 0220); the scheduled autopilot run, working from `2b602b0`, fixed CI, a web copy defect and the runbook, and reviewed 0213 to 0216 (its note is kept below). Its two IMPORTANT findings are both closed here (the runbook section, and OD-52, by 0218 and then 0220), and its OD-50 minor about a later cancellation is fixed by 0219.
 - **Before a deploy (owner):**
   - add `OPERATOR_BILLING_OIDC_AUDIENCE` to the staging `.env`, different from `OPERATOR_OIDC_AUDIENCE`, and have the identity provider issue plan-change tokens for it; the staging deploy refuses to start without it, with nothing changed;
-  - follow `docs/runbooks/deploy.md`, "Deploy a release carrying 0213 to 0240" (two new services; every writing process is stopped);
+  - follow `docs/runbooks/deploy.md`, "Deploy a release carrying 0213 to 0242" (two new services; every writing process is stopped);
   - run the OD-49 preflight as before.
 - **Not done, on purpose:** no merge, no deploy, no staging change, no live Paystack or Meta call. `REKODA_USER_JOURNEYS.md` and the acceptance documents do not yet describe the support-review route or the `duplicate_purchase` record.
 - **Honest limits:** the end of the OD-51 row in `REKODA_LAUNCH_READINESS.md`.

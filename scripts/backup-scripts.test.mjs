@@ -7,7 +7,14 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync, utimesSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+  utimesSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -23,7 +30,17 @@ function env(extra = {}) {
   mkdirSync(dest);
   const pass = join(dir, 'pass');
   writeFileSync(pass, 'x'.repeat(40), { mode: 0o600 });
-  return { dest, pass, env: { ...process.env, BACKUP_DEST: dest, BACKUP_PASSPHRASE_FILE: pass, BACKUP_DUMP_CMD: DUMP, ...extra } };
+  return {
+    dest,
+    pass,
+    env: {
+      ...process.env,
+      BACKUP_DEST: dest,
+      BACKUP_PASSPHRASE_FILE: pass,
+      BACKUP_DUMP_CMD: DUMP,
+      ...extra,
+    },
+  };
 }
 const run = (script, e) => spawnSync('bash', [join(ROOT, script)], { env: e, encoding: 'utf8' });
 
@@ -34,7 +51,10 @@ test('a backup is encrypted, checksummed and reads back', () => {
   const files = readdirSync(t.dest);
   const obj = files.find((f) => f.endsWith('.dump.enc'));
   assert.ok(obj && files.includes(`${obj}.sha256`));
-  assert.ok(!readFileSync(join(t.dest, obj)).includes(SECRET), 'plaintext leaked into the stored object');
+  assert.ok(
+    !readFileSync(join(t.dest, obj)).includes(SECRET),
+    'plaintext leaked into the stored object',
+  );
 });
 
 test('the newest backup decrypts with the passphrase and not with another', () => {
@@ -47,7 +67,11 @@ test('the newest backup decrypts with the passphrase and not with another', () =
   assert.equal(readFileSync(out, 'utf8'), `PGDMP${SECRET}`);
   const other = join(t.dest, '..', 'other');
   writeFileSync(other, 'y'.repeat(40));
-  const bad = spawnSync('bash', ['-c', sh], { cwd: ROOT, env: { ...t.env, BACKUP_PASSPHRASE_FILE: other }, encoding: 'utf8' });
+  const bad = spawnSync('bash', ['-c', sh], {
+    cwd: ROOT,
+    env: { ...t.env, BACKUP_PASSPHRASE_FILE: other },
+    encoding: 'utf8',
+  });
   assert.notEqual(bad.status, 0);
   /* AES-CBC with a wrong key passes openssl's padding check about once in 256
    * runs; the script then refuses at the next check instead. Both are the same
@@ -68,12 +92,21 @@ test('a tampered object is refused by its checksum', () => {
 });
 
 test('it fails closed on missing config, a weak passphrase, an empty or non-archive dump', () => {
-  assert.match(run('scripts/backup-db.sh', { ...env().env, BACKUP_DEST: '' }).stderr, /BACKUP_DEST is not set/);
+  assert.match(
+    run('scripts/backup-db.sh', { ...env().env, BACKUP_DEST: '' }).stderr,
+    /BACKUP_DEST is not set/,
+  );
   const weak = env();
   writeFileSync(weak.pass, 'short');
   assert.match(run('scripts/backup-db.sh', weak.env).stderr, /at least 32 bytes/);
-  assert.match(run('scripts/backup-db.sh', { ...env().env, BACKUP_DUMP_CMD: 'true' }).stderr, /dump is empty/);
-  assert.match(run('scripts/backup-db.sh', { ...env().env, BACKUP_DUMP_CMD: 'echo not-a-dump' }).stderr, /not a pg_dump custom archive/);
+  assert.match(
+    run('scripts/backup-db.sh', { ...env().env, BACKUP_DUMP_CMD: 'true' }).stderr,
+    /dump is empty/,
+  );
+  assert.match(
+    run('scripts/backup-db.sh', { ...env().env, BACKUP_DUMP_CMD: 'echo not-a-dump' }).stderr,
+    /not a pg_dump custom archive/,
+  );
   const failing = env({ BACKUP_DUMP_CMD: 'exit 3' });
   assert.notEqual(run('scripts/backup-db.sh', failing.env).status, 0);
   assert.deepEqual(readdirSync(failing.dest), [], 'a failed dump left an object behind');
@@ -96,7 +129,10 @@ test('retention removes only old backups in a directory destination', () => {
 test('the drill refuses a database that is not named as scratch', () => {
   const t = env();
   assert.equal(run('scripts/backup-db.sh', t.env).status, 0);
-  const r = run('scripts/restore-drill.sh', { ...t.env, DRILL_DATABASE_URL: 'postgres://u:p@localhost:5432/rekoda' });
+  const r = run('scripts/restore-drill.sh', {
+    ...t.env,
+    DRILL_DATABASE_URL: 'postgres://u:p@localhost:5432/rekoda',
+  });
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /refusing DRILL_DATABASE_URL/);
 });
@@ -116,7 +152,11 @@ test('a failed fetch leaves no temp copy of the encrypted dump behind', () => {
   writeFileSync(join(t.dest, obj), 'tampered');
   const tmp = mkdtempSync(join(tmpdir(), 'tmpd-'));
   const sh = `. scripts/lib/backup-common.sh; backup_require_config; backup_fetch_decrypt '' "${tmp}/o"`;
-  const r = spawnSync('bash', ['-c', sh], { cwd: ROOT, env: { ...t.env, TMPDIR: tmp }, encoding: 'utf8' });
+  const r = spawnSync('bash', ['-c', sh], {
+    cwd: ROOT,
+    env: { ...t.env, TMPDIR: tmp },
+    encoding: 'utf8',
+  });
   assert.notEqual(r.status, 0);
   assert.deepEqual(readdirSync(tmp), [], 'temp files leaked on failure');
 });
@@ -133,7 +173,11 @@ test('a backup whose checksum cannot be published is never listed as the newest'
   const good = readdirSync(t.dest).find((f) => f.endsWith('.dump.enc'));
   // A cp that fails for the checksum upload, as a storage error after the object went up.
   const bin = mkdtempSync(join(tmpdir(), 'bin-'));
-  writeFileSync(join(bin, 'cp'), '#!/bin/sh\ncase "$2" in *.sha256.part) exit 1;; esac\nexec /bin/cp "$@"\n', { mode: 0o755 });
+  writeFileSync(
+    join(bin, 'cp'),
+    '#!/bin/sh\ncase "$2" in *.sha256.part) exit 1;; esac\nexec /bin/cp "$@"\n',
+    { mode: 0o755 },
+  );
   const failed = spawnSync('bash', [join(ROOT, 'scripts/backup-db.sh')], {
     env: { ...t.env, PATH: `${bin}:${process.env.PATH}` },
     encoding: 'utf8',
@@ -143,18 +187,27 @@ test('a backup whose checksum cannot be published is never listed as the newest'
   assert.deepEqual(listed, [good], 'a half-published backup became the newest listed object');
   const out = join(t.dest, '..', 'o');
   const sh = `. scripts/lib/backup-common.sh; backup_require_config; backup_fetch_decrypt '' "${out}"`;
-  assert.equal(spawnSync('bash', ['-c', sh], { cwd: ROOT, env: t.env, encoding: 'utf8' }).status, 0);
+  assert.equal(
+    spawnSync('bash', ['-c', sh], { cwd: ROOT, env: t.env, encoding: 'utf8' }).status,
+    0,
+  );
 });
 
 test('two backups started in the same second never share an object name', () => {
   const t = env();
   const a = spawnSync(
     'bash',
-    ['-c', '"$1" & p=$!; "$1" & q=$!; wait "$p"; a=$?; wait "$q"; b=$?; [ "$a" -eq 0 ] && [ "$b" -eq 0 ]', 'backup-concurrency-test', join(ROOT, 'scripts/backup-db.sh')],
+    [
+      '-c',
+      '"$1" & p=$!; "$1" & q=$!; wait "$p"; a=$?; wait "$q"; b=$?; [ "$a" -eq 0 ] && [ "$b" -eq 0 ]',
+      'backup-concurrency-test',
+      join(ROOT, 'scripts/backup-db.sh'),
+    ],
     {
-    env: t.env,
-    encoding: 'utf8',
-  });
+      env: t.env,
+      encoding: 'utf8',
+    },
+  );
   assert.equal(a.status, 0, a.stderr);
   const objs = readdirSync(t.dest).filter((f) => /^rekoda-.*\.dump\.enc$/.test(f));
   assert.equal(objs.length, 2, `expected two distinct objects, got ${objs.join(',')}`);
@@ -211,15 +264,26 @@ test('a read-back that does not match is refused, leaves no new backup, and clea
   assert.equal(run('scripts/backup-db.sh', t.env).status, 0);
   const good = readdirSync(t.dest).filter((f) => /^rekoda-.*\.dump\.enc$/.test(f));
   const bin = mkdtempSync(join(tmpdir(), 'bin-'));
-  writeFileSync(join(bin, 'cp'), '#!/bin/sh\ncase "$2" in */readback) echo corrupt > "$2"; exit 0;; esac\nexec /bin/cp "$@"\n', { mode: 0o755 });
+  writeFileSync(
+    join(bin, 'cp'),
+    '#!/bin/sh\ncase "$2" in */readback) echo corrupt > "$2"; exit 0;; esac\nexec /bin/cp "$@"\n',
+    { mode: 0o755 },
+  );
   const r = spawnSync('bash', [join(ROOT, 'scripts/backup-db.sh')], {
     env: { ...t.env, PATH: `${bin}:${process.env.PATH}` },
     encoding: 'utf8',
   });
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /read-back checksum mismatch/);
-  assert.deepEqual(readdirSync(t.dest).filter((f) => /^rekoda-.*\.dump\.enc$/.test(f)), good);
-  assert.deepEqual(readdirSync(t.dest).filter((f) => f.endsWith('.pending') || f.endsWith('.part')), [], 'staging file left behind');
+  assert.deepEqual(
+    readdirSync(t.dest).filter((f) => /^rekoda-.*\.dump\.enc$/.test(f)),
+    good,
+  );
+  assert.deepEqual(
+    readdirSync(t.dest).filter((f) => f.endsWith('.pending') || f.endsWith('.part')),
+    [],
+    'staging file left behind',
+  );
 });
 
 test('the drill creates every role the migrations grant to, and its container never leaks a data volume', () => {
@@ -228,24 +292,39 @@ test('the drill creates every role the migrations grant to, and its container ne
   const roles = new Set();
   for (const f of readdirSync(dir).filter((n) => n.endsWith('.sql'))) {
     const sql = readFileSync(join(dir, f), 'utf8');
-    for (const m of sql.matchAll(/\b(?:TO|FROM)\s+"?(rekoda_[a-z_]+)"?/gi)) roles.add(m[1].toLowerCase());
+    for (const m of sql.matchAll(/\b(?:TO|FROM)\s+"?(rekoda_[a-z_]+)"?/gi))
+      roles.add(m[1].toLowerCase());
   }
   roles.delete('rekoda_private');
   assert.ok(roles.size >= 4, `expected the migrations to name roles, got ${[...roles]}`);
-  for (const r of roles) assert.ok(drill.includes(`'${r}'`), `restore-drill.sh does not create role ${r}`);
+  for (const r of roles)
+    assert.ok(drill.includes(`'${r}'`), `restore-drill.sh does not create role ${r}`);
   /* The by-hand restore in the runbook is the same step typed by a person; it must create the same roles. */
   const runbook = readFileSync(join(ROOT, 'docs/runbooks/backup-restore.md'), 'utf8');
-  for (const r of roles) assert.ok(runbook.includes(`'${r}'`), `backup-restore.md "Restore by hand" does not create role ${r}`);
-  assert.match(drill, /docker rm -fv /, 'removing the container must remove its anonymous data volume');
+  for (const r of roles)
+    assert.ok(
+      runbook.includes(`'${r}'`),
+      `backup-restore.md "Restore by hand" does not create role ${r}`,
+    );
+  assert.match(
+    drill,
+    /docker rm -fv /,
+    'removing the container must remove its anonymous data volume',
+  );
   /* PR B review: ownership must survive the restore, or the SECURITY DEFINER writer functions run as
    * the restoring superuser. Neither the drill nor the by-hand restore may drop it, and the drill
    * checks the owners afterwards. */
   /* A pg_restore command (a script line, or one written in backticks in the runbook) with the flag. */
-  const restoreWithNoOwner = /^\s*(?:\d+\.\s*`)?(?:docker exec \S+ )?pg_restore\b[^`\n]*--no-owner/m;
+  const restoreWithNoOwner =
+    /^\s*(?:\d+\.\s*`)?(?:docker exec \S+ )?pg_restore\b[^`\n]*--no-owner/m;
   assert.doesNotMatch(drill, restoreWithNoOwner);
   assert.doesNotMatch(runbook, restoreWithNoOwner);
   for (const role of ['rekoda_provenance_owner', 'rekoda_plan_writer', 'rekoda_usage_writer'])
-    assert.match(drill, new RegExp(`'${role}'\\)`), `the drill checks that ${role} owns its functions`);
+    assert.match(
+      drill,
+      new RegExp(`'${role}'\\)`),
+      `the drill checks that ${role} owns its functions`,
+    );
   assert.match(drill, /DRILL FAILED: \$OWNERS writer role/);
 });
 
@@ -257,11 +336,21 @@ test('a failed run never deletes the last good backup, even one older than the r
   const past = new Date(Date.now() - 3 * 864e5);
   for (const f of [lastGood, `${lastGood}.sha256`, debris]) utimesSync(f, past, past);
   const r = run('scripts/backup-db.sh', t.env);
-  assert.equal(r.status, 3, `expected the failure to be the dump's own exit code, got ${r.status}: ${r.stderr}`);
+  assert.equal(
+    r.status,
+    3,
+    `expected the failure to be the dump's own exit code, got ${r.status}: ${r.stderr}`,
+  );
   const files = readdirSync(t.dest);
-  assert.ok(files.includes('rekoda-20261001T000000Z-1.dump.enc'), 'the only good backup was deleted by a failed run');
+  assert.ok(
+    files.includes('rekoda-20261001T000000Z-1.dump.enc'),
+    'the only good backup was deleted by a failed run',
+  );
   assert.ok(files.includes('rekoda-20261001T000000Z-1.dump.enc.sha256'));
-  assert.ok(!files.includes('rekoda-20261001T000000Z-2.dump.enc.part'), 'stale staging debris was not cleared');
+  assert.ok(
+    !files.includes('rekoda-20261001T000000Z-2.dump.enc.part'),
+    'stale staging debris was not cleared',
+  );
 });
 
 test('the drill compares every function owner with the archive (parser and wiring, no database)', () => {
@@ -275,11 +364,15 @@ test('the drill compares every function owner with the archive (parser and wirin
     '501; 1255 20400 PROCEDURE public some_procedure() rekoda',
     '502; 0 0 COMMENT public FUNCTION usage_credit_pack(uuid, text, text, text, integer) rekoda',
   ].join('\n');
-  const parse = spawnSync('bash', ['-c', '. scripts/lib/backup-common.sh; backup_toc_function_owners'], {
-    cwd: ROOT,
-    input: toc,
-    encoding: 'utf8',
-  });
+  const parse = spawnSync(
+    'bash',
+    ['-c', '. scripts/lib/backup-common.sh; backup_toc_function_owners'],
+    {
+      cwd: ROOT,
+      input: toc,
+      encoding: 'utf8',
+    },
+  );
   assert.equal(parse.status, 0, parse.stderr);
   assert.deepEqual(parse.stdout.trim().split('\n'), [
     'public staging_move_date(uuid, text, timestamp with time zone) rekoda_plan_writer',
@@ -291,11 +384,17 @@ test('the drill compares every function owner with the archive (parser and wirin
   writeFileSync(join(dir, 'e'), parse.stdout);
   writeFileSync(
     join(dir, 'a'),
-    parse.stdout.replace('usage_credit_pack(uuid, text, text, text, integer) rekoda_usage_writer', 'usage_credit_pack(uuid, text, text, text, integer) rekoda'),
+    parse.stdout.replace(
+      'usage_credit_pack(uuid, text, text, text, integer) rekoda_usage_writer',
+      'usage_credit_pack(uuid, text, text, text, integer) rekoda',
+    ),
   );
   const cmp = spawnSync(
     'bash',
-    ['-c', `. scripts/lib/backup-common.sh; backup_function_owner_mismatches "${join(dir, 'e')}" "${join(dir, 'a')}"`],
+    [
+      '-c',
+      `. scripts/lib/backup-common.sh; backup_function_owner_mismatches "${join(dir, 'e')}" "${join(dir, 'a')}"`,
+    ],
     { cwd: ROOT, encoding: 'utf8' },
   );
   assert.equal(cmp.status, 0, cmp.stderr);
@@ -320,16 +419,61 @@ test('a role the migrations create with BYPASSRLS is created with it on the rest
   const bypass = new Set();
   for (const f of readdirSync(dir).filter((n) => n.endsWith('.sql'))) {
     const sql = readFileSync(join(dir, f), 'utf8');
-    for (const m of sql.matchAll(/CREATE ROLE\s+"?(rekoda_[a-z_]+)"?[^;]*\bBYPASSRLS\b/gi)) bypass.add(m[1].toLowerCase());
+    for (const m of sql.matchAll(/CREATE ROLE\s+"?(rekoda_[a-z_]+)"?[^;]*\bBYPASSRLS\b/gi))
+      bypass.add(m[1].toLowerCase());
   }
   assert.ok(bypass.has('rekoda_provenance_owner'), `expected 0058's role, got ${[...bypass]}`);
   const drill = readFileSync(join(ROOT, 'scripts/restore-drill.sh'), 'utf8');
   const runbook = readFileSync(join(ROOT, 'docs/runbooks/backup-restore.md'), 'utf8');
-  for (const [name, text] of [['restore-drill.sh', drill], ['backup-restore.md', runbook]]) {
+  for (const [name, text] of [
+    ['restore-drill.sh', drill],
+    ['backup-restore.md', runbook],
+  ]) {
     for (const role of bypass) {
-      assert.match(text, new RegExp(`WHEN '${role}'[^;]*BYPASSRLS`), `${name} does not create ${role} with BYPASSRLS`);
+      assert.match(
+        text,
+        new RegExp(`WHEN '${role}'[^;]*BYPASSRLS`),
+        `${name} does not create ${role} with BYPASSRLS`,
+      );
     }
     assert.match(text, /rolbypassrls/, `${name} does not check the restored roles' BYPASSRLS`);
   }
   assert.match(drill, /DRILL FAILED: .*BYPASSRLS/);
+});
+
+test("the drill re-applies 0109's database-level revokes and checks them (E-F5)", () => {
+  /* pg_restore without --create carries no database ACL: a restore into a fresh database hands
+   * TEMPORARY back to PUBLIC and the runtime roles. The drill applies the revokes 0109 made, from
+   * one definition the runbook's real restore mirrors, and fails if any runtime role keeps TEMP. */
+  const migration = readFileSync(
+    join(ROOT, 'packages/db/migrations/0109_security_hardening.sql'),
+    'utf8',
+  );
+  const revoked = [...migration.matchAll(/REVOKE TEMPORARY ON DATABASE %I FROM (\w+)/g)].map(
+    (m) => m[1],
+  );
+  assert.deepEqual(revoked, ['PUBLIC', 'rekoda_app', 'rekoda_worker']);
+  const common = readFileSync(join(ROOT, 'scripts/lib/backup-common.sh'), 'utf8');
+  const runbook = readFileSync(join(ROOT, 'docs/runbooks/backup-restore.md'), 'utf8');
+  for (const role of revoked) {
+    assert.match(
+      common,
+      new RegExp(`REVOKE TEMPORARY ON DATABASE %I FROM ${role}'`),
+      `the drill does not revoke from ${role}`,
+    );
+    assert.match(
+      runbook,
+      new RegExp(`REVOKE TEMPORARY ON DATABASE rekoda FROM ${role}'`),
+      `the real restore does not revoke from ${role}`,
+    );
+  }
+  const drill = readFileSync(join(ROOT, 'scripts/restore-drill.sh'), 'utf8');
+  assert.match(drill, /-c "\$BACKUP_DATABASE_REVOKES_SQL"/);
+  assert.match(drill, /TEMPGRANTED=\$\("\$\{PSQL\[@\]\}" -c "\$BACKUP_TEMP_GRANTED_SQL"\)/);
+  assert.match(
+    drill,
+    /DRILL FAILED: \$TEMPGRANTED runtime role\(s\) can still create temporary tables/,
+  );
+  /* Applied before the drill can report PASS. */
+  assert.ok(drill.indexOf('BACKUP_TEMP_GRANTED_SQL') < drill.indexOf('restore-drill: PASS'));
 });
