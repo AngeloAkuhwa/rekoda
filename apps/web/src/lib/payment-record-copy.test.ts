@@ -125,6 +125,22 @@ describe('payment record copy', () => {
     ).toMatch(/already been paid for\. No extra units were added\./);
   });
 
+  it('a fully refunded payment never says it is still being reviewed (the refund is the outcome)', () => {
+    for (const reason of ['paid_twice', 'under_review'] as const) {
+      /* Recording a refund does not mark the set-aside record reviewed, so `reconciled` can still
+       * be false here; the copy must not claim a review is going on after the money went back. */
+      const summary = paymentRecordView({
+        ...base,
+        state: 'refunded',
+        applied: false,
+        notAppliedReason: reason,
+        reconciled: false,
+      }).summary;
+      expect(summary).toMatch(/All of the charged amount has since been returned to you/);
+      expect(summary).not.toMatch(/is reviewing|being reviewed/);
+    }
+  });
+
   it('a no-charge upgrade claims no payment and no provider confirmation', () => {
     const view = paymentRecordView({ ...base, noCharge: true, amountK: 0, paidAmountK: null });
     expect(view.confirmed).toBe(false);

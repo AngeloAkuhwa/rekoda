@@ -132,6 +132,29 @@ describe('F-2: the overview says what became of a zero-priced upgrade', () => {
     expect(after.plan).toBe('complete');
   });
 
+  it('stops saying the upgrade is on once a later change has moved the plan (no stale plan name)', async () => {
+    const businessId = await chatEndingSoon();
+    const { service, job } = await upgradeAnsweredProcessing(businessId);
+    await runJob(businessId, job);
+    await setJob(job.id, 'done');
+    expect((await service.overview(businessId)).noChargeUpgrade).toEqual({
+      plan: 'complete',
+      state: 'applied',
+    });
+    /* A later change (an operator move, or a scheduled downgrade taking effect) puts the business
+     * on another plan. A `?done=processing` address reopened from history must not say "You are on
+     * Rekoda Complete now". */
+    await setPlanForTest(appDb, {
+      businessId,
+      plan: 'chat',
+      expiresAt: new Date(Date.now() + 20 * DAY),
+      actor: 'operator:test-f2-later',
+    });
+    const after = await service.overview(businessId);
+    expect(after.plan).toBe('chat');
+    expect(after.noChargeUpgrade).toBeNull();
+  });
+
   it('reads withdrawn when settlement could no longer apply it, and the plan is unchanged', async () => {
     const businessId = await chatEndingSoon();
     const { service, job } = await upgradeAnsweredProcessing(businessId);

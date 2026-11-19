@@ -56,7 +56,9 @@ describe.each([
     `${canonical}/v2`,
   ])(`production refuses ${name}=%s`, (value) => {
     expect(() => loadConfig({ ...PROD, [name]: value })).toThrow(
-      new RegExp(`${name} must not be set in production`),
+      new RegExp(
+        `${name} must be blank or exactly ${canonical.replace(/\./g, '\\.')} in production`,
+      ),
     );
   });
 

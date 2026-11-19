@@ -90,7 +90,9 @@ describe('the settlement process configuration', () => {
   it('in production sends the Paystack key to Paystack only', () => {
     expect(() =>
       loadSettlementConfig({ ...PRODUCTION, PAYSTACK_BASE_URL: 'http://127.0.0.1:4010' }),
-    ).toThrow(/PAYSTACK_BASE_URL must not be set in production/);
+    ).toThrow(
+      /PAYSTACK_BASE_URL must be blank or exactly https:\/\/api\.paystack\.co in production/,
+    );
     expect(
       loadSettlementConfig({ ...PRODUCTION, PAYSTACK_BASE_URL: 'https://api.paystack.co' })
         .paystackBaseUrl,

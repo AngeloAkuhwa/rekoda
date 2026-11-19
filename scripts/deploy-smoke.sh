@@ -296,8 +296,8 @@ refuses() {
     fail "$1 refused $2 without saying: $3"
   }
 }
-refuses api 'PAYSTACK_BASE_URL=http://127.0.0.1:4010' 'PAYSTACK_BASE_URL must not be set in production'
-refuses api 'MONO_BASE_URL=https://api.withmono.com.evil.example' 'MONO_BASE_URL must not be set in production'
+refuses api 'PAYSTACK_BASE_URL=http://127.0.0.1:4010' 'PAYSTACK_BASE_URL must be blank or exactly https://api.paystack.co in production'
+refuses api 'MONO_BASE_URL=https://api.withmono.com.evil.example' 'MONO_BASE_URL must be blank or exactly https://api.withmono.com in production'
 refuses api 'REKODA_LOCAL_STORAGE=/tmp/rekoda' 'REKODA_LOCAL_STORAGE must not be set in production'
 refuses api 'AI_BASE_URL=https://ollama:11434/v1' 'AI_BASE_URL names ollama'
 refuses api 'REKODA_TRUSTED_PROXIES=,' 'REKODA_TRUSTED_PROXIES is set but names no'

@@ -724,8 +724,9 @@ function providerBaseUrl(
   if (!raw) return canonical;
   if (isProduction && raw !== canonical) {
     throw new ConfigError(
-      `${name} must not be set in production: it points the provider's requests, and the ` +
-        `secret key they carry, at a host other than ${canonical}. Remove it.`,
+      `${name} must be blank or exactly ${canonical} in production: any other value points the ` +
+        `provider's requests, and the secret key they carry, at a host other than ${canonical}. ` +
+        `Leave it unset, or set it to exactly ${canonical}.`,
     );
   }
   return raw;

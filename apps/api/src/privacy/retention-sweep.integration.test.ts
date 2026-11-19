@@ -124,6 +124,15 @@ describe('the warning', () => {
     expect(await exists(businessId)).toBe(true);
   });
 
+  it('claims a delivered notice even when the pass started more than a minute ago', async () => {
+    const { businessId } = await abandonedTrial(RETENTION_NOTICE_DAYS + 5);
+    const sender = new StubSender();
+    expect((await sweepRetention(deps(sender), new Date(Date.now() - 5 * 60_000))).warned).toBe(1);
+    expect((await sweepRetention(deps(sender), new Date())).warned).toBe(0);
+    expect(sender.retentionNotices).toHaveLength(1);
+    expect(await exists(businessId)).toBe(true);
+  });
+
   /**
    * The warning is a chargeable Meta utility template, and the sweep recorded
    * nothing for it. A month of retention warnings was a month of Meta invoice

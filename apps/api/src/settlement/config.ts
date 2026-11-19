@@ -130,7 +130,7 @@ export function loadSettlementConfig(
   const base = env['PAYSTACK_BASE_URL']?.trim();
   if (base && isProduction && base !== PAYSTACK_API) {
     throw new SettlementConfigError(
-      `PAYSTACK_BASE_URL must not be set in production: it points the provider's requests, and the secret key they carry, at a host other than ${PAYSTACK_API}. Remove it.`,
+      `PAYSTACK_BASE_URL must be blank or exactly ${PAYSTACK_API} in production: any other value points the provider's requests, and the secret key they carry, at a host other than ${PAYSTACK_API}. Leave it unset, or set it to exactly ${PAYSTACK_API}.`,
     );
   }
 

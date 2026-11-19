@@ -103,10 +103,14 @@ export function paymentRecordView(record: ViewInput): PaymentRecordView {
   const view = VIEWS[record.state];
   let summary = view.summary;
   const reason = record.notAppliedReason ? NOT_APPLIED_WHY[record.notAppliedReason] : null;
+  /* A full refund is the outcome of the review, even where recording it left the set-aside record
+   * unmarked, so a refunded record never says a review is still going on. A part refund may still
+   * be under review, and keeps the pending wording until the record is marked reviewed. */
+  const reviewed = record.reconciled || record.state === 'refunded';
   const why =
     reason === null || typeof reason === 'string'
       ? reason
-      : record.reconciled
+      : reviewed
         ? reason.reviewed
         : reason.pending;
   if (record.state === 'paid_not_applied') {

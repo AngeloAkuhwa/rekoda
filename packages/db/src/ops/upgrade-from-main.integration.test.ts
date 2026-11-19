@@ -1,9 +1,9 @@
 /**
- * Migration safety for the whole of PR B (0193 to 0245): an UPGRADE of the database `main` leaves
+ * Migration safety for the whole of PR B (0193 to 0246): an UPGRADE of the database `main` leaves
  * behind, which is what the staging deploy actually applies.
  *
  * `upgrade-od51.integration.test.ts` starts from 0212, the last PR B migration before OWN-91. `main`
- * itself stops at 0192, so the staging database will take 0193 to 0245 in one stopped window. This
+ * itself stops at 0192, so the staging database will take 0193 to 0246 in one stopped window. This
  * suite migrates a scratch database to 0192, seeds it as that release would have left it (a paying
  * business, a settled plan charge, a credited pack, an open pack checkout, a consumed meter, a
  * Paystack event, a settlement job and a general job still queued), then migrates forward. The
@@ -165,15 +165,15 @@ afterAll(async () => {
   }
 });
 
-describe('upgrading the database main leaves (0192) through 0245', () => {
+describe('upgrading the database main leaves (0192) through 0246', () => {
   it('starts at 0192 with the release seeded', () => {
     expect(pending[0]).toBe('0193_charge_provider_times');
-    expect(pending.at(-1)).toBe('0245_usage_binds_only_to_the_events_own_job');
+    expect(pending.at(-1)).toBe('0246_refund_refuses_a_pack_credited_before_0193');
     expect(before.charges).toHaveLength(3);
     expect(before.charges[0]).not.toHaveProperty('provider_paid_at');
   });
 
-  it('applies 0193 to 0245 in order and rewrites no column the old release wrote', async () => {
+  it('applies 0193 to 0246 in order and rewrites no column the old release wrote', async () => {
     const applied = await applyMigrations(scratchUrl(urls.owner));
     expect(applied).toEqual(pending);
 
@@ -256,5 +256,40 @@ describe('upgrading the database main leaves (0192) through 0245', () => {
     expect(plan[0]!['plan_expires_at']).toEqual(
       new Date(String((before.business[0] as Doc)['plan_expires_at'])),
     );
+  });
+  /**
+   * Final review B-1 (0246): a pack main credited by writing the bonus directly has no recorded
+   * credit (`units_credited_at` is NULL after the upgrade). At 0245 the refund skipped every pack
+   * rule for it: accepted in full or in part, no units revoked, no seven-day or unused check. It is
+   * refused now, as 0230 always said, and the merchant's units are not touched.
+   */
+  it('refuses to refund a pack main credited, and leaves its units as they are', async () => {
+    const operator = scratchDb(urls.operator);
+    const bonusBefore = Number(
+      (await owner`SELECT bonus FROM usage_counters WHERE business_id = ${businessId}`)[0]![
+        'bonus'
+      ],
+    );
+    for (const amount of [250000, 100000]) {
+      await expect(
+        withBusiness(operator, businessId, (tx) =>
+          tx.execute(sql`SELECT * FROM subscription_record_refund(${businessId}::uuid,
+            'RKD-ADD-20261105-MAINCR', ${amount}, 'unused_add_on', 'operator:upgrade-main',
+            ${`rf_main_${amount}`})`),
+        ),
+      ).rejects.toMatchObject({
+        cause: {
+          code: '22023',
+          message: expect.stringMatching(/credited before its units were recorded/),
+        },
+      });
+    }
+    const after = await owner`
+      SELECT c.status, c.refunded_amount_k, (SELECT bonus FROM usage_counters u
+        WHERE u.business_id = c.business_id) AS bonus,
+        (SELECT count(*)::int FROM subscription_refunds r WHERE r.charge_id = c.id) AS refunds
+      FROM subscription_charges c WHERE c.reference = 'RKD-ADD-20261105-MAINCR'`;
+    expect(after[0]).toMatchObject({ status: 'paid', refunds: 0, bonus: bonusBefore });
+    expect(Number(after[0]!['refunded_amount_k'])).toBe(0);
   });
 });

@@ -184,7 +184,7 @@ export class BillingService {
         processingIssue: stuck
           ? { since: stuck.openedAt.toISOString(), recovering: stuck.status === 'recovering' }
           : null,
-        noChargeUpgrade: await noChargeUpgradeView(tx, businessId),
+        noChargeUpgrade: await noChargeUpgradeView(tx, businessId, plan),
         chargesTotal: charges.count,
         charges: await Promise.all(
           chargeRows.map(async (charge) => ({
@@ -1173,6 +1173,7 @@ function pricingIntervalFor(from: string, interval: BillingInterval): BillingInt
 async function noChargeUpgradeView(
   tx: TenantDb,
   businessId: string,
+  currentPlan: string,
 ): Promise<BillingOverviewResponse['noChargeUpgrade']> {
   const latest = await subscriptionsRepo.latestNoChargeUpgrade(tx, businessId);
   if (!latest) return null;
@@ -1183,7 +1184,11 @@ async function noChargeUpgradeView(
   /* Only a paid (settled, not set aside) charge is applied. Any other settled status (none is
    * reachable for a ₦0 charge, which never meets a provider) never claims the plan is on. */
   if (latest.status === 'paid') {
-    return view(latest.unappliedAt === null ? 'applied' : 'withdrawn');
+    if (latest.unappliedAt !== null) return view('withdrawn');
+    /* "You are on <plan> now" is true only while it still is. A later change (an operator move, a
+     * scheduled downgrade taking effect, a lapse) makes the old notice stale, so a `?done=processing`
+     * address reopened from history shows nothing rather than a plan the business is not on. */
+    return latest.plan === currentPlan ? view('applied') : null;
   }
   if (latest.status !== 'pending') return view('failed');
   if (latest.supersededAt) {

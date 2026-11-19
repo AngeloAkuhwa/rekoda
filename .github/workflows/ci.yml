@@ -75,9 +75,11 @@ jobs:
         run: pnpm turbo typecheck lint test build
       # withBusiness() is only a tenancy guarantee if it is the only path to the
       # database. This is what stops that decaying into a convention.
+      # The job-payload rule's fixture test (PR #432: a worker read of a job's payload is pinned to
+      # its tenant). It ran only locally before; a weakened rule would have merged unnoticed.
       - name: Architectural boundaries
         if: steps.ws.outputs.present == 'true'
-        run: node scripts/check-boundaries.mjs
+        run: node --test scripts/job-payload-reads.test.mjs && node scripts/check-boundaries.mjs
       # A deployment is filled from .env.example. Every name the code reads
       # must be in it and every name in it must be read (G-08). The fixture
       # test pins every read form the scanner handles; it runs first.

@@ -136,7 +136,7 @@ Decisions taken while building, each the narrowest that closes the gap:
 
 What remains is listed at the end of the OD-51 row in `docs/REKODA_LAUNCH_READINESS.md`. The
 deploy needs one new value from the owner, `OPERATOR_BILLING_OIDC_AUDIENCE`
-(`docs/runbooks/deploy.md`, "Deploy a release carrying 0213 to 0245").
+(`docs/runbooks/deploy.md`, "Deploy a release carrying 0213 to 0246").
 
 ## 6. G-119 / OWN-77: staging tools (Route A)
 

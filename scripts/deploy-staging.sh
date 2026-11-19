@@ -119,7 +119,7 @@ COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary 020
 # Every other migration after main's 0192: the previous release keeps working against it, so it is
 # applied with everything running (E-F8). Each new migration goes in exactly one of the two lists:
 # scripts/deploy-staging-classes.test.mjs fails a migration that is in neither, or in both.
-ADDITIVE_MIGRATIONS='0193_charge_provider_times 0194_dead_job_exceptions 0195_renewal_blocked 0197_staging_test_business_tools 0198_blocked_renewal_close_order 0199_blocked_renewal_close_cursor 0201_blocked_renewal_close_heartbeat 0208_subscription_period_preflight 0213_support_review_plan_change 0214_pack_purchase_identity 0215_pricing_source_authority 0219_support_review_respects_later_schedule 0222_usage_entitlement_in_the_database 0223_settlement_scope_and_dead_job_requeue 0224_pack_credit_derives_from_the_charge 0225_dead_job_enrolment_discovery 0226_settlement_holds_no_add_on 0227_paid_launch_gate 0229_dead_job_enrolment_dead_letter 0231_settlement_reads_only_its_kinds_payload 0232_support_review_prices_like_the_resolver 0233_operator_actor_contract 0234_job_payload_live_or_dying_only 0236_dead_job_enrolment_cursor 0237_settlement_reads_key_fingerprints 0238_worker_job_transitions 0239_operator_actor_columns 0240_pack_refund_allowance_history 0241_final_review_guards 0242_settlement_job_transitions 0243_refund_judges_the_allowance_after_the_counter_lock 0244_refund_refuses_across_a_time_boundary 0245_usage_binds_only_to_the_events_own_job'
+ADDITIVE_MIGRATIONS='0193_charge_provider_times 0194_dead_job_exceptions 0195_renewal_blocked 0197_staging_test_business_tools 0198_blocked_renewal_close_order 0199_blocked_renewal_close_cursor 0201_blocked_renewal_close_heartbeat 0208_subscription_period_preflight 0213_support_review_plan_change 0214_pack_purchase_identity 0215_pricing_source_authority 0219_support_review_respects_later_schedule 0222_usage_entitlement_in_the_database 0223_settlement_scope_and_dead_job_requeue 0224_pack_credit_derives_from_the_charge 0225_dead_job_enrolment_discovery 0226_settlement_holds_no_add_on 0227_paid_launch_gate 0229_dead_job_enrolment_dead_letter 0231_settlement_reads_only_its_kinds_payload 0232_support_review_prices_like_the_resolver 0233_operator_actor_contract 0234_job_payload_live_or_dying_only 0236_dead_job_enrolment_cursor 0237_settlement_reads_key_fingerprints 0238_worker_job_transitions 0239_operator_actor_columns 0240_pack_refund_allowance_history 0241_final_review_guards 0242_settlement_job_transitions 0243_refund_judges_the_allowance_after_the_counter_lock 0244_refund_refuses_across_a_time_boundary 0245_usage_binds_only_to_the_events_own_job 0246_refund_refuses_a_pack_credited_before_0193'
 BREAKING=
 BREAKING_APPLIED=false
 # Set once migrate has been entered for a release carrying a breaking migration. migrate applies each
@@ -196,6 +196,8 @@ UP_ENTERED=false
 #     and the boundary function by its body, owner, attributes and the absence of any grant;
 #   * a usage reservation binds only to its event's own live metering job, by a payload the closure
 #     trigger can read, never by the stripped-text match of 0227 (0245);
+#   * the refund refuses a pack credited before 0193, with no recorded credit and not set aside
+#     (0246; final review B-1), pinned by the md5 of the refund's exact body;
 #   * each of the nine operator-actor constraints of PR B is the named CHECK on its own table and
 #     column, with its exact definition, validated (0239's intentionally NOT VALID one on main's
 #     subscription_charges.unapplied_resolved_by excepted); `@` in the expected text stands in for the
@@ -242,7 +244,8 @@ SMOKE_0196_SQL="SELECT
                   '0242_settlement_job_transitions',
                   '0243_refund_judges_the_allowance_after_the_counter_lock',
                   '0244_refund_refuses_across_a_time_boundary',
-                  '0245_usage_binds_only_to_the_events_own_job')) = 45
+                  '0245_usage_binds_only_to_the_events_own_job',
+                  '0246_refund_refuses_a_pack_credited_before_0193')) = 46
   AND has_function_privilege('rekoda_billing_operator', 'public.subscription_record_refund(uuid,text,bigint,text,text,text)', 'EXECUTE')
   AND NOT has_function_privilege('rekoda_app', 'public.subscription_record_refund(uuid,text,bigint,text,text,text)', 'EXECUTE')
   AND NOT has_function_privilege('rekoda_worker', 'public.subscription_record_refund(uuid,text,bigint,text,text,text)', 'EXECUTE')
@@ -287,7 +290,7 @@ SMOKE_0196_SQL="SELECT
         LIKE '%NOT pg_has_role(current_user, ''rekoda_worker'', ''USAGE'')%pg_has_role(current_user, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), ''USAGE'')%OLD.state = ''pending'' AND NEW.state = ''running''%OLD.state = ''running'' AND NEW.state IN (''done'', ''pending'', ''dead'')%'
   AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('rekoda_private.jobs_worker_transition_guard()'))
         NOT LIKE '%OLD.state = ''dead''%'
-  AND (SELECT md5(p.prosrc) = '5d939e8f3bddf1fa67f4225463b12a46' AND p.prosecdef
+  AND (SELECT md5(p.prosrc) = '690bb1b0817802bbcfc8d9908d34d157' AND p.prosecdef
          AND p.proconfig = ARRAY['search_path=pg_catalog, public, pg_temp']
        FROM pg_proc p WHERE p.oid = to_regprocedure('public.subscription_record_refund(uuid,text,bigint,text,text,text)'))
   AND (SELECT md5(p.prosrc) = 'dbca515f6e41fa98f679930f00b3af4f' AND NOT p.prosecdef
@@ -1203,7 +1206,7 @@ if [[ " $BREAKING " == *' 0217_settlement_isolation '* ]]; then
   for var in OPERATOR_OIDC_ISSUER OPERATOR_OIDC_JWKS_URL OPERATOR_BILLING_OIDC_AUDIENCE VAULT_KEY \
     SETTLEMENT_DATABASE_URL OPERATOR_DATABASE_URL; do
     [ -n "$(sed -n "s/^${var}=//p" .env | tail -1)" ] ||
-      fail "this release carries 0217 (OD-51) and .env has no ${var}: add it (docs/runbooks/deploy.md, \"Deploy a release carrying 0213 to 0245\"); nothing has been changed"
+      fail "this release carries 0217 (OD-51) and .env has no ${var}: add it (docs/runbooks/deploy.md, \"Deploy a release carrying 0213 to 0246\"); nothing has been changed"
   done
   [ "$(sed -n 's/^OPERATOR_BILLING_OIDC_AUDIENCE=//p' .env | tail -1)" != "$(sed -n 's/^OPERATOR_OIDC_AUDIENCE=//p' .env | tail -1)" ] ||
     fail 'OPERATOR_BILLING_OIDC_AUDIENCE must differ from OPERATOR_OIDC_AUDIENCE: a token the API accepts must not change a plan (OD-51); nothing has been changed'

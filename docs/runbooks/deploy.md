@@ -227,7 +227,7 @@ dc build --build-arg REKODA_COMMIT=$(git rev-parse --short HEAD) api   # build B
 dc build --build-arg REKODA_COMMIT=$(git rev-parse --short HEAD) web   # one image at a time: never both at once
 # First PRODUCTION deploy carrying migrations 0175-0178 (G-109): run `dc stop api worker` here first
 # Every deploy carrying 0196 or 0200 (PR B, plan-field boundary, OD-48): run `dc stop api worker` here first, and see "Deploy a release carrying 0196"
-# Every deploy carrying 0216, 0217, 0218, 0220, 0221, 0228, 0230 or 0235 (OD-51, OWN-94; COMPAT_BREAKING_MIGRATIONS; 0222 and 0223 are not breaks and ship in the same stopped window): run `dc stop api worker operator settlement` here first, and see "Deploy a release carrying 0213 to 0245"
+# Every deploy carrying 0216, 0217, 0218, 0220, 0221, 0228, 0230 or 0235 (OD-51, OWN-94; COMPAT_BREAKING_MIGRATIONS; 0222 and 0223 are not breaks and ship in the same stopped window): run `dc stop api worker operator settlement` here first, and see "Deploy a release carrying 0213 to 0246"
 # ...and after migrate, run the step-8 pre-start database smoke (SMOKE_0196_SQL) as the owner: do not `dc up` unless it prints t
 dc run --rm -T migrate                                             # expand-only migrations, as the owner
 dc up -d --wait                                                    # recreates api, worker and web on the new images
@@ -686,7 +686,7 @@ worker or the api. Step 1 below describes the release that carried 0209.
 
 Rollback past these migrations is a backup restore (G-02), as for 0196 to 0206 (OWN-86).
 
-### Deploy a release carrying 0213 to 0245 (support-review upgrade, pack purchase identity, pricing source, usage meter boundary, settlement and operator processes, reservation closure; 0227 to 0230: the paid-launch gate, the worker's payload isolation, enrolment dead letters, refunds through the operator; 0231 to 0237: settlement reads only its own kinds' payloads, support-review pricing as the resolver, the operator actor contract, live-or-dying payloads only, one record per provider refund, the enrolment cursor, settlement's vault-key check; 0238 to 0240: the worker's job transitions, operator-actor columns, the pack allowance history; 0241: the worker guard by privilege and a trial's expiry in the allowance history; 0242: settlement's job transitions; 0243: a pack refund judges the allowance after the counter lock; 0244: a pack refund refuses across a time boundary of the allowance; 0245: a usage reservation binds only to its event's own metering job)
+### Deploy a release carrying 0213 to 0246 (support-review upgrade, pack purchase identity, pricing source, usage meter boundary, settlement and operator processes, reservation closure; 0227 to 0230: the paid-launch gate, the worker's payload isolation, enrolment dead letters, refunds through the operator; 0231 to 0237: settlement reads only its own kinds' payloads, support-review pricing as the resolver, the operator actor contract, live-or-dying payloads only, one record per provider refund, the enrolment cursor, settlement's vault-key check; 0238 to 0240: the worker's job transitions, operator-actor columns, the pack allowance history; 0241: the worker guard by privilege and a trial's expiry in the allowance history; 0242: settlement's job transitions; 0243: a pack refund judges the allowance after the counter lock; 0244: a pack refund refuses across a time boundary of the allowance; 0245: a usage reservation binds only to its event's own metering job)
 
 0216, 0217, 0218, 0220, 0221, 0228, 0230 and 0235 are compatibility breaks: the previous release writes
 `usage_counters` directly, which no runtime role may do afterwards, and settles charges in the worker
@@ -695,7 +695,7 @@ API refund route (refunds are recorded by the operator process alone); 0235 chan
 function's signature (a sixth argument, the provider refund id). Deploy with every writing process
 stopped; `scripts/deploy-staging.sh` lists them (`COMPAT_BREAKING_MIGRATIONS`), stops `api`,
 `worker`, `operator` and `settlement`, and enforces the order. 0213 to 0215, 0219, 0222 to 0227,
-0229, 0231 to 0234 and 0236 to 0245 are additive and ship in the same stopped release (every
+0229, 0231 to 0234 and 0236 to 0246 are additive and ship in the same stopped release (every
 migration after 0192 is in exactly one of `COMPAT_BREAKING_MIGRATIONS` and `ADDITIVE_MIGRATIONS`,
 checked by `scripts/deploy-staging-classes.test.mjs`). Rollback past
 0216 is a backup restore (G-02).
@@ -820,7 +820,9 @@ This release starts two more services. Before deploying:
      (0244);
    - a usage reservation binds only to its event's own live `inbound.message` or `customer.message`
      job, by a payload the closure trigger can read (0245; 0227's stripped-text match refused);
-   - the ledger carries 45 tags, 0196 to 0245 (the list in `SMOKE_0196_SQL`).
+   - the refund refuses a pack credited before 0193 (no recorded credit, not set aside), pinned by
+     the refund's md5 (0246);
+   - the ledger carries 46 tags, 0196 to 0246 (the list in `SMOKE_0196_SQL`).
 
    Re-running an earlier migration by hand after a later one (for example 0228, 0229 or 0230 after
    0231 to 0236) puts back its weaker definitions, whatever its header says about re-running; the

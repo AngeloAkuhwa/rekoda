@@ -235,6 +235,16 @@ describe('the pre-start database smoke, closeout round (actor constraints, 0242,
       )![0],
     ],
     [
+      'the refund function back at 0244, refunding a pack main credited with no units revoked (final review B-1)',
+      migrationText('0244_refund_refuses_across_a_time_boundary.sql').match(
+        /CREATE OR REPLACE FUNCTION public\.subscription_record_refund\([\s\S]*?END \$function\$;/,
+      )![0],
+    ],
+    [
+      '0246 not recorded in the ledger',
+      "DELETE FROM rekoda_migrations WHERE tag = '0246_refund_refuses_a_pack_credited_before_0193'",
+    ],
+    [
       '0245 not recorded in the ledger',
       "DELETE FROM rekoda_migrations WHERE tag = '0245_usage_binds_only_to_the_events_own_job'",
     ],
