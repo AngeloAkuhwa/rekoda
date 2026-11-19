@@ -68,11 +68,28 @@ same change that re-wraps the data (see below), update the fingerprint as
 the owner:
 
 ```sql
--- as the owner role, inside the rotation window
+-- as the owner role, inside the rotation window; <KEY_NAME> is exactly the key you
+-- rotated: 'VAULT_KEY', 'MATCH_KEY' or 'CONNECTION_KEY'
 UPDATE key_fingerprints
    SET fingerprint = '<new fingerprint>', created_at = now()
- WHERE key_name = 'VAULT_KEY';
+ WHERE key_name = '<KEY_NAME>';
+-- check that only that row changed: every other row keeps its old created_at
+SELECT key_name, fingerprint, created_at FROM key_fingerprints ORDER BY key_name;
 ```
+
+**Retiring `CONNECTION_KEY`.** A key that was set once stays enrolled when it is
+cleared, so setting a fresh, different key later is refused. When no sealed
+connection rows remain (or they are being re-wrapped under the new key in the same
+window), remove the enrolment as the owner so the next keyed boot enrols the new key:
+
+```sql
+-- as the owner role
+DELETE FROM key_fingerprints WHERE key_name = 'CONNECTION_KEY';
+```
+
+The fingerprint is taken over the key **exactly as deployed**, so a value that
+differs only in the case of its hex letters is refused even though it decrypts the
+same data. Keep the deployed value byte for byte; do not re-case it.
 
 The new fingerprint is printed by the failed boot attempt ("this process
 holds ..."), or computed as the first 16 hex chars of

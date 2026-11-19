@@ -85,6 +85,15 @@ async function enrolled(): Promise<string | undefined> {
   return [...rows][0]?.fingerprint;
 }
 
+/** Connections the application and worker roles hold in this database right now. */
+async function openConnections(): Promise<number> {
+  const rows = await ownerDb.execute<{ n: number }>(sql`
+    SELECT count(*)::int AS n FROM pg_stat_activity
+     WHERE datname = current_database() AND usename IN ('rekoda_app', 'rekoda_worker')
+  `);
+  return [...rows][0]?.n ?? -1;
+}
+
 describe('CONNECTION_KEY at boot (G-13)', () => {
   it('enrols the key on first boot and boots again with the same key', async () => {
     const key = randomBytes(32).toString('hex');
@@ -125,6 +134,18 @@ describe('CONNECTION_KEY at boot (G-13)', () => {
     process.env['CONNECTION_KEY'] = key;
     await boot();
     expect(await enrolled()).toBe(bootChecks.fingerprintKey(key));
+  });
+
+  it('a refused boot closes what it opened, leaving no database connection behind', async () => {
+    process.env['CONNECTION_KEY'] = randomBytes(32).toString('hex');
+    await (await boot()).close();
+    opened.length = 0;
+    expect(await openConnections()).toBe(0);
+
+    process.env['CONNECTION_KEY'] = randomBytes(32).toString('hex');
+    await expect(boot()).rejects.toBeInstanceOf(bootChecks.KeyFingerprintMismatch);
+    // A half-built application that is never closed keeps its pools open in the process.
+    expect(await openConnections()).toBe(0);
   });
 
   it('a process started without the key after enrolment still boots, and the enrolment holds', async () => {
