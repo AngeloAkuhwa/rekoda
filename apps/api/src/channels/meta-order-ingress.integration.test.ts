@@ -19,7 +19,7 @@ import {
 } from '@rekoda/db';
 import { usagePeriod } from '@rekoda/core';
 import { buildRunner } from '../jobs/jobs.module.js';
-import { billingRepo, customersRepo, paymentsHub } from '@rekoda/db';
+import { customersRepo, paymentsHub } from '@rekoda/db';
 import { encryptFacet } from '@rekoda/core/vault';
 import { sealPayload } from '../privacy/payload-vault.js';
 import { pumpPaystackEvents } from '../payments/paystack-pump.js';
@@ -34,6 +34,7 @@ import {
   useMetaWebhookHarness,
   workerDb,
 } from './meta-webhook.fixtures.js';
+import { setPlanForTest, requireUrls, settlementDb, creditBonusForTest } from '@rekoda/db/testing';
 
 useMetaWebhookHarness();
 
@@ -62,7 +63,7 @@ describe('every order ingress goes through PlaceOrder (remediation R2)', () => {
     /* A fresh trial business holds BOTH capabilities, so refusing one has to
      * be done by pinning the plan rather than by not granting (the same find
      * PR-025 recorded for the storefront). */
-    await billingRepo.setPlan(db, {
+    await setPlanForTest(db, {
       businessId: business.id,
       plan,
       expiresAt: null,
@@ -206,7 +207,7 @@ describe('the W3 completion gate: catalogue to receipt (spec §3.2; PR-089)', ()
       ownerUserId: user.id,
     });
     const businessId = business.id;
-    await billingRepo.setPlan(db, {
+    await setPlanForTest(db, {
       businessId,
       plan: 'integrate',
       expiresAt: null,
@@ -264,7 +265,10 @@ describe('the W3 completion gate: catalogue to receipt (spec §3.2; PR-089)', ()
           await usageRepo.consumeUnit(tx, businessId, period, 'SERVICE_MESSAGE', sold, sold);
         }
       } else {
-        await usageRepo.creditBonus(tx, businessId, period, 'SERVICE_MESSAGE', 5);
+        /* Pack units are credited only by settlement (OD-37). */
+        await withBusiness(settlementDb(), businessId, (s) =>
+          creditBonusForTest(s, businessId, period, 'SERVICE_MESSAGE', 5),
+        );
       }
       return wig.id;
     });

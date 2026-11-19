@@ -1,3 +1,4 @@
+import { openPricedCharge } from './priced-charge.fixtures.js';
 /**
  * The payment record page's data (billing Slice A): one payment in full, from the charge's own row.
  *
@@ -8,7 +9,16 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { billingPaymentRecord } from '@rekoda/contracts';
 import { createDb, identity, sql, subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import {
+  applyFixtureCycle,
+  migrate,
+  requireUrls,
+  truncateAll,
+  type Urls,
+  settlementDb,
+  setPricingSource,
+  applicationDb,
+} from '@rekoda/db/testing';
 import { applySettledCharge, BillingService } from './billing.service.js';
 
 let urls: Urls;
@@ -31,6 +41,8 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await truncateAll(urls);
+  /* This suite prices from the compiled constants; the database is told so (OD-51.6, 0215). */
+  await setPricingSource(urls, 'constants');
 });
 
 const config = { planCatalogueReads: false };
@@ -49,12 +61,12 @@ async function seedBusiness(): Promise<string> {
 }
 
 const open = (businessId: string, reference: string, over: { pack?: boolean } = {}) =>
-  withBusiness(appDb, businessId, (tx) =>
-    subscriptionsRepo.openCharge(tx, {
+  withBusiness(applicationDb(), businessId, (tx) =>
+    openPricedCharge(tx, config, {
       businessId,
       kind: over.pack ? 'add_on' : 'first_purchase',
       ...(over.pack ? { packId: 'messages_100' } : { plan: 'chat' }),
-      amountK: 990_000,
+      /* At the honest price: settlement re-prices every charge (OD-51, 0209). */
       reference,
       ...(over.pack
         ? {}
@@ -83,7 +95,7 @@ describe('payment record', () => {
       paidAt: null,
       paidAmountK: null,
       applied: false,
-      amountK: 990_000,
+      /* At the honest price: settlement re-prices every charge (OD-51, 0209). */
       currency: 'NGN',
       plan: 'chat',
     });
@@ -92,7 +104,7 @@ describe('payment record', () => {
   it('a verified payment that took effect is paid and applied, with its paid date', async () => {
     const b = await seedBusiness();
     await open(b, 'RKD-SUB-20261101-BBBBBB');
-    await withBusiness(appDb, b, (tx) =>
+    await withBusiness(settlementDb(), b, (tx) =>
       applySettledCharge(tx, {
         businessId: b,
         reference: 'RKD-SUB-20261101-BBBBBB',
@@ -180,7 +192,7 @@ describe('payment record', () => {
   it('a payment that was applied and later fully refunded is still recorded as applied', async () => {
     const b = await seedBusiness();
     await open(b, 'RKD-SUB-20261101-JJJJJJ');
-    await withBusiness(appDb, b, (tx) =>
+    await withBusiness(settlementDb(), b, (tx) =>
       applySettledCharge(tx, {
         businessId: b,
         reference: 'RKD-SUB-20261101-JJJJJJ',
@@ -233,7 +245,7 @@ describe('payment record', () => {
     );
 
     expect(await service().paymentRecord(b, 'RKD-SUB-20261101-MMMMMM')).toMatchObject({
-      amountK: 990_000,
+      /* At the honest price: settlement re-prices every charge (OD-51, 0209). */
       paidAmountK: 1_000_000,
     });
   });
@@ -290,26 +302,26 @@ describe('payment record', () => {
     const cycleStart = new Date('2026-11-01T00:00:00Z');
     const renewsAt = new Date('2026-12-01T00:00:00Z');
     await withBusiness(appDb, b, (tx) =>
-      subscriptionsRepo.applyCycle(tx, b, {
+      applyFixtureCycle(tx, b, {
         plan: 'chat',
         cycleStartedAt: cycleStart,
         renewsAt,
         anchorDay: 1,
       }),
     );
-    await withBusiness(appDb, b, (tx) =>
-      subscriptionsRepo.openCharge(tx, {
+    await withBusiness(applicationDb(), b, (tx) =>
+      openPricedCharge(tx, config, {
         businessId: b,
         kind: 'upgrade',
         plan: 'integrate',
-        amountK: 100_000,
+        /* At the honest price: settlement re-prices every charge (OD-51, 0209). */
         reference: 'RKD-SUB-20261128-QQQQQQ',
         periodStart: cycleStart,
         periodEnd: renewsAt,
       }),
     );
     const paidOn = new Date('2026-11-28T09:00:00Z');
-    await withBusiness(appDb, b, (tx) =>
+    await withBusiness(settlementDb(), b, (tx) =>
       applySettledCharge(tx, {
         businessId: b,
         reference: 'RKD-SUB-20261128-QQQQQQ',

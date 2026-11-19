@@ -23,6 +23,7 @@ import {
   ERASURE_SEAL_UNREADABLE_MESSAGE,
   ErasureSealUnreadable,
 } from './email-erasure.service.js';
+import { operatorActor } from '../auth/operator-actor.js';
 
 @Controller('v1/ops/privacy')
 @UseGuards(OperatorGuard)
@@ -44,7 +45,7 @@ export class EmailErasureController {
       );
     }
     try {
-      return await this.erasure.erase(input.data, `operator:${request.operator!.subject}`);
+      return await this.erasure.erase(input.data, operatorActor(request));
     } catch (error) {
       if (error instanceof ErasureBusinessNotFound) throw new NotFoundException('no such business');
       if (error instanceof ErasureSealUnreadable) {

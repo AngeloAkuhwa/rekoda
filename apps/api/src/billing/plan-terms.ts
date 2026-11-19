@@ -29,6 +29,7 @@ import {
   UNIT_SCALE,
   type AddOnPack,
   type BillingInterval,
+  type PricingSource,
   type UsageUnit,
 } from '@rekoda/core';
 import { addOnsRepo, planCatalogueRepo, type TenantDb } from '@rekoda/db';
@@ -36,6 +37,25 @@ import { addOnsRepo, planCatalogueRepo, type TenantDb } from '@rekoda/db';
 /** The one config fact this seam needs; keeps the functions testable bare. */
 export interface PlanTermsConfig {
   planCatalogueReads: boolean;
+}
+
+/** The pricing source this configuration prices from, as a charge records it (OD-51.6, 0215). */
+export function pricingSourceOf(config: PlanTermsConfig): PricingSource {
+  return config.planCatalogueReads ? 'catalogue' : 'constants';
+}
+
+/**
+ * The terms a charge is re-priced with at settlement (OD-51.6): the source the CHARGE recorded when
+ * it was opened, not the settling process's own setting. A charge that recorded none (opened before
+ * migration 0215) is priced from the settling process's source, which is the one in force: every
+ * process is checked against it at start.
+ */
+export function termsOfCharge(
+  config: PlanTermsConfig,
+  charge: { pricingSource: PricingSource | null },
+): PlanTermsConfig {
+  if (charge.pricingSource === null) return config;
+  return { ...config, planCatalogueReads: charge.pricingSource === 'catalogue' };
 }
 
 /**

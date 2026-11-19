@@ -11,11 +11,13 @@ import { and, eq, sql } from 'drizzle-orm';
 import {
   LOCK_CLASS,
   withAdvisoryLock,
+  withBusiness,
   type Db,
   type LockClient,
   type TenantDb,
 } from '../client.js';
 import { jobs } from '../schema/ops.js';
+import * as deadJobs from './dead-jobs.js';
 
 export type Queryable = Db | TenantDb;
 
@@ -53,7 +55,14 @@ export interface ClaimedJob {
  * unique violation elsewhere still surfaces as an error.
  */
 export async function enqueue(q: Queryable, input: EnqueueInput): Promise<{ id: string } | null> {
-  const runAt = new Date(Date.now() + (input.delayMs ?? 0));
+  /*
+   * Work due now takes the DATABASE's clock, not the host's: claims compare run_at with the
+   * database's now(), and the 0222 guard refuses a settlement job the application enqueues more
+   * than a minute into the future, so an API host running a few minutes fast would otherwise have
+   * every Paystack payment refused at the pump. A deliberate delay is still measured from the host.
+   */
+  const delayMs = input.delayMs ?? 0;
+  const runAt = delayMs > 0 ? new Date(Date.now() + delayMs) : (sql`now()` as unknown as Date);
   const rows = await q
     .insert(jobs)
     .values({
@@ -328,6 +337,21 @@ export async function hasJobForSingleton(
 }
 
 /**
+ * The job kinds that settle a Rekoda charge (OD-51.2, migration 0217): a provider-verified payment
+ * (`billing.process`) and a zero-priced upgrade (`billing.apply_no_charge`). They are claimed and
+ * run only by the dedicated settlement process, on the `rekoda_settlement` credential; the general
+ * worker's claim excludes them, and the database refuses its credential any claim or completion of
+ * one. The same two names are in the queue policies of migration 0217.
+ */
+export const SETTLEMENT_JOB_KINDS = ['billing.process', 'billing.apply_no_charge'] as const;
+
+/** Which kinds a claim may take: only these, or anything but these. Absent means any kind. */
+export interface ClaimFilter {
+  only?: readonly string[];
+  except?: readonly string[];
+}
+
+/**
  * Take the next due job, exactly once across every worker.
  *
  * `FOR UPDATE SKIP LOCKED` inside the sub-select is the whole concurrency
@@ -341,12 +365,26 @@ export async function hasJobForSingleton(
  * and an unpinned transaction matches no rows. That is the intended failure:
  * silent and empty rather than cross-tenant.
  */
-export async function claimNext(db: Db, workerId: string): Promise<ClaimedJob | null> {
+export async function claimNext(
+  db: Db,
+  workerId: string,
+  filter: ClaimFilter = {},
+): Promise<ClaimedJob | null> {
+  const kinds = (list: readonly string[]) =>
+    sql.join(
+      list.map((kind) => sql`${kind}`),
+      sql`, `,
+    );
+  const onlyThese =
+    filter.only && filter.only.length > 0 ? sql`AND kind IN (${kinds(filter.only)})` : sql``;
+  const notThese =
+    filter.except && filter.except.length > 0
+      ? sql`AND kind NOT IN (${kinds(filter.except)})`
+      : sql``;
   const rows = await db.execute<{
     id: string;
     business_id: string;
     kind: string;
-    payload: Record<string, unknown>;
     attempts: number;
     max_attempts: number;
   }>(sql`
@@ -359,20 +397,27 @@ export async function claimNext(db: Db, workerId: string): Promise<ClaimedJob | 
     WHERE id = (
       SELECT id FROM jobs
       WHERE state = 'pending' AND run_at <= now()
+        ${onlyThese}
+        ${notThese}
       ORDER BY run_at, created_at
       LIMIT 1
       FOR UPDATE SKIP LOCKED
     )
-    RETURNING id, business_id, kind, payload, attempts, max_attempts
+    RETURNING id, business_id, kind, attempts, max_attempts
   `);
 
   const row = [...rows][0];
   if (!row) return null;
+  /* The claim crosses tenants for coordination columns only; the payload is read under the job's
+   * own pin, through the one function the database allows for it (0228). */
+  const payload = await withBusiness(db, row.business_id, (tx) =>
+    pinnedPayload(tx, row.id, row.business_id),
+  );
   return {
     id: row.id,
     businessId: row.business_id,
     kind: row.kind,
-    payload: row.payload ?? {},
+    payload: (payload as Record<string, unknown> | null) ?? {},
     attempts: row.attempts,
     maxAttempts: row.max_attempts,
   };
@@ -395,12 +440,16 @@ export async function markDone(tx: TenantDb, id: string, claimedBy?: string): Pr
         ? eq(jobs.id, id)
         : and(eq(jobs.id, id), eq(jobs.state, 'running'), eq(jobs.lockedBy, claimedBy)),
     )
-    .returning({ id: jobs.id });
+    .returning({ id: jobs.id, kind: jobs.kind });
   /* Fenced completion (G-10): when the caller names its claim and the row is
    * no longer held under it (reclaimed and claimed again while this attempt
    * was still running), committing would let two attempts both finish their
    * effects. Throwing rolls the handler's transaction back with it. */
   if (claimedBy !== undefined && rows.length === 0) throw new JobLeaseLost(id);
+  /* A recovered payment or billing job closes its dead-job record in the same commit as its
+   * work (OWN-73, OWN-76). Other kinds never have one. */
+  const kind = rows[0]?.kind;
+  if (kind !== undefined && deadJobs.isDeadJobKind(kind)) await deadJobs.noteJobDone(tx, id);
 }
 
 /** This attempt no longer owns the job; its work must not commit. */
@@ -449,23 +498,91 @@ export async function markFailed(
 ): Promise<{ state: 'pending' | 'dead' | 'lost' }> {
   const exhausted = job.attempts >= job.maxAttempts;
   const state = exhausted ? 'dead' : 'pending';
-  const rows = await db.execute<{ id: string }>(sql`
-    UPDATE jobs SET
-      state      = ${state},
-      run_at     = ${exhausted ? sql`run_at` : sql`now() + make_interval(secs => ${delayMs / 1000})`},
-      locked_at  = NULL,
-      locked_by  = NULL,
-      last_error = ${error},
-      failure_category = 'handler_error',
-      updated_at = now()
-    WHERE id = ${job.id}::uuid
-      AND (${claimedBy ?? null}::text IS NULL OR locked_by = ${claimedBy ?? null})
-    RETURNING id
-  `);
+  /* One transaction: a payment or billing job that dies here writes its dead-job record in the
+   * same commit as the transition (OWN-73, OWN-76), so neither can exist without the other. */
+  const updated = await db.transaction(async (tx) => {
+    const rows = await tx.execute<ReclaimedRow>(sql`
+      UPDATE jobs SET
+        state      = ${state},
+        run_at     = ${exhausted ? sql`run_at` : sql`now() + make_interval(secs => ${delayMs / 1000})`},
+        locked_at  = NULL,
+        locked_by  = NULL,
+        last_error = ${error},
+        failure_category = 'handler_error',
+        updated_at = now()
+      WHERE id = ${job.id}::uuid
+        AND (${claimedBy ?? null}::text IS NULL OR locked_by = ${claimedBy ?? null})
+      RETURNING id, business_id, kind, attempts, state, failure_category
+    `);
+    const row = [...rows][0];
+    if (row?.state === 'dead' && deadJobs.isDeadJobKind(row.kind) && row.business_id) {
+      const payload = await pinnedPayload(tx, row.id, row.business_id);
+      await deadJobs.recordDeath(tx, dyingJob({ ...row, payload }));
+    }
+    return row;
+  });
   /* A fenced update that matched nothing means another claim owns the job:
    * report it rather than a retry or exhaustion that never happened. */
-  if (claimedBy !== undefined && [...rows].length === 0) return { state: 'lost' };
+  if (claimedBy !== undefined && !updated) return { state: 'lost' };
   return { state };
+}
+
+/**
+ * A dying job's payload, read under its own business's pin and only where that business owns it
+ * (final review of PR #432): the reclaim crosses tenants to move coordination columns, never to
+ * read what a tenant's job carries. Pins the transaction (savepoint) it runs in.
+ */
+async function pinnedPayload(tx: Queryable, jobId: string, businessId: string): Promise<unknown> {
+  const [pin] = await tx.execute<{ via_function: boolean }>(sql`
+    SELECT set_config('app.business_id', ${businessId}, true) IS NOT NULL
+       AND has_function_privilege('public.job_payload(uuid)', 'EXECUTE') AS via_function`);
+  /* The worker holds no SELECT on the column (0228): it reads through `job_payload`, which returns
+   * the payload only where the job's business is the pinned one. Settlement may not execute that
+   * definer function (0231, R01): it reads the column itself, and its RLS (0217) shows it only its
+   * own two kinds, so any other job's payload is simply not there for it. */
+  const rows = pin?.via_function
+    ? await tx.execute<{ payload: unknown }>(sql`
+        SELECT job_payload(${jobId}::uuid) AS payload`)
+    : await tx.execute<{ payload: unknown }>(sql`
+        SELECT j.payload FROM jobs j
+        WHERE j.id = ${jobId}::uuid
+          AND j.business_id = nullif(current_setting('app.business_id', true), '')::uuid`);
+  return [...rows][0]?.payload ?? null;
+}
+
+interface ReclaimedRow extends Record<string, unknown> {
+  id: string;
+  business_id: string;
+  kind: string;
+  attempts: number;
+  state: string;
+  failure_category: string | null;
+}
+
+interface DyingRow extends Record<string, unknown> {
+  id: string;
+  business_id: string;
+  kind: string;
+  payload: unknown;
+  attempts: number;
+  state: string;
+  failure_category: string | null;
+}
+
+const dyingJob = (row: DyingRow): deadJobs.DyingJob => ({
+  id: row.id,
+  businessId: row.business_id,
+  kind: row.kind,
+  payload: row.payload,
+  attempts: Number(row.attempts),
+  failureCategory: row.failure_category,
+});
+
+/** A stalled job the reclaim could not move this pass (E-F4). */
+export interface UnrecordedReclaim {
+  jobId: string;
+  kind: string;
+  sqlstate: string | null;
 }
 
 /**
@@ -483,28 +600,274 @@ export async function markFailed(
  * unread refund or dispute into a merchant exception there, never a silent dead
  * job). Only if that run dies too does the job go `dead` here.
  */
-export async function reclaimStalled(db: Db, olderThanMs = 300_000): Promise<number> {
-  const rows = await db.execute<{ id: string }>(sql`
-    UPDATE jobs SET
-      state      = CASE WHEN attempts > max_attempts THEN 'dead' ELSE 'pending' END,
-      locked_at  = NULL,
-      locked_by  = NULL,
-      -- An expired lease says the worker stopped answering, not why, so the message is neutral.
-      -- A dead job's error is fixed text (owner ruling, 4 Nov 2026): no earlier attempt's error
-      -- text is carried into it. That an earlier attempt's handler failed survives only as the
-      -- sanitised category beside it.
-      last_error = CASE WHEN attempts > max_attempts
-                     THEN 'reclaimed past the last attempt: its lease expired'
-                     ELSE coalesce(last_error, 'reclaimed: lease expired before the worker finished') END,
-      failure_category = CASE WHEN failure_category IN ('handler_error', 'lease_expired_after_handler_error')
-                              THEN 'lease_expired_after_handler_error'
-                              ELSE 'lease_expired' END,
-      updated_at = now()
-    WHERE state = 'running'
-      AND locked_at < now() - make_interval(secs => ${olderThanMs / 1000})
-    RETURNING id
-  `);
-  return [...rows].length;
+export async function reclaimStalled(
+  db: Db,
+  olderThanMs = 300_000,
+  options: {
+    /**
+     * Called once per pass with the number of stalled jobs left `running` because their move (and,
+     * for a payment or billing job, its dead-job record) could not be written, and one line per job:
+     * its id, kind and the database's SQLSTATE. Coordination data only, never a payload or a business
+     * (E-F4: the log names what the stuck-job alert counts).
+     */
+    onUnrecorded?: (count: number, jobs: UnrecordedReclaim[]) => void;
+  } = {},
+): Promise<number> {
+  /* An operator's recovery (OWN-73, OWN-76) is ONE attempt: its run already took the
+   * last-attempt path, so a crash during it goes straight back to dead (reopening the record)
+   * instead of taking the ordinary one-more-run crash allowance without a fresh operator ask. */
+  const exhausted = sql`(attempts > max_attempts OR (attempts >= max_attempts AND dead_job_is_recovering(jobs.id)))`;
+  const stale = sql`locked_at < now() - make_interval(secs => ${olderThanMs / 1000})`;
+  /* Each stalled job moves in its own savepoint, together with its dead-job record when it dies
+   * (OWN-73, OWN-76): both commit or neither does. One whose record cannot be written stays
+   * `running` with its expired lease, so the next pass retries both, and no other business's
+   * reclaim waits on it (G2-1: one failure used to roll back the whole cross-tenant pass; I1: a
+   * death committed without its record could leave a `recovering` record stuck for good). */
+  return db.transaction(async (tx) => {
+    const stalled = await tx.execute<{ id: string; kind: string }>(sql`
+      SELECT id, kind FROM jobs WHERE state = 'running' AND ${stale}
+      ORDER BY locked_at, id
+      FOR UPDATE SKIP LOCKED
+    `);
+    let reclaimed = 0;
+    const unrecorded: UnrecordedReclaim[] = [];
+    for (const { id, kind } of stalled) {
+      try {
+        const moved = await tx.transaction(async (savepoint) => {
+          const rows = await savepoint.execute<ReclaimedRow>(sql`
+            UPDATE jobs SET
+              state      = CASE WHEN ${exhausted} THEN 'dead' ELSE 'pending' END,
+              locked_at  = NULL,
+              locked_by  = NULL,
+              -- An expired lease says the worker stopped answering, not why, so the message is
+              -- neutral. A dead job's error is fixed text (owner ruling, 4 Nov 2026): no earlier
+              -- attempt's error text is carried into it. That an earlier attempt's handler failed
+              -- survives only as the sanitised category beside it.
+              last_error = CASE WHEN ${exhausted}
+                             THEN 'reclaimed past the last attempt: its lease expired'
+                             ELSE coalesce(last_error, 'reclaimed: lease expired before the worker finished') END,
+              failure_category = CASE WHEN failure_category IN ('handler_error', 'lease_expired_after_handler_error')
+                                      THEN 'lease_expired_after_handler_error'
+                                      ELSE 'lease_expired' END,
+              updated_at = now()
+            WHERE id = ${id}::uuid AND state = 'running' AND ${stale}
+            -- Coordination columns only: what a job carries is read below, under its own pin.
+            RETURNING id, business_id, kind, attempts, state, failure_category
+          `);
+          const row = [...rows][0];
+          if (!row) return false;
+          if (row.state === 'dead' && deadJobs.isDeadJobKind(row.kind) && row.business_id) {
+            const payload = await pinnedPayload(savepoint, row.id, row.business_id);
+            await deadJobs.recordDeath(savepoint, dyingJob({ ...row, payload }));
+          }
+          return true;
+        });
+        if (moved) reclaimed += 1;
+      } catch (error) {
+        unrecorded.push({ jobId: id, kind, sqlstate: sqlstateOf(error) });
+      }
+    }
+    options.onUnrecorded?.(unrecorded.length, unrecorded);
+    return reclaimed;
+  });
+}
+
+/**
+ * Enrol dead payment and billing jobs that have no dead-job record (OWN-73, OWN-76 cutover).
+ *
+ * A job that died before migration 0194, or under a worker still running the old code during a
+ * rollout, has no record, so it would sit dead with no merchant notice, no operator item and no
+ * recovery. This pass, run beside the reclaim, gives each one the same record a death writes now.
+ *
+ * It crosses tenants only to DISCOVER ids (`dead_job_unrecorded_candidates`, 0225: worker-only,
+ * job id and business id, nothing else; ADR 0035 Amendment 1). Each candidate is then re-read,
+ * re-checked and recorded by `enrolDeath` in its own transaction under its own business's pin, so
+ * a payload is never read outside the tenant that owns it and one business's failure rolls back
+ * that job alone. The failures are reported together after every other candidate has been tried.
+ * `recordDeath` is idempotent per job, and a job an operator already closed has a row, so it is
+ * never enrolled twice. Bounded per pass.
+ */
+export async function enrolUnrecordedDeaths(db: Db, limit = 100): Promise<number> {
+  const pass = await enrolUnrecordedDeathsPage(db, { limit });
+  throwIfEnrolmentFailed(pass);
+  return pass.enrolled;
+}
+
+/** Where the next enrolment pass continues: the last candidate job the previous pass saw (0236). */
+export type EnrolmentCursor = string | null;
+
+export interface EnrolmentPass {
+  enrolled: number;
+  /** Candidates whose enrolment failed; each failure was recorded (it backs off, 0229)... */
+  failed: number;
+  /** ...except these: the failure itself could not be recorded (R08). By SQLSTATE, never a message. */
+  untracked: { jobId: string; sqlstate: string | null }[];
+  /** The cursor for the next pass; null when this page was the last (the next pass starts over). */
+  next: EnrolmentCursor;
+}
+
+/**
+ * One page of the cutover enrolment, continuing after `after` (R08, migration 0236). The runner
+ * carries `next` from pass to pass, so a page full of candidates that fail, even ones whose failure
+ * cannot be recorded, never stops later candidates from being reached. Nothing is thrown for a
+ * candidate's failure: the caller reports the pass.
+ */
+export async function enrolUnrecordedDeathsPage(
+  db: Db,
+  options: { limit?: number; after?: EnrolmentCursor } = {},
+): Promise<EnrolmentPass> {
+  const limit = options.limit ?? 100;
+  const after = options.after && UUID_TEXT.test(options.after) ? options.after : null;
+  const candidates = [
+    ...(await db.execute<{ job_id: string; business_id: string }>(
+      sql`SELECT job_id, business_id FROM dead_job_unrecorded_candidates(${limit}::int, ${after}::uuid)`,
+    )),
+  ];
+  let enrolled = 0;
+  let failed = 0;
+  const untracked: EnrolmentPass['untracked'] = [];
+  for (const candidate of candidates) {
+    try {
+      if (await enrolDeath(db, candidate.job_id, candidate.business_id)) enrolled += 1;
+    } catch (error) {
+      /* The other businesses' candidates still run. Nothing about the failure (its message may
+       * quote a row) is carried out of here but the count and its SQLSTATE. The database applies
+       * the retry policy and dead-letters a candidate whose attempts are spent (0229). */
+      failed += 1;
+      try {
+        await noteEnrolmentFailure(db, candidate.job_id, candidate.business_id, error);
+      } catch (trackingError) {
+        /* R08: the failure could not be recorded either, so this candidate has no backoff. It is
+         * reported (not swallowed), and the cursor below still moves past it. */
+        untracked.push({ jobId: candidate.job_id, sqlstate: sqlstateOf(trackingError) });
+      }
+    }
+  }
+  const last = candidates.at(-1);
+  return {
+    enrolled,
+    failed,
+    untracked,
+    next: candidates.length === limit && last ? last.job_id : null,
+  };
+}
+
+/** The pass as one error, when anything in it failed: counts and SQLSTATEs only. */
+export function throwIfEnrolmentFailed(pass: EnrolmentPass): void {
+  if (pass.failed === 0) return;
+  const untracked =
+    pass.untracked.length > 0
+      ? `; the failure of ${pass.untracked.length} could not be recorded (SQLSTATE ${[
+          ...new Set(pass.untracked.map((u) => u.sqlstate ?? 'unknown')),
+        ].join(', ')})`
+      : '';
+  throw new Error(
+    `dead-job enrolment failed for ${pass.failed} dead job(s); ${pass.enrolled} enrolled${untracked}`,
+  );
+}
+
+/**
+ * Enrol one unrecorded death, under its own business's pin. False (and nothing read or written)
+ * when either id is not a UUID, or when the job is not, under that pin, a dead payment or billing
+ * job without a record (another pass or a recovery took it, or it is another business's job).
+ */
+export async function enrolDeath(db: Db, jobId: string, businessId: string): Promise<boolean> {
+  if (!UUID_TEXT.test(jobId) || !UUID_TEXT.test(businessId)) return false;
+  return withBusiness(db, businessId, async (tx) => {
+    const rows = await tx.execute<DyingRow>(sql`
+      SELECT j.id, j.business_id, j.kind, job_payload(j.id) AS payload, j.attempts, j.state,
+             j.failure_category
+      FROM jobs j
+      WHERE j.id = ${jobId}::uuid
+        AND j.business_id = nullif(current_setting('app.business_id', true), '')::uuid
+        AND j.state = 'dead' AND j.kind IN ('payment.process', 'billing.process')
+        AND NOT dead_job_has_record(j.id)
+      -- Held until this job's record commits: a recovery requeueing it waits, a second pass skips it.
+      FOR UPDATE OF j SKIP LOCKED
+    `);
+    const row = [...rows][0];
+    if (!row) return false;
+    /* Insert only: a record that already exists is never reopened by a stale candidate, and a
+     * write that did nothing is not counted as an enrolment. */
+    return deadJobs.recordDeath(tx, dyingJob(row), { enrolOnly: true });
+  });
+}
+
+const UUID_TEXT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** The SQLSTATE behind a failed query, when there is one: a code, never a message. */
+function sqlstateOf(error: unknown): string | null {
+  const code =
+    (error as { cause?: { code?: unknown }; code?: unknown } | null)?.cause?.code ??
+    (error as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && /^[0-9A-Z]{5}$/.test(code) ? code : null;
+}
+
+/** Record one failed enrolment of a candidate, under its own business's pin (0229). */
+async function noteEnrolmentFailure(
+  db: Db,
+  jobId: string,
+  businessId: string,
+  error: unknown,
+): Promise<void> {
+  if (!UUID_TEXT.test(jobId) || !UUID_TEXT.test(businessId)) return;
+  await withBusiness(db, businessId, (tx) =>
+    tx.execute(sql`SELECT dead_job_enrolment_failed(${businessId}::uuid, ${jobId}::uuid,
+                                                    ${sqlstateOf(error)}::text)`),
+  );
+}
+
+export interface EnrolmentDeadLetter {
+  jobId: string;
+  businessId: string;
+  kind: string;
+  attempts: number;
+  lastSqlstate: string | null;
+  lastFailedAt: Date | null;
+  deadLetteredAt: Date;
+  requeueCount: number;
+}
+
+/** The dead-lettered enrolment candidates, for the operator (worker credential, 0229). */
+export async function enrolmentDeadLetters(
+  db: Db,
+  options: { limit?: number; jobId?: string } = {},
+): Promise<EnrolmentDeadLetter[]> {
+  const jobId = options.jobId && UUID_TEXT.test(options.jobId) ? options.jobId : null;
+  if (options.jobId !== undefined && jobId === null) return [];
+  const rows = await db.execute<{
+    job_id: string;
+    business_id: string;
+    kind: string;
+    attempts: number;
+    last_sqlstate: string | null;
+    last_failed_at: string | null;
+    dead_lettered_at: string;
+    requeue_count: number;
+  }>(
+    sql`SELECT * FROM dead_job_enrolment_dead_letters(${options.limit ?? 200}::int, ${jobId}::uuid)`,
+  );
+  return [...rows].map((r) => ({
+    jobId: r.job_id,
+    businessId: r.business_id,
+    kind: r.kind,
+    attempts: r.attempts,
+    lastSqlstate: r.last_sqlstate,
+    lastFailedAt: r.last_failed_at ? new Date(r.last_failed_at) : null,
+    deadLetteredAt: new Date(r.dead_lettered_at),
+    requeueCount: r.requeue_count,
+  }));
+}
+
+/** An operator's requeue of a dead-lettered candidate, audited (0229). False when it is not one. */
+export async function requeueEnrolment(
+  tx: TenantDb,
+  input: { businessId: string; jobId: string; actor: string; reason: string },
+): Promise<boolean> {
+  const rows = await tx.execute<{ requeued: boolean }>(sql`
+    SELECT dead_job_enrolment_requeue(${input.businessId}::uuid, ${input.jobId}::uuid,
+                                      ${input.actor}, ${input.reason}) AS requeued`);
+  return [...rows][0]?.requeued === true;
 }
 
 export interface JobRow {
@@ -551,7 +914,22 @@ export interface QueueHealth {
    */
   oldestQueuedSeconds: number;
   running: number;
+  /**
+   * Jobs still `running` whose lease expired more than `STUCK_RUNNING_AFTER_SECONDS` ago (E-F4):
+   * several reclaim passes have run and none could move them, typically because a payment or billing
+   * job's dead-job record cannot be written. They persist across restarts (the row is the state) and
+   * leave this count only when the job genuinely moves: reclaimed, recorded dead or completed.
+   */
+  stuckRunning: { payment: number; billing: number; other: number };
+  /** Seconds since the oldest stuck job's lease was last renewed; 0 when none is stuck. */
+  oldestStuckSeconds: number;
 }
+
+/**
+ * When a running job counts as stuck (E-F4): three times the runner's default lease (300 s), so the
+ * reclaim, which runs once per lease window, has had at least two passes to move it and failed.
+ */
+export const STUCK_RUNNING_AFTER_SECONDS = 900;
 
 /**
  * The queue, in a handful of numbers (MASTER-PLAN §6.4). An approved
@@ -565,6 +943,7 @@ export interface QueueHealth {
  * silence rather than an alert.
  */
 export async function queueHealth(db: Db): Promise<QueueHealth> {
+  const stuck = sql`(state = 'running' AND locked_at < now() - make_interval(secs => ${STUCK_RUNNING_AFTER_SECONDS}))`;
   const rows = await db.execute<{
     dead: number;
     dead_recent: number;
@@ -572,6 +951,10 @@ export async function queueHealth(db: Db): Promise<QueueHealth> {
     running: number;
     oldest_seconds: number | null;
     oldest_queued_seconds: number | null;
+    stuck_payment: number;
+    stuck_billing: number;
+    stuck_other: number;
+    oldest_stuck_seconds: number | null;
   }>(sql`
     SELECT
       count(*) FILTER (WHERE state = 'dead')::int    AS dead,
@@ -582,7 +965,14 @@ export async function queueHealth(db: Db): Promise<QueueHealth> {
       EXTRACT(EPOCH FROM (now() - min(run_at) FILTER (WHERE state = 'pending')))::int
         AS oldest_seconds,
       EXTRACT(EPOCH FROM (now() - min(created_at) FILTER (WHERE state = 'pending')))::int
-        AS oldest_queued_seconds
+        AS oldest_queued_seconds,
+      count(*) FILTER (WHERE ${stuck} AND kind = 'payment.process')::int AS stuck_payment,
+      count(*) FILTER (WHERE ${stuck} AND kind IN ('billing.process', 'billing.apply_no_charge'))::int
+        AS stuck_billing,
+      count(*) FILTER (WHERE ${stuck}
+                         AND kind NOT IN ('payment.process', 'billing.process', 'billing.apply_no_charge'))::int
+        AS stuck_other,
+      EXTRACT(EPOCH FROM (now() - min(locked_at) FILTER (WHERE ${stuck})))::int AS oldest_stuck_seconds
     FROM jobs
   `);
   const row = [...rows][0];
@@ -593,5 +983,11 @@ export async function queueHealth(db: Db): Promise<QueueHealth> {
     running: row?.running ?? 0,
     oldestPendingSeconds: Math.max(0, row?.oldest_seconds ?? 0),
     oldestQueuedSeconds: Math.max(0, row?.oldest_queued_seconds ?? 0),
+    stuckRunning: {
+      payment: row?.stuck_payment ?? 0,
+      billing: row?.stuck_billing ?? 0,
+      other: row?.stuck_other ?? 0,
+    },
+    oldestStuckSeconds: Math.max(0, row?.oldest_stuck_seconds ?? 0),
   };
 }

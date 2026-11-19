@@ -21,7 +21,7 @@ import { sql } from 'drizzle-orm';
 import { allowanceFor, addMonth, usagePeriod } from '@rekoda/core';
 import { createDb, withBusiness, type Db } from '../client.js';
 import { identity, subscriptionsRepo, usageRepo } from '../index.js';
-import { migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
+import { applyFixtureCycle, migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
 
 let urls: Urls;
 let db: Db;
@@ -74,7 +74,7 @@ async function generate(businessId: string, now: Date): Promise<boolean> {
 /** What settling a paid plan charge writes (a first purchase or a renewal). */
 async function payCycle(businessId: string, plan: string, start: Date, anchorDay: number) {
   await inTenant(businessId, (tx) =>
-    subscriptionsRepo.applyCycle(tx, businessId, {
+    applyFixtureCycle(tx, businessId, {
       plan,
       cycleStartedAt: start,
       renewsAt: addMonth(start, anchorDay),
@@ -120,7 +120,7 @@ describe('one merchant, trial to reactivation', () => {
 
     // Mid-cycle upgrade to Complete: the new plan's allowance, the SAME renewal date.
     await inTenant(businessId, (tx) =>
-      subscriptionsRepo.applyCycle(tx, businessId, {
+      applyFixtureCycle(tx, businessId, {
         plan: 'complete',
         cycleStartedAt: start,
         renewsAt: addMonth(start, anchor),
@@ -138,8 +138,11 @@ describe('one merchant, trial to reactivation', () => {
     // Use the meter this month, then schedule a downgrade: nothing moves yet.
     const midCycle = new Date(start.getTime() + 8 * 86_400_000);
     expect(await generate(businessId, midCycle)).toBe(true);
+    /* Since 0222 the database picks the meter row from its own clock, not from the date the caller
+     * passes, so the unit is on the row for the real current month. Reading the row for `midCycle`
+     * (thirteen days from now) failed whenever that date fell in the next Lagos month. */
     const spent = await inTenant(businessId, (tx) =>
-      usageRepo.usageFor(tx, businessId, usagePeriod(midCycle)),
+      usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
     );
     expect(spent.find((r) => r.unit === DOCS)?.used).toBe(1);
     await inTenant(businessId, (tx) =>

@@ -1,3 +1,4 @@
+import { ownerDb as entitlementOwnerDb, creditBonusForTest } from '@rekoda/db/testing';
 /**
  * The API's three meters (PR-113, canonical spec §27, §4.2).
  *
@@ -30,6 +31,7 @@ import {
   truncateAll,
   type Urls,
 } from '@rekoda/db/testing';
+import { settlementDb } from '@rekoda/db/testing';
 
 const SECRET = 'api-metering-secret-at-least-32-chars';
 
@@ -95,7 +97,8 @@ async function entitled(
   ).json() as { sessionToken: string; businessId: string };
 
   const period = usagePeriod(new Date());
-  await withBusiness(db, created.businessId, async (tx) => {
+  // Grants are an owner act (0210); the owner may also credit the units.
+  await withBusiness(entitlementOwnerDb(), created.businessId, async (tx) => {
     await entitlementsRepo.grant(tx, {
       businessId: created.businessId,
       entitlementKey: 'REKODA_API',
@@ -103,7 +106,7 @@ async function entitled(
       grantedBy: 'operator:metering-suite',
     });
     if (capacity.requests !== undefined) {
-      await usageRepo.creditBonus(
+      await creditBonusForTest(
         tx,
         created.businessId,
         period,

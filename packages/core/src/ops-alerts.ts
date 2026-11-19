@@ -25,9 +25,34 @@ export interface OpsSnapshot {
     oldestDueSeconds: number;
     /** Seconds since the oldest still-pending job was QUEUED, due or not (G-63). */
     oldestQueuedSeconds: number;
+    /**
+     * Jobs still running long after their lease expired, by kind (E-F4): the reclaim has passed over
+     * them several times and could not move them (for a payment or billing job, typically because
+     * its dead-job record cannot be written). Absent when unknown.
+     */
+    stuckRunning?: { payment: number; billing: number; other: number };
+    /** Seconds since the oldest stuck job's lease was last renewed. */
+    oldestStuckSeconds?: number;
   } | null;
   meta: EventCounts | null;
   paystack: EventCounts | null;
+  /**
+   * Rekoda's own billing: open renewals raised while their payment could not be taken (OWN-70).
+   * Absent or null when the process cannot see it.
+   */
+  billing?: {
+    blockedRenewals: number;
+    /**
+     * Blocks the last blocked-renewal close pass could not close (migration 0199 cursor). Absent
+     * when unknown.
+     */
+    blockCloseFailed?: number;
+    /**
+     * A close pass's lease expired without a finish or a release (a pass died or could not
+     * reach the database to record its end), now or within the last 24 hours. Absent when unknown.
+     */
+    blockCloseStalled?: boolean;
+  } | null;
 }
 
 export interface EventCounts {
@@ -89,6 +114,22 @@ export function evaluateOpsAlerts(
         summary: `Due work has waited ${queue.oldestDueSeconds} s unclaimed (limit ${limits.overdueSeconds} s): the worker is down or not keeping up`,
       });
     }
+    /* A job the reclaim cannot move stays running for ever and never reaches the operator's
+     * dead-job queue (E-F4). Payment and billing first: they are money the books or the plan may
+     * not reflect. Active while any job is stuck; cleared only when the job itself moves. */
+    const stuck = queue.stuckRunning;
+    if (stuck && stuck.payment + stuck.billing + stuck.other > 0) {
+      const parts = [
+        stuck.payment > 0 ? `${stuck.payment} customer-payment` : null,
+        stuck.billing > 0 ? `${stuck.billing} Rekoda billing` : null,
+        stuck.other > 0 ? `${stuck.other} other` : null,
+      ].filter((part): part is string => part !== null);
+      alerts.push({
+        key: 'jobs.stuck_running',
+        severity: stuck.payment + stuck.billing > 0 ? 'critical' : 'warning',
+        summary: `${parts.join(', ')} job(s) have stayed running past their lease for ${queue.oldestStuckSeconds ?? 0} s and the reclaim cannot move them; see the worker and settlement logs ("reclaim: job ... not moved (sqlstate ...)") and docs/runbooks/incident.md "Stuck running jobs"`,
+      });
+    }
     if (queue.oldestQueuedSeconds > limits.backlogSeconds) {
       alerts.push({
         key: 'jobs.backlog',
@@ -115,6 +156,36 @@ export function evaluateOpsAlerts(
         summary: `${paystack.unprocessedStale} Paystack event(s) have waited more than 10 minutes unprocessed (limit ${limits.unprocessedEvents})`,
       });
     }
+  }
+
+  /* A renewal nobody can pay is revenue lost and a merchant heading for read-only (OWN-70). */
+  if (snapshot.billing && snapshot.billing.blockedRenewals > 0) {
+    alerts.push({
+      key: 'billing.renewals_blocked',
+      severity: 'critical',
+      summary: `${snapshot.billing.blockedRenewals} renewal(s) were raised while Rekoda cannot take the payment (live key unconfirmed or not configured); see the operator exception queue`,
+    });
+  }
+
+  /* The close pass after the gate opened is failing on some blocks: they stay open and their
+   * merchants cannot pay. Active while the latest pass reported any failure (OWN-70, 0199). */
+  if (snapshot.billing && (snapshot.billing.blockCloseFailed ?? 0) > 0) {
+    alerts.push({
+      key: 'billing.renewal_block_close_failing',
+      severity: 'critical',
+      summary: `${snapshot.billing.blockCloseFailed} blocked renewal(s) could not be closed by the close pass (the worst of the last pass, the cycle under way and the last complete cycle); see the worker log (renewal_block_close_failed)`,
+    });
+  }
+
+  /* A close pass stopped without recording its end (it died, or the database refused the lease
+   * release). Its unsaved batch is replayed by the next pass; until then, say so (OWN-88, 0199). */
+  if (snapshot.billing?.blockCloseStalled) {
+    alerts.push({
+      key: 'billing.renewal_block_close_stalled',
+      severity: 'critical',
+      summary:
+        'a blocked-renewal close pass stopped without recording its end (now or in the last 24 hours); see the worker log (renewal_block_close_release_failed, renewal_block_close_pass)',
+    });
   }
 
   if (meta) {

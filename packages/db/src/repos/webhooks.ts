@@ -169,18 +169,15 @@ export async function queueDelivery(
     payload: Record<string, unknown>;
   },
 ): Promise<boolean> {
-  const rows = await tx.execute<{ id: string }>(sql`
-    INSERT INTO webhook_deliveries (
-      business_id, endpoint_id, outbox_event_id, event_type, payload
-    )
-    VALUES (
-      ${input.businessId}, ${input.endpointId}, ${input.outboxEventId},
-      ${input.eventType}, ${JSON.stringify(input.payload)}::jsonb
-    )
-    ON CONFLICT (endpoint_id, outbox_event_id) DO NOTHING
-    RETURNING id
+  /* Through the definer (migration 0212): the type, payload and business are copied from the
+   * outbox row itself, and only for an active endpoint of that business, so the worker cannot queue
+   * a delivery the business never produced. The given type and payload are the same facts. */
+  void input.eventType;
+  void input.payload;
+  const rows = await tx.execute<{ queued: boolean }>(sql`
+    SELECT webhook_queue_delivery(${input.outboxEventId}::uuid, ${input.endpointId}::uuid) AS queued
   `);
-  return [...rows].length > 0;
+  return [...rows][0]?.queued === true;
 }
 
 /**

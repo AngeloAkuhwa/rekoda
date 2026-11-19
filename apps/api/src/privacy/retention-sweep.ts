@@ -136,7 +136,7 @@ async function warn(
       }
 
       const claimed = await withBusiness(deps.appDb, candidate.businessId, (tx) =>
-        retentionRepo.claimRetentionNotice(tx, candidate.businessId, now),
+        retentionRepo.claimRetentionNotice(tx, candidate.businessId),
       );
       if (claimed) result.warned += 1;
     }

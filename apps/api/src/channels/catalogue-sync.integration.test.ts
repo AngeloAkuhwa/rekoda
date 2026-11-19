@@ -14,7 +14,6 @@ import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { encryptFacet } from '@rekoda/core/vault';
 import {
-  billingRepo,
   catalogueRepo,
   createDb,
   identity,
@@ -24,7 +23,7 @@ import {
   withBusiness,
   type Db,
 } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import { migrate, requireUrls, truncateAll, type Urls, setPlanForTest } from '@rekoda/db/testing';
 import { loadConfig, type ApiConfig } from '../config.js';
 import { CatalogueSyncService } from './catalogue-sync.service.js';
 import { sweepCatalogues } from './catalogue-sweep.js';
@@ -95,7 +94,7 @@ async function seedMerchant(plan: 'integrate' | 'chat' = 'integrate', withCatalo
     businessType: null,
     ownerUserId: user.id,
   });
-  await billingRepo.setPlan(db, {
+  await setPlanForTest(db, {
     businessId: business.id,
     plan,
     expiresAt: null,
@@ -286,7 +285,7 @@ describe('the shelf, projected', () => {
       businessType: null,
       ownerUserId: user.id,
     });
-    await billingRepo.setPlan(db, {
+    await setPlanForTest(db, {
       businessId: bare.id,
       plan: 'integrate',
       expiresAt: null,

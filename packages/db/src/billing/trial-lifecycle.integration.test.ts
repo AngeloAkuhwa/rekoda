@@ -16,7 +16,7 @@ import { sql } from 'drizzle-orm';
 import { allowanceFor, TRIAL_DAYS } from '@rekoda/core';
 import { createDb, withBusiness, type Db } from '../client.js';
 import { identity, subscriptionsRepo, usageRepo } from '../index.js';
-import { migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
+import { applyFixtureCycle, migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
 
 let urls: Urls;
 let db: Db;
@@ -161,7 +161,7 @@ describe('upgrading before, at and after the trial ends', () => {
       const paidAt = new Date(end.getTime() + offsetFromEnd);
 
       await withBusiness(db, businessId, (tx) =>
-        subscriptionsRepo.applyCycle(tx, businessId, paidCycle(paidAt)),
+        applyFixtureCycle(tx, businessId, paidCycle(paidAt)),
       );
 
       expect(await planAt(businessId, paidAt)).toBe('chat');
@@ -179,7 +179,7 @@ describe('upgrading before, at and after the trial ends', () => {
     const businessId = await seedBusiness();
     const { end } = await trialWindow(businessId);
     await withBusiness(db, businessId, (tx) =>
-      subscriptionsRepo.applyCycle(tx, businessId, paidCycle(new Date(end.getTime() - DAY))),
+      applyFixtureCycle(tx, businessId, paidCycle(new Date(end.getTime() - DAY))),
     );
     await withBusiness(db, businessId, (tx) =>
       tx.execute(

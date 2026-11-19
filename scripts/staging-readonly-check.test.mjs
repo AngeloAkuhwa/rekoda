@@ -22,7 +22,10 @@ test('a compose call cannot swallow the rest of the piped script', () => {
   try {
     const out = h.go();
     assert.match(out, /== Meta template slots in the running api and worker/);
-    assert.match(out, /META_TRIAL_TEMPLATE \(api\)\s+SET, the agreed name/);
+    assert.match(
+      out,
+      /META_TRIAL_TEMPLATE \(api\)\s+SET \(approval is checked in WhatsApp Manager\)/,
+    );
     // The same script without the stdin guard stops at the first compose call.
     const unguarded = h.script.replace('"$@" </dev/null; }', '"$@"; }');
     assert.notEqual(unguarded, h.script, 'the guard is where the test expects it');
@@ -32,34 +35,34 @@ test('a compose call cannot swallow the rest of the piped script', () => {
   }
 });
 
-test('a failed per-slot query reads unknown, never UNSET', () => {
-  const h = host({
-    failKey: 'META_TRIAL_TEMPLATE',
-    env: { META_OTP_TEMPLATE: 'rekoda_otp', META_TRIAL_TEMPLATE: 'rekoda_trial_ending' },
-  });
+test('a failed template report reads unknown, never UNSET', () => {
+  const h = host({ templateReport: { api: 'fail' } });
   try {
     const out = h.go();
-    assert.match(out, /META_TRIAL_TEMPLATE \(api\)\s+unknown \(api query failed\)/);
-    assert.doesNotMatch(out, /META_TRIAL_TEMPLATE \(api\)\s+UNSET/);
-    assert.match(out, /META_OTP_TEMPLATE \(api\)\s+SET, but not the agreed name rekoda_login_otp/);
+    assert.match(out, /Meta template slots \(api\)\s+unknown \(no template report from api/);
+    assert.doesNotMatch(out, /META_\w+_TEMPLATE \(api\)\s+UNSET/);
+    assert.ok(attention(out).includes('Meta template slots (api)'));
   } finally {
     h.done();
   }
 });
 
-test('a query that fails in one container reads unknown there only; the other reads its own result', () => {
-  const env = { META_OTP_TEMPLATE: 'rekoda_otp', META_TRIAL_TEMPLATE: 'rekoda_trial_ending' };
-  const h = host({ failKey: 'META_TRIAL_TEMPLATE', failIn: 'worker', env, workerEnv: env });
+test('a report that fails in one container reads unknown there only; the other reads its own result', () => {
+  const env = { META_TRIAL_TEMPLATE: 'any_trial_template', META_TRIAL_TEMPLATE_LOCALE: 'en' };
+  const h = host({ templateReport: { worker: 'fail' }, env, workerEnv: env });
   try {
     const out = h.go();
-    assert.match(out, /META_TRIAL_TEMPLATE \(worker\)\s+unknown \(worker query failed\)/);
-    assert.match(out, /META_TRIAL_TEMPLATE \(api\)\s+SET, the agreed name\n/);
+    assert.match(out, /Meta template slots \(worker\)\s+unknown \(no template report from worker/);
+    assert.match(
+      out,
+      /META_TRIAL_TEMPLATE \(api\)\s+SET \(approval is checked in WhatsApp Manager\)\n/,
+    );
   } finally {
     h.done();
   }
 });
 
-test('prints presence only, never a template value', () => {
+test('prints a state for every slot, never a template value', () => {
   const h = host();
   try {
     const out = h.go();
@@ -74,37 +77,37 @@ test('prints presence only, never a template value', () => {
         assert.match(
           out,
           new RegExp(
-            `${k} \\(${c}\\)\\s+(SET, the agreed name|SET, but not the agreed name \\w+|UNSET \\((required|optional; information only)\\))\\n`,
+            `${k} \\(${c}\\)\\s+(SET \\(approval is checked in WhatsApp Manager\\)|UNSET \\((required|optional; information only)\\))\\n`,
           ),
         );
     }
+    assert.doesNotMatch(out, /any_trial_template/);
   } finally {
     h.done();
   }
 });
 
-test('reads set, empty and unset template variables as the API would', () => {
+test('reads set, empty, unset and malformed template variables as the API would', () => {
   const h = host({
     env: {
-      META_OTP_TEMPLATE: 'rekoda_otp',
+      META_OTP_TEMPLATE: 'some_signin_template',
+      META_OTP_TEMPLATE_LOCALE: 'en',
       META_BILLING_TEMPLATE: '',
       META_TRIAL_TEMPLATE: 'x y $z',
+      META_TRIAL_TEMPLATE_LOCALE: 'en',
     },
   });
   try {
     const out = h.go();
     assert.match(
       out,
-      /META_OTP_TEMPLATE \(api\)\s+SET, but not the agreed name rekoda_login_otp\n/,
+      /META_OTP_TEMPLATE \(api\)\s+SET \(approval is checked in WhatsApp Manager\)\n/,
     );
     assert.match(out, /META_BILLING_TEMPLATE \(api\)\s+UNSET \(required\)\n/);
     assert.match(out, /META_RETENTION_TEMPLATE \(api\)\s+UNSET \(optional; information only\)\n/);
-    assert.match(
-      out,
-      /META_TRIAL_TEMPLATE \(api\)\s+SET, but not the agreed name rekoda_trial_ending\n/,
-    );
-    // The configured values themselves never appear: only the agreed names do.
-    assert.doesNotMatch(out, /rekoda_otp|x y/);
+    assert.match(out, /META_TRIAL_TEMPLATE \(api\)\s+SET but not a Meta template name/);
+    // The configured values themselves never appear.
+    assert.doesNotMatch(out, /some_signin_template|x y/);
   } finally {
     h.done();
   }
@@ -307,7 +310,11 @@ test('an applied tag this checkout does not carry is listed, not ignored', () =>
 test('missing configuration is flagged: no EXPECT_SHA, live or absent key, platform flag set, slot unset, invalid reminders', () => {
   const h = healthy({
     dotenv: 'REKODA_RELEASE=staging-{sha7}\n',
-    env: { META_OTP_TEMPLATE: 'rekoda_login_otp', REKODA_PAYSTACK_PLATFORM_CONFIRMED: '1' },
+    env: {
+      META_OTP_TEMPLATE: 'some_signin_template',
+      META_OTP_TEMPLATE_LOCALE: 'en',
+      REKODA_PAYSTACK_PLATFORM_CONFIRMED: '1',
+    },
     workerEnv: { REKODA_CUSTOMER_REMINDERS: '' },
     images: { api: 'rekoda-app:staging-{sha7}', web: 'rekoda-web:staging-{sha7}' },
   });

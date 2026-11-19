@@ -79,3 +79,28 @@ backup_fetch_decrypt() { # [name] out-file
     echo "$name"
   )
 }
+
+# Every function's owner, one "schema name(argument types) owner" line each, sorted bytewise. The
+# restore drill compares the dump's list (`pg_restore -l`, read on stdin by backup_toc_function_owners)
+# with the restored database's (BACKUP_FUNCTION_OWNERS_SQL) line by line, so a SECURITY DEFINER
+# function handed to the wrong role fails the drill even while every writer role still owns some.
+# Extension members are not in a dump, so they are left out of the database's list too. Known
+# limit (fails safe): pg_dump writes an argument of a user-defined type schema-qualified, while
+# oidvectortypes follows the session's search_path, so the day a function takes such a type the
+# drill reports a difference rather than passing; no function does today.
+BACKUP_FUNCTION_OWNERS_SQL="SELECT n.nspname || ' ' || p.proname || '(' || oidvectortypes(p.proargtypes) || ') ' || r.rolname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace JOIN pg_roles r ON r.oid = p.proowner WHERE p.prokind IN ('f', 'w') AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\\_%' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')"
+backup_toc_function_owners() { # stdin: pg_restore -l output
+  LC_ALL=C awk '$4 == "FUNCTION" { sub(/^[^ ]+ [^ ]+ [^ ]+ FUNCTION /, ""); print }' | LC_ALL=C sort
+}
+backup_function_owner_mismatches() { # expected-file actual-file; prints each differing line
+  LC_ALL=C comm -3 <(LC_ALL=C sort "$1") <(LC_ALL=C sort "$2")
+}
+
+# 0109's database-level revokes (E-F5): `pg_restore` without `--create` carries no database ACL, so
+# a restore into a fresh database gives PUBLIC, rekoda_app and rekoda_worker TEMPORARY again. The real
+# restore re-applies exactly these (backup-restore.md, "Real restore"); the drill applies them too
+# and then checks that no runtime role can create a temporary table.
+# shellcheck disable=SC2016 # format() and current_database() are evaluated by PostgreSQL, not the shell
+BACKUP_DATABASE_REVOKES_SQL="DO \$\$ BEGIN EXECUTE format('REVOKE TEMPORARY ON DATABASE %I FROM PUBLIC', current_database()); EXECUTE format('REVOKE TEMPORARY ON DATABASE %I FROM rekoda_app', current_database()); EXECUTE format('REVOKE TEMPORARY ON DATABASE %I FROM rekoda_worker', current_database()); END \$\$;"
+# Runtime roles that can still create a temporary table: 0 after the revokes above.
+BACKUP_TEMP_GRANTED_SQL="SELECT count(*) FROM pg_roles WHERE rolname IN ('rekoda_app','rekoda_worker','rekoda_settlement','rekoda_billing_operator','rekoda_operator') AND has_database_privilege(rolname, current_database(), 'TEMPORARY');"

@@ -62,7 +62,7 @@
   staging. The register (G-03) still says not approved; the owner's statement is newer and wins, the
   register is to be corrected once the names are verified. The code reads five template slots
   (`config.ts:1465-1474`): `META_OTP_TEMPLATE`, `META_BILLING_TEMPLATE`, `META_RETENTION_TEMPLATE`,
-  `META_DOCUMENT_TEMPLATE`, `META_TRIAL_TEMPLATE`, each with a `_LOCALE` (default `en`). Which four are
+  `META_DOCUMENT_TEMPLATE`, `META_TRIAL_TEMPLATE`, each with a `_LOCALE` (default `en`; superseded by OWN-93, 14 Nov 2026: no default, the language is required with its template). Which four are
   configured on staging must be verified on the host (`scripts/staging-readonly-check.sh`), not assumed.
 - **Paystack:** staging test mode per the runbooks; no live transaction has run (G-05 open).
 - **Historical PRs verified on `main`:** #344 `85db593`, #349 `f62e6d5`, #355 `f3ee935`, #362

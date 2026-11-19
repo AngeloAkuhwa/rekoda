@@ -16,7 +16,7 @@ import {
 } from '@rekoda/db';
 import { allowanceFor, usagePeriod } from '@rekoda/core';
 import { buildRunner } from '../jobs/jobs.module.js';
-import { billingRepo, customersRepo, issueRepo, paymentsHub, reportsRepo } from '@rekoda/db';
+import { customersRepo, issueRepo, paymentsHub, reportsRepo } from '@rekoda/db';
 import { encryptFacet } from '@rekoda/core/vault';
 import {
   db,
@@ -29,6 +29,7 @@ import {
   useMetaWebhookHarness,
   workerDb,
 } from './meta-webhook.fixtures.js';
+import { setPlanForTest } from '@rekoda/db/testing';
 
 useMetaWebhookHarness();
 
@@ -184,7 +185,7 @@ describe('a forwarded order', () => {
 
   it('refuses capture on a plan without orders, keeps the quote, and gives the document back', async () => {
     const business = await seedMerchant('+2348031234567');
-    await billingRepo.setPlan(db, {
+    await setPlanForTest(db, {
       businessId: business.id,
       plan: 'chat',
       expiresAt: new Date(Date.now() + 30 * 86_400_000),

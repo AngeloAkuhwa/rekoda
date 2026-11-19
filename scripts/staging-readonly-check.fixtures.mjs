@@ -5,23 +5,53 @@
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export const SCRIPT = readFileSync(new URL('./staging-readonly-check.sh', import.meta.url), 'utf8');
+
+/**
+ * The api's real template report (OWN-93), which the fake containers run against their own
+ * environment exactly as `docker compose exec <svc> node dist/template-check.js` does on the host,
+ * so these tests read the application's own slot table and validator, not a copy. CI builds the
+ * api before it runs these tests; locally, build it first (`pnpm turbo run build --filter=@rekoda/api`).
+ */
+export const TEMPLATE_CHECK = fileURLToPath(
+  new URL('../apps/api/dist/template-check.js', import.meta.url),
+);
+if (!existsSync(TEMPLATE_CHECK)) {
+  throw new Error(
+    `${TEMPLATE_CHECK} is missing: build the api first (pnpm turbo run build --filter=@rekoda/api)`,
+  );
+}
 
 /**
  * A host checkout plus fakes. The fake `docker compose` reads all of stdin, as
  * a real `compose exec` can, and logs what it saw. `failKey` makes the
  * per-slot query for that one variable fail, as an exec that dies would; with `failIn` set to
- * `api` or `worker`, only in that container.
+ * `api` or `worker`, only in that container. `templateReport` makes a container's template report
+ * fail (`'fail'`: the exec dies) or be missing (`'absent'`: an image older than PR B).
  */
 export function host({
   failKey = '',
   failIn = '',
-  env = { META_TRIAL_TEMPLATE: 'rekoda_trial_ending' },
+  env = { META_TRIAL_TEMPLATE: 'any_trial_template', META_TRIAL_TEMPLATE_LOCALE: 'en' },
   workerEnv = {},
+  // The settlement container's own environment (compose hands it a short list of its own). Null
+  // means "the same as the api's", which is what a correctly configured host gives it.
+  settlementEnv = null,
+  // The settlement container refuses a container-side query, as a stopped one does.
+  settlementQueryFails = false,
   migrations = 'applied',
   dotenv = 'REKODA_RELEASE=staging-test\n',
   images = {},
@@ -40,6 +70,7 @@ export function host({
   // otherwise. A missing service has no creation time. The start time is always new: a restart
   // resets it, and it must never be what decides.
   created = {},
+  templateReport = {},
 } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'staging-check-'));
   const dir = join(root, 'rekoda');
@@ -77,6 +108,23 @@ if [ "$1" = compose ]; then
   echo "compose $* stdin=$n" >> "${join(fake, 'calls.log')}"
   case " $* " in
     *" exec -T api true "*) exit 0 ;;
+    *" exec -T api node dist/template-check.js "* | *" exec -T worker node dist/template-check.js "*)
+      # The real report, run against the container's own fixture environment.
+      case "$6" in
+${['api', 'worker']
+  .map((svc) => {
+    const mode = templateReport[svc];
+    const vars = envLine(svc === 'worker' ? workerEnv : env);
+    const body =
+      mode === 'fail'
+        ? 'exit 1'
+        : mode === 'absent'
+          ? 'echo "Error: Cannot find module \'/repo/apps/api/dist/template-check.js\'" >&2; exit 1'
+          : `env -i ${vars} '${process.execPath}' '${TEMPLATE_CHECK}'; exit $?`;
+    return `        ${svc}) ${body} ;;`;
+  })
+  .join('\n')}
+      esac ;;
     *" ps -a "*)
       ${services === null ? 'exit 0' : `printf '%s\\n' ${services.map((l) => `'${l}'`).join(' ')}; exit 0`} ;;
     *" logs "*)
@@ -130,6 +178,9 @@ ${Object.keys(images)
       while [ "$1" = -e ]; do extra+=("$2"); shift 2; done
       svc="$1"; shift 3
       if [ "$svc" = worker ]; then env -i ${envLine(workerEnv)} "\${extra[@]}" sh -c "$1"
+      elif [ "$svc" = settlement ]; then
+        ${settlementQueryFails ? 'exit 1' : ':'}
+        env -i ${envLine(settlementEnv ?? env)} "\${extra[@]}" sh -c "$1"
       else env -i ${envLine(env)} "\${extra[@]}" sh -c "$1"; fi
       exit $? ;;
   esac
@@ -207,14 +258,21 @@ export const TAGS = [
   '0189_reminder_batches',
   '0190_failed_inbound_and_failure_category',
 ];
-/** The five agreed template names (OD-41(b)), as a healthy api and worker carry them. */
+/**
+ * A healthy api and worker's template settings (OD-41(b), OWN-93): synthetic names and languages,
+ * never the owner's real templates, which this repository does not know.
+ */
 export const SLOTS = {
-  META_OTP_TEMPLATE: 'rekoda_login_otp',
-  META_BILLING_TEMPLATE: 'rekoda_billing_grace_notice',
-  META_RETENTION_TEMPLATE: 'rekoda_retention_notice',
-  META_DOCUMENT_TEMPLATE: 'rekoda_document_ready',
-  META_TRIAL_TEMPLATE: 'rekoda_trial_ending',
-  META_TRIAL_TEMPLATE_LOCALE: 'en',
+  META_OTP_TEMPLATE: 'synthetic_signin_code',
+  META_OTP_TEMPLATE_LOCALE: 'en',
+  META_BILLING_TEMPLATE: 'synthetic_grace_notice',
+  META_BILLING_TEMPLATE_LOCALE: 'en_GB',
+  META_RETENTION_TEMPLATE: 'synthetic_erasure_warning',
+  META_RETENTION_TEMPLATE_LOCALE: 'fr',
+  META_DOCUMENT_TEMPLATE: 'synthetic_document_ready',
+  META_DOCUMENT_TEMPLATE_LOCALE: 'ha',
+  META_TRIAL_TEMPLATE: 'synthetic_trial_reminder',
+  META_TRIAL_TEMPLATE_LOCALE: 'pt_BR',
   REKODA_WEB_URL: 'https://staging.invalid',
   // The reminder Reply-To (OD-42(b)); a healthy host with reminders on carries it.
   REKODA_SUPPORT_EMAIL: 'support@staging.invalid',
@@ -249,6 +307,8 @@ export const healthy = (over = {}) =>
       'api|running|healthy|0',
       'worker|running|healthy|0',
       'web|running|healthy|0',
+      'settlement|running|healthy|0',
+      'operator|running|healthy|0',
       'caddy|running||0',
       'migrate|exited||0',
       'edge-check|exited||0',

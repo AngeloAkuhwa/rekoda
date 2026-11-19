@@ -114,7 +114,8 @@ describe('a customer replies to a WhatsApp reminder (OWN-83)', () => {
       expect(await noticeRows(s.businessId)).toHaveLength(0);
 
       // The job is retried: the business is told again (the accepted duplicate), now recorded.
-      await withBusiness(db, s.businessId, (tx) =>
+      // Its run time is staged as the owner: the worker's retry writes it, never the application (0227).
+      await withBusiness(ownerDb, s.businessId, (tx) =>
         tx.execute(
           sql`UPDATE jobs SET run_at = now() WHERE business_id = ${s.businessId}::uuid AND state <> 'done'`,
         ),

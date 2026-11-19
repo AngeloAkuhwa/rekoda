@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { identity, catalogueRepo, usageRepo, wabaRepo, withBusiness, sql } from '@rekoda/db';
 import { usagePeriod } from '@rekoda/core';
 import { buildRunner } from '../jobs/jobs.module.js';
-import { billingRepo, customersRepo, issueRepo, paymentsHub } from '@rekoda/db';
+import { customersRepo, issueRepo, paymentsHub } from '@rekoda/db';
 import {
   encryptFacet,
   matchKeyFor,
@@ -28,6 +28,7 @@ import {
   useMetaWebhookHarness,
   workerDb,
 } from './meta-webhook.fixtures.js';
+import { setPlanForTest, requireUrls, settlementDb, creditBonusForTest } from '@rekoda/db/testing';
 
 useMetaWebhookHarness();
 
@@ -139,7 +140,7 @@ describe('send payment details across products (spec §5.3 X1; PR-093)', () => {
       ownerUserId: user.id,
     });
     const businessId = business.id;
-    await billingRepo.setPlan(db, {
+    await setPlanForTest(db, {
       businessId,
       plan: opts.plan ?? 'complete',
       expiresAt: null,
@@ -168,7 +169,10 @@ describe('send payment details across products (spec §5.3 X1; PR-093)', () => {
         status: 'active',
         externalSubaccountId: 'ACCT_live1',
       });
-      await usageRepo.creditBonus(tx, businessId, usagePeriod(new Date()), 'SERVICE_MESSAGE', 5);
+      /* Pack units are credited only by settlement (OD-37). */
+      await withBusiness(settlementDb(), businessId, (s) =>
+        creditBonusForTest(s, businessId, usagePeriod(new Date()), 'SERVICE_MESSAGE', 5),
+      );
     });
 
     /* Chidi: phone-anchored through the gateway, email on file for the

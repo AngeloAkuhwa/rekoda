@@ -198,12 +198,14 @@ describe('trial reminders', () => {
       const visible = await workerDb.execute<{ id: string }>(
         sql`SELECT id FROM businesses WHERE id = ${id}::uuid`,
       );
-      const written = await workerDb.execute<{ id: string }>(
-        sql`UPDATE businesses SET trial_notice_state = 'sent', last_trial_notice_stage = 3 WHERE id = ${id}::uuid RETURNING id`,
-      );
+      // Refused outright since 0210 (the worker writes no business row), not merely unmatched.
+      await expect(
+        workerDb.execute(
+          sql`UPDATE businesses SET trial_notice_state = 'sent', last_trial_notice_stage = 3 WHERE id = ${id}::uuid RETURNING id`,
+        ),
+      ).rejects.toThrow();
 
       expect([...visible]).toHaveLength(1);
-      expect([...written]).toHaveLength(0);
       expect((await stateOf(id)).stage).toBeNull();
     });
 

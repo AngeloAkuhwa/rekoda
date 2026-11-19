@@ -66,7 +66,9 @@ export async function GET(
         .json()
         .then((body: { message?: string }) => body.message)
         .catch(() => undefined);
-      return new NextResponse(said ?? "You have used this month's downloads.", { status: 429 });
+      /* The API's sentence names the plan's window (a month, or the trial); this fallback, used
+       * only when that sentence cannot be read, names none. */
+      return new NextResponse(said ?? 'You have used your included downloads.', { status: 429 });
     }
     return new NextResponse('Could not build your export. Try again in a moment.', {
       status: upstream.status === 401 ? 401 : 502,

@@ -15,6 +15,14 @@ import { defineConfig } from '@playwright/test';
 // so there is no credential here to hardcode. Real deployments supply these.
 const DATABASE_URL = process.env.APP_DATABASE_URL ?? 'postgres://rekoda_app@127.0.0.1:5432/rekoda';
 const OWNER_DATABASE_URL = process.env.DATABASE_URL ?? 'postgres://rekoda@127.0.0.1:5432/rekoda';
+/** A principal's URL: its own variable, or the app URL with the role swapped (trust auth only). */
+function principalUrl(appUrl: string, variable: string, role: string): string {
+  const given = process.env[variable];
+  if (given) return given;
+  const url = new URL(appUrl);
+  url.username = role;
+  return url.toString();
+}
 const API_PORT = 3101;
 
 /**
@@ -132,6 +140,17 @@ export default defineConfig({
         // Yearly billing is off in a real deployment until every process is annual-aware;
         // the suite exercises the screens it unlocks.
         REKODA_ANNUAL_BILLING: '1',
+        // OD-37 (migration 0202): the settlement and billing-operator principals, never the app role.
+        SETTLEMENT_DATABASE_URL: principalUrl(
+          DATABASE_URL,
+          'SETTLEMENT_DATABASE_URL',
+          'rekoda_settlement',
+        ),
+        OPERATOR_DATABASE_URL: principalUrl(
+          DATABASE_URL,
+          'OPERATOR_DATABASE_URL',
+          'rekoda_billing_operator',
+        ),
       },
     },
     {

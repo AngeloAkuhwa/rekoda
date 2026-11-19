@@ -9,4 +9,15 @@ export const BASE = {
   REKODA_API_SECRET: 's'.repeat(40),
   VAULT_KEY: 'a'.repeat(64),
   MATCH_KEY: 'b'.repeat(64),
+  /* Production refuses to boot without a recognised platform key (owner decision, 15 Nov 2026).
+   * A TEST-shaped placeholder, built at run time so no key-shaped literal sits in the tree. */
+  PAYSTACK_SECRET_KEY: ['sk', 'test', 'placeholder'].join('_'),
 } as NodeJS.ProcessEnv;
+
+/**
+ * The two privileged principals' URLs (OD-37, OD-51). Neither is part of the base environment: in
+ * production each belongs to its own process (`settlement-main.ts`, `operator-main.ts`) and the
+ * API and the worker refuse both. Outside production one process may be handed them.
+ */
+export const OPERATOR_URL = 'postgres://rekoda_billing_operator@127.0.0.1:5432/x';
+export const SETTLEMENT_URL = 'postgres://rekoda_settlement@127.0.0.1:5432/x';

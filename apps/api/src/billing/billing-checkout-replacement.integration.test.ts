@@ -39,6 +39,7 @@ import {
   chargeOf,
   useCheckoutRecoveryHarness,
 } from './checkout-recovery.fixtures.js';
+import { requireUrls, settlementDb } from '@rekoda/db/testing';
 
 useCheckoutRecoveryHarness();
 
@@ -259,7 +260,7 @@ describe('a failed replacement does not strand a payment on the older session', 
     const verify = provider.verifyTransaction.bind(provider);
     provider.verifyTransaction = async (ref) => {
       const answer = await verify(ref);
-      await withBusiness(appDb, businessId, (tx) =>
+      await withBusiness(settlementDb(), businessId, (tx) =>
         applySettledCharge(tx, {
           businessId,
           reference,
@@ -306,7 +307,7 @@ describe('a failed replacement does not strand a payment on the older session', 
     const verify = provider.verifyTransaction.bind(provider);
     provider.verifyTransaction = async (ref) => {
       const answer = await verify(ref);
-      await withBusiness(appDb, businessId, async (tx) => {
+      await withBusiness(settlementDb(), businessId, async (tx) => {
         await subscriptionsRepo.lockBusiness(tx, businessId);
         await subscriptionsRepo.settleCharge(tx, {
           reference,

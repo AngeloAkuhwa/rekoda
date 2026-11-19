@@ -11,7 +11,7 @@
  * inside them is not.
  */
 import { and, desc, eq, gt, isNull, ne, sql } from 'drizzle-orm';
-import { trialExpiry } from '@rekoda/core';
+import { TRIAL_DAYS } from '@rekoda/core';
 import type { Db, TenantDb } from '../client.js';
 import { withBusiness, withUser } from '../client.js';
 import {
@@ -241,7 +241,12 @@ export async function createBusinessWithOwner(db: Db, input: NewBusiness): Promi
         ownerUserId: input.ownerUserId,
         // The trial clock starts here, written once. Without it the monthly
         // counters would hand out a fresh free trial every calendar month.
-        planExpiresAt: trialExpiry(new Date()),
+        // On the DATABASE clock (OD-37, migration 0203): `trial_started_at` defaults to the same
+        // `now()`, so the end is exactly TRIAL_DAYS after the start and the insert guard can
+        // check it exactly, whatever the application host's clock says. Counted in hours, not
+        // calendar days: `make_interval(days => 14)` is 337 or 335 hours across a DST change in
+        // the session's time zone, and the guard allows exactly 336 (core's `trialExpiry`).
+        planExpiresAt: sql`now() + make_interval(hours => ${TRIAL_DAYS * 24})`,
       })
       .returning();
     const row = rows[0];

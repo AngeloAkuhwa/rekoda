@@ -1,3 +1,4 @@
+import { ownerDb as entitlementOwnerDb, creditBonusForTest } from '@rekoda/db/testing';
 /**
  * The sandbox (PR-114, API-D closes).
  *
@@ -25,6 +26,7 @@ import {
   truncateAll,
   type Urls,
 } from '@rekoda/db/testing';
+import { settlementDb } from '@rekoda/db/testing';
 
 const SECRET = 'sandbox-secret-at-least-32-characters';
 
@@ -95,14 +97,15 @@ async function developer(phone: string, name: string): Promise<Developer> {
   const auth = { authorization: `Bearer ${created.sessionToken}` };
 
   const period = usagePeriod(new Date());
-  await withBusiness(db, created.businessId, async (tx) => {
+  // Grants are an owner act (0210); the owner may also credit the units.
+  await withBusiness(entitlementOwnerDb(), created.businessId, async (tx) => {
     await entitlementsRepo.grant(tx, {
       businessId: created.businessId,
       entitlementKey: 'REKODA_API',
       source: 'MANUAL_GRANT',
       grantedBy: 'operator:sandbox-suite',
     });
-    await usageRepo.creditBonus(tx, created.businessId, period, 'API_REQUEST_UNITS', 20);
+    await creditBonusForTest(tx, created.businessId, period, 'API_REQUEST_UNITS', 20);
   });
   /* Applications are held, not spent (PR-116): capacity comes from an
    * add-on holding rather than a credit against the month. */

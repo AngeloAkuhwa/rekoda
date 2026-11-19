@@ -16,7 +16,7 @@ import { createHmac, randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { LogLevel, LoggerService } from '@nestjs/common';
 import { createDb, identity, type Db } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import { migrate, requireUrls, truncateAll, type Urls, settlementDb } from '@rekoda/db/testing';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -121,6 +121,7 @@ beforeAll(async () => {
   stubStt = new StubSpeechToText();
   stubOcr = new StubTextExtraction();
   deps = {
+    settlementDb: settlementDb(),
     gateway: new PrivacyGateway(db, config),
     interpreter: new Interpreter(db, config, stubTransport),
     replySender: new ReplySender(config, stubSender),

@@ -31,6 +31,45 @@ describe('evaluateOpsAlerts (G-26)', () => {
     expect(keys({ queue: null, meta: null, paystack: null })).toEqual([]);
   });
 
+  it('pages on a payment or billing job the reclaim cannot move, naming kinds and age only (E-F4)', () => {
+    const alerts = evaluateOpsAlerts(
+      {
+        ...healthy,
+        queue: {
+          ...healthy.queue!,
+          stuckRunning: { payment: 2, billing: 1, other: 0 },
+          oldestStuckSeconds: 1_800,
+        },
+      },
+      DEFAULT_OPS_ALERT_THRESHOLDS,
+    );
+    expect(alerts).toEqual([
+      expect.objectContaining({ key: 'jobs.stuck_running', severity: 'critical' }),
+    ]);
+    expect(alerts[0]!.summary).toMatch(
+      /^2 customer-payment, 1 Rekoda billing job\(s\) have stayed running past their lease for 1800 s/,
+    );
+  });
+
+  it('warns, not pages, when only other kinds are stuck; silent when nothing is (E-F4)', () => {
+    const stuck = (other: number) =>
+      evaluateOpsAlerts(
+        {
+          ...healthy,
+          queue: {
+            ...healthy.queue!,
+            stuckRunning: { payment: 0, billing: 0, other },
+            oldestStuckSeconds: other > 0 ? 960 : 0,
+          },
+        },
+        DEFAULT_OPS_ALERT_THRESHOLDS,
+      );
+    expect(stuck(3)).toEqual([
+      expect.objectContaining({ key: 'jobs.stuck_running', severity: 'warning' }),
+    ]);
+    expect(stuck(0)).toEqual([]);
+  });
+
   it('pages on a job that died recently: nothing retries it again', () => {
     const alerts = evaluateOpsAlerts(
       { ...healthy, queue: { ...healthy.queue!, dead: 1, deadRecent: 1 } },
@@ -158,5 +197,47 @@ describe('planAlertDelivery (G-26)', () => {
     expect(quiet.resolved).toEqual([]);
     const back = planAlertDelivery([dead], cleared.next, 4_000, COOLDOWN);
     expect(back.send).toEqual([dead]);
+  });
+});
+
+describe('blocked renewals (OWN-70)', () => {
+  it('pages while any renewal Rekoda cannot take the payment for is open, and not otherwise', () => {
+    expect(keys({ ...healthy, billing: { blockedRenewals: 0 } })).not.toContain(
+      'billing.renewals_blocked',
+    );
+    expect(keys({ ...healthy, billing: null })).not.toContain('billing.renewals_blocked');
+    const alerts = evaluateOpsAlerts({ ...healthy, billing: { blockedRenewals: 2 } });
+    expect(alerts.find((a) => a.key === 'billing.renewals_blocked')).toMatchObject({
+      severity: 'critical',
+    });
+  });
+});
+
+describe('blocked renewals the close pass could not close (OWN-70, 0199)', () => {
+  it('is active while the last close pass reported failures, and clears when it reports none', () => {
+    const failing = { ...healthy, billing: { blockedRenewals: 3, blockCloseFailed: 3 } };
+    // Evaluated again on every alert pass: the condition stays active as long as the count does.
+    for (let pass = 0; pass < 3; pass += 1) {
+      expect(
+        evaluateOpsAlerts(failing).find((a) => a.key === 'billing.renewal_block_close_failing'),
+      ).toMatchObject({ severity: 'critical' });
+    }
+    expect(
+      keys({ ...healthy, billing: { blockedRenewals: 0, blockCloseFailed: 0 } }),
+    ).not.toContain('billing.renewal_block_close_failing');
+    expect(keys({ ...healthy, billing: { blockedRenewals: 1 } })).not.toContain(
+      'billing.renewal_block_close_failing',
+    );
+  });
+  it('reports a pass that stopped without recording its end, and only that', () => {
+    expect(
+      evaluateOpsAlerts({
+        ...healthy,
+        billing: { blockedRenewals: 0, blockCloseStalled: true },
+      }).find((a) => a.key === 'billing.renewal_block_close_stalled'),
+    ).toMatchObject({ severity: 'critical' });
+    expect(
+      keys({ ...healthy, billing: { blockedRenewals: 0, blockCloseStalled: false } }),
+    ).not.toContain('billing.renewal_block_close_stalled');
   });
 });

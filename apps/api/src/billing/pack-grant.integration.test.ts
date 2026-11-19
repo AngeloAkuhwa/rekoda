@@ -28,7 +28,15 @@ import {
   withBusiness,
   type Db,
 } from '@rekoda/db';
-import { migrate, requireUrls, storedEventId, truncateAll, type Urls } from '@rekoda/db/testing';
+import {
+  migrate,
+  requireUrls,
+  storedEventId,
+  truncateAll,
+  type Urls,
+  settlementDb,
+  applicationDb,
+} from '@rekoda/db/testing';
 import { buildRunner, type RunnerDeps } from '../jobs/jobs.module.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { Interpreter } from '../ai/interpreter.service.js';
@@ -83,6 +91,7 @@ beforeAll(async () => {
   provider = new StubPaymentProvider();
   const stubSender = new StubSender();
   deps = {
+    settlementDb: settlementDb(),
     gateway: new PrivacyGateway(appDb, config),
     interpreter: new Interpreter(appDb, config, StubTransport.answering({ intent: 'Unclear' })),
     replySender: new ReplySender(config, stubSender),
@@ -133,7 +142,7 @@ async function openSubscriptionCharge(
 ): Promise<string> {
   const reference = subscriptionReference(new Date(), (n) => randomBytes(n));
   const now = new Date();
-  await withBusiness(appDb, businessId, (tx) =>
+  await withBusiness(applicationDb(), businessId, (tx) =>
     subscriptionsRepo.openCharge(tx, {
       businessId,
       kind: opts.kind ?? 'first_purchase',
@@ -340,7 +349,7 @@ describe('a top-up pack payment', () => {
     const businessId = await seedBusiness();
     const reference = await openPack(businessId);
     const settle = (providerReference: string) =>
-      withBusiness(appDb, businessId, (tx) =>
+      withBusiness(settlementDb(), businessId, (tx) =>
         applySettledCharge(tx, {
           businessId,
           reference,

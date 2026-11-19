@@ -65,7 +65,7 @@ the disclosed hosted provider and never persisted (ADR 0032).
 apps/api            NestJS: webhooks, /v1 and /api/v1, auth, jobs, sweeps
 apps/web            Next.js: marketing, legal, dashboard (/app), storefront (/s)
 packages/core       Pure domain rules: money, ledger, statements, gates, replies (no IO)
-packages/db         Drizzle schema, SQL migrations 0000–0151, RLS policies, repos
+packages/db         Drizzle schema, SQL migrations 0000–0246, RLS policies, repos
 packages/contracts  zod schemas shared between api, web and the AI border
 packages/shared     Branded types and utilities
 scripts/            CI guard scripts (boundaries, env template, node version, UI copy, retired claims, OpenAPI)
@@ -126,12 +126,15 @@ exercise the inbound path.
 pnpm turbo typecheck lint test build          # unit tests across every package
 node scripts/check-boundaries.mjs             # architectural boundaries (CI runs seven guard scripts)
 
-# Integration suites need a real PostgreSQL and three roles; run them SERIALLY.
-# Both suites read the three URLs (requireUrls in packages/db/src/testing.ts),
-# so export them once for the shell rather than prefixing one command.
+# Integration suites need a real PostgreSQL and five URLs (the owner and the four
+# login principals); run them SERIALLY. Both suites read them (requireUrls in
+# packages/db/src/testing.ts), so export them once for the shell rather than
+# prefixing one command.
 export DATABASE_URL=postgres://rekoda@127.0.0.1:5432/rekoda
 export APP_DATABASE_URL=postgres://rekoda_app@127.0.0.1:5432/rekoda
 export WORKER_DATABASE_URL=postgres://rekoda_worker@127.0.0.1:5432/rekoda
+export SETTLEMENT_DATABASE_URL=postgres://rekoda_settlement@127.0.0.1:5432/rekoda
+export OPERATOR_DATABASE_URL=postgres://rekoda_billing_operator@127.0.0.1:5432/rekoda
 pnpm --filter @rekoda/db test:integration
 pnpm --filter @rekoda/api test:integration
 

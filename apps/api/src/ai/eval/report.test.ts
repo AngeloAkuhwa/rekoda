@@ -7,7 +7,6 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { randomBytes } from 'node:crypto';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { loadConfig, type ApiConfig } from '../../config.js';
 import { AnthropicTransport } from '../anthropic.transport.js';
@@ -41,6 +40,7 @@ import {
   runCasesInRoom,
   writeReportAtomically,
 } from './run-eval.js';
+import { BASE } from '../../config/env.fixtures.js';
 import { MANIFEST_PATH, stampedCommit, verifyBuild, writeBuildManifest } from './build-stamp.js';
 
 function configWith(env: Record<string, string>): ApiConfig {
@@ -50,11 +50,7 @@ function configWith(env: Record<string, string>): ApiConfig {
       delete process.env[key];
     }
     Object.assign(process.env, {
-      DATABASE_URL: 'postgres://eval@127.0.0.1:1/eval',
-      OTP_PEPPER: randomBytes(24).toString('hex'),
-      REKODA_API_SECRET: randomBytes(24).toString('hex'),
-      VAULT_KEY: randomBytes(32).toString('hex'),
-      MATCH_KEY: randomBytes(32).toString('hex'),
+      ...BASE, // the smallest bootable environment, the OD-37 principals included
       ...env,
     });
     return loadConfig();

@@ -17,7 +17,6 @@ import { createHash, randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { subscriptionReference } from '@rekoda/core';
 import {
-  billingRepo,
   createDb,
   events,
   identity,
@@ -27,7 +26,16 @@ import {
   withBusiness,
   type Db,
 } from '@rekoda/db';
-import { migrate, requireUrls, storedEventId, truncateAll, type Urls } from '@rekoda/db/testing';
+import {
+  migrate,
+  requireUrls,
+  storedEventId,
+  truncateAll,
+  type Urls,
+  settlementDb,
+  applicationDb,
+} from '@rekoda/db/testing';
+import { setPlanForTest } from '@rekoda/db/testing';
 import { buildRunner, type RunnerDeps } from '../jobs/jobs.module.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { Interpreter } from '../ai/interpreter.service.js';
@@ -81,6 +89,7 @@ beforeAll(async () => {
   provider = new StubPaymentProvider();
   const stubSender = new StubSender();
   deps = {
+    settlementDb: settlementDb(),
     gateway: new PrivacyGateway(appDb, config),
     interpreter: new Interpreter(appDb, config, StubTransport.answering({ intent: 'Unclear' })),
     replySender: new ReplySender(config, stubSender),
@@ -131,7 +140,7 @@ async function openSubscriptionCharge(
 ): Promise<string> {
   const reference = subscriptionReference(new Date(), (n) => randomBytes(n));
   const now = new Date();
-  await withBusiness(appDb, businessId, (tx) =>
+  await withBusiness(applicationDb(), businessId, (tx) =>
     subscriptionsRepo.openCharge(tx, {
       businessId,
       kind: opts.kind ?? 'first_purchase',
@@ -327,7 +336,7 @@ describe('a subscription payment', () => {
   it('queues a superseded payment ONCE: on the charge queue, not also as a flagged event (G-104)', async () => {
     const businessId = await seedBusiness();
     const reference = await openSubscriptionCharge(businessId);
-    await billingRepo.setPlan(appDb, {
+    await setPlanForTest(appDb, {
       businessId,
       plan: 'integrate',
       expiresAt: new Date(Date.now() + 20 * 86_400_000),
@@ -348,7 +357,7 @@ describe('a subscription payment', () => {
   it('a REDELIVERED success for an already-unapplied payment is not queued a second time (G-104)', async () => {
     const businessId = await seedBusiness();
     const reference = await openSubscriptionCharge(businessId);
-    await billingRepo.setPlan(appDb, {
+    await setPlanForTest(appDb, {
       businessId,
       plan: 'integrate',
       expiresAt: new Date(Date.now() + 20 * 86_400_000),

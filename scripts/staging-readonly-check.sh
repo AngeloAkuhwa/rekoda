@@ -130,16 +130,17 @@ case "$code" in
   *) flag "web status" "$code" ;;
 esac
 
-# Every long-running service must be running. postgres, api, worker and web have a healthcheck in
-# docker-compose.prod.yml, so they must read healthy (an empty health result is not a pass); caddy
-# has none. The one-off jobs (migrate, edge-check) must have exited 0 or be absent; any other state
+# Every long-running service must be running. postgres, api, worker, web, settlement and operator
+# have a healthcheck in docker-compose.prod.yml, so they must read healthy (an empty health result
+# is not a pass); caddy has none. settlement and operator (OD-51) are the only processes that apply
+# a paid charge and serve a plan change, so a stopped one must never read as a healthy staging. The one-off jobs (migrate, edge-check) must have exited 0 or be absent; any other state
 # needs attention.
 echo "== services"
 SERVICES="$(dc ps -a --format '{{.Service}}|{{.State}}|{{.Health}}|{{.ExitCode}}' 2>/dev/null)"
 if [ -z "$SERVICES" ]; then
   flag "services" "unknown (compose ps failed)"
 else
-  for svc in postgres api worker web caddy; do
+  for svc in postgres api worker web settlement operator caddy; do
     line="$(printf '%s\n' "$SERVICES" | grep "^$svc|" | head -1)"
     IFS='|' read -r _ state health _ <<<"$line"
     if [ -z "$line" ]; then flag "service $svc" "MISSING"
@@ -340,21 +341,30 @@ case "$r" in
   *) flag "REKODA_PAYSTACK_PLATFORM_CONFIRMED" "unknown (cannot exec into the api container)" ;;
 esac
 
-# The five WhatsApp template slots (OD-41(b)). The authority is
-# apps/api/src/channels/template-slots.ts; staging-readonly-check.test.mjs fails if this list and
-# that file disagree. Each line: variable, required|optional, the agreed Meta template name, and
-# the agreed language ("-" when none was agreed, so it is only reported).
+# The settlement process (OD-51) verifies every Rekoda payment with its own copy of the key, which
+# compose hands it by name. It starts and reports healthy without one, so its own value is asked
+# for here, classified inside the container, never printed.
+echo "== Paystack key in the running settlement process (classification only)"
+r="$(dc exec -T -e K=PAYSTACK_SECRET_KEY settlement sh -c 'eval "v=\${$K:-}"; case "$v" in "") echo UNSET ;; sk_test_?*) echo TEST ;; sk_live_?*) echo LIVE ;; *) echo OTHER ;; esac' 2>/dev/null)"
+case "$r" in
+  TEST) say "PAYSTACK_SECRET_KEY (settlement)" "SET (TEST-KEY)" ;;
+  UNSET) flag "PAYSTACK_SECRET_KEY (settlement)" "UNSET (the settlement process starts without a key and every subscription payment then fails verify)" ;;
+  LIVE) flag "PAYSTACK_SECRET_KEY (settlement)" "SET (NOT-A-TEST-KEY: a live key; staging must run an sk_test_ key)" ;;
+  OTHER) flag "PAYSTACK_SECRET_KEY (settlement)" "SET (NOT-A-TEST-KEY: unrecognised, so payments fail closed)" ;;
+  *) flag "PAYSTACK_SECRET_KEY (settlement)" "unknown (cannot exec into the settlement container)" ;;
+esac
+
+# The WhatsApp template slots (OD-41(b), OWN-93). This script holds no list of slots, template
+# names or languages: the authority is apps/api/src/channels/template-slots.ts, and each running
+# container classifies its OWN settings with it (`node dist/template-check.js`, the same validator
+# the api boots with). Each slot reads its template variable and its language variable as unset,
+# set (well-formed) or invalid, never with its value; the settings as a whole are reduced to a
+# digest that is only compared between the api and the worker, never printed.
 # CONFIGURATION ONLY: this reads what the running containers were started with. It cannot see
 # whether Meta approved, paused, rejected or rated a template, or what its components say; those
 # are checked by hand in WhatsApp Manager (docs/runbooks/meta-whatsapp-templates.md).
 # Asked of the running api AND worker (the worker's sweeps send the grace, trial and retention
-# templates), not parsed from .env, so quoting and defaults resolve exactly as the API sees them.
-# A template name is compared with the agreed name inside the container and never printed.
-TEMPLATE_SLOTS="META_OTP_TEMPLATE required rekoda_login_otp -
-META_BILLING_TEMPLATE required rekoda_billing_grace_notice -
-META_RETENTION_TEMPLATE optional rekoda_retention_notice -
-META_DOCUMENT_TEMPLATE required rekoda_document_ready -
-META_TRIAL_TEMPLATE required rekoda_trial_ending en"
+# templates), not parsed from .env, so quoting resolves exactly as the processes see it.
 # Optional: the dashboard origin this host should link to: an https origin with no path, query or
 # fragment (any host spelling, internationalised and underscore hosts included). It is handed to
 # the container as an environment variable and compared there, never spliced into the script.
@@ -364,34 +374,45 @@ if [ -n "$EXPECT_WEB" ] && ! [[ "$EXPECT_WEB" =~ ^https://[^/?#[:space:]@]+$ ]];
   flag "EXPECT_WEB_URL" "not an https origin with no path; comparison skipped"; EXPECT_WEB=""
 fi
 echo "== Meta template slots in the running api and worker (configuration only, not Meta approval)"
+declare -A TPL_DIGEST=([api]="" [worker]="")
 for c in api worker; do
   if ! dc exec -T "$c" true >/dev/null 2>&1; then
     flag "Meta template slots ($c)" "unknown (cannot exec into the $c container)"
     continue
   fi
-  while read -r k need agreed locale; do
-    # The container answers AGREED, OTHER or UNSET itself; anything else (a failed exec, a
-    # container that stopped mid-loop) is reported as unknown, never as UNSET.
-    r="$(dc exec -T -e "K=$k" -e "AGREED=$agreed" "$c" sh -c 'eval "v=\${$K:-}"; if [ -z "$v" ]; then echo UNSET; elif [ "$v" = "$AGREED" ]; then echo AGREED; else echo OTHER; fi' 2>/dev/null)"
-    case "$r:$need" in
-      AGREED:*) say "$k ($c)" "SET, the agreed name" ;;
-      OTHER:*) flag "$k ($c)" "SET, but not the agreed name $agreed" ;;
-      UNSET:required) flag "$k ($c)" "UNSET (required)" ;;
-      UNSET:optional) say "$k ($c)" "UNSET (optional; information only)" ;;
-      *) flag "$k ($c)" "unknown ($c query failed)" ;;
-    esac
-    # The language: an unset one is the code's default, en. Compared with the agreed language
-    # where one was agreed; otherwise only reported, for checking against WhatsApp Manager.
-    l="$(dc exec -T -e "K=${k}_LOCALE" "$c" sh -c 'eval "v=\${$K-__unset__}"; case "$v" in __unset__) echo DEFAULT ;; en) echo EN ;; *) echo OTHER ;; esac' 2>/dev/null)"
-    case "$l:$locale" in
-      DEFAULT:en|EN:en) say "${k}_LOCALE ($c)" "en, the agreed language" ;;
-      OTHER:en) flag "${k}_LOCALE ($c)" "not the agreed language en" ;;
-      DEFAULT:-) say "${k}_LOCALE ($c)" "unset (the code sends en)" ;;
-      EN:-) say "${k}_LOCALE ($c)" "en" ;;
-      OTHER:-) say "${k}_LOCALE ($c)" "SET (not en; confirm in WhatsApp Manager)" ;;
-      *) flag "${k}_LOCALE ($c)" "unknown ($c query failed)" ;;
-    esac
-  done <<<"$TEMPLATE_SLOTS"
+  # A failed exec, or an image without the report (a release older than PR B), answers no RESULT
+  # line: unknown, never a pass and never UNSET.
+  rep="$(dc exec -T "$c" node dist/template-check.js 2>/dev/null)"
+  case "$rep" in
+    *"RESULT BOOTS"* | *"RESULT REFUSED"*) ;;
+    *) flag "Meta template slots ($c)" "unknown (no template report from $c: an image older than PR B, or the query failed)"
+       rep="" ;;
+  esac
+  if [ -n "$rep" ]; then
+    slots=0
+    while read -r tag k need name locale; do
+      [ "$tag" = SLOT ] || continue
+      slots=$((slots + 1))
+      case "$name:$need" in
+        set:*) say "$k ($c)" "SET (approval is checked in WhatsApp Manager)" ;;
+        invalid:*) flag "$k ($c)" "SET but not a Meta template name (the api refuses to boot with it)" ;;
+        unset:required) flag "$k ($c)" "UNSET (required)" ;;
+        unset:optional) say "$k ($c)" "UNSET (optional; information only)" ;;
+        *) flag "$k ($c)" "unknown (unreadable report line)" ;;
+      esac
+      case "$locale:$name" in
+        set:set | set:invalid) say "${k}_LOCALE ($c)" "SET (confirm it is the template's language in WhatsApp Manager)" ;;
+        unset:set | unset:invalid) flag "${k}_LOCALE ($c)" "UNSET (required with $k; the api refuses to boot without it)" ;;
+        invalid:*) flag "${k}_LOCALE ($c)" "SET but not a Meta language code (the api refuses to boot with it)" ;;
+        unset:unset) say "${k}_LOCALE ($c)" "unset" ;;
+        set:unset) say "${k}_LOCALE ($c)" "SET without a template (unused)" ;;
+        *) flag "${k}_LOCALE ($c)" "unknown (unreadable report line)" ;;
+      esac
+    done <<<"$rep"
+    [ "$slots" -gt 0 ] || flag "Meta template slots ($c)" "unknown (the report named no slot)"
+    case "$rep" in *"RESULT REFUSED"*) flag "Meta template settings ($c)" "REFUSED (a process started with them now would not boot)" ;; esac
+    TPL_DIGEST[$c]="$(sed -n 's/^DIGEST \([0-9a-f]\{64\}\)$/\1/p' <<<"$rep")"
+  fi
   # The grace and trial templates carry the billing page as {{3}}, built from REKODA_WEB_URL as
   # <origin>/app/billing. The URL is classified, never printed. With EXPECT_WEB_URL=<origin> (for
   # example https://staging.myrekoda.com) it is compared with that origin inside the container.
@@ -405,6 +426,11 @@ for c in api worker; do
     *) flag "billing link in templates ($c)" "unknown ($c query failed)" ;;
   esac
 done
+# Both processes must send through the same templates: compared by digest, never printed.
+if [ -n "${TPL_DIGEST[api]}" ] && [ -n "${TPL_DIGEST[worker]}" ]; then
+  if [ "${TPL_DIGEST[api]}" = "${TPL_DIGEST[worker]}" ]; then say "Meta template settings, api and worker" "SAME"
+  else flag "Meta template settings, api and worker" "DIFFERENT (the two processes would send through different templates)"; fi
+else flag "Meta template settings, api and worker" "unknown (not compared: a report is missing)"; fi
 
 # Customer payment reminders (N1, REM-01..06) run only with REKODA_CUSTOMER_REMINDERS=1, and the
 # api and the worker each read it. Absent or 0 is off (the default); 1 is on; anything else makes

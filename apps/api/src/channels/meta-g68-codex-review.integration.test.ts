@@ -9,7 +9,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { identity, withBusiness, sql } from '@rekoda/db';
 import { replies } from '@rekoda/core';
 import { buildRunner } from '../jobs/jobs.module.js';
-import { billingRepo, customersRepo } from '@rekoda/db';
+import { customersRepo } from '@rekoda/db';
 import {
   db,
   deps,
@@ -20,6 +20,7 @@ import {
   useMetaWebhookHarness,
   workerDb,
 } from './meta-webhook.fixtures.js';
+import { setPlanForTest } from '@rekoda/db/testing';
 
 useMetaWebhookHarness();
 
@@ -362,7 +363,7 @@ describe('G-68 Codex review: erasure events, emoji, failed rebuild send, gates, 
   it('P2: a gate refusal does not use up the answer; after access returns, "cash" rebuilds', async () => {
     const business = await seedMerchant();
     await say('wamid.CX-g-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
-    await billingRepo.setPlan(db, {
+    await setPlanForTest(db, {
       businessId: business.id,
       plan: 'integrate',
       expiresAt: null,
@@ -370,7 +371,7 @@ describe('G-68 Codex review: erasure events, emoji, failed rebuild send, gates, 
     });
     await reply('wamid.CX-g-refused', 'cash');
     expect(stubSender.lastText).toBe(replies.chatNotInPlan().text);
-    await billingRepo.setPlan(db, {
+    await setPlanForTest(db, {
       businessId: business.id,
       plan: 'trial',
       expiresAt: new Date(Date.now() + 7 * 86_400_000),

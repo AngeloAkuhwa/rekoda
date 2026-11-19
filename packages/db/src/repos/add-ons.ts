@@ -143,7 +143,11 @@ export async function grantedEntitlements(
   return [...rows].map((row) => row.entitlement_key);
 }
 
-/** Start a holding at the version in force. The purchase's record. */
+/** Start a holding at the version in force. The purchase's record.
+ *
+ * No runtime role may call this since 0226: a holding raises the metered ceiling, and nothing sells
+ * an add-on yet. The sale that first needs it must write the holding through a definer function
+ * bound to a paid charge, as `usage_credit_pack` is for packs. */
 export async function hold(
   tx: TenantDb,
   input: { businessId: string; addOnId: string; version: number; startedAt?: Date },

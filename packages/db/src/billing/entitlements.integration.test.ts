@@ -16,7 +16,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 import { createDb, withBusiness, type Db } from '../client.js';
 import { entitlementsRepo, identity } from '../index.js';
-import { migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
+import { migrate, requireUrls, truncateAll, type Urls, ownerDb as grantDb } from '../testing.js';
 
 let urls: Urls;
 let db: Db;
@@ -85,7 +85,7 @@ describe('the entitlement catalogue', () => {
 describe('what a business holds', () => {
   it('records a grant with its source and who made it', async () => {
     const businessId = await seedBusiness('+2348090200001', 'Mama Chidi Stores');
-    await withBusiness(db, businessId, (tx) =>
+    await withBusiness(grantDb(), businessId, (tx) =>
       entitlementsRepo.grant(tx, {
         businessId,
         entitlementKey: 'REKODA_CHAT',
@@ -110,7 +110,7 @@ describe('what a business holds', () => {
   it('is idempotent: granting twice leaves one row', async () => {
     const businessId = await seedBusiness('+2348090200002', 'Mama Chidi Stores');
     const grant = () =>
-      withBusiness(db, businessId, (tx) =>
+      withBusiness(grantDb(), businessId, (tx) =>
         entitlementsRepo.grant(tx, {
           businessId,
           entitlementKey: 'REKODA_INTEGRATE',
@@ -134,7 +134,7 @@ describe('what a business holds', () => {
   it('holds Complete as the pair', async () => {
     const businessId = await seedBusiness('+2348090200003', 'Mama Chidi Stores');
     for (const key of ['REKODA_CHAT', 'REKODA_INTEGRATE'] as const) {
-      await withBusiness(db, businessId, (tx) =>
+      await withBusiness(grantDb(), businessId, (tx) =>
         entitlementsRepo.grant(tx, {
           businessId,
           entitlementKey: key,
@@ -157,7 +157,7 @@ describe('what a business holds', () => {
   it('revokes one entitlement without touching the other', async () => {
     const businessId = await seedBusiness('+2348090200004', 'Mama Chidi Stores');
     for (const key of ['REKODA_CHAT', 'REKODA_INTEGRATE'] as const) {
-      await withBusiness(db, businessId, (tx) =>
+      await withBusiness(grantDb(), businessId, (tx) =>
         entitlementsRepo.grant(tx, {
           businessId,
           entitlementKey: key,
@@ -166,7 +166,7 @@ describe('what a business holds', () => {
         }),
       );
     }
-    await withBusiness(db, businessId, (tx) =>
+    await withBusiness(grantDb(), businessId, (tx) =>
       entitlementsRepo.revoke(tx, businessId, 'REKODA_INTEGRATE'),
     );
     const held = await withBusiness(db, businessId, (tx) =>
@@ -178,7 +178,7 @@ describe('what a business holds', () => {
   it('refuses an entitlement that is not in the catalogue', async () => {
     const businessId = await seedBusiness('+2348090200005', 'Mama Chidi Stores');
     await expect(
-      withBusiness(db, businessId, (tx) =>
+      withBusiness(grantDb(), businessId, (tx) =>
         entitlementsRepo.grant(tx, {
           businessId,
           entitlementKey: 'REKODA_FREE_MONEY' as never,
@@ -192,7 +192,7 @@ describe('what a business holds', () => {
   it('refuses a source that is not one of the three', async () => {
     const businessId = await seedBusiness('+2348090200006', 'Mama Chidi Stores');
     await expect(
-      withBusiness(db, businessId, (tx) =>
+      withBusiness(grantDb(), businessId, (tx) =>
         entitlementsRepo.grant(tx, {
           businessId,
           entitlementKey: 'REKODA_CHAT',
@@ -210,7 +210,7 @@ describe('tenant isolation', () => {
     const mine = await seedBusiness('+2348090200007', 'Mama Chidi Stores');
     const theirs = await seedBusiness('+2348090200008', 'Rival Shop');
 
-    await withBusiness(db, theirs, (tx) =>
+    await withBusiness(grantDb(), theirs, (tx) =>
       entitlementsRepo.grant(tx, {
         businessId: theirs,
         entitlementKey: 'REKODA_INTEGRATE',
@@ -232,6 +232,8 @@ describe('tenant isolation', () => {
   it('refuses to write a grant for another business', async () => {
     const mine = await seedBusiness('+2348090200009', 'Mama Chidi Stores');
     const theirs = await seedBusiness('+2348090200010', 'Rival Shop');
+    // As the application: refused outright since 0210 (no runtime role writes grants), and by
+    // RLS before that.
     await expect(
       withBusiness(db, mine, (tx) =>
         entitlementsRepo.grant(tx, {

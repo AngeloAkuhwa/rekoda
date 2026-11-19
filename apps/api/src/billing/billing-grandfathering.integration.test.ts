@@ -29,12 +29,14 @@ import {
   type Db,
 } from '@rekoda/db';
 import {
+  applyFixtureCycle,
   migrate,
   requireUrls,
   resetPlanCatalogue,
   truncateAll,
   type Urls,
 } from '@rekoda/db/testing';
+import { operatorDb, settlementDb } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { sweepRenewals } from './renewal-sweep.js';
 import { applySettledCharge, BillingService } from './billing.service.js';
@@ -115,7 +117,7 @@ async function onboard(phone: string) {
 /** Put a business on a paid cycle, as a settled first purchase would. */
 async function putOnPlan(businessId: string, plan: string, cycleStart: Date, renewsAt: Date) {
   await withBusiness(db, businessId, (tx) =>
-    subscriptionsRepo.applyCycle(tx, businessId, {
+    applyFixtureCycle(tx, businessId, {
       plan,
       cycleStartedAt: cycleStart,
       renewsAt,
@@ -285,11 +287,12 @@ describe('grandfathering through the catalogue (BL2, PR-100)', () => {
       effectiveFrom: new Date(),
     });
 
-    await withBusiness(db, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       applySettledCharge(tx, {
         businessId,
         reference: answer.reference,
         providerReference: 'ps_pack_v1',
+        paidAmountK: answer.amountK,
         when: new Date(),
         config,
       }),
@@ -331,11 +334,12 @@ describe('grandfathering through the catalogue (BL2, PR-100)', () => {
     );
     const answer = await confirmedBilling().buyPack(businessId, 'messages_100');
     if (answer.state !== 'payment_required') throw new Error('expected a payable pack');
-    await withBusiness(db, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       applySettledCharge(tx, {
         businessId,
         reference: answer.reference,
         providerReference: 'ps_refund_1',
+        paidAmountK: answer.amountK,
         when: new Date(),
         config,
       }),
@@ -346,16 +350,23 @@ describe('grandfathering through the catalogue (BL2, PR-100)', () => {
       0,
     );
 
-    await withBusiness(db, businessId, (tx) =>
-      subscriptionsRepo.refundCharge(tx, answer.reference, 100_000, new Date()),
-    );
+    /* A credited pack is refunded only in full, unused, within seven days (owner decision,
+     * 15 Nov 2026; 0230), on the billing-operator credential. */
+    await subscriptionsRepo.recordRefund(operatorDb(), {
+      businessId,
+      reference: answer.reference,
+      amountK: answer.amountK,
+      reason: 'unused_add_on',
+      actor: 'operator:test',
+      providerRefundId: `rf-${globalThis.crypto.randomUUID()}`,
+    });
 
     const overview = await confirmedBilling().overview(businessId);
     const charge = overview.charges.find((row) => row.reference === answer.reference);
 
-    // Still paid: only part came back. The amount that did is on the row.
-    expect(charge?.status).toBe('paid');
-    expect(charge?.refundedAmountK).toBe(100_000);
+    // Refunded in full: the amount that came back is on the row.
+    expect(charge?.status).toBe('refunded');
+    expect(charge?.refundedAmountK).toBe(answer.amountK);
   });
 
   it('a pack is offered exactly where its unit is sold: Integrate is not sold Chat overage', async () => {

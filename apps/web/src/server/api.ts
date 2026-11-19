@@ -209,6 +209,25 @@ const BASE = process.env.REKODA_API_URL ?? 'http://127.0.0.1:3001';
 
 export class ApiUnauthorised extends Error {}
 export class ApiUnavailable extends Error {}
+
+/**
+ * One line in the web tier's log for a call that never reached the API: which path, and the
+ * transport's own error code (`ECONNREFUSED`, `UND_ERR_SOCKET`, a timeout). Never the request body
+ * or headers: on sign-in the body is a phone number. Without it a dropped connection and a slow
+ * server look the same from outside: the merchant sees "We could not reach Rekoda just now" and the
+ * log shows nothing.
+ */
+function logUnreachable(path: string, cause: unknown): void {
+  const inner = cause instanceof Error && cause.cause instanceof Error ? cause.cause : cause;
+  const code =
+    inner && typeof inner === 'object' && 'code' in inner && typeof inner.code === 'string'
+      ? inner.code
+      : inner instanceof Error
+        ? inner.name
+        : 'unknown';
+  /* The path without its query: a query can carry a record's number or a search. */
+  console.error(`rekoda-web: the API was unreachable for ${path.split('?')[0]} (${code})`);
+}
 /**
  * The API answered something no caller anticipated.
  *
@@ -282,6 +301,7 @@ async function call(options: CallOptions): Promise<{ status: number; json: unkno
     });
   } catch (cause) {
     // A dead API must read as "we are down", not as a merchant mistake.
+    logUnreachable(options.path, cause);
     throw new ApiUnavailable(`cannot reach the Rekoda API at ${BASE}`, { cause });
   }
 
@@ -1309,6 +1329,7 @@ export async function uploadProductImage(
       cache: 'no-store',
     });
   } catch (cause) {
+    logUnreachable('/v1/catalogue/:id/image', cause);
     throw new ApiUnavailable(`cannot reach the Rekoda API at ${BASE}`, { cause });
   }
   if (response.status !== 200) return null;

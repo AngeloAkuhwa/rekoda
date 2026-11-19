@@ -19,7 +19,6 @@
  * unreachable in production by construction rather than by convention: the
  * config layer refuses to build it.
  */
-import { createHash, timingSafeEqual } from 'node:crypto';
 import {
   ForbiddenException,
   Inject,
@@ -31,13 +30,8 @@ import {
 import type { CanActivate, ExecutionContext } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { CONFIG, type ApiConfig } from '../config.js';
-import {
-  operatorVerifier,
-  OperatorAuthRefused,
-  OPERATOR_SCOPES,
-  type OperatorIdentity,
-  type OperatorScope,
-} from './operator-identity.js';
+import { operatorAuthenticator, OperatorUnauthenticated } from '../operator-plane/authenticate.js';
+import type { OperatorIdentity, OperatorScope } from './operator-identity.js';
 
 export const OPERATOR_SCOPES_KEY = 'operatorScopes';
 
@@ -56,12 +50,19 @@ export interface OperatorRequest {
 
 @Injectable()
 export class OperatorGuard implements CanActivate {
-  private verifier: ReturnType<typeof operatorVerifier> | null = null;
+  /* One implementation for this guard and for the dedicated operator process (OD-51.1), so the
+   * two cannot disagree about what a valid operator is. */
+  private readonly authenticator: ReturnType<typeof operatorAuthenticator>;
 
   constructor(
-    @Inject(CONFIG) private readonly config: ApiConfig,
+    @Inject(CONFIG) config: ApiConfig,
     @Inject(Reflector) private readonly reflector: Reflector,
-  ) {}
+  ) {
+    this.authenticator = operatorAuthenticator({
+      operatorAuth: config.operatorAuth,
+      operatorSecret: config.operatorSecret,
+    });
+  }
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const required = this.reflector.getAllAndOverride<OperatorScope[] | undefined>(
@@ -91,53 +92,11 @@ export class OperatorGuard implements CanActivate {
   }
 
   private async identify(request: OperatorRequest): Promise<OperatorIdentity> {
-    const auth = header(request, 'authorization');
-    const operatorAuth = this.config.operatorAuth;
-
-    if (operatorAuth) {
-      /* The scheme is case-insensitive in RFC 7235, and a proxy that
-       * normalises it is not a caller we should refuse. */
-      const bearer = /^bearer +(.+)$/i.exec(auth ?? '');
-      if (!bearer) {
-        throw new UnauthorizedException('operator identity required');
-      }
-      this.verifier ??= operatorVerifier(operatorAuth);
-      try {
-        return await this.verifier.verify(bearer[1]!);
-      } catch (error) {
-        if (error instanceof OperatorAuthRefused) {
-          throw new UnauthorizedException(error.message);
-        }
-        throw error;
-      }
+    try {
+      return await this.authenticator.identify(request.headers);
+    } catch (error) {
+      if (error instanceof OperatorUnauthenticated) throw new UnauthorizedException(error.message);
+      throw error;
     }
-
-    /* No verifier configured. In production the config layer has already
-     * refused to boot, so reaching here means a development or test process,
-     * and the legacy secret stands in — with every scope, because outside
-     * production the point is to exercise the routes rather than to model an
-     * organisation. */
-    const secret = header(request, 'x-rekoda-operator-secret');
-    const expected = this.config.operatorSecret;
-    if (!expected || !secret || !matchesSecret(secret, expected)) {
-      throw new UnauthorizedException('operator identity required');
-    }
-    return { subject: 'local:operator-secret', scopes: [...OPERATOR_SCOPES] };
   }
-}
-
-function header(request: OperatorRequest, name: string): string | undefined {
-  const value = request.headers[name];
-  return Array.isArray(value) ? value[0] : value;
-}
-
-/**
- * Constant-time secret comparison with no length oracle, unchanged from the
- * one this replaces: comparing digests means the observable work is identical
- * whatever the caller sent.
- */
-function matchesSecret(provided: string, expected: string): boolean {
-  const a = createHash('sha256').update(provided).digest();
-  const b = createHash('sha256').update(expected).digest();
-  return timingSafeEqual(a, b);
 }

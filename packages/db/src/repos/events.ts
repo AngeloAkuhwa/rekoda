@@ -23,8 +23,9 @@
  */
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import type { Db, TenantDb } from '../client.js';
-import type { MeterRow } from './usage.js';
-import { externalEvents } from '../schema/ops.js';
+import { withBusiness } from '../client.js';
+import { reservationOf, type MeterRow } from './usage.js';
+import { auditEvents, externalEvents } from '../schema/ops.js';
 
 export type Queryable = Db | TenantDb;
 
@@ -153,6 +154,14 @@ export async function noteReservedUnit(
        SET reserved_units = array_append(reserved_units, ${unit}),
            reserved_meters = reserved_meters || jsonb_build_object(${unitOf(unit)}::text, ${meter}::text)
      WHERE id = ${eventId}::uuid AND business_id = ${businessId}::uuid`);
+  /* The reservation now belongs to this event (migration 0218): the database closes it when the
+   * event's job is done, after which it gives nothing back. Until then every exit that hands the
+   * unit back still can. A handle with no reservation (recorded before 0216) has nothing to bind. */
+  const reservation = reservationOf(meter);
+  if (reservation) {
+    await tx.execute(sql`
+      SELECT usage_bind_event(${businessId}::uuid, ${reservation}::uuid, ${eventId}::uuid)`);
+  }
 }
 
 /** "VOICE_MINUTES:5" is the unit VOICE_MINUTES with its quantity. */
@@ -457,21 +466,23 @@ export async function unattributedEvents(
 /**
  * Attribute an event to the business its reference resolved to.
  *
- * The `business_id IS NULL` predicate makes attribution WRITE-ONCE: two pumps
- * racing over the same event cannot re-point it, and nothing can ever move an
- * event from one tenant to another. Returns false for the loser.
+ * WRITE-ONCE: two pumps racing over the same event cannot re-point it. Since migration 0204 that is
+ * the database's rule for the worker, not only this query's: the worker holds no UPDATE of
+ * `business_id`, and `attribute_external_event` (worker-only,
+ * SECURITY DEFINER) sets it once, from NULL, to a business that exists. Returns false for the loser
+ * (or for a business that does not exist). The application credential is not bound by this
+ * function: 0130's `app_records_unattributed_ingress` lets it un-attribute and re-attribute a row it can
+ * pin (pre-existing, `REKODA_LAUNCH_READINESS.md` OD-51 item 4).
  */
 export async function attributeEvent(
   q: Queryable,
   id: string,
   businessId: string,
 ): Promise<boolean> {
-  const rows = await q
-    .update(externalEvents)
-    .set({ businessId })
-    .where(and(eq(externalEvents.id, id), isNull(externalEvents.businessId)))
-    .returning({ id: externalEvents.id });
-  return rows.length === 1;
+  const rows = await q.execute<{ ok: boolean }>(
+    sql`SELECT attribute_external_event(${id}::uuid, ${businessId}::uuid) AS ok`,
+  );
+  return [...rows][0]?.ok === true;
 }
 
 /** One event's processing outcome — the admin event log's core question. */
@@ -602,6 +613,11 @@ export interface OpsEventRow {
   createdAt: Date;
   /** How long it has been sitting. What an operator actually judges by. */
   ageSeconds: number;
+  /**
+   * The dead payment or billing job behind this event, while its record is open or recovering
+   * (OWN-73, OWN-76): the id an operator recovers or resolves it by. Null otherwise.
+   */
+  jobId: string | null;
 }
 
 export interface ExceptionQueue {
@@ -644,21 +660,23 @@ export async function exceptionQueue(q: Queryable, limit = 50): Promise<Exceptio
     created_at: Date;
     age_seconds: number;
     bucket: string;
+    job_id: string | null;
   }>(sql`
     (SELECT id, provider, event_type, business_id, error, signature_valid, created_at,
             EXTRACT(EPOCH FROM (now() - created_at))::int AS age_seconds,
-            'stuck' AS bucket
+            'stuck' AS bucket, NULL::uuid AS job_id
        FROM external_events
       WHERE processed_at IS NULL AND business_id IS NULL
       ORDER BY created_at
       LIMIT ${limit})
     UNION ALL
-    (SELECT id, provider, event_type, business_id, error, signature_valid, created_at,
-            EXTRACT(EPOCH FROM (now() - created_at))::int AS age_seconds,
-            'flagged' AS bucket
-       FROM external_events
-      WHERE error IS NOT NULL AND resolved_at IS NULL
-      ORDER BY created_at
+    (SELECT e.id, e.provider, e.event_type, e.business_id, e.error, e.signature_valid,
+            e.created_at, EXTRACT(EPOCH FROM (now() - e.created_at))::int AS age_seconds,
+            'flagged' AS bucket,
+            dead_job_open_for_event(e.id, e.business_id) AS job_id
+       FROM external_events e
+      WHERE e.error IS NOT NULL AND e.resolved_at IS NULL
+      ORDER BY e.created_at
       LIMIT ${limit})
   `);
 
@@ -673,6 +691,7 @@ export async function exceptionQueue(q: Queryable, limit = 50): Promise<Exceptio
       signatureValid: r.signature_valid,
       createdAt: new Date(r.created_at),
       ageSeconds: Number(r.age_seconds),
+      jobId: r.job_id,
     };
     if (r.bucket === 'stuck') queue.stuck.push(row);
     else queue.flagged.push(row);
@@ -691,6 +710,15 @@ export async function exceptionQueue(q: Queryable, limit = 50): Promise<Exceptio
  * resolving it MEANS: it was never going to be attributed, and leaving it
  * unprocessed would keep a sweep picking it up forever. A flagged one is
  * already processed and only gains the decision.
+ *
+ * Only an OPEN EXCEPTION is resolved: a flagged event (`error` set) or one never processed (stuck
+ * unattributed, or attributed but never handled, e.g. behind a job that died before flagging it). A
+ * handled, unflagged event cannot be stamped resolved through this path.
+ *
+ * `q` is an application-credential transaction (owner review of #432, migration 0204): pinned to the
+ * event's business when it has one, or unpinned for an unattributed event, which the application's
+ * `app_records_unattributed_ingress` policy reaches. The worker credential can no longer write a
+ * resolution.
  */
 export async function resolveEvent(
   q: Queryable,
@@ -699,6 +727,10 @@ export async function resolveEvent(
   actor: string,
   now = new Date(),
 ): Promise<boolean> {
+  /* The event row is locked in its own statement first, then the guarded write runs on a fresh
+   * snapshot: a death that committed while this waited for the lock is seen by the guard, and a
+   * death that has not locked the row yet waits for this resolve (`dead-jobs.recordDeath`). */
+  await q.execute(sql`SELECT 1 FROM external_events WHERE id = ${id}::uuid FOR UPDATE`);
   const rows = await q.execute<{ id: string }>(sql`
     UPDATE external_events
        SET resolved_at = ${now.toISOString()}::timestamptz,
@@ -707,7 +739,71 @@ export async function resolveEvent(
            processed_at = COALESCE(processed_at, ${now.toISOString()}::timestamptz)
      WHERE id = ${id}::uuid
        AND resolved_at IS NULL
+       AND (error IS NOT NULL OR processed_at IS NULL)
+       -- In the same statement as the write: an event behind an open dead job is worked through
+       -- that job (OWN-73, OWN-76), even if the job died after the caller checked.
+       AND NOT EXISTS (SELECT 1 FROM dead_job_exceptions d
+                       WHERE d.event_id = external_events.id
+                         AND d.status IN ('open', 'recovering'))
      RETURNING id
   `);
   return [...rows].length === 1;
+}
+
+export type OperatorResolveOutcome = 'resolved' | 'not_found';
+
+/**
+ * The operator's generic exception resolve (`POST /v1/ops/exceptions/:id/resolve`, `ops:payment`),
+ * under ADR 0035 Amendment 2 rule 4: discovery is a read on the worker credential; the write runs on
+ * the APPLICATION credential, pinned to the event's own business, and writes an audit row there.
+ *
+ * - The target is read first (worker, fixed columns): it must be an open exception.
+ * - An attributed event is resolved inside `withBusiness(appDb, its business)`, with a
+ *   `exception_resolved` audit event (who, what, which event) in the same transaction, and the
+ *   write is re-checked against that business, so a row that moved cannot be resolved.
+ * - An unattributed event belongs to no business: it is resolved on the application credential
+ *   without a pin (the `app_records_unattributed_ingress` policy reaches only such rows). There is
+ *   no tenant to own an audit row; the event's own `resolved_by`, `resolved_at` and `resolution`
+ *   are its record.
+ */
+export async function resolveExceptionAsOperator(
+  appDb: Db,
+  workerDb: Db,
+  id: string,
+  resolution: string,
+  actor: string,
+  now = new Date(),
+): Promise<OperatorResolveOutcome> {
+  const found = await workerDb.execute<{ business_id: string | null }>(sql`
+    SELECT business_id FROM external_events
+     WHERE id = ${id}::uuid AND resolved_at IS NULL
+       AND (error IS NOT NULL OR processed_at IS NULL)
+  `);
+  const target = [...found][0];
+  if (!target) return 'not_found';
+  const businessId = target.business_id;
+  if (businessId === null) {
+    const done = await appDb.transaction(async (tx) => {
+      const rows = await tx.execute<{ business_id: string | null }>(
+        sql`SELECT business_id FROM external_events WHERE id = ${id}::uuid FOR UPDATE`,
+      );
+      if ([...rows][0]?.business_id !== null || [...rows].length !== 1) return false;
+      return resolveEvent(tx, id, resolution, actor, now);
+    });
+    return done ? 'resolved' : 'not_found';
+  }
+  const done = await withBusiness(appDb, businessId, async (tx) => {
+    if (!(await resolveEvent(tx, id, resolution, actor, now))) return false;
+    await tx.insert(auditEvents).values({
+      businessId,
+      actor,
+      entity: 'external_event',
+      entityId: id,
+      action: 'exception_resolved',
+      newValue: { resolution },
+      sourceType: 'operator',
+    });
+    return true;
+  });
+  return done ? 'resolved' : 'not_found';
 }

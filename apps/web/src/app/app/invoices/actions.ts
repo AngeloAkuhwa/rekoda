@@ -12,6 +12,7 @@ import {
   viewOnlyRefusal,
 } from '@/server/api';
 import { readSessionToken } from '@/server/session-cookies';
+import { quoteConvertExhausted } from '@/lib/allowance-copy';
 
 export interface VoidFormState {
   error?: string;
@@ -409,9 +410,7 @@ async function convertQuoteActionUnguarded(
     };
   }
   if (outcome.outcome === 'exhausted') {
-    return {
-      error: `You have used all ${outcome.allowance} invoices and receipts in your plan this month. Upgrade on the billing page and convert again.`,
-    };
+    return { error: quoteConvertExhausted(outcome.allowance, outcome.window) };
   }
   if (outcome.outcome === 'already_converted') {
     revalidatePath('/app/invoices');

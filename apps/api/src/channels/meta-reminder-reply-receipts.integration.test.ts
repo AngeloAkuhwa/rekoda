@@ -12,6 +12,7 @@ import {
   sql,
   withBusiness,
 } from '@rekoda/db';
+import { ownerDb } from '@rekoda/db/testing';
 import { buildRunner } from '../jobs/jobs.module.js';
 import {
   db,
@@ -44,7 +45,7 @@ const noticeWamidOf = (phone: string) =>
 
 /** A failed receipt for `wamid` was stored, but its delivery-status job ran out of attempts. */
 async function deadReceipt(businessId: string, wamid: string): Promise<void> {
-  await withBusiness(db, businessId, async (tx) => {
+  const jobId = await withBusiness(db, businessId, async (tx) => {
     const [event] = [
       ...(await tx.execute<{ id: string }>(sql`
         INSERT INTO external_events (provider, event_type, external_id, payload, business_id, signature_valid)
@@ -58,10 +59,12 @@ async function deadReceipt(businessId: string, wamid: string): Promise<void> {
       singletonKey: event!.id,
       maxAttempts: 12,
     });
-    await tx.execute(
-      sql`UPDATE jobs SET state = 'dead', attempts = 12 WHERE id = ${job!.id}::uuid`,
-    );
+    return job!.id;
   });
+  /* Staged as the owner: the application may only finish a job or requeue a dead one (0220). */
+  await withBusiness(ownerDb(), businessId, (tx) =>
+    tx.execute(sql`UPDATE jobs SET state = 'dead', attempts = 12 WHERE id = ${jobId}::uuid`),
+  );
 }
 
 /** Whether the business's (only) reply notice is marked undelivered. */

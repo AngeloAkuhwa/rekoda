@@ -17,6 +17,7 @@ import { migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
 
 let urls: Urls;
 let app: Db;
+let app2: Db;
 let worker: Db;
 let owner: Db;
 const closers: Array<() => Promise<void>> = [];
@@ -26,6 +27,7 @@ beforeAll(async () => {
   await migrate(urls);
   for (const [key, assign] of [
     [urls.app, (db: Db) => (app = db)],
+    [urls.app, (db: Db) => (app2 = db)],
     [urls.worker, (db: Db) => (worker = db)],
     [urls.owner, (db: Db) => (owner = db)],
   ] as const) {
@@ -114,7 +116,8 @@ describe('assertKeyUnchanged (A6)', () => {
     await expect(
       Promise.all([
         bootChecks.assertKeyUnchanged(app, 'VAULT_KEY', KEY),
-        bootChecks.assertKeyUnchanged(worker, 'VAULT_KEY', KEY),
+        // Every process enrols on its application pool (main.ts); the worker role writes no key.
+        bootChecks.assertKeyUnchanged(app2, 'VAULT_KEY', KEY),
       ]),
     ).resolves.toBeDefined();
   });
@@ -139,5 +142,41 @@ describe('assertKeyUnchanged (A6)', () => {
       SELECT fingerprint FROM key_fingerprints WHERE key_name = 'VAULT_KEY'
     `);
     expect([...rows][0]?.fingerprint).toBe(bootChecks.fingerprintKey(KEY));
+  });
+});
+
+describe('assertRoleCannotAssumePlanWriter (OD-37, 0196)', () => {
+  it('passes for the application and worker roles as migrated', async () => {
+    await expect(
+      bootChecks.assertRoleCannotAssumePlanWriter(app, 'application'),
+    ).resolves.toBeUndefined();
+    await expect(
+      bootChecks.assertRoleCannotAssumePlanWriter(worker, 'worker'),
+    ).resolves.toBeUndefined();
+  });
+
+  it('refuses a role that is a member of the plan writer, directly or through another role', async () => {
+    for (const setup of [
+      'GRANT rekoda_plan_writer TO boot_hop',
+      'CREATE ROLE boot_mid NOLOGIN; GRANT rekoda_plan_writer TO boot_mid; GRANT boot_mid TO boot_hop',
+    ]) {
+      let refusal = '';
+      await owner
+        .transaction(async (tx) => {
+          await tx.execute(sql.raw('CREATE ROLE boot_hop NOLOGIN'));
+          await tx.execute(sql.raw(setup));
+          await tx.execute(sql.raw('SET LOCAL ROLE boot_hop'));
+          try {
+            await bootChecks.assertRoleCannotAssumePlanWriter(tx as never, 'application');
+          } catch (error) {
+            refusal = (error as Error).message;
+          }
+          tx.rollback();
+        })
+        .catch((error: unknown) => {
+          if (!String(error).includes('Rollback')) throw error;
+        });
+      expect(refusal, setup).toMatch(/member of rekoda_plan_writer/);
+    }
   });
 });

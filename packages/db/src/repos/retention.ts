@@ -146,11 +146,18 @@ export async function dueForDeletion(
 export async function claimRetentionNotice(
   tx: TenantDb,
   businessId: string,
-  when: Date,
+  /**
+   * Fixture-only: a notice sent in the past, staged as the owner. Runtime callers omit it, and the
+   * notice is stamped with the database clock at the moment it is claimed, which is what 0210's
+   * "never backdated" guard checks against. A sweep pass's start time is only its eligibility
+   * cutoff; stamping with it was refused once the pass had run for over a minute.
+   */
+  when?: Date,
 ): Promise<boolean> {
+  const stamp = when ? sql`${when.toISOString()}::timestamptz` : sql`clock_timestamp()`;
   const rows = await tx.execute<{ id: string }>(sql`
     UPDATE businesses
-    SET retention_notified_at = ${when.toISOString()}::timestamptz, updated_at = now()
+    SET retention_notified_at = ${stamp}, updated_at = now()
     WHERE id = ${businessId}::uuid AND retention_notified_at IS NULL
     RETURNING id
   `);

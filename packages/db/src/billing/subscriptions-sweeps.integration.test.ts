@@ -18,7 +18,16 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db, type TenantDb } from '../client.js';
 import { identity, subscriptionsRepo } from '../index.js';
-import { migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
+import {
+  applyFixtureCycle,
+  migrate,
+  requireUrls,
+  truncateAll,
+  type Urls,
+  setPlanAsOwner,
+  startGraceForTest,
+} from '../testing.js';
+import { settlementDb } from '../testing.js';
 
 let urls: Urls;
 let appDb: Db;
@@ -63,12 +72,15 @@ const RENEWS_AT = new Date('2026-09-01T00:00:00Z');
 
 const inTenant = <T>(businessId: string, fn: (tx: TenantDb) => Promise<T>): Promise<T> =>
   withBusiness(appDb, businessId, fn);
+/** Charges are opened and paid only as `rekoda_settlement` (OD-37, 0202, 0205). */
+const inSettlement = <T>(businessId: string, fn: (tx: TenantDb) => Promise<T>): Promise<T> =>
+  withBusiness(settlementDb(), businessId, fn);
 
 describe('the sweeps', () => {
   async function paidBusiness(name: string, renewsAt: Date): Promise<string> {
     const businessId = await seedBusiness(name);
     await inTenant(businessId, (tx) =>
-      subscriptionsRepo.applyCycle(tx, businessId, {
+      applyFixtureCycle(tx, businessId, {
         plan: 'chat',
         cycleStartedAt: new Date(renewsAt.getTime() - 30 * 86_400_000),
         renewsAt,
@@ -95,9 +107,7 @@ describe('the sweeps', () => {
     await inTenant(businessId, (tx) =>
       subscriptionsRepo.schedulePlanChange(tx, businessId, 'chat'),
     );
-    await inTenant(businessId, (tx) =>
-      tx.execute(sql`UPDATE businesses SET plan = 'complete' WHERE id = ${businessId}::uuid`),
-    );
+    await setPlanAsOwner(urls, businessId, { plan: 'complete' });
 
     const [row] = await subscriptionsRepo.dueForRenewal(workerDb, NOW);
     expect(row?.plan).toBe('complete');
@@ -121,7 +131,7 @@ describe('the sweeps', () => {
         periodStart: new Date('2026-09-01T00:00:00Z'),
         periodEnd: new Date('2026-10-01T00:00:00Z'),
       });
-      await subscriptionsRepo.markRenewalFailed(tx, businessId, NOW);
+      await startGraceForTest(tx, businessId, NOW);
     });
 
     // Otherwise every pass would open another charge against a card that is
@@ -163,16 +173,14 @@ describe('stopping a lapsed subscription', () => {
   it('is an ACT, with a row saying which plan was stopped and by what', async () => {
     const businessId = await seedBusiness();
     await inTenant(businessId, (tx) =>
-      subscriptionsRepo.applyCycle(tx, businessId, {
+      applyFixtureCycle(tx, businessId, {
         plan: 'complete',
         cycleStartedAt: CYCLE_START,
         renewsAt: RENEWS_AT,
         anchorDay: 1,
       }),
     );
-    await inTenant(businessId, (tx) =>
-      subscriptionsRepo.markRenewalFailed(tx, businessId, RENEWS_AT),
-    );
+    await inTenant(businessId, (tx) => startGraceForTest(tx, businessId, RENEWS_AT));
 
     const previous = await inTenant(businessId, (tx) =>
       subscriptionsRepo.expireSubscription(tx, businessId, 'system:grace-sweep', 'grace'),
@@ -203,17 +211,17 @@ describe('stopping a lapsed subscription', () => {
   it('keeps the plan of a merchant whose renewal is paid between the grace read and the write', async () => {
     const businessId = await seedBusiness();
     await inTenant(businessId, async (tx) => {
-      await subscriptionsRepo.applyCycle(tx, businessId, {
+      await applyFixtureCycle(tx, businessId, {
         plan: 'complete',
         cycleStartedAt: CYCLE_START,
         renewsAt: RENEWS_AT,
         anchorDay: 1,
       });
-      await subscriptionsRepo.markRenewalFailed(tx, businessId, RENEWS_AT);
+      await startGraceForTest(tx, businessId, RENEWS_AT);
     });
     // The sweep has read this business as out of grace. Now the renewal pays.
     await inTenant(businessId, (tx) =>
-      subscriptionsRepo.applyCycle(tx, businessId, {
+      applyFixtureCycle(tx, businessId, {
         plan: 'complete',
         cycleStartedAt: RENEWS_AT,
         renewsAt: new Date('2026-10-01T00:00:00Z'),
@@ -235,7 +243,7 @@ describe('stopping a lapsed subscription', () => {
   it('keeps the plan of a merchant who undoes a cancel between the renewal read and the write', async () => {
     const businessId = await seedBusiness();
     await inTenant(businessId, async (tx) => {
-      await subscriptionsRepo.applyCycle(tx, businessId, {
+      await applyFixtureCycle(tx, businessId, {
         plan: 'chat',
         cycleStartedAt: CYCLE_START,
         renewsAt: RENEWS_AT,
@@ -269,16 +277,14 @@ describe('stopping a lapsed subscription', () => {
   it('does nothing twice, so a second sweep pass writes no second row', async () => {
     const businessId = await seedBusiness();
     await inTenant(businessId, (tx) =>
-      subscriptionsRepo.applyCycle(tx, businessId, {
+      applyFixtureCycle(tx, businessId, {
         plan: 'chat',
         cycleStartedAt: CYCLE_START,
         renewsAt: RENEWS_AT,
         anchorDay: 1,
       }),
     );
-    await inTenant(businessId, (tx) =>
-      subscriptionsRepo.markRenewalFailed(tx, businessId, RENEWS_AT),
-    );
+    await inTenant(businessId, (tx) => startGraceForTest(tx, businessId, RENEWS_AT));
     await inTenant(businessId, (tx) =>
       subscriptionsRepo.expireSubscription(tx, businessId, 'system:grace-sweep', 'grace'),
     );
@@ -315,7 +321,7 @@ describe('the daily reminder claim', () => {
     const businessId = await seedBusiness();
     await inTenant(businessId, (tx) => subscriptionsRepo.claimGraceReminder(tx, businessId, 5));
     await inTenant(businessId, (tx) =>
-      subscriptionsRepo.applyCycle(tx, businessId, {
+      applyFixtureCycle(tx, businessId, {
         plan: 'chat',
         cycleStartedAt: CYCLE_START,
         renewsAt: RENEWS_AT,

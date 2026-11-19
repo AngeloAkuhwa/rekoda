@@ -67,6 +67,12 @@ The new fingerprint is printed by the failed boot attempt ("this process
 holds ..."), or computed as the first 16 hex chars of
 `sha256("rekoda-key-fingerprint-v1:" + key)`.
 
+The **settlement** process also holds `VAULT_KEY` (and `PAYSTACK_SECRET_KEY`), but it never
+enrols: it checks the fingerprint the API enrolled (`assertKeyEnrolled`, 0237) and refuses to boot
+until that fingerprint exists and matches. After a `VAULT_KEY` rotation, start the API first so it
+enrols the new fingerprint, then settlement; rotate `PAYSTACK_SECRET_KEY` for settlement, the API and
+the worker together (final review of PR #432, E-F9).
+
 ## Low-cost rotation (stateless keys)
 
 `META_APP_SECRET`, Paystack secret, `OTP_PEPPER` (and `REKODA_OPERATOR_SECRET`,

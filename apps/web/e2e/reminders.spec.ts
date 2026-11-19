@@ -223,6 +223,26 @@ test('the owner sets the business phone and bank details, and a bad account numb
   await expect(saved).toHaveCount(0);
 });
 
+test('bank details saved before the page hydrates (a full form post) still say Saved', async ({
+  page,
+}) => {
+  /* The flake on run 43001866271 (desktop, first attempt): "Save bank details" clicked before
+   * React hydrated, so the form posted natively. The save went through, but the page that came
+   * back starts from the action's answer and the form skipped it, so "Saved." never showed. The
+   * app's script is blocked here so the post is always a full one, as on a slow connection. */
+  await onboard(page);
+  await page.route('**/_next/static/chunks/**', (route) => route.abort());
+  await page.goto('/app/settings');
+  await page.getByLabel('Bank', { exact: true }).fill('Access Bank');
+  await page.getByLabel('Account name').fill('Ada Fabrics Ltd');
+  await page.getByLabel('Account number').fill('0987654321');
+  await page.getByRole('checkbox', { name: /This is my business account/ }).check();
+  await page.getByRole('button', { name: 'Save bank details' }).click();
+
+  await expect(page.getByRole('status').filter({ hasText: 'Saved.' })).toBeVisible();
+  await expect(page.getByLabel('Account number')).toHaveValue('0987654321');
+});
+
 test('the owner reminds one invoice by email, reads its history, and stops and resumes reminders', async ({
   page,
 }, info) => {

@@ -15,10 +15,11 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { OperatorGuard, OperatorScopes, type OperatorRequest } from '../auth/operator.guard.js';
-import { opsExceptionsResponse, opsRefundRequest, opsResolveEventRequest } from '@rekoda/contracts';
+import { opsExceptionsResponse, opsResolveEventRequest } from '@rekoda/contracts';
 import type { OpsExceptionsResponse } from '@rekoda/contracts';
 import {
   billingRepo,
+  deadJobsRepo,
   events,
   jobsRepo,
   marginRepo,
@@ -45,6 +46,7 @@ import {
 import { CONFIG, type ApiConfig } from '../config.js';
 import { SecurityMetrics } from '../channels/security-metrics.service.js';
 import { DB, WORKER_DB } from '../db/db.module.js';
+import { operatorActor } from '../auth/operator-actor.js';
 
 /**
  * What an operator needs to know at 2am (MASTER-PLAN §6.4).
@@ -127,10 +129,11 @@ export class OpsController {
     alerts: OpsAlert[];
   }> {
     const worker = this.workerDb;
-    const [queue, meta, paystack] = await Promise.all([
+    const [queue, meta, paystack, blockedRenewals] = await Promise.all([
       worker ? jobsRepo.queueHealth(worker) : Promise.resolve(null),
       worker ? events.eventHealth(worker, 'meta') : Promise.resolve(null),
       worker ? events.eventHealth(worker, 'paystack') : Promise.resolve(null),
+      worker ? subscriptionsRepo.blockedRenewalCount(worker) : Promise.resolve(null),
     ]);
     return {
       queue,
@@ -149,9 +152,12 @@ export class OpsController {
           running: queue.running,
           oldestDueSeconds: queue.oldestPendingSeconds,
           oldestQueuedSeconds: queue.oldestQueuedSeconds,
+          stuckRunning: queue.stuckRunning,
+          oldestStuckSeconds: queue.oldestStuckSeconds,
         },
         meta,
         paystack,
+        billing: blockedRenewals === null ? null : { blockedRenewals },
       }),
     };
   }
@@ -473,54 +479,6 @@ export class OpsController {
   }
 
   /**
-   * Record a refund against a charge (ADR 0024's matrix).
-   *
-   * THIS DOES NOT MOVE MONEY. Returning the naira is a Paystack action the
-   * operator performs, and saying otherwise in a method name is how somebody
-   * comes to believe a merchant has been paid because a row says so. What
-   * this does is make the refund a fact Rekoda knows: the amount comes off
-   * the charge, the status becomes `refunded` only when the whole of it is
-   * back, and an audit row records who decided and under which rule.
-   *
-   * The plan is deliberately untouched. ADR 0024 refunds money in several
-   * situations that all leave the merchant with the period they paid for, and
-   * a refund that silently cancelled a subscription would be a second
-   * decision nobody made.
-   */
-  @Post('refund')
-  @OperatorScopes('ops:payment')
-  @HttpCode(200)
-  async refund(
-    @Req() request: OperatorRequest,
-    @Body() body: unknown,
-  ): Promise<{ refunded: true; status: string; refundedK: number }> {
-    const input = opsRefundRequest.safeParse(body);
-    if (!input.success) {
-      throw new BadRequestException(
-        'businessId, reference, amountK (positive kobo) and reason are required',
-      );
-    }
-    const { businessId, reference, amountK, reason } = input.data;
-    /* The audit actor is the VERIFIED subject, never a name the caller sent.
-     * A body field here meant whoever held the shared secret also chose who
-     * the record said they were. */
-    const actor = `operator:${request.operator!.subject}`;
-
-    return withBusiness(this.db, businessId, async (tx) => {
-      const charge = await subscriptionsRepo.refundCharge(tx, reference, amountK, new Date(), {
-        actor,
-        reason,
-      });
-      /* Refused because the charge was never paid, has gone, or this refund
-       * would take back more than we ever took. All three are an operator
-       * mistake to correct rather than an error to retry. */
-      if (!charge) throw new BadRequestException('that charge cannot be refunded by that amount');
-
-      return { refunded: true as const, status: charge.status, refundedK: amountK };
-    });
-  }
-
-  /**
    * The exception queue, as rows (MASTER-PLAN §6.4).
    *
    * The one place on this surface that returns rows rather than numbers, and
@@ -548,6 +506,13 @@ export class OpsController {
     const limit = Math.min(Math.max(Number(limitParam) || 50, 1), 200);
     const queue = await events.exceptionQueue(this.workerDb, limit);
     const unapplied = await subscriptionsRepo.unappliedCharges(this.workerDb, limit);
+    const deadJobs = await deadJobsRepo.opsQueue(this.workerDb, limit);
+    /* The details for the flagged events are fetched BY their job ids: an independent page of
+     * the oldest dead jobs could miss the very job a flagged row points at. */
+    const flaggedJobIds = queue.flagged.flatMap((e) => (e.jobId ? [e.jobId] : []));
+    const flaggedDetails = await deadJobsRepo.opsQueue(this.workerDb, limit, flaggedJobIds);
+    const eventless = await deadJobsRepo.opsQueue(this.workerDb, limit, undefined, true);
+    const blocked = await subscriptionsRepo.blockedRenewals(this.workerDb, limit);
     const now = new Date();
     return opsExceptionsResponse.parse({
       stuck: queue.stuck.map(toEventView),
@@ -570,6 +535,26 @@ export class OpsController {
         ageSeconds: Math.max(0, Math.floor((now.getTime() - c.unappliedAt.getTime()) / 1000)),
         resolveBy: unappliedChargeDueAt(c.unappliedAt).toISOString(),
         overdue: unappliedChargeOverdue(c.unappliedAt, now),
+      })),
+      deadJobs: eventless.map((d) => toDeadJobView(d, now)),
+      /* Every flagged row's job, plus any other event-bound dead job on the page, once each,
+       * so no open item is hidden whichever list it would otherwise have fallen into. */
+      deadJobDetails: [
+        ...flaggedDetails,
+        ...deadJobs.filter(
+          (d) => d.eventId !== null && !flaggedDetails.some((f) => f.jobId === d.jobId),
+        ),
+      ].map((d) => toDeadJobView(d, now)),
+      blockedRenewals: blocked.map((b) => ({
+        reference: b.reference,
+        businessId: b.businessId,
+        plan: b.plan,
+        amountK: b.amountK,
+        reason: b.reason,
+        blockedAt: b.blockedAt.toISOString(),
+        ageSeconds: Math.max(0, Math.floor((now.getTime() - b.blockedAt.getTime()) / 1000)),
+        currentPlan: b.currentPlan,
+        currentRenewsAt: b.currentRenewsAt?.toISOString() ?? null,
       })),
     });
   }
@@ -603,10 +588,44 @@ export class OpsController {
         tx,
         reference,
         input.data.resolution,
-        `operator:${request.operator!.subject}`,
+        operatorActor(request),
       ),
     );
     if (!resolved) throw new ConflictException('that charge is not open');
+    return { resolved: true as const };
+  }
+
+  /**
+   * Close a blocked renewal (OWN-70) with what the operator decided. Records only: it neither pays
+   * the renewal, nor starts a new one, nor touches the grace clock (a fresh payment for a blocked renewal is `billing.renewal_initiate`, OD-44, queued by the block-close pass).
+   */
+  @Post('exceptions/renewals/:reference/resolve')
+  @OperatorScopes('ops:payment')
+  @HttpCode(200)
+  async resolveBlockedRenewal(
+    @Req() request: OperatorRequest,
+    @Param('reference') reference: string,
+    @Body() body: unknown,
+  ): Promise<{ resolved: true }> {
+    if (!this.workerDb) {
+      throw new ServiceUnavailableException('this process holds no worker credential');
+    }
+    const input = opsResolveEventRequest.safeParse(body);
+    if (!input.success) {
+      throw new BadRequestException('a resolution of at least 4 characters is required');
+    }
+    const businessId = await subscriptionsRepo.businessForCharge(this.workerDb, reference);
+    if (!businessId) throw new NotFoundException('no such charge');
+    const resolved = await withBusiness(this.db, businessId, (tx) =>
+      subscriptionsRepo.resolveBlockedRenewal(
+        tx,
+        businessId,
+        reference,
+        input.data.resolution,
+        operatorActor(request),
+      ),
+    );
+    if (!resolved) throw new ConflictException('that renewal is not an open blocked renewal');
     return { resolved: true as const };
   }
 
@@ -637,15 +656,51 @@ export class OpsController {
       throw new BadRequestException('a resolution of at least 4 characters is required');
     }
 
-    const resolved = await events.resolveEvent(
-      this.workerDb,
-      id,
-      input.data.resolution,
-      `operator:${request.operator!.subject}`,
-    );
+    /* An event behind an open dead payment or billing job is worked through that job
+     * (OWN-73, OWN-76): resolving only the event would leave the job's record, the merchant's
+     * exception or billing notice open, and a later death could not flag the event again. */
+    /* Looked up by the event itself, not by scanning a page of the queue. */
+    if ((await deadJobsRepo.openJobForEvent(this.workerDb, id)) !== null) {
+      throw new ConflictException(
+        'this event belongs to an open dead job; recover or resolve it at /v1/ops/dead-jobs/:jobId',
+      );
+    }
+    /* ADR 0035 Amendment 2 rule 4 (owner review of #432, migration 0204): found on the worker
+     * credential, written on the application credential under the event's own business pin, with an
+     * audit row; the worker credential can no longer write a resolution. */
+    const resolved =
+      (await events.resolveExceptionAsOperator(
+        this.db,
+        this.workerDb,
+        id,
+        input.data.resolution,
+        operatorActor(request),
+      )) === 'resolved';
     if (!resolved) throw new NotFoundException('no open exception with that id');
     return { resolved: true as const };
   }
+}
+
+/** A dead-job record to wire: ids, statuses, a category and fixed text (OWN-73, OWN-76). */
+function toDeadJobView(d: deadJobsRepo.DeadJobOpsRow, now: Date) {
+  return {
+    jobId: d.jobId,
+    businessId: d.businessId,
+    kind: d.kind,
+    status: d.status as 'open' | 'recovering',
+    eventId: d.eventId,
+    reference: d.reference,
+    failureCategory: d.failureCategory,
+    summary: d.summary,
+    attempts: d.attempts,
+    deathCount: d.deathCount,
+    openedAt: d.openedAt.toISOString(),
+    lastDiedAt: d.lastDiedAt.toISOString(),
+    ageSeconds: Math.max(0, Math.floor((now.getTime() - d.openedAt.getTime()) / 1000)),
+    paymentState: d.paymentState,
+    currentPlan: d.currentPlan,
+    currentPlanExpiresAt: d.currentPlanExpiresAt?.toISOString() ?? null,
+  };
 }
 
 /** Row to wire. Nothing here that a payload or a name could reach. */
@@ -658,6 +713,7 @@ function toEventView(row: {
   signatureValid: number;
   createdAt: Date;
   ageSeconds: number;
+  jobId?: string | null;
 }) {
   return {
     id: row.id,
@@ -668,5 +724,6 @@ function toEventView(row: {
     signatureValid: row.signatureValid === 1 ? (1 as const) : (0 as const),
     createdAt: row.createdAt.toISOString(),
     ageSeconds: Math.max(0, row.ageSeconds),
+    jobId: row.jobId ?? null,
   };
 }

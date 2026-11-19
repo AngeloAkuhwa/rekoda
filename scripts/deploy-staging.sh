@@ -24,6 +24,14 @@
 #     out of every image (the build context is the checkout);
 #   - a host whose .env is not staging's (REKODA_API_PUBLIC_URL must be the
 #     staging API), so a mis-set STAGING_HOST can never deploy production;
+#   - a host whose .env does not hold a Paystack TEST key (sk_test_...), or sets
+#     REKODA_PAYSTACK_PLATFORM_CONFIRMED=1 (OWN-70): staging never runs a live key,
+#     and the settlement process would start healthy with none;
+#   - a .env that sets a COMPOSE_ variable (COMPOSE_PROJECT_NAME and the like), which would
+#     point the deploy at another Compose project;
+#   - WhatsApp template settings the new image would refuse to boot with (OWN-93:
+#     a template without its language, or a malformed name or language), checked
+#     in the freshly built image before anything live is stopped;
 #   - a running staging that is not healthy, or is not the release and commit
 #     the checkout and .env name (the rollback this run would print);
 #   - a commit whose code does not know the schema staging already has: one
@@ -57,7 +65,42 @@ API_URL=https://staging-api.myrekoda.com
 EDGE_NETWORK=rekoda-prod_edge
 EDGE_EXPECTED='172.30.10.1 false'
 
-dc() { docker compose -f docker-compose.prod.yml "$@"; }
+# --env-file .env names the one settings file on every call: without it an exported
+# COMPOSE_ENV_FILES replaces the project's .env as Compose's source, past every .env check below.
+dc() { docker compose --env-file .env -f docker-compose.prod.yml "$@"; }
+# Compose fills ${NAME} from the shell before .env. Staging's settings live in .env alone (the
+# owner's decision, 14 Nov 2026; never in GitHub or a deploy shell), and the checks above read
+# .env, so every name the compose file interpolates is cleared from this shell, except
+# REKODA_RELEASE, which this script pins on purpose. Otherwise a key exported in the deploy
+# session (a live Paystack key, another VAULT_KEY) would reach settlement or operator past them.
+# Comment lines are skipped: a ${NAME} in a comment is prose, and may name one of this script's own.
+clear_compose_overrides() {
+  local name
+  for name in $(grep -v '^[[:space:]]*#' docker-compose.prod.yml 2>/dev/null |
+    grep -oE '\$\{[A-Z_][A-Z0-9_]*' | cut -c3- | sort -u); do
+    [ "$name" = REKODA_RELEASE ] || unset "$name"
+  done
+  # Compose's own settings too (COMPOSE_PROJECT_NAME, COMPOSE_PROFILES, COMPOSE_FILE, ...): an
+  # exported project name would point every call at another, empty project, so the stop check would
+  # pass with nothing stopped and migrate would run against a fresh database. A COMPOSE_* line in
+  # .env would apply through --env-file .env, so the checks above refuse one. DOCKER_HOST and
+  # DOCKER_CONTEXT are left alone: they choose the daemon (a rootless one, for example), not what
+  # runs on it.
+  for name in "${!COMPOSE_@}"; do unset "$name"; done
+}
+# Whether the OWN-86 pre-start smoke applies: whenever this release carries ANY compatibility-breaking
+# migration (second review of PR #432, G5-1). It used to list 0196 to 0221 by hand and missed 0228,
+# 0230 and 0235, so a later release carrying only those would stop, migrate and start with no smoke.
+# Every migration the smoke checks is in COMPAT_BREAKING_MIGRATIONS or ships with one of them.
+carries_plan_boundary() {
+  [[ -n "${BREAKING// /}" ]]
+}
+# The OWN-86 pre-start smoke query, printed for an operator fixing forward by hand.
+print_smoke_0196() {
+  if carries_plan_boundary; then
+    printf 'Pre-start database smoke (OWN-86): dc exec -T postgres psql -U rekoda_owner -d rekoda -v ON_ERROR_STOP=1 -tA -c "%s"\n' "$SMOKE_0196_SQL" >&2
+  fi
+}
 step() { printf '\n== %s\n' "$*"; }
 fail() {
   printf 'STAGING DEPLOY REFUSED: %s\n' "$*" >&2
@@ -70,6 +113,549 @@ fail() {
 #   prepared  the checkout and .env name the new release; nothing live changed
 #   live      migrate or `up` has run; the running stack may be the new one
 PHASE=checks
+# Migrations the previous release cannot run against (OD-48): the api and worker are stopped before
+# any of them is applied, and the old release is never restarted against a database that has one.
+COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary 0202_settlement_and_operator_principals 0203_plan_duration_rules 0204_external_events_worker_least_privilege 0205_charge_terms_belong_to_settlement 0206_paid_charge_bound_to_its_cycle 0207_operator_standard_periods 0209_settlement_verifies_the_price 0210_worker_least_privilege 0211_operator_principal_least_privilege 0212_closeout_review_fixes 0216_usage_meter_boundary 0217_settlement_isolation 0218_usage_reservation_closure 0220_job_row_and_grace_review_fixes 0221_operator_writes_only_through_its_functions 0228_worker_reads_no_payload_across_tenants 0230_refund_through_the_operator 0235_refund_records_and_pack_eligibility'
+# Every other migration after main's 0192: the previous release keeps working against it, so it is
+# applied with everything running (E-F8). Each new migration goes in exactly one of the two lists:
+# scripts/deploy-staging-classes.test.mjs fails a migration that is in neither, or in both.
+ADDITIVE_MIGRATIONS='0193_charge_provider_times 0194_dead_job_exceptions 0195_renewal_blocked 0197_staging_test_business_tools 0198_blocked_renewal_close_order 0199_blocked_renewal_close_cursor 0201_blocked_renewal_close_heartbeat 0208_subscription_period_preflight 0213_support_review_plan_change 0214_pack_purchase_identity 0215_pricing_source_authority 0219_support_review_respects_later_schedule 0222_usage_entitlement_in_the_database 0223_settlement_scope_and_dead_job_requeue 0224_pack_credit_derives_from_the_charge 0225_dead_job_enrolment_discovery 0226_settlement_holds_no_add_on 0227_paid_launch_gate 0229_dead_job_enrolment_dead_letter 0231_settlement_reads_only_its_kinds_payload 0232_support_review_prices_like_the_resolver 0233_operator_actor_contract 0234_job_payload_live_or_dying_only 0236_dead_job_enrolment_cursor 0237_settlement_reads_key_fingerprints 0238_worker_job_transitions 0239_operator_actor_columns 0240_pack_refund_allowance_history 0241_final_review_guards 0242_settlement_job_transitions 0243_refund_judges_the_allowance_after_the_counter_lock 0244_refund_refuses_across_a_time_boundary 0245_usage_binds_only_to_the_events_own_job 0246_refund_refuses_a_pack_credited_before_0193'
+BREAKING=
+BREAKING_APPLIED=false
+# Set once migrate has been entered for a release carrying a breaking migration. migrate applies each
+# file in its own transaction, so from here whether 0196 or 0200 committed is unknown (OWN-86).
+MIGRATE_ENTERED=false
+# Set just before `up`: a failure after migrate but before it (the 0196 smoke) has started nothing.
+UP_ENTERED=false
+# The OWN-86 pre-start database smoke for the plan and payment boundary (0196, 0200, and OD-37's
+# 0202 to 0206; OD-50's 0207; OD-51's 0209 to 0211), run as the owner between migrate and `up`. It
+# prints `t` only when the DATABASE (not only the ledger) holds exactly the boundary this release
+# expects:
+#   * the ledger rows of 0196, 0200, 0202 to 0207 and 0209 to 0211;
+#   * the trial-start, retention-notice and worker event guards are present and enabled (0207, 0210);
+#   * the application may open only a pristine pending charge, priced within five minutes of opening
+#     (0209), and the worker none;
+#   * the worker holds exactly the table writes its jobs make (0210); no runtime role writes the
+#     migration ledger or explicit entitlements; the unchecked retention deletion runs for no runtime
+#     role;
+#   * the billing operator does not act with rekoda_app's rights and cannot open a charge (0211);
+#   * every guard trigger exists and fires (enabled in origin or always mode): the plan-field update
+#     and insert guards, the cycle-input guard on businesses, the applied-once guard, the settlement
+#     guard on subscription_charges and the pack-credit guard on usage_counters;
+#   * the provider writer is 0206's, which binds an upgrade or a renewal to its charge's frozen period;
+#   * rekoda_plan_writer owns EXACTLY the expected functions, each named by schema, name and argument
+#     types, each with EXACTLY its expected EXECUTE grantees (PUBLIC would show as "-", so a PUBLIC
+#     grant fails), no more and no fewer: a missing writer, an extra one, a renamed signature, a
+#     wrong owner or a widened grant all fail; every one of them is SECURITY DEFINER with the pinned
+#     search_path;
+#   * the removed general writer, the old four-argument operator writer and the test-only fixture
+#     writer are absent, and no runtime role can create a function in public (the cycle-input
+#     guard's test exemption keys on that writer existing);
+#   * the settlement and billing-operator roles exist, can log in and cannot bypass RLS; neither
+#     acts with rekoda_app's rights; no runtime role can become another principal, the worker or a
+#     writer;
+#   * the support-review resolution (0213) runs for the billing operator only, the request for the
+#     application only, and no runtime role writes plan_change_reviews directly;
+#   * a pack purchase is credited once: the purchase guard is enabled and the unique index on a
+#     credited (business, purchase) exists (0214);
+#   * no runtime role writes a usage counter or the reservation ledger; rekoda_usage_writer (NOLOGIN,
+#     no members) owns exactly the three usage functions with exactly their grantees; a pack's
+#     credit time is written by usage_credit_pack alone (0216), which credits exactly the unit,
+#     quantity and meter row the charge bought, derived in the database, for an amount that is its
+#     price; a superseded charge only when it was a withdrawn link and its purchase is not credited
+#     yet; settlement moves a charge's status only out of pending, cannot put a set-aside paid
+#     charge back, and marks a link withdrawn only while it is pending (0224);
+#   * the cutover enrolment of unrecorded dead jobs discovers ids only, through a definer function
+#     only the worker may execute (0225);
+#   * no runtime role writes an add-on holding, settlement included (0226);
+#   * the OWN-92 paid-launch gate: the application cannot reschedule or retry-budget a job, or
+#     insert one that is not new pending work, and a usage reservation binds only to an event of
+#     its business whose job is running (0227);
+#   * the worker reads no job payload across tenants: no SELECT on jobs.payload, and job_payload()
+#     returns one job's payload only under that job's own tenant pin (0228);
+#   * a poison enrolment candidate backs off and is dead-lettered, never starving the rest (0229);
+#   * a refund is recorded by the billing operator alone; a credited pack only in full, unused,
+#     within seven days, its units revoked (0230);
+#   * settlement does not act with rekoda_app's rights: it holds exactly the reads and the column
+#     writes listed (never a charge insert, a plan, a price, a credit time or a job's kind or
+#     payload), no default privilege, and the queue is split by kind between it and the worker (0217);
+#   * the pricing source in force is one row no runtime role can write or switch, and a charge's
+#     recorded source is guarded (0215);
+#   * settlement sees and settles only the Paystack events its own billing.process jobs name, and
+#     touches only billing.process dead-job records; every application requeue of a dead job is due
+#     now with one more attempt, and a settlement job is enqueued with its full retry budget (0223);
+#   * settlement moves its jobs only through its runner's transitions (claim, renewal, retry,
+#     deferral, completion, death; never out of done or dead; never its retry budget back), for any
+#     role holding its privileges (0242); both transition guards (0241, 0242) are BEFORE UPDATE row
+#     triggers on every column with no WHEN clause, bound to their functions, pinned by the md5
+#     of their exact body, plpgsql, not SECURITY DEFINER, with their search_path (a definer guard
+#     would run as its owner, whom the guard exempts);
+#   * a credited pack's refund judges the allowance after it holds the usage counter (0243) and
+#     refuses across a time boundary of the allowance (a trial expiring, a catalogue version or a
+#     holding starting or ending; 0244): the refund function is pinned by the md5 of its exact body,
+#     and the boundary function by its body, owner, attributes and the absence of any grant;
+#   * a usage reservation binds only to its event's own live metering job, by a payload the closure
+#     trigger can read, never by the stripped-text match of 0227 (0245);
+#   * the refund refuses a pack credited before 0193, with no recorded credit and not set aside
+#     (0246; final review B-1), pinned by the md5 of the refund's exact body;
+#   * each of the nine operator-actor constraints of PR B is the named CHECK on its own table and
+#     column, with its exact definition, validated (0239's intentionally NOT VALID one on main's
+#     subscription_charges.unapplied_resolved_by excepted); `@` in the expected text stands in for the
+#     regex end anchor, which this double-quoted shell string cannot carry, and is mapped back to it
+#     on the expected side only, so a constraint holding a literal `@` never matches;
+#   * the worker reads but cannot write other businesses' events (its estate policy is SELECT only,
+#     no table-level INSERT, UPDATE or DELETE), and the application cannot record an add-on holding.
+# The expected list is the contract; a new writer is a deliberate edit of this list in its PR.
+SMOKE_0196_SQL="SELECT
+  (SELECT count(*) FROM rekoda_migrations
+    WHERE tag IN ('0196_plan_fields_guard', '0200_plan_writer_boundary',
+                  '0202_settlement_and_operator_principals', '0203_plan_duration_rules',
+                  '0204_external_events_worker_least_privilege',
+                  '0205_charge_terms_belong_to_settlement',
+                  '0206_paid_charge_bound_to_its_cycle', '0207_operator_standard_periods',
+                  '0209_settlement_verifies_the_price', '0210_worker_least_privilege',
+                  '0211_operator_principal_least_privilege', '0212_closeout_review_fixes',
+                  '0213_support_review_plan_change', '0214_pack_purchase_identity',
+                  '0215_pricing_source_authority', '0216_usage_meter_boundary',
+                  '0217_settlement_isolation', '0218_usage_reservation_closure',
+                  '0219_support_review_respects_later_schedule',
+                  '0220_job_row_and_grace_review_fixes',
+                  '0221_operator_writes_only_through_its_functions',
+                  '0222_usage_entitlement_in_the_database',
+                  '0223_settlement_scope_and_dead_job_requeue',
+                  '0224_pack_credit_derives_from_the_charge',
+                  '0225_dead_job_enrolment_discovery',
+                  '0226_settlement_holds_no_add_on',
+                  '0227_paid_launch_gate',
+                  '0228_worker_reads_no_payload_across_tenants',
+                  '0229_dead_job_enrolment_dead_letter',
+                  '0230_refund_through_the_operator',
+                  '0231_settlement_reads_only_its_kinds_payload',
+                  '0232_support_review_prices_like_the_resolver',
+                  '0233_operator_actor_contract',
+                  '0234_job_payload_live_or_dying_only',
+                  '0235_refund_records_and_pack_eligibility',
+                  '0236_dead_job_enrolment_cursor',
+                  '0237_settlement_reads_key_fingerprints',
+                  '0238_worker_job_transitions',
+                  '0239_operator_actor_columns',
+                  '0240_pack_refund_allowance_history',
+                  '0241_final_review_guards',
+                  '0242_settlement_job_transitions',
+                  '0243_refund_judges_the_allowance_after_the_counter_lock',
+                  '0244_refund_refuses_across_a_time_boundary',
+                  '0245_usage_binds_only_to_the_events_own_job',
+                  '0246_refund_refuses_a_pack_credited_before_0193')) = 46
+  AND has_function_privilege('rekoda_billing_operator', 'public.subscription_record_refund(uuid,text,bigint,text,text,text)', 'EXECUTE')
+  AND NOT has_function_privilege('rekoda_app', 'public.subscription_record_refund(uuid,text,bigint,text,text,text)', 'EXECUTE')
+  AND NOT has_function_privilege('rekoda_worker', 'public.subscription_record_refund(uuid,text,bigint,text,text,text)', 'EXECUTE')
+  AND NOT has_function_privilege('rekoda_settlement', 'public.subscription_record_refund(uuid,text,bigint,text,text,text)', 'EXECUTE')
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('public.subscription_record_refund(uuid,text,bigint,text,text,text)'))
+        LIKE '%operator:[!-~]{1,255}%already recorded with another charge or amount%p_amount <> c.amount_k%interval ''7 days''%pack_credit_entitlements%has been used%SET bonus = greatest(bonus - c.credited_units, 0)%INSERT INTO public.subscription_refunds%'
+  AND to_regprocedure('public.subscription_record_refund(uuid,text,bigint,text,text)') IS NULL
+  AND (SELECT indisunique FROM pg_index WHERE indexrelid = to_regclass('public.subscription_refunds_provider_refund_ux'))
+  AND NOT has_table_privilege('rekoda_app', 'public.subscription_refunds', 'INSERT')
+  AND NOT has_table_privilege('rekoda_billing_operator', 'public.subscription_refunds', 'INSERT')
+  AND NOT has_table_privilege('rekoda_settlement', 'public.pack_credit_entitlements', 'INSERT')
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('public.usage_credit_pack(uuid,text,text,text,integer)'))
+        LIKE '%INSERT INTO public.pack_credit_entitlements%'
+  AND (SELECT prosrc FROM pg_proc
+        WHERE oid = to_regprocedure('rekoda_private.subscription_charges_settlement_guard()'))
+        LIKE '%OR NEW.credited_period IS NOT NULL OR NEW.units_revoked_at IS NOT NULL THEN%'
+  AND NOT has_function_privilege('rekoda_settlement', 'public.job_payload(uuid)', 'EXECUTE')
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('public.job_payload(uuid)'))
+        LIKE '%j.state = ''running''%j.state = ''dead'' AND j.kind IN (''payment.process'', ''billing.process'')%'
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('rekoda_private.review_plan_price(uuid,text,text,timestamp with time zone)'))
+        LIKE '%amount_minor * 10%'
+  AND to_regprocedure('rekoda_private.open_plan_price(text,text)') IS NULL
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('public.dead_job_enrolment_requeue(uuid,uuid,text,text)'))
+        LIKE '%operator:[!-~]{1,255}%'
+  AND has_function_privilege('rekoda_worker', 'public.dead_job_unrecorded_candidates(integer,uuid)', 'EXECUTE')
+  AND NOT has_function_privilege('rekoda_app', 'public.dead_job_unrecorded_candidates(integer,uuid)', 'EXECUTE')
+  AND NOT has_function_privilege('rekoda_settlement', 'public.dead_job_unrecorded_candidates(integer,uuid)', 'EXECUTE')
+  AND (SELECT pg_get_function_result(p.oid) = 'TABLE(job_id uuid, business_id uuid)' AND p.prosecdef
+       FROM pg_proc p WHERE p.oid = to_regprocedure('public.dead_job_unrecorded_candidates(integer,uuid)'))
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('public.dead_job_unrecorded_candidates(integer)'))
+        LIKE '%public.dead_job_unrecorded_candidates(p_limit, NULL::uuid)%'
+  AND has_table_privilege('rekoda_settlement', 'public.key_fingerprints', 'SELECT')
+  AND NOT has_table_privilege('rekoda_settlement', 'public.key_fingerprints', 'INSERT')
+  AND (SELECT count(*) FROM pg_trigger t
+        WHERE t.tgrelid = 'public.jobs'::regclass AND t.tgenabled IN ('O', 'A')
+          AND t.tgtype = 19 AND t.tgattr = ''::int2vector AND t.tgqual IS NULL
+          AND ((t.tgname = 'jobs_worker_transition_guard'
+                AND t.tgfoid = to_regprocedure('rekoda_private.jobs_worker_transition_guard()'))
+            OR (t.tgname = 'jobs_settlement_transition_guard'
+                AND t.tgfoid = to_regprocedure('rekoda_private.jobs_settlement_transition_guard()')))) = 2
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('rekoda_private.jobs_worker_transition_guard()'))
+        LIKE '%NOT pg_has_role(current_user, ''rekoda_worker'', ''USAGE'')%pg_has_role(current_user, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), ''USAGE'')%OLD.state = ''pending'' AND NEW.state = ''running''%OLD.state = ''running'' AND NEW.state IN (''done'', ''pending'', ''dead'')%'
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('rekoda_private.jobs_worker_transition_guard()'))
+        NOT LIKE '%OLD.state = ''dead''%'
+  AND (SELECT md5(p.prosrc) = '690bb1b0817802bbcfc8d9908d34d157' AND p.prosecdef
+         AND p.proconfig = ARRAY['search_path=pg_catalog, public, pg_temp']
+       FROM pg_proc p WHERE p.oid = to_regprocedure('public.subscription_record_refund(uuid,text,bigint,text,text,text)'))
+  AND (SELECT md5(p.prosrc) = 'dbca515f6e41fa98f679930f00b3af4f' AND NOT p.prosecdef
+         AND p.provolatile = 's' AND l.lanname = 'plpgsql'
+         AND p.proconfig = ARRAY['search_path=pg_catalog, public, pg_temp']
+         AND p.proowner = (SELECT r.proowner FROM pg_proc r
+                           WHERE r.oid = to_regprocedure('public.subscription_record_refund(uuid,text,bigint,text,text,text)'))
+         AND NOT EXISTS (SELECT 1 FROM aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+                         WHERE a.grantee <> p.proowner)
+       FROM pg_proc p JOIN pg_language l ON l.oid = p.prolang
+       WHERE p.oid = to_regprocedure('rekoda_private.pack_allowance_boundary_between(uuid,text,timestamptz,timestamptz)'))
+  AND (SELECT count(*) FROM pg_proc p JOIN pg_language l ON l.oid = p.prolang
+        WHERE l.lanname = 'plpgsql' AND NOT p.prosecdef
+          AND p.proconfig = ARRAY['search_path=pg_catalog, public, pg_temp']
+          AND ((p.oid = to_regprocedure('rekoda_private.jobs_worker_transition_guard()')
+                AND md5(p.prosrc) = '9b1f25164868ffaa77c3c0e9c5eedf29')
+            OR (p.oid = to_regprocedure('rekoda_private.jobs_settlement_transition_guard()')
+                AND md5(p.prosrc) = '9c347c83519b1b913e0b7fc1361629da'))) = 2
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('rekoda_private.jobs_settlement_transition_guard()'))
+        LIKE '%NOT pg_has_role(current_user, ''rekoda_settlement'', ''USAGE'')%pg_has_role(current_user, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), ''USAGE'')%interval ''10 minutes''%OLD.state = ''pending'' AND NEW.state = ''running'' AND NEW.attempts = OLD.attempts + 1%OLD.state = ''running'' AND NEW.state IN (''done'', ''dead'') AND NEW.attempts = OLD.attempts%'
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('rekoda_private.jobs_settlement_transition_guard()'))
+        NOT LIKE '%OLD.state = ''dead''%'
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('rekoda_private.jobs_settlement_transition_guard()'))
+        NOT LIKE '%OLD.state = ''done''%'
+  AND (SELECT count(*) FROM (VALUES
+        ('public', 'dead_job_exceptions', 'dead_job_exceptions_recovery_requested_by_actor', 'recovery_requested_by', true,
+         'CHECK (((recovery_requested_by IS NULL) OR (recovery_requested_by ~ ''^operator:[!-~]{1,255}@''::text)))'),
+        ('public', 'dead_job_exceptions', 'dead_job_exceptions_closed_by_actor', 'closed_by', true,
+         'CHECK (((closed_by IS NULL) OR (closed_by ~ ''^(operator:[!-~]{1,255}|system:[a-z][a-z_-]{0,63})@''::text)))'),
+        ('public', 'subscription_charges', 'subscription_charges_blocked_resolved_by_actor', 'blocked_resolved_by', true,
+         'CHECK (((blocked_resolved_by IS NULL) OR (blocked_resolved_by ~ ''^(operator:[!-~]{1,255}|system:[a-z][a-z_-]{0,63})@''::text)))'),
+        ('public', 'subscription_charges', 'subscription_charges_unapplied_resolved_by_actor', 'unapplied_resolved_by', false,
+         'CHECK (((unapplied_resolved_by IS NULL) OR (unapplied_resolved_by ~ ''^(operator:[!-~]{1,255}|system:[a-z][a-z_-]{0,63})@''::text)))'),
+        ('public', 'staging_test_businesses', 'staging_test_businesses_designated_by_actor', 'designated_by', true,
+         'CHECK (((designated_by IS NULL) OR (designated_by ~ ''^operator:[!-~]{1,255}@''::text)))'),
+        ('public', 'staging_tool_actions', 'staging_tool_actions_operator_actor', 'operator', true,
+         'CHECK (((operator IS NULL) OR (operator ~ ''^(operator:[!-~]{1,255}|system:[a-z][a-z_-]{0,63})@''::text)))'),
+        ('public', 'staging_send_faults', 'staging_send_faults_armed_by_actor', 'armed_by', true,
+         'CHECK (((armed_by IS NULL) OR (armed_by ~ ''^operator:[!-~]{1,255}@''::text)))'),
+        ('public', 'dead_job_enrolment_failures', 'dead_job_enrolment_failures_requeued_by_operator', 'requeued_by', true,
+         'CHECK (((requeued_by IS NULL) OR (requeued_by ~ ''^operator:[!-~]{1,255}@''::text)))'),
+        ('public', 'subscription_refunds', 'subscription_refunds_actor_check', 'actor', true,
+         'CHECK ((actor ~ ''^operator:[!-~]{1,255}@''::text))')
+        ) AS e(nsp, rel, con, col, must_validate, def)
+        JOIN pg_namespace n ON n.nspname = e.nsp
+        JOIN pg_class c ON c.relnamespace = n.oid AND c.relname = e.rel AND c.relkind = 'r'
+        JOIN pg_constraint k ON k.conrelid = c.oid AND k.conname = e.con AND k.contype = 'c'
+        JOIN pg_attribute a ON a.attrelid = c.oid AND a.attname = e.col AND NOT a.attisdropped
+       WHERE k.conkey = ARRAY[a.attnum]
+         AND (k.convalidated OR NOT e.must_validate)
+         AND regexp_replace(pg_get_constraintdef(k.oid), ' NOT VALID' || chr(36), '') = replace(e.def, '@', chr(36))) = 9
+  AND (SELECT count(*) FROM pg_trigger t WHERE t.tgenabled IN ('O', 'A') AND (t.tgname, t.tgrelid) IN (
+        ('businesses_note_allowance_change', 'public.businesses'::regclass),
+        ('business_add_ons_note_allowance_change', 'public.business_add_ons'::regclass))) = 2
+  AND (SELECT pg_get_triggerdef(t.oid) FROM pg_trigger t
+        WHERE t.tgname = 'businesses_note_allowance_change' AND t.tgrelid = 'public.businesses'::regclass)
+        LIKE '%AFTER UPDATE OF plan, plan_version_id, plan_expires_at ON public.businesses%(old.plan = ''trial''::text) OR (new.plan = ''trial''::text)%old.plan_expires_at IS DISTINCT FROM new.plan_expires_at%'
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('rekoda_private.note_allowance_change()'))
+        LIKE '%greatest(a.changed_at, excluded.changed_at)%'
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('public.subscription_record_refund(uuid,text,bigint,text,text,text)'))
+        LIKE '%FROM public.business_allowance_changes a%a.changed_at >= c.units_credited_at%'
+  AND NOT has_table_privilege('rekoda_app', 'public.business_allowance_changes', 'INSERT')
+  AND NOT has_table_privilege('rekoda_settlement', 'public.business_allowance_changes', 'DELETE')
+  AND (SELECT prosrc FROM pg_proc
+        WHERE oid = to_regprocedure('rekoda_private.subscription_charges_settlement_guard()'))
+        LIKE '%only settlement moves a charge''''s status; a refund is recorded by the operator (OD-37, 0230)%a refund is recorded by the operator alone (0230)%'
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('public.usage_credit_pack(uuid,text,text,text,integer)'))
+        LIKE '%credited_units = p_n, credited_unit = p_unit%'
+  AND has_function_privilege('rekoda_worker', 'public.dead_job_enrolment_failed(uuid,uuid,text)', 'EXECUTE')
+  AND NOT has_function_privilege('rekoda_app', 'public.dead_job_enrolment_failed(uuid,uuid,text)', 'EXECUTE')
+  AND has_function_privilege('rekoda_worker', 'public.dead_job_enrolment_dead_letters(integer,uuid)', 'EXECUTE')
+  AND NOT has_function_privilege('rekoda_app', 'public.dead_job_enrolment_dead_letters(integer,uuid)', 'EXECUTE')
+  AND has_function_privilege('rekoda_app', 'public.dead_job_enrolment_requeue(uuid,uuid,text,text)', 'EXECUTE')
+  AND NOT has_function_privilege('rekoda_worker', 'public.dead_job_enrolment_requeue(uuid,uuid,text,text)', 'EXECUTE')
+  AND NOT has_table_privilege('rekoda_app', 'public.dead_job_enrolment_failures', 'INSERT')
+  AND NOT has_table_privilege('rekoda_worker', 'public.dead_job_enrolment_failures', 'INSERT')
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('public.dead_job_unrecorded_candidates(integer,uuid)'))
+        LIKE '%FROM public.dead_job_enrolment_failures f%f.dead_lettered_at IS NOT NULL OR f.next_attempt_at > now()%(j.updated_at, j.id) >%'
+  AND NOT has_column_privilege('rekoda_worker', 'public.jobs', 'payload', 'SELECT')
+  AND NOT has_table_privilege('rekoda_worker', 'public.jobs', 'SELECT')
+  AND has_column_privilege('rekoda_worker', 'public.jobs', 'business_id', 'SELECT')
+  AND has_function_privilege('rekoda_worker', 'public.job_payload(uuid)', 'EXECUTE')
+  AND NOT has_function_privilege('rekoda_app', 'public.job_payload(uuid)', 'EXECUTE')
+  AND NOT has_function_privilege('rekoda_billing_operator', 'public.job_payload(uuid)', 'EXECUTE')
+  AND (SELECT p.prosecdef AND p.proconfig @> ARRAY['search_path=pg_catalog, public, pg_temp']
+         AND p.prosrc LIKE '%j.business_id = nullif(current_setting(''app.business_id'', true), '''')::uuid%'
+       FROM pg_proc p WHERE p.oid = to_regprocedure('public.job_payload(uuid)'))
+  AND (SELECT prosrc FROM pg_proc
+        WHERE oid = to_regprocedure('rekoda_private.jobs_application_transition_guard()'))
+        LIKE '%no lease and no attempt spent (OWN-92, 0227)%NEW.run_at IS DISTINCT FROM OLD.run_at OR NEW.max_attempts IS DISTINCT FROM OLD.max_attempts%only the worker schedules or retries a job%'
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('public.usage_bind_event(uuid,uuid,uuid)'))
+        LIKE '%FROM public.external_events e%e.business_id = p_business%j.kind IN (''inbound.message'', ''customer.message'')%pg_input_is_valid(j.payload ->> ''eventId'', ''uuid'')%THEN (j.payload ->> ''eventId'')::uuid END = p_event) <> 1%j.state = ''running''%not an event of this business whose job is running%'
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('public.usage_bind_event(uuid,uuid,uuid)'))
+        NOT LIKE '%translate(%'
+  AND (SELECT p.prosecdef AND p.proconfig @> ARRAY['search_path=pg_catalog, public, pg_temp']
+         AND pg_get_function_result(p.oid) = 'TABLE(job_id uuid, business_id uuid)'
+       FROM pg_proc p WHERE p.oid = to_regprocedure('public.dead_job_unrecorded_candidates(integer)'))
+  AND has_function_privilege('rekoda_worker', 'public.dead_job_unrecorded_candidates(integer)', 'EXECUTE')
+  AND NOT has_function_privilege('rekoda_app', 'public.dead_job_unrecorded_candidates(integer)', 'EXECUTE')
+  AND NOT has_function_privilege('rekoda_settlement', 'public.dead_job_unrecorded_candidates(integer)', 'EXECUTE')
+  AND NOT has_function_privilege('rekoda_billing_operator', 'public.dead_job_unrecorded_candidates(integer)', 'EXECUTE')
+  AND (SELECT string_agg(column_name, ',' ORDER BY column_name)
+         FROM information_schema.column_privileges
+        WHERE grantee = 'rekoda_billing_operator' AND table_schema = 'public'
+          AND table_name = 'businesses' AND privilege_type = 'UPDATE') = 'updated_at'
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure(
+        'public.subscription_operator_set_plan(uuid,text,timestamp with time zone,text,text)'))
+        LIKE '%subscription_origin%'
+  AND (SELECT prosrc FROM pg_proc WHERE oid
+        = to_regprocedure('rekoda_private.jobs_close_event_reservations()'))
+        LIKE '%set_config(''app.business_id'', NEW.business_id::text, true)%coalesce(v_pin, '''')%'
+  AND NOT EXISTS (SELECT 1 FROM pg_policy WHERE polrelid = 'public.usage_reservations'::regclass
+        AND pg_get_expr(polqual, polrelid) = 'true')
+  AND (SELECT pg_get_expr(polwithcheck, polrelid) FROM pg_policy
+        WHERE polname = 'worker_leaves_settlement_jobs' AND polrelid = 'public.jobs'::regclass)
+        NOT LIKE '%pending%'
+  AND (SELECT prosrc FROM pg_proc WHERE oid
+        = to_regprocedure('public.subscription_start_grace(uuid,timestamp with time zone)'))
+        LIKE '%the cycle has not ended%'
+  AND (SELECT prosrc FROM pg_proc WHERE oid
+        = to_regprocedure('rekoda_private.jobs_close_event_reservations()'))
+        LIKE '%invalid_text_representation%'
+  AND NOT has_table_privilege('rekoda_app', 'public.jobs', 'DELETE')
+  AND NOT has_column_privilege('rekoda_app', 'public.jobs', 'payload', 'UPDATE')
+  AND NOT has_column_privilege('rekoda_app', 'public.jobs', 'kind', 'UPDATE')
+  AND NOT has_column_privilege('rekoda_app', 'public.jobs', 'business_id', 'UPDATE')
+  AND (SELECT prosrc FROM pg_proc WHERE oid
+        = to_regprocedure('public.subscription_operator_resolve_review(uuid,text,text,text)'))
+        LIKE '%the merchant scheduled a plan change after asking for this review%'
+  AND (SELECT count(*) FROM pg_trigger t WHERE t.tgenabled IN ('O', 'A') AND (t.tgname, t.tgrelid) IN (
+        ('businesses_plan_fields_guard', 'public.businesses'::regclass),
+        ('businesses_plan_fields_insert_guard', 'public.businesses'::regclass),
+        ('businesses_cycle_fields_guard', 'public.businesses'::regclass),
+        ('subscription_charges_applied_once_guard', 'public.subscription_charges'::regclass),
+        ('subscription_charges_settlement_guard', 'public.subscription_charges'::regclass),
+        ('usage_counters_bonus_guard', 'public.usage_counters'::regclass),
+        ('businesses_trial_start_guard', 'public.businesses'::regclass),
+        ('businesses_retention_notice_guard', 'public.businesses'::regclass),
+        ('external_events_worker_guard', 'public.external_events'::regclass),
+        ('subscription_charges_purchase_guard', 'public.subscription_charges'::regclass),
+        ('subscription_charges_pricing_source_guard', 'public.subscription_charges'::regclass),
+        ('jobs_close_event_reservations', 'public.jobs'::regclass),
+        ('jobs_application_transition_guard', 'public.jobs'::regclass))) = 13
+  AND (SELECT prosrc FROM pg_proc
+        WHERE oid = to_regprocedure('public.subscription_apply_paid_charge(uuid,text,timestamptz)'))
+        LIKE '%the upgrade was priced for another cycle%the renewal was priced for another cycle%'
+  AND (SELECT string_agg(sig || ' => ' || grantees, ' ; ' ORDER BY sig) FROM (
+        SELECT n.nspname || '.' || p.proname || '(' || oidvectortypes(p.proargtypes) || ')' AS sig,
+               coalesce((SELECT string_agg(a.grantee::regrole::text, ',' ORDER BY a.grantee::regrole::text)
+                         FROM aclexplode(p.proacl) a
+                         WHERE a.privilege_type = 'EXECUTE' AND a.grantee <> p.proowner), '') AS grantees
+        FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE p.proowner = 'rekoda_plan_writer'::regrole) w)
+      = 'public.staging_move_date(uuid, text, timestamp with time zone, timestamp with time zone, text, text, uuid) => rekoda_app'
+        || ' ; public.subscription_apply_paid_charge(uuid, text, timestamp with time zone) => rekoda_settlement'
+        || ' ; public.subscription_expire_plan(uuid, text, text) => rekoda_app,rekoda_worker'
+        || ' ; public.subscription_operator_resolve_review(uuid, text, text, text) => rekoda_billing_operator'
+        || ' ; public.subscription_operator_set_plan(uuid, text, timestamp with time zone, text, text) => rekoda_billing_operator'
+        || ' ; public.subscription_request_plan_review(uuid, text) => rekoda_app'
+        || ' ; public.subscription_start_grace(uuid, timestamp with time zone) => rekoda_app,rekoda_worker'
+  AND NOT EXISTS (SELECT 1 FROM pg_proc WHERE proowner = 'rekoda_plan_writer'::regrole
+        AND (NOT prosecdef OR proconfig IS DISTINCT FROM ARRAY['search_path=pg_catalog, public, pg_temp']))
+  AND to_regprocedure('public.subscription_write_plan(uuid,text,timestamptz)') IS NULL
+  AND to_regprocedure('public.subscription_operator_set_plan(uuid,text,timestamptz,text)') IS NULL
+  AND to_regprocedure('public.test_fixture_set_plan(uuid,text,timestamptz)') IS NULL
+  AND to_regprocedure('public.test_fixture_credit_bonus(uuid,text,text,integer)') IS NULL
+  AND to_regprocedure('public.test_fixture_start_grace(uuid,timestamptz)') IS NULL
+  AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY['rekoda_app', 'rekoda_worker', 'rekoda_settlement',
+        'rekoda_billing_operator']) AS r(role) WHERE has_schema_privilege(r.role, 'public', 'CREATE'))
+  AND (SELECT count(*) FROM pg_roles WHERE rolname IN ('rekoda_settlement', 'rekoda_billing_operator')
+        AND rolcanlogin AND NOT rolsuper AND NOT rolbypassrls) = 2
+  AND NOT pg_has_role('rekoda_settlement', 'rekoda_app', 'USAGE')
+  AND NOT pg_has_role('rekoda_billing_operator', 'rekoda_app', 'USAGE')
+  AND NOT EXISTS (SELECT 1 FROM (VALUES
+        ('rekoda_app', 'rekoda_plan_writer'), ('rekoda_worker', 'rekoda_plan_writer'),
+        ('rekoda_settlement', 'rekoda_plan_writer'), ('rekoda_billing_operator', 'rekoda_plan_writer'),
+        ('rekoda_app', 'rekoda_settlement'), ('rekoda_worker', 'rekoda_settlement'),
+        ('rekoda_app', 'rekoda_billing_operator'), ('rekoda_worker', 'rekoda_billing_operator'),
+        ('rekoda_settlement', 'rekoda_billing_operator'), ('rekoda_billing_operator', 'rekoda_settlement'),
+        ('rekoda_settlement', 'rekoda_worker'), ('rekoda_billing_operator', 'rekoda_worker'),
+        ('rekoda_settlement', 'rekoda_app'), ('rekoda_billing_operator', 'rekoda_app'),
+        ('rekoda_settlement', 'rekoda_usage_writer')) AS m(member, target)
+        WHERE pg_has_role(m.member, m.target, 'MEMBER'))
+  AND (SELECT polcmd FROM pg_policy WHERE polname = 'worker_reads_the_estate'
+        AND polrelid = 'public.external_events'::regclass) = 'r'
+  AND NOT has_table_privilege('rekoda_worker', 'public.external_events', 'INSERT')
+  AND NOT has_table_privilege('rekoda_worker', 'public.external_events', 'UPDATE')
+  AND NOT has_table_privilege('rekoda_worker', 'public.external_events', 'DELETE')
+  AND NOT has_column_privilege('rekoda_worker', 'public.external_events', 'business_id', 'UPDATE')
+  AND has_function_privilege('rekoda_worker', 'public.attribute_external_event(uuid,uuid)', 'EXECUTE')
+  AND NOT has_function_privilege('rekoda_app', 'public.attribute_external_event(uuid,uuid)', 'EXECUTE')
+  AND NOT has_table_privilege('rekoda_app', 'public.business_add_ons', 'INSERT')
+  AND (SELECT prosrc FROM pg_proc
+        WHERE oid = to_regprocedure('rekoda_private.subscription_charges_settlement_guard()'))
+        LIKE '%priced at most five minutes%the application opens only a new pending charge%'
+  AND (SELECT count(*) FROM pg_attribute WHERE attrelid = 'public.subscription_charges'::regclass
+        AND attname = 'priced_at' AND NOT attisdropped) = 1
+  AND NOT has_table_privilege('rekoda_worker', 'public.subscription_charges', 'INSERT')
+  AND (SELECT string_agg(c.relname || ':' || p.priv, ',' ORDER BY c.relname, p.priv)
+        FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        CROSS JOIN unnest(ARRAY['INSERT', 'UPDATE', 'DELETE', 'TRUNCATE']) AS p(priv)
+        WHERE n.nspname IN ('public', 'rekoda_private') AND c.relkind IN ('r', 'p')
+          AND CASE WHEN p.priv IN ('INSERT', 'UPDATE')
+                   THEN has_any_column_privilege('rekoda_settlement', c.oid, p.priv)
+                   ELSE has_table_privilege('rekoda_settlement', c.oid, p.priv) END)
+      = 'audit_events:INSERT,businesses:UPDATE,'
+        || 'dead_job_exceptions:INSERT,dead_job_exceptions:UPDATE,external_events:UPDATE,jobs:UPDATE,'
+        || 'subscription_charge_attempts:UPDATE,subscription_charges:UPDATE'
+  AND (SELECT string_agg(c.relname, ',' ORDER BY c.relname)
+        FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm')
+          AND has_table_privilege('rekoda_settlement', c.oid, 'SELECT'))
+      = 'add_on_grants,add_ons,billing_pricing_source,business_add_ons,businesses,dead_job_exceptions,'
+        || 'external_events,jobs,key_fingerprints,plan_prices,plan_versions,subscription_charge_attempts,'
+        || 'subscription_charges,usage_packs'
+  AND NOT has_column_privilege('rekoda_settlement', 'public.businesses', 'plan', 'UPDATE')
+  AND NOT has_column_privilege('rekoda_settlement', 'public.businesses', 'plan_expires_at', 'UPDATE')
+  AND NOT has_column_privilege('rekoda_settlement', 'public.businesses', 'trial_started_at', 'UPDATE')
+  AND NOT has_column_privilege('rekoda_settlement', 'public.subscription_charges', 'amount_k', 'UPDATE')
+  AND NOT has_column_privilege('rekoda_settlement', 'public.subscription_charges', 'units_credited_at', 'UPDATE')
+  AND NOT has_column_privilege('rekoda_settlement', 'public.jobs', 'kind', 'UPDATE')
+  AND NOT has_column_privilege('rekoda_settlement', 'public.jobs', 'payload', 'UPDATE')
+  AND NOT has_column_privilege('rekoda_settlement', 'public.jobs', 'business_id', 'UPDATE')
+  AND NOT EXISTS (SELECT 1 FROM pg_default_acl d CROSS JOIN aclexplode(d.defaclacl) a
+        WHERE a.grantee = 'rekoda_settlement'::regrole)
+  AND (SELECT string_agg(p.polname::text || ':' || p.polcmd::text || ':' || p.polpermissive::text, ','
+                         ORDER BY p.polname)
+        FROM pg_policy p WHERE p.polrelid = 'public.jobs'::regclass
+          AND p.polname IN ('settlement_claim', 'settlement_only_its_kinds',
+                            'worker_leaves_settlement_jobs'))
+      = 'settlement_claim:*:true,settlement_only_its_kinds:*:false,worker_leaves_settlement_jobs:w:false'
+  AND (SELECT string_agg(c.relname || ':' || p.priv, ',' ORDER BY c.relname, p.priv)
+        FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        CROSS JOIN unnest(ARRAY['INSERT', 'UPDATE', 'DELETE', 'TRUNCATE']) AS p(priv)
+        WHERE n.nspname IN ('public', 'rekoda_private') AND c.relkind IN ('r', 'p')
+          AND CASE WHEN p.priv IN ('INSERT', 'UPDATE')
+                   THEN has_any_column_privilege('rekoda_worker', c.oid, p.priv)
+                   ELSE has_table_privilege('rekoda_worker', c.oid, p.priv) END)
+      = 'audit_events:INSERT,dead_job_exceptions:INSERT,dead_job_exceptions:UPDATE,'
+        || 'external_events:UPDATE,jobs:UPDATE,outbox_events:UPDATE,'
+        || 'pending_object_deletions:DELETE,pending_object_deletions:UPDATE,reconciliations:INSERT,'
+        || 'stranger_contacts:INSERT,stranger_contacts:UPDATE,'
+        || 'webhook_deliveries:UPDATE,webhook_endpoints:UPDATE'
+  AND NOT has_column_privilege('rekoda_worker', 'public.jobs', 'kind', 'UPDATE')
+  AND NOT has_column_privilege('rekoda_worker', 'public.jobs', 'payload', 'UPDATE')
+  AND NOT has_column_privilege('rekoda_worker', 'public.jobs', 'business_id', 'UPDATE')
+  AND NOT has_column_privilege('rekoda_worker', 'public.webhook_deliveries', 'payload', 'UPDATE')
+  AND has_function_privilege('rekoda_worker', 'public.webhook_queue_delivery(uuid,uuid)', 'EXECUTE')
+  AND NOT EXISTS (SELECT 1 FROM pg_default_acl d CROSS JOIN aclexplode(d.defaclacl) a
+        WHERE a.grantee = 'rekoda_worker'::regrole
+          AND a.privilege_type IN ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE'))
+  AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY['rekoda_app', 'rekoda_worker']) AS r(role)
+        CROSS JOIN unnest(ARRAY['public.rekoda_migrations', 'public.business_entitlements']) AS t(tab)
+        WHERE has_any_column_privilege(r.role, t.tab, 'INSERT')
+           OR has_any_column_privilege(r.role, t.tab, 'UPDATE')
+           OR has_table_privilege(r.role, t.tab, 'DELETE'))
+  AND NOT has_function_privilege('rekoda_worker', 'public.retention_delete_business_unchecked(uuid,timestamptz)', 'EXECUTE')
+  AND NOT has_function_privilege('rekoda_app', 'public.retention_delete_business_unchecked(uuid,timestamptz)', 'EXECUTE')
+  AND NOT has_table_privilege('rekoda_billing_operator', 'public.subscription_charges', 'INSERT')
+  AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY['rekoda_app', 'rekoda_worker', 'rekoda_settlement',
+        'rekoda_billing_operator']) AS r(role)
+        WHERE has_any_column_privilege(r.role, 'public.plan_change_reviews', 'INSERT')
+           OR has_any_column_privilege(r.role, 'public.plan_change_reviews', 'UPDATE')
+           OR has_table_privilege(r.role, 'public.plan_change_reviews', 'DELETE'))
+  AND (SELECT count(*) FROM pg_indexes WHERE schemaname = 'public'
+        AND indexname = 'subscription_charges_one_credit_per_purchase_ux'
+        AND indexdef LIKE '%UNIQUE%(business_id, purchase_id)%units_credited_at IS NOT NULL%') = 1
+  AND (SELECT string_agg(sig || ' => ' || grantees, ' ; ' ORDER BY sig) FROM (
+        SELECT n.nspname || '.' || p.proname || '(' || oidvectortypes(p.proargtypes) || ')' AS sig,
+               coalesce((SELECT string_agg(a.grantee::regrole::text, ',' ORDER BY a.grantee::regrole::text)
+                         FROM aclexplode(p.proacl) a
+                         WHERE a.privilege_type = 'EXECUTE' AND a.grantee <> p.proowner), '') AS grantees
+        FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE p.proowner = 'rekoda_usage_writer'::regrole) w)
+      = 'public.usage_bind_event(uuid, uuid, uuid) => rekoda_app,rekoda_worker'
+        || ' ; public.usage_credit_pack(uuid, text, text, text, integer) => rekoda_settlement'
+        || ' ; public.usage_entitlement(uuid, text) => rekoda_app,rekoda_worker'
+        || ' ; public.usage_refund(uuid, uuid, text, integer) => rekoda_app,rekoda_worker'
+        || ' ; public.usage_reserve(uuid, text, text, integer, integer, boolean) => rekoda_app,rekoda_worker'
+        || ' ; rekoda_private.jobs_close_event_reservations() => '
+        || ' ; rekoda_private.usage_meter_row(uuid, text, text) => '
+        || ' ; rekoda_private.usage_meter_row_at(uuid, text, text, timestamp with time zone) => '
+  AND (SELECT prosrc FROM pg_proc
+        WHERE oid = to_regprocedure('public.usage_credit_pack(uuid,text,text,text,integer)'))
+        LIKE '%c.pack_id IS NULL%OR (c.superseded_at IS NOT NULL AND c.abandoned_at IS NULL)%this purchase is credited already (OD-51.7)%v_source := coalesce(c.pricing_source, (SELECT mode FROM public.billing_pricing_source))%IF v_source = ''catalogue'' THEN%FROM public.usage_packs p%p_n::bigint IS DISTINCT FROM v_n%c.amount_k IS DISTINCT FROM pk.price_minor::bigint * c.quantity%c.currency IS DISTINCT FROM pk.currency%IF c.paid_amount_k IS NULL THEN%c.paid_amount_k < c.amount_k%usage_meter_row_at(%to_char(now() AT TIME ZONE ''Africa/Lagos'', ''YYYY-MM''), p_unit, now())%'
+  AND (SELECT prosrc FROM pg_proc
+        WHERE oid = to_regprocedure('rekoda_private.subscription_charges_settlement_guard()'))
+        LIKE '%usage_credit_pack (0216) runs as rekoda_usage_writer%AND (OLD.superseded_at IS NULL OR OLD.abandoned_at IS NOT NULL)%IF NEW.status IS DISTINCT FROM OLD.status AND OLD.status IS DISTINCT FROM ''pending''%settlement moves a charge''''s status only out of pending%a link is withdrawn only while it is pending (OD-51)%a paid charge set aside or superseded stays so, for settlement too%IF OLD.status IN (''paid'', ''refunded'')%OR (OLD.superseded_at IS NOT NULL AND NEW.superseded_at IS NULL))%AND NOT pg_has_role(current_user, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), ''USAGE'') THEN%a paid charge set aside cannot be put back (OD-37)%'
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('public.usage_refund(uuid,uuid,text,integer)'))
+        LIKE '%closed_at IS NOT NULL%event_id IS NULL AND r.created_at < now() - interval ''15 minutes''%'
+  AND (SELECT prosrc FROM pg_proc
+        WHERE oid = to_regprocedure('public.usage_reserve(uuid,text,text,integer,integer,boolean)'))
+        LIKE '%v_row := rekoda_private.usage_meter_row(%v_ceiling := least(p_allowance, public.usage_entitlement(%c.used + p_n <= v_ceiling + c.bonus%'
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('public.usage_entitlement(uuid,text)'))
+        LIKE '%b.plan = ''trial'' AND b.plan_expires_at IS NOT NULL%av.plan_version_id = COALESCE(%g.grant_kind = ''MONTHLY_UNITS''%RETURN (coalesce(v_sold, 0) + v_granted) * v_scale%'
+  AND (SELECT prosrc FROM pg_proc
+        WHERE oid = to_regprocedure('rekoda_private.usage_meter_row_at(uuid,text,text,timestamptz)'))
+        LIKE '%RETURN ''TRIAL00''%extract(day FROM v_lagos) <= 7%EXISTS (SELECT 1 FROM public.usage_counters c%RETURN v_month;%'
+  AND (SELECT prosrc FROM pg_proc
+        WHERE oid = to_regprocedure('rekoda_private.usage_meter_row(uuid,text,text)'))
+        LIKE '%usage_meter_row_at(p_business, p_period, p_unit, now())%'
+  AND (SELECT prosrc FROM pg_proc
+        WHERE oid = to_regprocedure('rekoda_private.businesses_plan_fields_guard()'))
+        LIKE '%IF current_user = ''rekoda_plan_writer'' THEN%relowner%change only through the subscription writers%'
+  AND (SELECT prosrc FROM pg_proc
+        WHERE oid = to_regprocedure('rekoda_private.jobs_application_transition_guard()'))
+        LIKE '%a settlement job names the Paystack event of its singleton key%a settlement job names the charge of its singleton key%'
+  AND (SELECT prosrc FROM pg_proc
+        WHERE oid = to_regprocedure('rekoda_private.jobs_application_transition_guard()'))
+        LIKE '%NOT pg_has_role(current_user, ''rekoda_app'', ''USAGE'')%NEW.run_at <= now() + interval ''1 minute''%NEW.max_attempts = OLD.attempts + 1%only settlement runs, completes or reschedules a settlement job%locked_by IS DISTINCT FROM OLD.locked_by%OLD.state = ''dead'' AND NEW.state = ''pending''%NEW.locked_by IS NULL AND NEW.locked_at IS NULL%'
+  AND (SELECT prosrc FROM pg_proc
+        WHERE oid = to_regprocedure('rekoda_private.jobs_application_transition_guard()'))
+        LIKE '%NEW.max_attempts < 5%OLD.state = ''dead'' AND NEW.state = ''pending''%NEW.locked_by IS NULL AND NEW.locked_at IS NULL%NEW.run_at <= now() + interval ''1 minute''%NEW.max_attempts = OLD.attempts + 1 THEN%'
+  AND (SELECT count(*) FROM pg_policy
+        WHERE polname = 'settlement_only_its_events' AND polrelid = 'public.external_events'::regclass
+          AND NOT polpermissive AND polcmd = '*'
+          AND polroles = ARRAY['rekoda_settlement'::regrole::oid]
+          AND pg_get_expr(polqual, polrelid) LIKE '%paystack%billing.process%eventId%'
+          AND pg_get_expr(polwithcheck, polrelid) LIKE '%paystack%billing.process%eventId%') = 1
+  AND (SELECT count(*) FROM pg_policy
+        WHERE polname = 'settlement_only_its_dead_jobs'
+          AND polrelid = 'public.dead_job_exceptions'::regclass
+          AND NOT polpermissive AND polcmd = '*'
+          AND polroles = ARRAY['rekoda_settlement'::regrole::oid]
+          AND pg_get_expr(polqual, polrelid) LIKE '%billing.process%'
+          AND pg_get_expr(polwithcheck, polrelid) LIKE '%billing.process%') = 1
+  AND (SELECT count(*) FROM pg_trigger WHERE tgname = 'jobs_application_transition_guard'
+        AND tgrelid = 'public.jobs'::regclass AND tgenabled IN ('O', 'A')
+        AND pg_get_triggerdef(oid) LIKE '%BEFORE INSERT OR UPDATE ON public.jobs%') = 1
+  AND (SELECT prosrc FROM pg_proc
+        WHERE oid = to_regprocedure('rekoda_private.external_events_worker_guard()'))
+        LIKE '%NOT pg_has_role(current_user, ''rekoda_worker'', ''USAGE'')%'
+  AND NOT EXISTS (SELECT 1 FROM pg_proc WHERE proowner = 'rekoda_usage_writer'::regrole
+        AND (NOT prosecdef OR proconfig IS DISTINCT FROM ARRAY['search_path=pg_catalog, public, pg_temp']))
+  AND (SELECT count(*) FROM pg_roles WHERE rolname = 'rekoda_usage_writer'
+        AND NOT rolcanlogin AND NOT rolsuper AND NOT rolbypassrls) = 1
+  AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY['rekoda_app', 'rekoda_worker', 'rekoda_settlement',
+        'rekoda_billing_operator', 'rekoda_plan_writer']) AS r(role)
+        WHERE pg_has_role(r.role, 'rekoda_usage_writer', 'MEMBER'))
+  AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY['rekoda_app', 'rekoda_worker', 'rekoda_settlement',
+        'rekoda_billing_operator']) AS r(role)
+        CROSS JOIN unnest(ARRAY['public.usage_counters', 'public.usage_reservations']) AS t(tab)
+        WHERE has_any_column_privilege(r.role, t.tab, 'INSERT')
+           OR has_any_column_privilege(r.role, t.tab, 'UPDATE')
+           OR has_table_privilege(r.role, t.tab, 'DELETE')
+           OR has_table_privilege(r.role, t.tab, 'TRUNCATE'))
+  AND (SELECT prosrc FROM pg_proc
+        WHERE oid = to_regprocedure('rekoda_private.usage_counters_bonus_guard()'))
+        LIKE '%rekoda_usage_writer%credited only through usage_credit_pack%'
+  AND (SELECT prosrc FROM pg_proc
+        WHERE oid = to_regprocedure('rekoda_private.subscription_charges_settlement_guard()'))
+        LIKE '%the usage writer records only the credit time%a pack is credited only through usage_credit_pack%OR NEW.provider_reference IS DISTINCT FROM OLD.provider_reference THEN%'
+  AND (SELECT count(*) FROM billing_pricing_source WHERE mode IN ('catalogue', 'constants')) = 1
+  AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY['rekoda_app', 'rekoda_worker', 'rekoda_settlement',
+        'rekoda_billing_operator']) AS r(role)
+        CROSS JOIN unnest(ARRAY['public.billing_pricing_source',
+          'public.billing_pricing_source_history']) AS t(tab)
+        WHERE has_any_column_privilege(r.role, t.tab, 'INSERT')
+           OR has_any_column_privilege(r.role, t.tab, 'UPDATE')
+           OR has_table_privilege(r.role, t.tab, 'DELETE')
+           OR has_table_privilege(r.role, t.tab, 'TRUNCATE'))
+  AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY['rekoda_app', 'rekoda_worker', 'rekoda_settlement',
+        'rekoda_billing_operator']) AS r(role)
+        WHERE has_function_privilege(r.role,
+          'rekoda_private.set_pricing_source(text,text,text,text)', 'EXECUTE'))"
 PREV_SHA=
 PREV_RELEASE=
 # The exit status meaning "skipped, nothing changed"; no failure may use it.
@@ -320,12 +906,33 @@ on_exit() {
       restore_prepared
       ;;
     live)
-      printf '\nSTAGING DEPLOY FAILED after migrate/up started: the stack may be part-way to %s.\n' "$RELEASE" >&2
-      printf 'Inspect with `dc ps -a` and `dc logs <service>` on the host. To roll back, from %s:\n' "$REKODA_DIR" >&2
-      printf '  git checkout %s\n' "$PREV_SHA" >&2
-      printf "  sed -i 's/^REKODA_RELEASE=.*/REKODA_RELEASE=%s/' .env\n" "$PREV_RELEASE" >&2
-      printf '  dc up -d --wait --wait-timeout 300\n' >&2
-      printf '  dc exec -T caddy caddy reload --config /etc/caddy/Caddyfile\n' >&2
+      if [ -n "$BREAKING" ] && [ "$MIGRATE_ENTERED" != true ]; then
+        printf '\nSTAGING DEPLOY FAILED BEFORE migrate: nothing was migrated, but the api and worker were being stopped for %s and their stopped state is UNVERIFIED.\n' "$BREAKING" >&2
+      elif [ "$BREAKING_APPLIED" = true ] && [ "$UP_ENTERED" != true ]; then
+        printf '\nSTAGING DEPLOY FAILED after migrate, before the new release was started: the api and worker are still stopped.\n' >&2
+      else
+        printf '\nSTAGING DEPLOY FAILED after migrate/up started: the stack may be part-way to %s.\n' "$RELEASE" >&2
+      fi
+      if [ "$BREAKING_APPLIED" = true ]; then
+        printf 'Migration(s) %s are APPLIED, so the previous release (%s) is NOT safe to restart against this database.\n' "$BREAKING" "$PREV_RELEASE" >&2
+        printf 'Fix forward, by hand from %s (the checkout is already at the new release): correct the cause first (a repeat of the same failure will repeat); `dc run --rm -T migrate`; then run the pre-start database smoke below as the owner and do NOT run `dc up` unless it prints t; then `dc up -d --wait --wait-timeout 300`; reload Caddy; check /health; remove .git/rekoda-deploy-staging.state.\n' "$REKODA_DIR" >&2
+        print_smoke_0196
+        printf 'The Deploy staging workflow refuses to run while /health is down, so do not wait for it, and do not start the previous containers (`dc start api worker` would). Escalate if the new release cannot start.\n' >&2
+      elif [ "$MIGRATE_ENTERED" = true ]; then
+        printf 'The api and worker were stopped for %s and migrate did not finish. Migrations commit one file at a time, so %s MAY already be applied: no rollback commands are printed.\n' "$BREAKING" "$BREAKING" >&2
+        printf 'Check the DATABASE, not only the ledger (rekoda_migrations): 0196 is present if `SELECT 1 FROM pg_trigger WHERE tgname = '"'"'businesses_plan_fields_guard'"'"'` returns a row, and 0200 is present if `SELECT to_regprocedure('"'"'public.subscription_apply_paid_charge(uuid,text,timestamptz)'"'"')` is not null (a kill between a migration and its ledger row leaves it applied, unrecorded). Treat either as applied.\n' >&2
+        printf 'Fix forward, by hand from %s (the checkout is already at the new release): correct the cause first (a repeat of the same failure, such as the plan-writer membership refusal, will repeat), then `dc run --rm -T migrate` (0196 and 0200 are safe to re-run), then run the pre-start database smoke below as the owner and do NOT run `dc up` unless it prints t, then `dc up -d --wait --wait-timeout 300`, reload Caddy, check /health, remove .git/rekoda-deploy-staging.state. The previous release (%s) must never be restarted against a database holding 0196 or 0200; the workflow refuses to run while /health is down. Escalate if unsure.\n' "$REKODA_DIR" "$PREV_RELEASE" >&2
+        print_smoke_0196
+      else
+        if [ -n "$BREAKING" ]; then
+          printf 'Migrate was never entered, so %s is not applied by this run. Check with `dc ps` whether the api and worker are running before anything else: the previous release is still compatible with this database, so `dc start api worker operator settlement` is safe if they are down (a running release older than 0217 has no operator or settlement service: there, `dc start api worker`). Confirm in the database itself, before restarting it, that the guard trigger `businesses_plan_fields_guard` is absent (0196) and that `subscription_write_plan(uuid,text,timestamptz)` still exists (0200 not applied).\n' "$BREAKING" >&2
+        fi
+        printf 'Inspect with `dc ps -a` and `dc logs <service>` on the host. To roll back, from %s:\n' "$REKODA_DIR" >&2
+        printf '  git checkout %s\n' "$PREV_SHA" >&2
+        printf "  sed -i 's/^REKODA_RELEASE=.*/REKODA_RELEASE=%s/' .env\n" "$PREV_RELEASE" >&2
+        printf '  dc up -d --wait --wait-timeout 300\n' >&2
+        printf '  dc exec -T caddy caddy reload --config /etc/caddy/Caddyfile\n' >&2
+      fi
       dc ps -a >&2 || true
       ;;
   esac
@@ -366,13 +973,55 @@ cd "$REKODA_DIR"
 exec 9>.git/rekoda-deploy-staging.lock
 flock -n 9 || fail 'another staging deployment is running on this host'
 
-# This must be staging. Read only the one non-secret line; nothing else in
-# .env is read or printed.
+# This must be staging. Read the one non-secret line; of the rest of .env only
+# names, roles and the Paystack key's prefix are read below, and nothing is printed.
 api_public=$(sed -n 's/^REKODA_API_PUBLIC_URL=//p' .env)
 [ "$api_public" = "$API_URL" ] ||
   fail "this host's REKODA_API_PUBLIC_URL is not $API_URL; this script deploys staging only"
 [ "$(grep -c '^REKODA_RELEASE=' .env)" = 1 ] || fail '.env must hold exactly one REKODA_RELEASE= line'
 PREV_RELEASE=$(sed -n 's/^REKODA_RELEASE=//p' .env)
+
+# Staging runs Paystack in TEST mode only (OWN-70, OWN-77). The settlement process starts and
+# reports healthy without a key, and every subscription payment job then fails verify until it
+# dies, so a missing, empty or live key is refused here, before anything is built or stopped.
+# Only the key's prefix is examined (the last line wins, as compose reads it); the value is never
+# printed. Staging application settings live in this host's .env alone, never in GitHub.
+# Compose's .env parser reads more than plain lines: `export NAME=`, indents, spaces or a no-break
+# space before the separator, YAML-style `NAME: value`, and a new statement straight after a closing
+# quote. Rather than mirror that parser, every non-comment line that mentions either name at all
+# (byte match, so a no-break space counts) must be the plain `NAME=` line; anything else is
+# refused outright, and the values below are read from those plain lines only.
+for name in PAYSTACK_SECRET_KEY REKODA_PAYSTACK_PLATFORM_CONFIRMED; do
+  mentions=$(LC_ALL=C grep -v '^[[:space:]]*#' .env | LC_ALL=C grep -cE "${name}([^A-Za-z0-9_]|\$)" || true)
+  # And at most one: a second plain line can sit inside another value's multi-line quotes, where
+  # Compose never reads it but this check would.
+  [ "$mentions" = "$(LC_ALL=C grep -c "^${name}=" .env || true)" ] && [ "$mentions" -le 1 ] ||
+    fail 'write PAYSTACK_SECRET_KEY and REKODA_PAYSTACK_PLATFORM_CONFIRMED in .env as at most one plain line each (NAME=value, nothing else on the line; no export, indent, colon or space before =); nothing has been changed'
+done
+unset mentions
+paystack_key=$(sed -n 's/^PAYSTACK_SECRET_KEY=//p' .env | tail -1)
+case "$paystack_key" in
+  \"*\") paystack_key=${paystack_key#\"} paystack_key=${paystack_key%\"} ;;
+  \'*\') paystack_key=${paystack_key#\'} paystack_key=${paystack_key%\'} ;;
+esac
+# A Paystack secret key is the prefix and letters and digits; nothing else may follow it.
+[[ "$paystack_key" =~ ^sk_test_[A-Za-z0-9]+$ ]] ||
+  fail 'PAYSTACK_SECRET_KEY in .env must be a Paystack TEST key (sk_test_...): staging never runs a live key or none (OWN-70); nothing has been changed'
+unset paystack_key
+case "$(sed -n 's/^REKODA_PAYSTACK_PLATFORM_CONFIRMED=//p' .env | tail -1)" in
+  '' | 0) ;;
+  *) fail 'REKODA_PAYSTACK_PLATFORM_CONFIRMED must be absent, empty or 0 on staging (OWN-70); nothing has been changed' ;;
+esac
+# Compose's own settings never come from .env either. `--env-file .env` makes Compose read a
+# COMPOSE_* line there (COMPOSE_PROJECT_NAME, COMPOSE_PROFILES, COMPOSE_FILE, ...), which would
+# point every call below at another project: the stop check would pass with nothing stopped and
+# migrate would run against a fresh database. The project is the compose file's `name:` alone, so
+# any non-comment line naming a COMPOSE_ variable (in any spelling Compose reads) is refused here.
+compose_lines=$(LC_ALL=C grep -v '^[[:space:]]*#' .env | LC_ALL=C grep -cE '(^|[^A-Za-z0-9_])COMPOSE_[A-Za-z0-9_]*' || true)
+[ "$compose_lines" = 0 ] ||
+  fail ".env sets a COMPOSE_ variable on $compose_lines line(s): remove it; the project and its files come from docker-compose.prod.yml alone; nothing has been changed"
+unset compose_lines
+clear_compose_overrides
 
 
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
@@ -520,12 +1169,48 @@ unknown=$(jq -rn --argjson run "$running_journal" --argjson new "$target_journal
   fail "the migration journals could not be compared"
 [ -z "$unknown" ] ||
   fail "commit $SHA does not carry migrations staging already runs ($unknown); roll back across a migration by hand, as the runbook's \"Roll back\" says"
+BREAKING=$(jq -rn --argjson run "$running_journal" --argjson new "$target_journal" \
+  --arg breaking "$COMPAT_BREAKING_MIGRATIONS" \
+  '($breaking | split(" ")) as $b
+   | [$new.entries[].tag] - [$run.entries[].tag] | map(select(. as $t | $b | index($t))) | join(" ")') ||
+  fail "the migration journals could not be compared for compatibility-breaking migrations"
 MIGRATIONS=$(jq '.entries | length' <<<"$target_journal")
 APPLIED=$(jq '.migrations' <<<"$running")
 [[ "$MIGRATIONS" =~ ^[0-9]+$ && "$APPLIED" =~ ^[0-9]+$ ]] ||
   fail "could not count migrations (commit carries '$MIGRATIONS', /health reports '$APPLIED')"
 [ "$MIGRATIONS" -ge "$APPLIED" ] ||
   fail "commit $SHA carries $MIGRATIONS migrations and staging's database has applied $APPLIED; roll back across a migration by hand, as the runbook's \"Roll back\" says"
+
+# OD-37 (0202): a release that brings in the settlement and billing-operator principals cannot start
+# without their credentials, and migrate.sh refuses to run without them. Check .env HERE, before the
+# api and worker are stopped, so a missing credential refuses the deploy with nothing live changed.
+# Only the variable names and the role each URL names are read; a password is never printed.
+if [[ " $BREAKING " == *' 0202_settlement_and_operator_principals '* ]]; then
+  for pair in SETTLEMENT_DATABASE_URL:rekoda_settlement OPERATOR_DATABASE_URL:rekoda_billing_operator; do
+    var=${pair%%:*}
+    role=${pair#*:}
+    value=$(sed -n "s/^${var}=//p" .env | tail -1)
+    [ -n "$value" ] ||
+      fail "this release carries 0202 (OD-37) and .env has no ${var}: add it (docs/runbooks/deploy.md, \"Deploy a release carrying 0202 to 0206\"); nothing has been changed"
+    case "$value" in
+      postgres://"$role":* | postgresql://"$role":*) ;;
+      *) fail "${var} in .env must connect as ${role} with its own password; nothing has been changed" ;;
+    esac
+  done
+fi
+
+# OD-51 (0217): this release starts two more processes. The operator process verifies operator
+# tokens against its OWN audience, and compose refuses every command while a name it requires is
+# missing, so check .env HERE, with nothing live changed. Names only; a value is never printed.
+if [[ " $BREAKING " == *' 0217_settlement_isolation '* ]]; then
+  for var in OPERATOR_OIDC_ISSUER OPERATOR_OIDC_JWKS_URL OPERATOR_BILLING_OIDC_AUDIENCE VAULT_KEY \
+    SETTLEMENT_DATABASE_URL OPERATOR_DATABASE_URL; do
+    [ -n "$(sed -n "s/^${var}=//p" .env | tail -1)" ] ||
+      fail "this release carries 0217 (OD-51) and .env has no ${var}: add it (docs/runbooks/deploy.md, \"Deploy a release carrying 0213 to 0246\"); nothing has been changed"
+  done
+  [ "$(sed -n 's/^OPERATOR_BILLING_OIDC_AUDIENCE=//p' .env | tail -1)" != "$(sed -n 's/^OPERATOR_OIDC_AUDIENCE=//p' .env | tail -1)" ] ||
+    fail 'OPERATOR_BILLING_OIDC_AUDIENCE must differ from OPERATOR_OIDC_AUDIENCE: a token the API accepts must not change a plan (OD-51); nothing has been changed'
+fi
 
 SHORT=$(git rev-parse --short=7 "$SHA")
 RELEASE="staging-${SHORT}"
@@ -542,26 +1227,96 @@ git -c advice.detachedHead=false checkout -q --detach "$SHA"
 verify_checkout "$SHA" || fail 'the checkout holds tracked files that differ from the commit (empty or cut short: a full disk?)'
 sed -i "s/^REKODA_RELEASE=.*/REKODA_RELEASE=${RELEASE}/" .env
 [ "$(sed -n 's/^REKODA_RELEASE=//p' .env)" = "$RELEASE" ] || fail 'REKODA_RELEASE was not updated in .env'
+# The commit's compose file may interpolate names the previous one did not.
+clear_compose_overrides
 
 # One image at a time, never both at once: concurrent builds are what overloaded
 # the host. The api image is the one api, worker, migrate and edge-check run.
 step "build the api image, tagged $RELEASE (nothing live changes)"
 dc config -q
+# And Compose itself is the authority: whatever spelling a .env line uses (a statement after the
+# closing quote of a multi-line value hides from the line check above), the project every call
+# reaches must resolve to the compose file's own name. Only the `name:` line of the resolved
+# configuration is read; the rest, which holds resolved settings, is never printed.
+resolved_project=$(dc config 2>/dev/null | sed -n 's/^name: //p' | head -n 1) || resolved_project=''
+[ "$resolved_project" = rekoda-prod ] ||
+  fail "Compose resolves this deployment to project '${resolved_project:-unknown}', not rekoda-prod: remove whatever sets COMPOSE_PROJECT_NAME from .env; nothing live has been changed"
+unset resolved_project
+# OWN-70 with Compose as the authority too: the key Compose actually hands the settlement process
+# must be a TEST key, whatever spelling .env uses (the line checks before the checkout can be
+# hidden from the same way). Classified here, never printed.
+resolved_key=$(dc config settlement 2>/dev/null | sed -n 's/^ *PAYSTACK_SECRET_KEY: *//p' | head -n 1) || resolved_key=''
+[[ "$resolved_key" =~ ^\"?sk_test_[A-Za-z0-9]+\"?$ ]] ||
+  fail 'Compose does not resolve a Paystack TEST key (sk_test_...) for the settlement process from .env: staging never runs a live key or none (OWN-70); nothing live has been changed'
+unset resolved_key
 log_memory 'before the api build'
 dc build --build-arg REKODA_COMMIT="$SHORT" api
 log_memory 'after the api build'
+
+# OWN-93: the new release takes every WhatsApp template's name AND language from .env, assumes
+# neither, and refuses to boot with a template set without its language or with a malformed one
+# (templateConfigProblems). Ask the new image (its own slot table and validator,
+# dist/template-check.js) now, while the old release still runs, so such a .env refuses the deploy
+# instead of leaving staging down after a migration. It reads the environment only: no database, no
+# Meta, so --no-deps: a one-off container that starts, recreates or waits on no other service. It
+# does not cover config.ts's other production template refusals (a Meta token without the sign-in
+# template; a grace or trial template without an https REKODA_WEB_URL), which `up --wait` reports.
+# The per-slot report (stdout) is kept in a variable and never printed; a refusal names variables
+# only, on stderr.
+step 'check the WhatsApp template settings in .env against the new image (nothing live changes)'
+template_rc=0
+template_report=$(dc run --rm -T --no-deps api node dist/template-check.js) || template_rc=$?
+case "$template_report" in
+  *'RESULT REFUSED'*)
+    fail 'the new release would refuse to boot with the WhatsApp template settings in .env (the variable is named above; set each META_*_TEMPLATE_LOCALE beside its template: docs/runbooks/meta-whatsapp-templates.md); nothing live has been changed' ;;
+  *'RESULT BOOTS'*) [ "$template_rc" -eq 0 ] ||
+    fail "the template check in the new image reported its settings boot but exited $template_rc; nothing live has been changed" ;;
+  *) fail "could not run the template check in the new image (exit $template_rc, no report); nothing live has been changed" ;;
+esac
 
 step "build the web image, tagged $RELEASE (nothing live changes)"
 require_memory 'before the web build'
 dc build --build-arg REKODA_COMMIT="$SHORT" web
 log_memory 'after the web build'
 
-step 'migrate (expand-only, as the owner)'
 PHASE=live
 write_state live
+if [ -n "$BREAKING" ]; then
+  # The previous release's api and worker write columns these migrations guard; left running they
+  # would be refused mid-migration, or run against a schema they do not know. Stop them first and
+  # prove it, so the old release cannot keep writing while the new schema goes in.
+  step "stop the api, worker, operator and settlement: this release carries a migration the running release cannot work against ($BREAKING)"
+  # The operator and settlement processes too (OD-51): they write under the same guarded schema. On
+  # the release that first brings them in there is nothing of theirs to stop, which is not an error.
+  dc stop api worker operator settlement
+  # A failing `ps` is not "nothing running": it is "could not tell", and migrate must not go ahead.
+  running_services=$(dc ps --status running --services) ||
+    fail "could not list the running services, so it cannot be proved that the api and worker stopped; not migrating $BREAKING"
+  still_up=$(grep -Ex 'api|worker|operator|settlement' <<<"$running_services" || true)
+  [ -z "$still_up" ] || fail "the api and worker must be stopped before migrating $BREAKING, but still running: $still_up"
+fi
+step 'migrate (expand-only, as the owner)'
+[ -z "$BREAKING" ] || MIGRATE_ENTERED=true
 dc run --rm -T migrate
+[ -z "$BREAKING" ] || BREAKING_APPLIED=true
+
+# OWN-86: "applies the migrations, verifies, deploys the new release, smokes, then starts them". The
+# database half of that is checked here, between migrate and `up`, so it cannot be skipped: the
+# ledger row, the guard trigger itself (a ledger row alone can disagree with the database), the
+# sanctioned plan functions (exact signature, SECURITY DEFINER, owned by rekoda_plan_writer), and
+# neither runtime role able to become it.
+# Any miss stops the deploy with the api and worker still stopped; the exit handler then prints the
+# fix-forward steps (0196/0200 are applied, so the previous release must not be restarted).
+if carries_plan_boundary; then
+  step 'pre-start database smoke for the plan and payment boundary, 0196/0200/0202-0206 and later (OWN-86, OD-37): ledger, guard triggers, exact writer set and grants, principals'
+  smoke_0196=$(dc exec -T postgres psql -U rekoda_owner -d rekoda -v ON_ERROR_STOP=1 -tA -c "$SMOKE_0196_SQL") ||
+    fail 'migrations are APPLIED, but the pre-start database smoke for 0196/0200/0202-0206 could not run, so the new release is not started; the api and worker stay stopped'
+  [ "$smoke_0196" = t ] ||
+    fail "migrations are APPLIED, but the pre-start database smoke for 0196/0200/0202-0206 failed (got '$smoke_0196'): a ledger row, an enabled guard trigger (plan fields, insert, cycle inputs, applied-once, settlement, pack credit), the cycle-bound provider writer, the exact set of rekoda_plan_writer functions with their exact EXECUTE grantees, SECURITY DEFINER and pinned search_path, the absence of the removed and test-only writers, the settlement and billing-operator roles and their separation, or the worker's read-only estate policy is not as this release requires; the new release is not started and the api and worker stay stopped"
+fi
 
 step 'start the new release'
+UP_ENTERED=true
 dc up -d --wait --wait-timeout 300
 
 step 'reload the Caddyfile this commit carries'

@@ -13,6 +13,7 @@
 // The job queue and its handlers, end to end. Split by concern across jobs*.integration.test.ts; the shared setup is in
 // jobs.fixtures.ts.
 import { describe, expect, it, vi } from 'vitest';
+import { ownerDb } from '@rekoda/db/testing';
 import { jobsRepo, schema, sql, withBusiness } from '@rekoda/db';
 import { Logger } from '@nestjs/common';
 import { JobDeferred, JobRunner } from './runner.js';
@@ -164,7 +165,8 @@ describe('reclaim does not depend on a free lane (G-10)', () => {
     await enqueue(ada, 'test.long-abandoned');
     const claimed = await jobsRepo.claimNext(workerDb, 'dead-worker');
     expect(claimed?.kind).toBe('test.long-abandoned');
-    await withBusiness(appDb, ada, (tx) =>
+    /* As the owner: the application may not age a running job's lease (0220). */
+    await withBusiness(ownerDb(), ada, (tx) =>
       tx.execute(
         sql`UPDATE jobs SET locked_at = now() - interval '1 hour' WHERE id = ${claimed!.id}::uuid`,
       ),

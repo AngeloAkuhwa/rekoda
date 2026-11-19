@@ -15,18 +15,25 @@ Drill cadence: monthly, and before any migration touching financial tables.
 > CI (below). When the timer is enabled, this note is replaced by the
 > evidence (bucket name, first verified upload date, first off-box drill).
 
-| Data                                                    | Method (planned)                        | Frequency (planned) | Destination (planned)   |
-| ------------------------------------------------------- | --------------------------------------- | ------------------- | ----------------------- |
-| Postgres (everything: ledger, vault ciphertexts, audit) | `pg_dump -Fc`                           | nightly 02:00 WAT   | Backblaze B2, encrypted |
-| Generated documents                                     | R2 is primary storage; lifecycle-copied | continuous          | R2 + B2 mirror          |
-| Whole box                                               | Hetzner snapshot                        | weekly              | Hetzner                 |
+| Data                                                    | Method (planned)                        | Frequency (planned) | Destination (planned)                                                                                                                                                                |
+| ------------------------------------------------------- | --------------------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Postgres (everything: ledger, vault ciphertexts, audit) | `pg_dump -Fc`                           | nightly 02:00 WAT   | Backblaze B2, encrypted (production design; not chosen or enabled. Staging's offsite target is Cloudflare R2, owner choice 13 Nov 2026, below and `staging-first-deploy-pr-b.md` §1) |
+| Generated documents                                     | R2 is primary storage; lifecycle-copied | continuous          | R2 + B2 mirror (production design; not enabled)                                                                                                                                      |
+| Whole box                                               | Hetzner snapshot                        | weekly              | Hetzner                                                                                                                                                                              |
 
 Vault ciphertexts are useless without `VAULT_KEY`, which lives ONLY in the
 environment — so an exfiltrated backup alone exposes no customer identity.
 Corollary: **losing VAULT_KEY loses the vault.** The key custody procedure
 (who holds copies, where) is part of this runbook's checklist, not optional.
 
-## Backup scripts (G-02, CODE COMPLETE 22 Oct 2026; NOT enabled anywhere)
+## Backup scripts (G-02, CODE COMPLETE 22 Oct 2026; enabled on staging only since 18 Nov 2026; not in production)
+
+**Staging, 18 Nov 2026 (owner-reported, OWN-96):** enabled on the staging host only. Destination: the private R2
+bucket `rekoda-staging-backups`, with dedicated backup credentials, a 30-day bucket lock, 90-day lifecycle retention and
+1-day incomplete-multipart cleanup. The nightly timer runs at 01:00 UTC. The first off-box drill passed (drill log).
+**Outstanding:** the first unattended nightly run, the restored copy's migration count, and off-server custody of the
+passphrase and `VAULT_KEY` (`docs/audits/pr-432/pre-merge-host-evidence.md` §3). Production: not enabled; no production
+host. PITR (OD-7) is G-131. Backup alerts are G-130.
 
 `scripts/backup-db.sh` takes a `pg_dump -Fc`, encrypts it (AES-256, PBKDF2,
 passphrase from `BACKUP_PASSPHRASE_FILE`), writes a `.sha256`, uploads to
@@ -53,8 +60,26 @@ ADR 0010 is NOT implemented; this is the nightly logical half only, RPO up to 24
   long, mode 0600, custody recorded off the host), optionally `BACKUP_S3_ENDPOINT` and the
   `AWS_*` credentials for an `s3://` destination, `BACKUP_RETAIN_DAYS` (directory destinations only,
   default 30), `BACKUP_DUMP_CMD` (default: `pg_dump` inside the production compose postgres; a pipeline
-  here runs with `pipefail`). For R2 or B2 also set `AWS_REQUEST_CHECKSUM_CALCULATION=when_required`,
-  which newer aws CLI versions otherwise reject.
+  here runs with `pipefail`). For R2 or B2 also set `AWS_REQUEST_CHECKSUM_CALCULATION=when_required`
+  and `AWS_RESPONSE_CHECKSUM_VALIDATION=when_required` (aws CLI 2.23 and later add checksum headers R2
+  only partly supports), and `AWS_DEFAULT_REGION=auto`. R2 endpoint:
+  `BACKUP_S3_ENDPOINT=https://<account id>.r2.cloudflarestorage.com`.
+- **Cloudflare R2 specifics** (owner choice for the staging destination, 13 Nov 2026; tested against an
+  S3-compatible server with aws CLI 2.40, not yet against R2 itself; the full procedure is
+  `staging-first-deploy-pr-b.md` §1):
+  - R2 has **no** S3 versioning and **no** S3 Object Lock API. Its immutability feature is the **bucket
+    lock rule** (by prefix; age, date or indefinite), which blocks deletes and overwrites, and overrides
+    lifecycle deletion. Use a lock rule (for example 30 days on the backup prefix) plus a lifecycle
+    expiry well beyond it.
+  - R2 tokens cannot be limited by key prefix or suffix. _Object Read & Write_ scoped to the one backup
+    bucket is the narrowest token, and it can delete anything in that bucket. The lock rule is what stops
+    a stolen token from deleting recent backups.
+  - Under a lock rule the script's cleanup of its `<name>.pending` staging copy is refused (HTTP 409
+    `ObjectLockedByBucketPolicy`, one line in the journal each run). The script tolerates it, the backup
+    still succeeds, and the `.pending` copy stays until the lock and lifecycle expire it. Listing and the
+    drill never select `.pending` objects.
+  - Use a separate bucket and token from the application's documents (`R2_*` in `.env`). Backup
+    credentials live only in `/etc/rekoda/backup.env`.
 - **Drill variables:** `DRILL_DATABASE_URL` (a superuser URL of a scratch server whose database name
   contains `drill` or `scratch`; unset uses a throwaway `postgres:16-alpine` container, removed with its
   data volume) and `DRILL_OBJECT` (a specific object instead of the newest). In URL mode the host's
@@ -83,7 +108,9 @@ format, scope the credentials to what each script calls: the nightly backup need
 reads back what it staged) and DeleteObject only for its own `.pending` staging objects, or leave those
 to a lifecycle rule; the restore drill additionally needs ListBucket, since it finds the newest object
 by listing, turn on bucket versioning or object lock so an overwrite or delete keeps a prior
-version, and compare the newest object's date with today's. This is an open hardening item for G-02, not
+version, and compare the newest object's date with today's. On Cloudflare R2 neither the per-key
+delete scope nor versioning or object lock exists: use an R2 bucket lock rule instead (see "Cloudflare
+R2 specifics" above). This is an open hardening item for G-02, not
 closed by this change.
 
 ### Restore by hand (no scripts)
@@ -104,8 +131,24 @@ openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 \
 # The target must be an empty database on a server where these roles exist; without
 # them every GRANT and row-level-security policy that names one is skipped, and the
 # restore comes up with missing privileges and policies:
-psql "$SCRATCH_URL" -c "DO \$\$ DECLARE r text; BEGIN FOREACH r IN ARRAY ARRAY['rekoda_owner','rekoda_app','rekoda_worker','rekoda_provenance_owner','rekoda_operator'] LOOP IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN EXECUTE format('CREATE ROLE %I NOLOGIN', r); END IF; END LOOP; END \$\$;"
-pg_restore --no-owner -d "$SCRATCH_URL" restore.dump
+psql "$SCRATCH_URL" -c "DO \$\$ DECLARE r text; BEGIN FOREACH r IN ARRAY ARRAY['rekoda_owner','rekoda_app','rekoda_worker','rekoda_provenance_owner','rekoda_operator','rekoda_plan_writer','rekoda_usage_writer','rekoda_settlement','rekoda_billing_operator'] LOOP IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN EXECUTE format('CREATE ROLE %I NOLOGIN' || CASE r WHEN 'rekoda_provenance_owner' THEN ' BYPASSRLS' WHEN 'rekoda_owner' THEN ' BYPASSRLS' ELSE '' END, r); END IF; END LOOP; END \$\$;"
+# Keep ownership (never --no-owner) and restore as a superuser of the target server: the
+# SECURITY DEFINER writer functions must keep their owners (rekoda_plan_writer,
+# rekoda_usage_writer, rekoda_provenance_owner). --no-owner hands them to whoever restores,
+# a superuser, and the plan, usage and payment-provenance boundaries silently disappear.
+pg_restore -d "$SCRATCH_URL" restore.dump
+# Must print 0 (each writer role owns its definer functions again):
+psql "$SCRATCH_URL" -Atc "SELECT count(*) FROM (VALUES ('0058_payment_provenance','rekoda_provenance_owner'),('0196_plan_fields_guard','rekoda_plan_writer'),('0216_usage_meter_boundary','rekoda_usage_writer')) AS e(tag, role) WHERE EXISTS (SELECT 1 FROM rekoda_migrations m WHERE m.tag = e.tag) AND NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_roles r ON r.oid = p.proowner WHERE p.prosecdef AND r.rolname = e.role);"
+# Must print 0: pg_restore carries no role attribute, and these two roles' definer functions must
+# not be filtered by row-level security (rekoda_owner may instead be the server's superuser):
+psql "$SCRATCH_URL" -Atc "SELECT count(*) FROM pg_roles WHERE (rolname = 'rekoda_provenance_owner' AND NOT rolbypassrls) OR (rolname = 'rekoda_owner' AND NOT (rolbypassrls OR rolsuper));"
+# Must print nothing: every function has the owner the archive gave it (the drill's full check).
+# Run from the checkout (/opt/rekoda on the host), with restore.dump given by its full path.
+. scripts/lib/backup-common.sh
+pg_restore -l restore.dump | backup_toc_function_owners > owners.expected
+[ -s owners.expected ] || echo "the archive lists no function: do not trust this restore" >&2
+psql "$SCRATCH_URL" -At -c "$BACKUP_FUNCTION_OWNERS_SQL" | LC_ALL=C sort > owners.restored
+backup_function_owner_mismatches owners.expected owners.restored
 )
 ```
 
@@ -116,7 +159,7 @@ switch the application over; do not restore over a database you may still need.
 
 1. Provision a scratch Postgres (local docker is fine).
 2. Pull the newest object from the destination, check its `.sha256` and decrypt it (see "Restore by hand").
-3. `pg_restore -d "$SCRATCH_URL" --no-owner restore.dump` (the file written by the decrypt step)
+3. `pg_restore -d "$SCRATCH_URL" restore.dump` as a superuser (the file written by the decrypt step); never `--no-owner`, which hands the SECURITY DEFINER writer functions to the restoring superuser
 4. Run the integrity checks (`scripts/restore-drill.sh` does this):
    ```sql
    -- the ledger must balance, in total and per business
@@ -124,6 +167,9 @@ switch the application over; do not restore over a database you may still need.
    FROM ledger_entries GROUP BY business_id HAVING SUM(debit_k) <> SUM(credit_k);
    -- must return zero rows
    ```
+   and the writer roles still own their definer functions (the ownership query under "Restore by
+   hand" prints 0, and every function has the owner the archive's table of contents gives it, the
+   comparison printing nothing; `restore-drill.sh` fails otherwise).
 5. Spot-check one business: invoice count, latest document number, an
    audit-trail tail.
 6. Record the drill (date, dump used, duration, result) in this file's
@@ -132,7 +178,22 @@ switch the application over; do not restore over a database you may still need.
 ## Real restore (incident)
 
 Same as the drill against the production server, plus: stop the app first
-(`docker compose -f docker-compose.prod.yml stop api worker web`), restore, run integrity checks, start, then
+(`docker compose --env-file .env -f docker-compose.prod.yml stop api worker web operator settlement`), restore,
+run integrity checks, re-apply the database-level revokes 0109 made (the drill applies the same
+three from `BACKUP_DATABASE_REVOKES_SQL` in `scripts/lib/backup-common.sh` and fails if any runtime
+role can still create a temporary table; `pg_restore` without `--create`
+does not carry database ACLs into a new database, so they are lost by a restore into a fresh
+`rekoda`; final review of PR #432, E-F5):
+
+```sh
+docker compose --env-file .env -f docker-compose.prod.yml exec -T postgres psql -U rekoda_owner -d rekoda \
+  -c 'REVOKE TEMPORARY ON DATABASE rekoda FROM PUBLIC' \
+  -c 'REVOKE TEMPORARY ON DATABASE rekoda FROM rekoda_app' \
+  -c 'REVOKE TEMPORARY ON DATABASE rekoda FROM rekoda_worker'
+```
+
+then put back the application release the backup was taken under (its checkout and its
+`REKODA_RELEASE` in `.env`; `deploy.md`, "Roll back"), start, then
 verify webhooks re-deliver (Meta and Paystack both retry) — idempotency
 keys make replays safe.
 
@@ -155,7 +216,8 @@ against production. A green build is a passed run of that integration test only;
 
 ## Drill log
 
-| Date                                                     | Dump                      | Duration | Result | Operator            |
-| -------------------------------------------------------- | ------------------------- | -------- | ------ | ------------------- |
-| Continuous                                               | CI, per push (§32-shaped) | ~6s      | PASS   | recovery-drill test |
-| _(first off-box drill due before first paying merchant)_ |                           |          |        |                     |
+| Date                                                                | Dump                                                                                                                                                      | Duration                  | Result | Operator            |
+| ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- | ------ | ------------------- |
+| Continuous                                                          | CI, per push (§32-shaped)                                                                                                                                 | ~6s                       | PASS   | recovery-drill test |
+| 18 Nov 2026 (staging, release `staging-58e6834`, off-box R2)        | `rekoda-20261118T223639Z-1783012.dump.enc`, 746800 bytes; 1 business, 77 ledger entries, 15 invoices, 0 unbalanced; restored migration count NOT RECORDED | restore 14s (backup ~12s) | PASS   | owner (OWN-96)      |
+| _(first production off-box drill due before first paying merchant)_ |                                                                                                                                                           |                           |        |                     |

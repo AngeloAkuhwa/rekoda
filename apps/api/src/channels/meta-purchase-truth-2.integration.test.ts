@@ -8,7 +8,6 @@
 import { describe, expect, it } from 'vitest';
 import { withBusiness, sql } from '@rekoda/db';
 import { replies } from '@rekoda/core';
-import { billingRepo } from '@rekoda/db';
 import {
   db,
   messagePayload,
@@ -35,6 +34,7 @@ import {
   purchases,
   bookMilo,
 } from './meta-purchase-truth.fixtures.js';
+import { setPlanForTest } from '@rekoda/db/testing';
 
 useMetaWebhookHarness();
 
@@ -123,7 +123,7 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
       await bookMilo(business.id, 'G15');
       await say('wamid.G15-d', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
       const documents = stubSender.documents.length;
-      await billingRepo.setPlan(db, {
+      await setPlanForTest(db, {
         businessId: business.id,
         plan: 'trial',
         expiresAt: new Date(Date.now() - 1_000),

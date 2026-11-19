@@ -12,7 +12,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db } from '../client.js';
 import { identity, marginRepo, quotaRepo } from '../index.js';
-import { migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
+import { migrate, requireUrls, truncateAll, type Urls, setPlanAsOwner } from '../testing.js';
 
 let urls: Urls;
 let appDb: Db;
@@ -46,9 +46,7 @@ async function seedBusiness(name: string, phone: string, plan?: string): Promise
     ownerUserId: user.id,
   });
   if (plan) {
-    await withBusiness(appDb, business.id, (tx) =>
-      tx.execute(sql`UPDATE businesses SET plan = ${plan} WHERE id = ${business.id}::uuid`),
-    );
+    await setPlanAsOwner(urls, business.id, { plan });
   }
   return business.id;
 }
@@ -226,7 +224,10 @@ describe('the privilege boundary 0019 draws', () => {
     const shop = await seedBusiness('Untouchable', '+2348030000113', 'chat');
     await spend(shop, 'meta', 20_000);
 
-    await workerDb.execute(sql`UPDATE usage_events SET naira_equivalent_k = 1`);
+    // Refused outright since 0210 (the worker writes no usage history), not merely unmatched.
+    await expect(
+      workerDb.execute(sql`UPDATE usage_events SET naira_equivalent_k = 1`),
+    ).rejects.toThrow();
     const rows = await marginRepo.costByBusiness(workerDb, PERIOD);
     expect(rows.find((r) => r.businessId === shop)?.costK).toBe(20_000);
   });
@@ -234,7 +235,8 @@ describe('the privilege boundary 0019 draws', () => {
   it('gives the worker no way to move another tenant onto a free plan', async () => {
     const shop = await seedBusiness('Still Paying', '+2348030000114', 'complete');
 
-    await workerDb.execute(sql`UPDATE businesses SET plan = 'trial'`);
+    // Refused outright since 0210 (the worker writes no business row).
+    await expect(workerDb.execute(sql`UPDATE businesses SET plan = 'trial'`)).rejects.toThrow();
     const rows = await marginRepo.costByBusiness(workerDb, PERIOD);
     expect(rows.find((r) => r.businessId === shop)?.plan).toBe('complete');
   });

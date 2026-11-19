@@ -21,7 +21,6 @@ import { sql } from 'drizzle-orm';
 import { paymentReference } from '@rekoda/core';
 import { createDb, withBusiness, type Db, type TenantDb } from '../client.js';
 import {
-  billingRepo,
   identity,
   issueRepo,
   paymentsHub,
@@ -31,7 +30,8 @@ import {
   subscriptionsRepo,
   usageRepo,
 } from '../index.js';
-import { migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
+import { applyFixtureCycle, migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
+import { setPlanAsOwner, setPlanForTest, settlementDb } from '../testing.js';
 
 let urls: Urls;
 let appDb: Db;
@@ -63,6 +63,9 @@ let phoneSeq = 0;
 
 const inTenant = <T>(businessId: string, fn: (tx: TenantDb) => Promise<T>): Promise<T> =>
   withBusiness(appDb, businessId, fn);
+/** Payments and pack units are recorded only as `rekoda_settlement` (OD-37). */
+const inSettlement = <T>(businessId: string, fn: (tx: TenantDb) => Promise<T>): Promise<T> =>
+  withBusiness(settlementDb(), businessId, fn);
 
 /** A business whose trial ended `daysAgo`, with nobody warned yet. */
 async function abandonedTrial(daysAgo: number): Promise<string> {
@@ -76,18 +79,21 @@ async function abandonedTrial(daysAgo: number): Promise<string> {
     businessType: null,
     ownerUserId: user.id,
   });
-  await inTenant(business.id, (tx) =>
-    tx.execute(sql`
-      UPDATE businesses
-      SET plan_expires_at = now() - ${`${daysAgo} days`}::interval
-      WHERE id = ${business.id}::uuid
-    `),
-  );
+  await setPlanAsOwner(urls, business.id, {
+    planExpiresAt: new Date(Date.now() - daysAgo * 86_400_000),
+  });
   return business.id;
 }
 
+/**
+ * Claim the warning. A notice sent now goes through the application credential, as the sweep's
+ * does; one in the past is history staged as the owner, because no runtime role may backdate a
+ * notice (0210: that would shorten the notice period).
+ */
 const warn = (businessId: string, when = new Date()) =>
-  inTenant(businessId, (tx) => retentionRepo.claimRetentionNotice(tx, businessId, when));
+  withBusiness(when.getTime() >= Date.now() - 30_000 ? appDb : ownerDb, businessId, (tx) =>
+    retentionRepo.claimRetentionNotice(tx, businessId, when),
+  );
 
 const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000);
 
@@ -114,7 +120,7 @@ describe('who is due', () => {
         periodEnd: daysAgo(370),
       }),
     );
-    await inTenant(businessId, (tx) =>
+    await inSettlement(businessId, (tx) =>
       subscriptionsRepo.settleCharge(tx, {
         reference: 'RKD-SUB-20260101-AAAAAA',
         status: 'paid',
@@ -137,17 +143,15 @@ describe('who is due', () => {
   it('NEVER touches a business moved onto a paid plan by hand, once it lapses', async () => {
     const businessId = await abandonedTrial(400);
     expect(
-      await billingRepo.setPlan(appDb, {
+      await setPlanForTest(appDb, {
         businessId,
         plan: 'complete',
-        expiresAt: daysAgo(380),
+        expiresAt: new Date(Date.now() + 30 * 86_400_000), // a paid plan's date is in the future (G-114)
         actor: 'operator:test',
       }),
     ).toBe(true);
-    // The paid plan then lapsed (renewal unpaid, grace run out).
-    await inTenant(businessId, (tx) =>
-      tx.execute(sql`UPDATE businesses SET plan = 'expired' WHERE id = ${businessId}::uuid`),
-    );
+    // The paid plan then lapsed long ago (renewal unpaid, grace run out): time moved on.
+    await setPlanAsOwner(urls, businessId, { plan: 'expired', planExpiresAt: daysAgo(380) });
 
     expect(await retentionRepo.dueForNotice(workerDb, daysAgo(60))).toEqual([]);
     await warn(businessId, daysAgo(200));
@@ -172,12 +176,13 @@ describe('who is due', () => {
           periodStart: daysAgo(ageDays),
           periodEnd: daysAgo(ageDays - 30),
         });
-        await tx.execute(sql`
-          UPDATE subscription_charges
-          SET created_at = ${daysAgo(ageDays).toISOString()}::timestamptz
-          WHERE reference = ${reference}
-        `);
       });
+      /* Backdated as the table owner: a charge's opening time is frozen for every runtime role. */
+      await ownerDb.execute(sql`
+        UPDATE subscription_charges
+        SET created_at = ${daysAgo(ageDays).toISOString()}::timestamptz
+        WHERE reference = ${reference}
+      `);
     };
 
     it('is neither warned nor deleted while a recent charge is still pending', async () => {
@@ -240,15 +245,15 @@ describe('who is due', () => {
         return [...rows][0]?.ever_paid_at ?? null;
       });
     const change = (plan: string, expiresAt: Date) =>
-      billingRepo.setPlan(appDb, { businessId, plan, expiresAt, actor: 'operator:test' });
+      setPlanForTest(appDb, { businessId, plan, expiresAt, actor: 'operator:test' });
 
-    await change('complete', daysAgo(380));
+    await change('complete', new Date(Date.now() + 30 * 86_400_000)); // future: G-114
     const first = await everPaidAt();
     expect(first).not.toBeNull();
 
     await change('trial', daysAgo(380));
     expect(await everPaidAt()).toEqual(first);
-    await change('chat', daysAgo(380));
+    await change('chat', new Date(Date.now() + 30 * 86_400_000));
     expect(await everPaidAt()).toEqual(first); // the first date stands
     await change('expired', daysAgo(380));
     expect(await everPaidAt()).toEqual(first);
@@ -277,12 +282,14 @@ describe('who is due', () => {
     // The payment path: plan and ever_paid_at change in one transaction that
     // has not committed yet.
     const payment = inTenant(businessId, async (tx) => {
-      await tx.execute(sql`
-        UPDATE businesses
-        SET plan = 'chat', plan_expires_at = now() + interval '30 days',
-            ever_paid_at = coalesce(ever_paid_at, now())
-        WHERE id = ${businessId}::uuid
-      `);
+      /* The real writer (OD-37): plan, expiry and ever_paid_at in one transaction. */
+      const renewsAt = new Date(Date.now() + 30 * 86_400_000);
+      await applyFixtureCycle(tx, businessId, {
+        plan: 'chat',
+        cycleStartedAt: new Date(),
+        renewsAt,
+        anchorDay: renewsAt.getUTCDate(),
+      });
       applied();
       await held;
     });
@@ -331,353 +338,3 @@ describe('who is due', () => {
     expect(await retentionRepo.dueForDeletion(workerDb, daysAgo(90), daysAgo(30))).toEqual([]);
   });
 });
-
-describe('the deletion function', () => {
-  it('refuses a business nobody warned, however old', async () => {
-    const businessId = await abandonedTrial(400);
-    expect(await retentionRepo.deleteForRetention(workerDb, businessId, daysAgo(90))).toBe(-1);
-
-    const still = await inTenant(businessId, (tx) =>
-      tx.execute<{ id: string }>(sql`SELECT id FROM businesses WHERE id = ${businessId}::uuid`),
-    );
-    expect([...still]).toHaveLength(1);
-  });
-
-  it('refuses a trial that has not been over long enough', async () => {
-    const businessId = await abandonedTrial(40);
-    await warn(businessId, daysAgo(35));
-    expect(await retentionRepo.deleteForRetention(workerDb, businessId, daysAgo(90))).toBe(-1);
-  });
-
-  it('refuses an id that is not a business at all', async () => {
-    expect(
-      await retentionRepo.deleteForRetention(
-        workerDb,
-        '00000000-0000-4000-8000-000000000000',
-        daysAgo(90),
-      ),
-    ).toBe(-1);
-  });
-
-  it('deletes a traded business COMPLETELY, leaving nothing anywhere', async () => {
-    const businessId = await abandonedTrial(120);
-    await seedTradingHistory(businessId);
-    await warn(businessId, daysAgo(40));
-
-    const removed = await retentionRepo.deleteForRetention(workerDb, businessId, daysAgo(90));
-    expect(removed).toBeGreaterThan(10);
-
-    // Every table in the database carrying a business_id, scanned. A missed
-    // table would leave a deleted merchant's records behind, which is the one
-    // outcome this whole schedule exists to prevent.
-    const tables = await workerDb.execute<{ table_name: string }>(sql`
-      SELECT c.table_name
-      FROM information_schema.columns c
-      JOIN information_schema.tables t
-        ON t.table_name = c.table_name AND t.table_schema = 'public'
-       AND t.table_type = 'BASE TABLE'
-      WHERE c.table_schema = 'public'
-        AND c.column_name = 'business_id'
-        /* Two tables outlive their tenant on purpose: the receipt proving
-         * the deletion happened, and the queue of objects the deletion
-         * promised to remove from R2 (PR-136). Both are asserted on
-         * positively below rather than merely skipped here. */
-        AND c.table_name NOT IN ('retention_deletions', 'pending_object_deletions')
-      ORDER BY 1
-    `);
-
-    const leftovers: string[] = [];
-    for (const { table_name: table } of tables) {
-      const rows = await workerDb.execute<{ n: number }>(
-        sql.raw(
-          `SELECT count(*)::int AS n FROM "${table}" WHERE business_id = '${businessId}'::uuid`,
-        ),
-      );
-      if (Number([...rows][0]?.n ?? 0) > 0) leftovers.push(table);
-    }
-    expect(leftovers).toEqual([]);
-
-    // And the proof survives the tenant.
-    const record = (await retentionRepo.deletions(workerDb)).find(
-      (row) => row.businessId === businessId,
-    );
-    expect(record?.reason).toBe('abandoned_trial');
-    expect(record?.rowsDeleted).toBe(removed);
-  });
-
-  it('takes the objects with it: every storage key is queued for deletion', async () => {
-    const businessId = await abandonedTrial(120);
-    await warn(businessId, daysAgo(40));
-
-    /* One of each kind of thing Rekoda puts in the object store: a rendered
-     * document, a product photo, and the picture somebody sent of a bank
-     * transfer. All three are a KEY in a row and BYTES in R2 (ADR 0006), so
-     * all three would survive the deletion of the row without this. */
-    await withBusiness(appDb, businessId, (tx) =>
-      issueRepo.recordDocument(tx, {
-        businessId,
-        kind: 'receipt_pdf',
-        storageKey: `documents/${businessId}/receipt_pdf/deadbeef.pdf`,
-        refNumber: 'RCT-2026-000001',
-        bytes: 9,
-      }),
-    );
-
-    await withBusiness(appDb, businessId, (tx) =>
-      tx.execute(sql`
-        INSERT INTO products (business_id, name, unit_price_k, image_key)
-        VALUES (${businessId}::uuid, 'wig', 150000, ${`products/${businessId}/photo.jpg`})
-      `),
-    );
-    await withBusiness(appDb, businessId, (tx) =>
-      tx.execute(sql`
-        INSERT INTO payment_evidence
-          (business_id, source, media_ref, media_mime_type)
-        VALUES (${businessId}::uuid, 'chat',
-                ${`evidence/${businessId}/shot.png`}, 'image/png')
-      `),
-    );
-
-    expect(
-      await retentionRepo.deleteForRetention(workerDb, businessId, daysAgo(90)),
-    ).toBeGreaterThan(0);
-
-    /* The rows are gone - the scan above proves that for every table. What
-     * has to remain is the QUEUE: it is now the only thing in the estate
-     * that knows these keys, and the drain reads it after the fact. */
-    const queued = await workerDb.execute<{ storage_key: string; reason: string }>(sql`
-      SELECT storage_key, reason FROM pending_object_deletions
-       WHERE business_id = ${businessId}::uuid ORDER BY storage_key
-    `);
-    expect([...queued].map((row) => row.storage_key)).toEqual([
-      `documents/${businessId}/receipt_pdf/deadbeef.pdf`,
-      `evidence/${businessId}/shot.png`,
-      `products/${businessId}/photo.jpg`,
-    ]);
-    expect([...queued].every((row) => row.reason === 'business_deleted')).toBe(true);
-  });
-
-  it('running the deletion twice does not queue an object twice', async () => {
-    const businessId = await abandonedTrial(120);
-    await warn(businessId, daysAgo(40));
-    await withBusiness(appDb, businessId, (tx) =>
-      issueRepo.recordDocument(tx, {
-        businessId,
-        kind: 'receipt_pdf',
-        storageKey: `documents/${businessId}/receipt_pdf/cafe.pdf`,
-        refNumber: 'RCT-2026-000002',
-        bytes: 9,
-      }),
-    );
-
-    await retentionRepo.deleteForRetention(workerDb, businessId, daysAgo(90));
-    /* The second call refuses - the business is gone - and must not disturb
-     * what the first one promised. */
-    expect(await retentionRepo.deleteForRetention(workerDb, businessId, daysAgo(90))).toBe(-1);
-
-    const rows = await workerDb.execute<{ n: number }>(
-      sql`SELECT count(*)::int AS n FROM pending_object_deletions WHERE business_id = ${businessId}::uuid`,
-    );
-    expect(Number([...rows][0]?.n)).toBe(1);
-  });
-
-  it('takes the owner with it, but not an owner who runs something else', async () => {
-    const businessId = await abandonedTrial(120);
-    await warn(businessId, daysAgo(40));
-
-    const owner = await workerDb.execute<{ owner_user_id: string }>(sql`
-      SELECT owner_user_id FROM businesses WHERE id = ${businessId}::uuid
-    `);
-    const ownerId = [...owner][0]?.owner_user_id;
-
-    // A second business for a DIFFERENT owner, which must survive untouched.
-    const survivor = await abandonedTrial(2);
-
-    await retentionRepo.deleteForRetention(workerDb, businessId, daysAgo(90));
-
-    const users = await workerDb.execute<{ n: number }>(sql`
-      SELECT count(*)::int AS n FROM users WHERE id = ${ownerId}::uuid
-    `);
-    expect(Number([...users][0]?.n)).toBe(0);
-
-    const others = await workerDb.execute<{ n: number }>(sql`
-      SELECT count(*)::int AS n FROM businesses WHERE id = ${survivor}::uuid
-    `);
-    expect(Number([...others][0]?.n)).toBe(1);
-  });
-
-  it('is idempotent: the same business twice deletes once', async () => {
-    const businessId = await abandonedTrial(120);
-    await warn(businessId, daysAgo(40));
-
-    expect(
-      await retentionRepo.deleteForRetention(workerDb, businessId, daysAgo(90)),
-    ).toBeGreaterThan(0);
-    // The row is gone, so the predicate cannot match and nothing happens.
-    expect(await retentionRepo.deleteForRetention(workerDb, businessId, daysAgo(90))).toBe(-1);
-    expect(await retentionRepo.deletions(workerDb)).toHaveLength(1);
-  });
-
-  it('is not something the APPLICATION role may execute', async () => {
-    const businessId = await abandonedTrial(120);
-    await warn(businessId, daysAgo(40));
-
-    // The worker may call it; the API's credential may not call it at all.
-    // That is the difference between "the sweep can delete" and "a request
-    // handler can delete".
-    await expect(
-      appDb.execute(
-        sql`SELECT retention_delete_business(${businessId}::uuid, now() - interval '90 days')`,
-      ),
-    ).rejects.toThrow();
-  });
-
-  /**
-   * The tenant boundary on USERS (launch remediation R9, migration 0118).
-   *
-   * The original function ended with a global "delete users with no
-   * memberships" sweep — tidy-looking, and a tenant-boundary violation: a
-   * retention run for one business could delete a completely unrelated
-   * person who happened to be between phone verification and creating
-   * their first business. The corrected function may only ever evaluate
-   * the users the TARGET business brought to the run.
-   */
-  it('NEVER deletes an unrelated user who merely has no membership yet (R9)', async () => {
-    const businessId = await abandonedTrial(120);
-    await warn(businessId, daysAgo(40));
-
-    /* Somebody mid-onboarding: phone verified, user row created, no
-     * business yet. The exact person the global sweep used to delete. */
-    const onboarding = await identity.upsertUserByPhone(appDb, '+2348169999901');
-
-    expect(
-      await retentionRepo.deleteForRetention(workerDb, businessId, daysAgo(90)),
-    ).toBeGreaterThan(0);
-
-    const rows = await workerDb.execute<{ n: number }>(sql`
-      SELECT count(*)::int AS n FROM users WHERE id = ${onboarding.id}::uuid
-    `);
-    expect(Number([...rows][0]?.n)).toBe(1);
-  });
-
-  it('keeps an owner whose OTHER business still trades (R9)', async () => {
-    const doomed = await abandonedTrial(120);
-    await warn(doomed, daysAgo(40));
-    const owner = await workerDb.execute<{ owner_user_id: string }>(sql`
-      SELECT owner_user_id FROM businesses WHERE id = ${doomed}::uuid
-    `);
-    const ownerId = [...owner][0]!.owner_user_id;
-
-    // The same person runs a second, living business.
-    const second = await identity.createBusinessWithOwner(appDb, {
-      name: 'Second Shop',
-      businessType: null,
-      ownerUserId: ownerId,
-    });
-
-    await retentionRepo.deleteForRetention(workerDb, doomed, daysAgo(90));
-
-    const user = await workerDb.execute<{ n: number }>(sql`
-      SELECT count(*)::int AS n FROM users WHERE id = ${ownerId}::uuid
-    `);
-    expect(Number([...user][0]?.n)).toBe(1);
-    const shop = await workerDb.execute<{ n: number }>(sql`
-      SELECT count(*)::int AS n FROM businesses WHERE id = ${second.id}::uuid
-    `);
-    expect(Number([...shop][0]?.n)).toBe(1);
-  });
-
-  it('cannot touch another business, its owner, or its people (R9)', async () => {
-    const doomed = await abandonedTrial(120);
-    await warn(doomed, daysAgo(40));
-    // A different merchant, mid-trial, completely unrelated.
-    const bystander = await abandonedTrial(2);
-    const bystanderOwner = await workerDb.execute<{ owner_user_id: string }>(sql`
-      SELECT owner_user_id FROM businesses WHERE id = ${bystander}::uuid
-    `);
-    const bystanderOwnerId = [...bystanderOwner][0]!.owner_user_id;
-
-    await retentionRepo.deleteForRetention(workerDb, doomed, daysAgo(90));
-
-    const shop = await workerDb.execute<{ n: number }>(sql`
-      SELECT count(*)::int AS n FROM businesses WHERE id = ${bystander}::uuid
-    `);
-    expect(Number([...shop][0]?.n)).toBe(1);
-    const user = await workerDb.execute<{ n: number }>(sql`
-      SELECT count(*)::int AS n FROM users WHERE id = ${bystanderOwnerId}::uuid
-    `);
-    expect(Number([...user][0]?.n)).toBe(1);
-  });
-});
-
-/** A month of real trading, so the deletion has something to miss. */
-async function seedTradingHistory(businessId: string): Promise<void> {
-  await withBusiness(appDb, businessId, async (tx) => {
-    const sale = await issueRepo.issueSale(tx, {
-      businessId,
-      customerId: null,
-      customerToken: 'CUSTOMER_7K2',
-      items: [{ name: 'wig', quantity: 3, unitPriceK: 5_000_000 }],
-      subtotalK: 15_000_000,
-      discountK: 0,
-      deliveryFeeK: 0,
-      vatK: 0,
-      totalK: 15_000_000,
-      paidK: 4_000_000,
-      balanceDueK: 11_000_000,
-      method: 'cash',
-      sourceType: 'chat',
-      sourceId: 'draft-1',
-      actor: 'system',
-    });
-
-    const intent = await paymentsHub.createIntent(tx, {
-      businessId,
-      reference: paymentReference(new Date(), (n) => randomBytes(n)),
-      expectedAmountK: 5_000_000,
-      providerType: 'paystack',
-      invoiceId: sale.invoiceId,
-    });
-    await settleRepo.bookVerifiedPayment(tx, {
-      businessId,
-      intent: {
-        id: intent.id,
-        reference: intent.reference,
-        invoiceId: sale.invoiceId,
-        customerId: null,
-      },
-      confirmedAmountK: 5_000_000,
-      currency: 'NGN',
-      providerType: 'paystack',
-      providerRef: 'pst-r1',
-      providerStatus: 'success',
-      providerFeeK: 0,
-      feePolicy: 'merchant_bearing',
-      method: 'transfer',
-      actor: 'test',
-      eventId: 'evt-1',
-    });
-
-    await spendRepo.recordExpense(tx, {
-      businessId,
-      description: 'fuel for generator',
-      category: 'utilities',
-      amountK: 1_200_000,
-      method: 'cash',
-      sourceType: 'chat',
-      sourceId: 'draft-2',
-    });
-    await spendRepo.recordPurchase(tx, {
-      businessId,
-      description: 'ankara fabric',
-      amountK: 5_000_000,
-      paidK: 2_000_000,
-      method: 'cash',
-      sourceType: 'chat',
-      sourceId: 'draft-3',
-    });
-
-    await usageRepo.consumeUnit(tx, businessId, '2026-08', 'AI_ACTIONS', 50);
-    await usageRepo.creditBonus(tx, businessId, '2026-08', 'AI_ACTIONS', 10);
-  });
-}

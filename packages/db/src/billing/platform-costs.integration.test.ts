@@ -147,8 +147,8 @@ describe('the platform-cost subledger (COST-1, PR-102)', () => {
       source: 'PROVIDER_API' as const,
       actualOrEstimated: 'ACTUAL' as const,
     };
-    await platformCostsRepo.recordCostEvent(workerDb, event);
-    await platformCostsRepo.recordCostEvent(workerDb, event);
+    await platformCostsRepo.recordCostEvent(db, event);
+    await platformCostsRepo.recordCostEvent(db, event);
 
     const { from, to } = window();
     const lines = await platformCostsRepo.costsForBusiness(workerDb, businessId, from, to);
@@ -164,7 +164,7 @@ describe('the platform-cost subledger (COST-1, PR-102)', () => {
   });
 
   it('a cost nobody carries is a real row: null business, listed as unattributed', async () => {
-    await platformCostsRepo.recordCostEvent(workerDb, {
+    await platformCostsRepo.recordCostEvent(db, {
       provider: 'storage',
       providerProduct: 'r2_object_storage',
       businessId: null,

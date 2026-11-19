@@ -38,6 +38,8 @@ import {
   pendingCharge,
   trialCopy,
   trialDaysLeft,
+  billingProcessingCopy,
+  noChargeUpgradeCopy,
 } from '@/lib/billing-pay-copy';
 import { EmailForm } from './EmailForm';
 import { PayForms } from './PayForms';
@@ -107,6 +109,10 @@ const PROBLEMS: Record<string, string> = {
     'Your paid period has ended, so there is nothing to upgrade yet. Nothing was charged. Message upgrade on WhatsApp and we will sort out your renewal with you.',
   support_review:
     'Your plan needs a quick check by our team, so we change it with you rather than automatically. Nothing was charged and nothing was changed. Message upgrade on WhatsApp and we will sort it out with you.',
+  upgrade_withdrawn:
+    'That change could not be made in time, so your plan has not changed. Nothing was charged. Choose the plan again to see what it costs now.',
+  support_review_unavailable:
+    'We could not set up that change. Nothing was charged and nothing was changed. Message upgrade on WhatsApp and we will help you with it.',
   plan: 'That change did not go through. Nothing was charged.',
   pack: 'That purchase did not go through. Nothing was charged.',
   view_only:
@@ -160,6 +166,10 @@ export default async function BillingPage({
     : null;
   const waiting = pendingCharge(overview.charges, params.pay);
   const lastFailed = waiting ? null : lastPaymentFailed(overview.charges);
+  const noChargeUpgradeText = noChargeUpgradeCopy(
+    overview.noChargeUpgrade,
+    (plan) => PLAN_NAMES[plan] ?? plan,
+  );
   const firstPurchase = overview.plan === 'trial' || overview.plan === 'expired';
   const paidPlan = !firstPurchase;
 
@@ -228,6 +238,21 @@ export default async function BillingPage({
       {params.done === 'applied' ? (
         <div className="rk-attention-strip" role="status">
           Done. Your new plan is on now. Nothing was charged and your renewal date has not changed.
+        </div>
+      ) : null}
+
+      {/* Not beside a processing problem: the two would say opposite things. */}
+      {/* F-2: what became of it, from the overview, so a refresh never repeats "switching it on
+          now" after the switch happened, was withdrawn or stopped. */}
+      {params.done === 'processing' && !overview.processingIssue && noChargeUpgradeText ? (
+        <div className="rk-attention-strip" role="status" data-no-charge-upgrade>
+          {noChargeUpgradeText}
+        </div>
+      ) : null}
+
+      {overview.processingIssue ? (
+        <div className="rk-attention-strip" role="status" data-billing-processing>
+          {billingProcessingCopy(overview.processingIssue, owner)}
         </div>
       ) : null}
 
@@ -750,7 +775,7 @@ export default async function BillingPage({
                         {charge.reference}
                       </Link>
                     </td>
-                    <td>{chargeStatusLabel(charge.status, charge.superseded)}</td>
+                    <td>{chargeStatusLabel(charge.status, charge.superseded, charge.amountK)}</td>
                     <td>
                       <Money kobo={charge.amountK} />
                       {partlyRefunded(charge.refundedAmountK, charge.status) ? (

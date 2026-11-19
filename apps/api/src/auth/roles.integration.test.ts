@@ -16,7 +16,7 @@
 import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
-import { billingRepo, createDb, usageRepo, withBusiness, type Db } from '@rekoda/db';
+import { createDb, usageRepo, withBusiness, type Db } from '@rekoda/db';
 import { usagePeriod } from '@rekoda/core';
 import {
   grantCapacityAddOn,
@@ -25,6 +25,7 @@ import {
   truncateAll,
   type Urls,
 } from '@rekoda/db/testing';
+import { setPlanForTest } from '@rekoda/db/testing';
 
 const SECRET = 'roles-secret-at-least-32-characters-long';
 
@@ -103,7 +104,7 @@ async function team(seed: string): Promise<{
   /* A business running all three roles is a Complete-shaped business: the
    * seat table (SEATS_PER_PLAN) now refuses a trial's second invite, which
    * is the product working, not this suite's subject. */
-  await billingRepo.setPlan(db, {
+  await setPlanForTest(db, {
     businessId: created.businessId,
     plan: 'complete',
     expiresAt: new Date(Date.now() + 30 * 86_400_000),

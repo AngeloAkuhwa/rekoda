@@ -10,7 +10,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createDb, withBusiness, type Db } from '../client.js';
 import { identity, catalogueRepo, sql } from '../index.js';
-import { migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
+import { migrate, requireUrls, setPricingSource, truncateAll, type Urls } from '../testing.js';
 
 let urls: Urls;
 let db: Db;
@@ -74,7 +74,7 @@ describe('what teardown removes', () => {
            'rekoda_migrations', 'entitlements', 'plan_versions', 'plan_prices',
            'plan_version_entitlements', 'allowance_versions', 'add_ons',
            'add_on_grants', 'usage_packs', 'provider_capabilities',
-           'provider_cost_schedules')
+           'provider_cost_schedules', 'billing_pricing_source')
     `);
     expect([...leftovers].filter((r) => Number(r.n) > 0)).toEqual([]);
   });
@@ -133,6 +133,19 @@ describe('what teardown preserves', () => {
     }
   });
 
+  it('puts the pricing source back to the seeded catalogue, with no history left behind', async () => {
+    /* OD-51.6 (0215): one row every process is held to. A suite that ran on the constant path
+     * must not leave the next suite there. */
+    await setPricingSource(urls, 'constants');
+    expect(await rowsIn('billing_pricing_source_history')).toBe(1);
+    await truncateAll(urls);
+    const rows = await db.execute<{ mode: string; constants_fingerprint: string | null }>(
+      sql`SELECT mode, constants_fingerprint FROM billing_pricing_source`,
+    );
+    expect([...rows]).toEqual([{ mode: 'catalogue', constants_fingerprint: null }]);
+    expect(await rowsIn('billing_pricing_source_history')).toBe(0);
+  });
+
   it('keeps the migration ledger, so the next run does not re-apply history', async () => {
     expect(await rowsIn('rekoda_migrations')).toBeGreaterThan(0);
   });
@@ -145,7 +158,7 @@ describe('what teardown preserves', () => {
         'rekoda_migrations', 'entitlements', 'plan_versions', 'plan_prices',
         'plan_version_entitlements', 'allowance_versions', 'add_ons',
         'add_on_grants', 'usage_packs', 'provider_capabilities',
-        'provider_cost_schedules']) AS name
+        'provider_cost_schedules', 'billing_pricing_source']) AS name
        WHERE name NOT IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public')
     `);
     expect([...missing]).toEqual([]);

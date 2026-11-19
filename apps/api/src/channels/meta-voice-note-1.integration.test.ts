@@ -8,7 +8,6 @@
 import { describe, expect, it } from 'vitest';
 import { conversationsRepo, createDb, identity, usageRepo, withBusiness, sql } from '@rekoda/db';
 import { allowanceFor, replies, usagePeriod } from '@rekoda/core';
-import { billingRepo } from '@rekoda/db';
 import {
   db,
   invoiceCount,
@@ -29,6 +28,7 @@ import {
   voiceUsed,
   unitUsed,
 } from './meta-voice-note.fixtures.js';
+import { setPlanForTest } from '@rekoda/db/testing';
 
 useMetaWebhookHarness();
 
@@ -43,7 +43,7 @@ useMetaWebhookHarness();
 describe('a voice note', () => {
   /** Move a business onto a plan, through the repository that owns the write. */
   async function moveToPlan(businessId: string, plan: 'chat' | 'integrate' | 'complete') {
-    await billingRepo.setPlan(db, {
+    await setPlanForTest(db, {
       businessId,
       plan,
       expiresAt: null,

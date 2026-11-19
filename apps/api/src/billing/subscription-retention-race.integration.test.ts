@@ -25,7 +25,16 @@ import {
   withBusiness,
   type Db,
 } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import {
+  migrate,
+  requireUrls,
+  truncateAll,
+  type Urls,
+  setPlanAsOwner,
+  settlementDb,
+  applicationDb,
+  setPricingSource,
+} from '@rekoda/db/testing';
 import { applySettledCharge } from './billing.service.js';
 
 const BARRIER_KEY = 7_770_161;
@@ -55,6 +64,8 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await truncateAll(urls);
+  /* This suite prices from the compiled constants; the database is told so (OD-51.6, 0215). */
+  await setPricingSource(urls, 'constants');
 });
 
 afterEach(async () => {
@@ -76,12 +87,13 @@ async function warnedTrialWithPendingCharge(
     ownerUserId: user.id,
   });
   const businessId = business.id;
-  await withBusiness(appDb, businessId, async (tx) => {
-    await tx.execute(sql`
-      UPDATE businesses SET plan_expires_at = ${daysAgo(400).toISOString()}::timestamptz
-      WHERE id = ${businessId}::uuid
-    `);
-    await retentionRepo.claimRetentionNotice(tx, businessId, daysAgo(200));
+  /* OD-37: a plan date is set by the owner in a fixture, never by the application role. */
+  await setPlanAsOwner(urls, businessId, { planExpiresAt: daysAgo(400) });
+  /* A notice sent long ago is history the owner stages: no runtime role may backdate one (0210). */
+  await withBusiness(ownerDb, businessId, (tx) =>
+    retentionRepo.claimRetentionNotice(tx, businessId, daysAgo(200)),
+  );
+  await withBusiness(applicationDb(), businessId, async (tx) => {
     await subscriptionsRepo.openCharge(tx, {
       businessId,
       kind,
@@ -91,6 +103,9 @@ async function warnedTrialWithPendingCharge(
       periodStart: daysAgo(1),
       periodEnd: new Date(Date.now() + 29 * 86_400_000),
     });
+  });
+  /* Backdating a charge is a fixture's act, so the owner does it: no runtime role may. */
+  await withBusiness(ownerDb, businessId, async (tx) => {
     // A checkout opened in the last 14 days defers deletion (migration 0161),
     // which would end the race before it began. This one was abandoned weeks
     // ago, so the business is genuinely due.
@@ -148,7 +163,7 @@ describe('a subscription payment racing the retention sweep', () => {
     `);
 
       // The payment, exactly as the billing job runs it.
-      const payment = withBusiness(appDb, businessId, (tx) =>
+      const payment = withBusiness(settlementDb(), businessId, (tx) =>
         applySettledCharge(tx, {
           businessId,
           reference: REFERENCE,
@@ -208,7 +223,7 @@ describe('a subscription payment racing the retention sweep', () => {
       await retentionRepo.deleteForRetention(workerDb, businessId, daysAgo(90)),
     ).toBeGreaterThan(0);
 
-    const outcome = await withBusiness(appDb, businessId, (tx) =>
+    const outcome = await withBusiness(settlementDb(), businessId, (tx) =>
       applySettledCharge(tx, {
         businessId,
         reference: REFERENCE,
@@ -228,7 +243,7 @@ describe('a subscription payment racing the retention sweep', () => {
     const gate = new Promise<void>((resolve) => (release = resolve));
     let parked!: () => void;
     const settledUncommitted = new Promise<void>((resolve) => (parked = resolve));
-    const payment = withBusiness(appDb, businessId, async (tx) => {
+    const payment = withBusiness(settlementDb(), businessId, async (tx) => {
       const outcome = await applySettledCharge(tx, {
         businessId,
         reference: REFERENCE,

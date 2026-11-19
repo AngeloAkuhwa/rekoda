@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { identity, withBusiness, sql } from '@rekoda/db';
 import { replies } from '@rekoda/core';
 import { buildRunner } from '../jobs/jobs.module.js';
-import { billingRepo, customersRepo } from '@rekoda/db';
+import { customersRepo } from '@rekoda/db';
 import {
   db,
   deps,
@@ -20,6 +20,7 @@ import {
   useMetaWebhookHarness,
   workerDb,
 } from './meta-webhook.fixtures.js';
+import { setPlanForTest } from '@rekoda/db/testing';
 
 useMetaWebhookHarness();
 
@@ -226,7 +227,7 @@ describe('G-68 review: doubt, the funding gates, and closing a question', () => 
     it('a trial that lapsed since the question gets no draft', async () => {
       const business = await seedMerchant();
       await askFunding(business.id);
-      await billingRepo.setPlan(db, {
+      await setPlanForTest(db, {
         businessId: business.id,
         plan: 'trial',
         expiresAt: new Date(Date.now() - 1_000),
@@ -241,7 +242,7 @@ describe('G-68 review: doubt, the funding gates, and closing a question', () => 
     it('a plan without Chat since the question gets no draft', async () => {
       const business = await seedMerchant();
       await askFunding(business.id);
-      await billingRepo.setPlan(db, {
+      await setPlanForTest(db, {
         businessId: business.id,
         plan: 'integrate',
         expiresAt: null,

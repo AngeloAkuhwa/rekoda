@@ -8,8 +8,8 @@
 import { describe, expect, it } from 'vitest';
 import { continuationsRepo, conversationsRepo, identity, withBusiness } from '@rekoda/db';
 import { replies } from '@rekoda/core';
-import { truncateAll } from '@rekoda/db/testing';
-import { billingRepo, customersRepo, issueRepo, paymentsHub } from '@rekoda/db';
+import { truncateAll, setPlanForTest } from '@rekoda/db/testing';
+import { customersRepo, issueRepo, paymentsHub } from '@rekoda/db';
 import { encryptFacet, matchKeyFor } from '@rekoda/core/vault';
 import {
   db,
@@ -53,14 +53,14 @@ describe('Chat entitlement on fixed commands (G-65)', () => {
   // meta-chat-entitlement-3.integration.test.ts. It writes the plan, which the G-62 guard
   // allows only in test files. Change them together.
   async function moveToPlan(businessId: string, plan: 'chat' | 'integrate' | 'complete') {
-    await billingRepo.setPlan(db, { businessId, plan, expiresAt: null, actor: 'operator:g65' });
+    await setPlanForTest(db, { businessId, plan, expiresAt: null, actor: 'operator:g65' });
   }
 
   // Kept identical to the copy in meta-chat-entitlement-1.integration.test.ts,
   // meta-chat-entitlement-3.integration.test.ts. It writes the plan, which the G-62 guard
   // allows only in test files. Change them together.
   async function lapse(businessId: string) {
-    await billingRepo.setPlan(db, {
+    await setPlanForTest(db, {
       businessId,
       plan: 'trial',
       expiresAt: new Date(Date.now() - 1_000),
@@ -149,7 +149,7 @@ describe('Chat entitlement on fixed commands (G-65)', () => {
    * plan, which the G-62 guard allows only in test files. Change them together.
    */
   async function lapsePaid(businessId: string) {
-    await billingRepo.setPlan(db, {
+    await setPlanForTest(db, {
       businessId,
       plan: 'expired',
       expiresAt: null,

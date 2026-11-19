@@ -14,7 +14,14 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db } from '../client.js';
 import { entitlementsRepo, identity } from '../index.js';
-import { migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
+import {
+  migrate,
+  requireUrls,
+  truncateAll,
+  type Urls,
+  setPlanAsOwner,
+  ownerDb as grantDb,
+} from '../testing.js';
 import { ENTITLEMENT_KEYS, type EntitlementKey } from '@rekoda/core';
 
 let urls: Urls;
@@ -48,9 +55,7 @@ async function seedOn(plan: string): Promise<string> {
   });
   /* Pinned: `businesses` carries RLS, so an unpinned UPDATE matches no row
    * and silently leaves every business on `trial`. */
-  await withBusiness(db, business.id, (tx) =>
-    tx.execute(sql`UPDATE businesses SET plan = ${plan} WHERE id = ${business.id}::uuid`),
-  );
+  await setPlanAsOwner(urls, business.id, { plan });
   return business.id;
 }
 
@@ -121,7 +126,7 @@ describe('a manual grant', () => {
     const businessId = await seedOn('chat');
     expect(await gate(businessId, 'REKODA_INTEGRATE')).not.toBeNull();
 
-    await withBusiness(db, businessId, (tx) =>
+    await withBusiness(grantDb(), businessId, (tx) =>
       entitlementsRepo.grant(tx, {
         businessId,
         entitlementKey: 'REKODA_INTEGRATE',
@@ -139,7 +144,7 @@ describe('a manual grant', () => {
   /** Revoking puts it back, or a grant is a one-way door. */
   it('closes again when it is revoked', async () => {
     const businessId = await seedOn('chat');
-    await withBusiness(db, businessId, (tx) =>
+    await withBusiness(grantDb(), businessId, (tx) =>
       entitlementsRepo.grant(tx, {
         businessId,
         entitlementKey: 'REKODA_INTEGRATE',
@@ -147,7 +152,7 @@ describe('a manual grant', () => {
         grantedBy: 'operator:support',
       }),
     );
-    await withBusiness(db, businessId, (tx) =>
+    await withBusiness(grantDb(), businessId, (tx) =>
       entitlementsRepo.revoke(tx, businessId, 'REKODA_INTEGRATE'),
     );
     expect(await gate(businessId, 'REKODA_INTEGRATE')).not.toBeNull();
@@ -162,7 +167,7 @@ describe('grants do not leak between tenants', () => {
   it('keeps a granted capability to the business it was granted to', async () => {
     const granted = await seedOn('chat');
     const other = await seedOn('chat');
-    await withBusiness(db, granted, (tx) =>
+    await withBusiness(grantDb(), granted, (tx) =>
       entitlementsRepo.grant(tx, {
         businessId: granted,
         entitlementKey: 'REKODA_INTEGRATE',

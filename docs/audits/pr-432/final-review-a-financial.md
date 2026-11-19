@@ -1,0 +1,86 @@
+# PR #432 final independent review: Reviewer A (financial, accounting, billing truth)
+
+- Reviewed head: `1376d7e80aed5d23682804cc26141aa696462669` (branch `angelo/magical-bell-s81mqc`, merge base `58e6834`)
+- Scope: the whole PR diff, with extra attention on `095ff62..HEAD` (0231 to 0237, G1-1, G3-1, R02, R03, R06, R09).
+- Method: read-only. I read the migrations, repos, services, handlers, web copy and tests, and ran git and grep. No database was touched and no test was run, so every finding below comes from reading the code.
+
+## Findings
+
+### A-1 IMPORTANT: a consumed pack can still be judged "unused" after the allowance moves away and comes back (R09)
+
+- **Where:** `packages/db/migrations/0235_refund_records_and_pack_eligibility.sql:489-504` (the check in `subscription_record_refund`) and `:397-400` (the snapshot in `usage_credit_pack`).
+- **What 0235 checks:** the unit's allowance at the moment of the credit (`pack_credit_entitlements.entitlement`), and that `usage_entitlement()` returns the same number at refund time. The header (lines 29-30) says that equality means "nothing changed the comparison". It does not. `usage_entitlement` (`0222:85-146`) is a live function of `businesses.plan`, `plan_version_id`, the plan version in force, and the add-on holdings active now. It records nothing about what happened between the credit and the refund.
+- **Failure scenario** (all inside the seven-day window, all on the same Lagos-month row):
+  1. The merchant is on Complete (AI_ACTIONS allowance E=200, for example). A 50-unit pack is credited on 25 Oct. The snapshot stores 200.
+  2. A downgrade to Chat (E=100) was already scheduled, and it takes effect at the cycle renewal on 27 Oct. From then on `usage_reserve` spends against 100 + bonus 50. The merchant goes from 120 to 140 used, so 40 of the pack's units are consumed.
+  3. On 31 Oct the merchant upgrades back to Complete. The upgrade is immediate and prorated.
+  4. On 1 Nov the operator records the refund. `usage_entitlement` = 200 = the snapshot, so the check passes. The ceiling is 200 + 50 - 50 = 200, and used 140 is at or under 200, so the pack counts as "unused". The refund is recorded and 50 units are revoked.
+  - The same thing happens when a `MONTHLY_UNITS` add-on holding ends and a new one starts (`business_add_ons.started_at/ends_at`). It also happens when an unpinned business's version in force changes and changes back.
+- **Why it violates the requirements:** R09 says a consumed pack must never later appear unused across upgrades and downgrades. The header's claim, and OD-55 (i) in `docs/REKODA_LAUNCH_READINESS.md:156`, both say a changed allowance is refused. A change that has been reversed is not detected. Only the one-way upgrade case is tested (`packages/db/src/billing/pack-refund.integration.test.ts:419`). No test covers a downgrade, a downgrade then an upgrade back, a holding ending, or a trial conversion.
+- **Suggested fix:** refuse the automatic refund when any allowance input changed after `units_credited_at`. Examples: `businesses.plan_decided_at`, `cycle_started_at` or `plan_version_id` moved since the credit, or a `business_add_ons` row started or ended since it. Alternatively, record a monotonic minimum ceiling on the counter row inside `usage_reserve` and judge against that. Add RED tests for downgrade then upgrade back, and for a holding that ends then restarts. Correct the 0235 header and OD-55 (i).
+- **Confidence:** high on the mechanism. Medium on how likely it is (it needs a renewal-time downgrade followed by an upgrade within seven days of the credit).
+
+### A-2 IMPORTANT: the money leaves before eligibility is fixed, and when eligibility changes in between there is no way to record or recover the refund (R06, R09, invariant 6)
+
+- **Where:** `docs/runbooks/billing-duplicate-payments.md:93-133` (§5 step 1: refund in Paystack first; step 3: then call `/v1/ops/refund` with the Paystack refund id). `0235:475-504` re-judges eligibility only at recording time. `apps/api/src/operator-plane/refund-operations.ts` has no eligibility read and no dry run.
+- **Failure scenario:** a credited pack is eligible (unused, day 6). The operator refunds it in Paystack. The pack's units are still credited, so the merchant keeps spending them, or day 7 passes, or the plan changes. The operator then records it. `subscription_record_refund` refuses with "the pack has been used", "only within seven days", or OD-55. The naira has gone back to the merchant, but Rekoda's record shows the pack paid and its units intact. The R06 "recover by replaying" path cannot help, because a replay only succeeds for an id that was recorded once. OD-55 lists the statically ineligible cases (allowance changed, pack credited before 0235, incorrect charge or service failure). It does not list this race, where the pack was eligible when the money moved.
+- **Why it violates the requirements:** R06 asks for recovery after the provider refund succeeded but the recording failed. Invariant 6 forbids silently absorbing a discrepancy. The design makes the irreversible step (Paystack) come before the step that can still refuse.
+- **Suggested fix:** split the refund in two:
+  1. A `subscription_reserve_refund` step, run before any Paystack action. It judges eligibility, revokes or freezes the pack's units, and records a pending refund intent.
+  2. The existing call, which then only attaches the provider refund id and the amount, and cannot be refused on usage grounds.
+
+  If that is not done, at least add an eligibility read for the operator and record this race in OD-55 as a paid-launch item.
+
+- **Confidence:** high.
+
+### A-3 IMPORTANT: a withdrawn zero-priced upgrade is announced to the merchant as "We are switching your plan on now" (merchant copy truth; regression of the G3-1 intent)
+
+- **Where:** `apps/api/src/billing/billing.service.ts:552-569` (`awaitNoCharge` returns true only when `status !== 'pending'`; otherwise it answers `processing` once the 4 s wait ends). `apps/api/src/jobs/apply-no-charge-upgrade.handler.ts:69-99` (since `e5b2bd2`, a set-aside is rolled back and the charge is withdrawn, so it stays `pending`). `apps/web/src/app/app/billing/actions.ts:39` and `apps/web/src/app/app/billing/page.tsx:237-243`.
+- **Failure scenario:** the merchant upgrades with under a day left. The worker withdraws the charge for `cycle_ended` (a queue backlog), `subscription_decided_after_charge`, or `price_not_verified`. The charge stays `pending` with `superseded_at` and `abandoned_at` set, and the API answers `processing`. The page tells the merchant "We are switching your plan on now… Refresh this page in a moment to see your new plan." Refreshing never shows the plan and explains nothing (`processingIssue` covers only dead `billing.process` jobs). The same happens when the job fails on its last attempt (handler lines 101-112): it is audited and logged, but the merchant is told nothing. The test itself asserts this answer (`apps/api/src/billing/settlement-verifies-price.integration.test.ts:529`: `processing`, then withdrawn). `price_not_verified` is deterministic, so in that case the merchant is told this on every attempt.
+- **Why it violates the requirements:** the merchant is told a plan change is happening when it has been refused. This is the same class of false statement R03 forbids for support review, and that G3-1 set out to remove. The "Nothing was charged" part is true.
+- **Suggested fix:** in `awaitNoCharge`, treat `supersededAt`/`abandonedAt` as a terminal "withdrawn" outcome and return `unavailable` (for example `no_cycle`, or a new `upgrade_withdrawn` with honest copy). On the billing page, surface a pending zero-priced upgrade that is withdrawn or has failed, so "processing" is not left standing.
+- **Confidence:** high.
+
+### A-4 IMPORTANT: support-review pricing still disagrees with the application about whether a change is an upgrade, for every annual subscriber (R02)
+
+- **Where:** `packages/db/migrations/0232_support_review_prices_like_the_resolver.sql` (request and resolve both compare `review_plan_price(..., b.billing_interval, ...)`) against `apps/api/src/billing/billing.service.ts:395-401,1134-1136` (`pricingIntervalFor` compares every non-first-purchase change at **monthly** prices).
+- **Failure scenario:** an annual cycle is never a standard month (`packages/core/src/billing.ts:215-241`), so every annual subscriber's upgrade goes to support review. The application calls chat → complete an upgrade because Complete's monthly price is higher. The database compares annual prices. Under the test catalogue (`packages/db/src/billing/support-review-pricing.integration.test.ts:91-104`: Complete's explicit annual price 9,000,000 against Chat's 9,900,000), the database refuses. The merchant gets "We could not set up that change" for a change the application classified as an upgrade. The reverse (the application says downgrade, the database would say upgrade) is never asked. The result is honest (R03 holds) but wrong.
+- **Why it violates the requirements:** the 0232 header says it fixed the case where "the database could disagree with the application about whether a change is an upgrade at all". It still disagrees, because the two compare at different intervals. Either the application's monthly comparison or the database's annual comparison is not what OWN-40/R02 intend. They must be the same rule.
+- **Suggested fix:** pick one comparison interval. The owner's R02 wording ("explicit annual price wins") suggests the cycle's interval. Use it in both `pricingIntervalFor` (for the support-review classification) and the database, or pass the application's comparison interval into the database. Add an annual case that crosses the application and the database (classification plus request).
+- **Confidence:** high on the divergence. Medium on which side the owner wants.
+
+### A-5 MINOR: a `price_not_verified` zero-priced upgrade (a possible forged charge, OD-51) now leaves only an audit row and a log line
+
+`apply-no-charge-upgrade.handler.ts:88-93`. Before G3-1 it appeared in the operator's paid-but-not-applied queue. Now it is `ALERT billing_no_charge_price_not_verified …` on `log.error`, and that string is not wired to the ops-alert pipeline (`apps/api/src/health/ops-alerts.ts:131` is the routed path; no reference to it exists outside the handler). The settlement refusal itself still holds. Suggested fix: raise it through `ops-alerts`, or list `no_charge_upgrade_withdrawn` with reason `price_not_verified` on an operator work list.
+
+### A-6 MINOR: the public `/refunds` promise is wider than the mechanism
+
+`apps/web/src/app/refunds/page.tsx:60-62,103-106` says "Untouched within 7 days, we refund it". Since 0235, an untouched pack is refused whenever the allowance changed (a trial conversion, any plan move). OD-55 records the `/refunds` mismatch only for the "incorrect charge" and "service failure" rows (ii), not for (i). Add (i) to the copy alignment in OD-55, option B or C.
+
+### A-7 MINOR: the refund cap and replay details
+
+`0235:470` caps refunds at `amount_k`, not `paid_amount_k`. A verified overpayment's excess (G-107) can only be recorded as a refund of the charge itself, which inflates `refunded_amount_k` and can mark a delivered charge `refunded`. Also, `0235:462` treats a replay with a different `reason` as a silent success. Suggested fix: refuse a reason mismatch on replay. Record overpayment excess separately, or keep it with the OD-53 (5) record-only path.
+
+### A-8 MINOR: a support-reviewed upgrade changes the plan with no Rekoda charge on record
+
+`0232` `subscription_operator_resolve_review` moves the plan and keeps the paid-through date, but it opens no charge. Any difference the operator collects is outside `subscription_charges`. The test uses the free-text reason "paid the difference". This follows the OD-50/OWN-91 ruling, but nothing records how the difference is collected or recorded. Record it as an open owner question next to OD-53.
+
+### A-9 MINOR: a transient settlement failure at the Lagos month boundary
+
+`billing.service.ts` `applySettledCharge` passes `usagePeriod(input.when)`, where `when` is `new Date()` taken after the transaction started (`process-billing-charge.handler.ts:244`). `usage_credit_pack` (`0235:381-386`) compares against `now()`, which is the transaction start. A settlement whose transaction straddles midnight Lagos raises "not the meter row in use", rolls back and retries. It heals itself, but it uses up an attempt. Fix: let the database choose the row, or derive `when` from the database clock.
+
+## Checked and found sound
+
+- **R06 per-provider-refund idempotency.** `subscription_refunds` has a unique `(provider, provider_refund_id)` (`0235:43-58`). A replay under the charge lock gets a fresh READ COMMITTED snapshot, so a sequential or concurrent replay of the same charge records once (`0235:446-468`). The same id on another charge or business is refused: by the lookup, or by the `unique_violation` handler, which aborts the whole call, including any usage-counter change (`0235:511-519`). Multiple genuine partials are capped at `amount_k`. No money moves. The actor is the verified `operator:<subject>`, and the body has no `actor` field (`packages/contracts/src/billing-api.ts:499-520`; `apps/api/src/health/ops-refund.controller.ts:66`). The 404 comes before identity is read (`OperatorPlaneServedHere` before `OperatorGuard`). Tests: `packages/db/src/billing/pack-refund.integration.test.ts:305-399`.
+- **Pack refund arithmetic.** Concurrent refunds and reserves serialise on `usage_counters` (`FOR UPDATE`, against `ON CONFLICT DO UPDATE`). `used` includes in-flight reservations (`0222:240-255`). Two packs refunded in sequence cannot both count as unused when one was consumed (the ceiling shrinks by the first revocation). Integer kobo and `bigint` are used throughout.
+- **The charge guard (G1-1).** The application's insert refuses every credit and revocation column preset (`0235:119-139`). The usage writer may stamp only the credit facts of a paid, not-set-aside pack charge, once (`0235:145-158`). Settlement moves status only out of `pending` and cannot write refund or credit facts (`0235:160-208`). Settlement's column grants exclude `amount_k`, `plan`, `kind`, `quantity` and the period (`0217:136-140`).
+- **`usage_credit_pack`.** It is exactly-once per charge and per purchase (`0235:301-312`; unique index backstop 0214). The units are derived from the catalogue version at `priced_at`, and the amount must equal price × quantity (catalogue mode). It refuses an underpayment or a NULL paid amount. It credits only the meter row in use. The snapshot insert is granted only to `rekoda_usage_writer`, and no runtime role can write `pack_credit_entitlements` or `subscription_refunds` (test at `pack-refund.integration.test.ts:453`).
+- **Settlement re-pricing.** `verifiedPriceRefusal` and `expectedChargeTerms` (`billing.service.ts:965-1038`) use the same functions as the opener, from the charge's recorded pricing source (`termsOfCharge`). A mismatch is recorded as paid and set aside, never applied. The upgrade and renewal frozen-period checks are at `billing.service.ts:827-845`.
+- **Zero-priced upgrade (G3-1).** The savepoint rollback leaves no `paid` row, no `no_charge:` provider reference and no unapplied-queue item. The withdrawal re-locks the business first (`apply-no-charge-upgrade.handler.ts:53-99`). Only a pending, current, zero-amount upgrade is processed (lines 39-48). The copy problem is A-3.
+- **R03.** `requestPlanReview` runs in a savepoint and returns null on 22023 (`packages/db/src/repos/subscriptions.ts:345-363`). `changePlan` answers `support_review` only when a review id exists, and otherwise `support_review_unavailable` (`billing.service.ts:418-431`). The web copy for the unavailable case claims no review (`page.tsx:111-112`).
+- **R02 resolver parity (apart from A-4).** `review_plan_price` matches `versionForBusiness` + `priceAt` + OWN-40 ×10. It covers the pin rule, NGN only, the latest `effective_from`, an explicit annual price winning, and NULL refused (`0232:35-72`; `apps/api/src/billing/plan-terms.ts:152-175`). The paid-through date is preserved in the resolution (`plan_expires_at` is never written; the audit records `paidThroughKept`). The 0219 later-schedule rule is retained.
+- **Rekoda money stays out of merchant books.** No PR-added billing, settlement, refund or operator code path writes `journal`, `ledger_*` or any merchant record. Grep of the diff and of 0193-0237 found ledger tables only in retention and test listings.
+- **R12/R13.** Pending-charge reconciliation (OD-53 (4), GATE 8) and same-charge duplicate-payment recovery (OD-53 (1), (2), (5), GATE 9) are explicitly NOT BUILT and listed as paid-launch blockers (`docs/REKODA_LAUNCH_READINESS.md:455,466,783`). The runbook tells the operator not to call `/v1/ops/refund` for a `duplicate_payment` (`docs/runbooks/billing-duplicate-payments.md:96-100`).
+- **Merchant copy.** "Nothing was charged" claims on the plan-change problems are accurate. `paid_twice` copy says no units were added. `billingProcessingCopy` claims no outcome (`apps/web/src/lib/billing-pay-copy.ts:368-385`).
+
+BLOCKING=0 IMPORTANT=4 MINOR=5

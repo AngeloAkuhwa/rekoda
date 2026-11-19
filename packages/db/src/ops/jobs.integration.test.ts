@@ -16,7 +16,10 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, createLockClient, withBusiness, type Db, type LockClient } from '../client.js';
 import { identity, jobsRepo } from '../index.js';
-import { migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
+import { migrate, ownerDb, requireUrls, truncateAll, type Urls } from '../testing.js';
+
+/* A stalled lease is staged as the owner: since 0220 the application may change a job's lease
+ * only as it finishes or requeues the job. */
 
 let urls: Urls;
 let appDb: Db;
@@ -215,7 +218,7 @@ describe('a worker that dies mid-job', () => {
     expect(await jobsRepo.claimNext(workerDb, 'worker-2')).toBeNull();
 
     // Age the lock rather than waiting five minutes for it.
-    await withBusiness(appDb, businessId, (tx) =>
+    await withBusiness(ownerDb(), businessId, (tx) =>
       tx.execute(
         sql`UPDATE jobs SET locked_at = now() - interval '10 minutes' WHERE id = ${job!.id}::uuid`,
       ),
@@ -244,7 +247,7 @@ describe('a worker that dies mid-job', () => {
     ] as const) {
       const job = await jobsRepo.claimNext(workerDb, worker);
       expect(job?.attempts).toBe(attempt);
-      await withBusiness(appDb, businessId, (tx) =>
+      await withBusiness(ownerDb(), businessId, (tx) =>
         tx.execute(
           sql`UPDATE jobs SET locked_at = now() - interval '10 minutes' WHERE id = ${job!.id}::uuid`,
         ),
@@ -277,7 +280,7 @@ describe('a worker that dies mid-job', () => {
     expect(failed?.failureCategory).toBe('handler_error');
     for (const worker of ['worker-2', 'worker-3']) {
       const job = await jobsRepo.claimNext(workerDb, worker);
-      await withBusiness(appDb, businessId, (tx) =>
+      await withBusiness(ownerDb(), businessId, (tx) =>
         tx.execute(
           sql`UPDATE jobs SET locked_at = now() - interval '10 minutes' WHERE id = ${job!.id}::uuid`,
         ),
@@ -291,7 +294,8 @@ describe('a worker that dies mid-job', () => {
       lastError: 'reclaimed past the last attempt: its lease expired',
       failureCategory: 'lease_expired_after_handler_error',
     });
-    const raw = await workerDb.execute<{ row: string }>(
+    /* The whole raw row, read as the owner: the worker may not read a whole job row since 0228. */
+    const raw = await ownerDb().execute<{ row: string }>(
       sql`SELECT row_to_json(j)::text AS row FROM jobs j WHERE business_id = ${businessId}::uuid`,
     );
     expect([...raw][0]?.row).not.toMatch(/sk_live_|xxxxxxxx|provider said|2348040000001/);
@@ -322,7 +326,12 @@ describe('the queue is inside the tenancy perimeter, not beside it', () => {
      * and every other test in this file is describing a system we no longer
      * have.
      */
-    expect(await jobsRepo.claimNext(appDb, 'the-api')).toBeNull();
+    /* Since 0220 the claim's own write is refused outright (the application may not set
+     * `attempts`); before, the policy left it nothing to see. Either way: no job. */
+    const claimed = await jobsRepo
+      .claimNext(appDb, 'the-api')
+      .catch((error: { cause?: { message?: string } }) => String(error.cause?.message));
+    expect(claimed === null || /permission denied/.test(String(claimed))).toBe(true);
 
     // …and the worker, holding the right credential, gets it immediately.
     expect(await jobsRepo.claimNext(workerDb, 'the-worker')).not.toBeNull();
@@ -439,7 +448,8 @@ describe('queue order is a promise, not a hope (H7a)', () => {
     const yes = await enqueue(businessId);
     if (!failure || !yes) throw new Error('both jobs should have enqueued');
     // The receipt failed once and backed off: its run_at is now in the future.
-    await withBusiness(appDb, businessId, (tx) =>
+    /* Staged as the owner: the worker's retry and defer write run_at, never the application (0227). */
+    await withBusiness(ownerDb(), businessId, (tx) =>
       tx.execute(sql`UPDATE jobs SET run_at = now() + interval '1 minute'
                       WHERE id = ${failure.id}::uuid`),
     );
@@ -455,7 +465,8 @@ describe('queue order is a promise, not a hope (H7a)', () => {
     if (!first || !second) throw new Error('both jobs should have enqueued');
     // The first message stepped back behind a failed receipt: deferClaimed
     // pushed its run_at forward. It is still the older message.
-    await withBusiness(appDb, businessId, (tx) =>
+    /* Staged as the owner: the worker's retry and defer write run_at, never the application (0227). */
+    await withBusiness(ownerDb(), businessId, (tx) =>
       tx.execute(sql`UPDATE jobs SET run_at = now() + interval '1 minute'
                       WHERE id = ${first.id}::uuid`),
     );
@@ -482,6 +493,8 @@ describe('queue order is a promise, not a hope (H7a)', () => {
     const failure = await enqueue(businessId, { kind: 'delivery.status' });
     const yes = await enqueue(businessId);
     if (!failure || !yes) throw new Error('both jobs should have enqueued');
+    /* The receipt is claimed, as a worker would: the application finishes only a running job. */
+    expect((await jobsRepo.claimNext(workerDb, 'lane-a'))?.id).toBe(failure.id);
 
     await withBusiness(appDb, businessId, async (tx) => {
       // Default: same kind only, as before.

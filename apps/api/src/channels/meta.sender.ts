@@ -15,6 +15,7 @@ import {
   type OutboundMessage,
   type SendResult,
 } from './sender.js';
+import { NO_TEMPLATES, type MetaTemplates } from './template-slots.js';
 
 /**
  * WhatsApp Cloud API, by `fetch`.
@@ -79,21 +80,12 @@ export class MetaSender implements MessageSender {
     private readonly phoneNumberId: string,
     private readonly graphVersion = 'v21.0',
     private readonly timeoutMs = 10_000,
-    /** Meta-approved authentication template. Null means sign-in cannot send. */
-    private readonly otpTemplate: string | null = null,
-    private readonly otpTemplateLocale = 'en',
-    /** Meta-approved UTILITY template for grace reminders. Null means silence. */
-    private readonly billingTemplate: string | null = null,
-    private readonly billingTemplateLocale = 'en',
-    /** Meta-approved UTILITY template for retention warnings. */
-    private readonly retentionTemplate: string | null = null,
-    private readonly retentionTemplateLocale = 'en',
-    /** Meta-approved UTILITY template for "your document is ready" (G-67). */
-    private readonly documentTemplate: string | null = null,
-    private readonly documentTemplateLocale = 'en',
-    /** Meta-approved UTILITY template for trial reminders (G-109). Null: none is sent. */
-    private readonly trialTemplate: string | null = null,
-    private readonly trialTemplateLocale = 'en',
+    /**
+     * The five slots' templates, each the exact name and language the environment configures
+     * (`ApiConfig.metaTemplates`, OWN-93). A null slot cannot send: that message is refused as not
+     * sent, never replaced by free text or by a name or language of the code's choosing.
+     */
+    private readonly templates: MetaTemplates = NO_TEMPLATES,
     /**
      * Graph's host. Injectable for the same reason the Paystack adapter's is:
      * the claims worth having about an adapter are about what goes over the
@@ -110,7 +102,8 @@ export class MetaSender implements MessageSender {
    * the document silently, and the owner can still say "resend" at any time.
    */
   async sendDocumentNotice(notice: OutboundDocumentNotice): Promise<SendResult> {
-    if (!this.documentTemplate) {
+    const template = this.templates.document;
+    if (!template) {
       throw new SendFailed('no document template configured (META_DOCUMENT_TEMPLATE)');
     }
     return this.post({
@@ -119,8 +112,8 @@ export class MetaSender implements MessageSender {
       to: notice.to,
       type: 'template',
       template: {
-        name: this.documentTemplate,
-        language: { code: this.documentTemplateLocale },
+        name: template.name,
+        language: { code: template.locale },
         components: [
           {
             type: 'body',
@@ -142,7 +135,8 @@ export class MetaSender implements MessageSender {
    * as delivered.
    */
   async sendTrialNotice(notice: OutboundTrialNotice): Promise<SendResult> {
-    if (!this.trialTemplate) {
+    const template = this.templates.trial;
+    if (!template) {
       /* Transient and sender-wide: configuration may be fixed, so the stage must not burn. */
       throw new SendFailed(
         'no trial template configured (META_TRIAL_TEMPLATE)',
@@ -170,8 +164,8 @@ export class MetaSender implements MessageSender {
       to: notice.to,
       type: 'template',
       template: {
-        name: this.trialTemplate,
-        language: { code: this.trialTemplateLocale },
+        name: template.name,
+        language: { code: template.locale },
         components: [
           {
             type: 'body',
@@ -194,7 +188,8 @@ export class MetaSender implements MessageSender {
    * that promises notice cannot delete somebody it failed to notify.
    */
   async sendRetentionNotice(notice: OutboundRetentionNotice): Promise<SendResult> {
-    if (!this.retentionTemplate) {
+    const template = this.templates.retention;
+    if (!template) {
       throw new SendFailed('no retention template configured (META_RETENTION_TEMPLATE)');
     }
     return this.post({
@@ -203,8 +198,8 @@ export class MetaSender implements MessageSender {
       to: notice.to,
       type: 'template',
       template: {
-        name: this.retentionTemplate,
-        language: { code: this.retentionTemplateLocale },
+        name: template.name,
+        language: { code: template.locale },
         components: [
           {
             type: 'body',
@@ -228,7 +223,8 @@ export class MetaSender implements MessageSender {
    * a sweep that reports it sent something.
    */
   async sendBillingNotice(notice: OutboundBillingNotice): Promise<SendResult> {
-    if (!this.billingTemplate) {
+    const template = this.templates.billing;
+    if (!template) {
       /* Nothing left: a definite non-delivery that an operator clears by setting the template
        * (SUB-03r), so the grace sweep gives its claim back and retries. */
       throw new SendFailed(
@@ -255,8 +251,8 @@ export class MetaSender implements MessageSender {
       to: notice.to,
       type: 'template',
       template: {
-        name: this.billingTemplate,
-        language: { code: this.billingTemplateLocale },
+        name: template.name,
+        language: { code: template.locale },
         components: [
           {
             type: 'body',
@@ -284,7 +280,8 @@ export class MetaSender implements MessageSender {
    * which is how a sign-in flow passes every test and reaches nobody.
    */
   async sendAuthCode(code: OutboundAuthCode): Promise<SendResult> {
-    if (!this.otpTemplate) {
+    const template = this.templates.otp;
+    if (!template) {
       throw new SendFailed('no authentication template configured (META_OTP_TEMPLATE)');
     }
     return this.post({
@@ -293,8 +290,8 @@ export class MetaSender implements MessageSender {
       to: code.to,
       type: 'template',
       template: {
-        name: this.otpTemplate,
-        language: { code: this.otpTemplateLocale },
+        name: template.name,
+        language: { code: template.locale },
         components: [
           { type: 'body', parameters: [{ type: 'text', text: code.code }] },
           {

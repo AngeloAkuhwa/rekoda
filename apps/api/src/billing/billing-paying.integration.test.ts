@@ -20,8 +20,15 @@ import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PLAN_PRICES_K } from '@rekoda/core';
 import { billingOverviewResponse } from '@rekoda/contracts';
-import { billingRepo, createDb, sql, subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import { createDb, sql, subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
+import {
+  applyFixtureCycle,
+  migrate,
+  requireUrls,
+  truncateAll,
+  type Urls,
+} from '@rekoda/db/testing';
+import { setPlanForTest, settlementDb } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { applySettledCharge, BillingService } from './billing.service.js';
 import { CONFIG, type ApiConfig } from '../config.js';
@@ -97,7 +104,7 @@ async function onboard(phone: string) {
 /** Put a business on a paid cycle, as a settled first purchase would. */
 async function putOnPlan(businessId: string, plan: string, cycleStart: Date, renewsAt: Date) {
   await withBusiness(db, businessId, (tx) =>
-    subscriptionsRepo.applyCycle(tx, businessId, {
+    applyFixtureCycle(tx, businessId, {
       plan,
       cycleStartedAt: cycleStart,
       renewsAt,
@@ -223,22 +230,35 @@ describe('paying, and the gate in front of it', () => {
 
   it('treats an open-ended paid plan (no expiry) as custom, not prorated (OWN-33)', async () => {
     const { businessId } = await onboard('+2348177100097');
-    await billingRepo.setPlan(db, {
+    await setPlanForTest(db, {
       businessId,
       plan: 'chat',
       expiresAt: null,
       actor: 'operator:test-g115',
     });
+    const before = await withBusiness(db, businessId, (tx) =>
+      subscriptionsRepo.subscriptionFor(tx, businessId),
+    );
 
     const billing = confirmedBilling();
     const quote = await billing.quote(businessId, 'complete', new Date());
     expect(quote.supportReview).toBe(true);
     const answer = await billing.changePlan(businessId, 'complete', new Date());
+    /* OWN-34: a cycle with a missing expiry answers support_review, with no charge and no change.
+     * OD-50 records a review only against a paid-through date (0213), so none exists here, and the
+     * answer claims none (R03): the copy asks the merchant to contact us. */
     expect(answer).toEqual({ state: 'unavailable', reason: 'support_review' });
+    const [reviews] = await ownerDb.execute<{ n: number }>(sql`
+      SELECT count(*)::int AS n FROM plan_change_reviews WHERE business_id = ${businessId}::uuid`);
+    expect(reviews!.n).toBe(0);
     const charges = await withBusiness(db, businessId, (tx) =>
       subscriptionsRepo.chargesFor(tx, businessId),
     );
     expect(charges.count).toBe(0);
+    const after = await withBusiness(db, businessId, (tx) =>
+      subscriptionsRepo.subscriptionFor(tx, businessId),
+    );
+    expect(after).toEqual(before);
   });
 
   describe('an operator-defined arrangement is never prorated, whatever its length (OWN-33 Option B)', () => {
@@ -257,7 +277,7 @@ describe('paying, and the gate in front of it', () => {
     ])('sends %s granted by an operator to support review', async (_label, days) => {
       const { businessId } = await onboard(`+23481771${String(2000 + days).padStart(5, '0')}`);
       const now = new Date();
-      await billingRepo.setPlan(db, {
+      await setPlanForTest(db, {
         businessId,
         plan: 'chat',
         expiresAt: new Date(now.getTime() + days * DAY),
@@ -331,7 +351,7 @@ describe('paying, and the gate in front of it', () => {
         new Date(now.getTime() - 11 * DAY),
         new Date(now.getTime() + 19 * DAY),
       );
-      await billingRepo.setPlan(db, {
+      await setPlanForTest(db, {
         businessId,
         plan: 'chat',
         expiresAt: new Date(now.getTime() + 30 * DAY),
@@ -346,7 +366,7 @@ describe('paying, and the gate in front of it', () => {
     it('concurrent and repeated requests open no charge and cannot slip past the rule', async () => {
       const { businessId } = await onboard('+2348177100304');
       const now = new Date();
-      await billingRepo.setPlan(db, {
+      await setPlanForTest(db, {
         businessId,
         plan: 'chat',
         expiresAt: new Date(now.getTime() + 30 * DAY),
@@ -376,7 +396,7 @@ describe('paying, and the gate in front of it', () => {
     const answer = await confirmedBilling().changePlan(businessId, 'complete', now);
     if (answer.state !== 'payment_required') throw new Error('expected a charge');
 
-    await withBusiness(db, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       applySettledCharge(tx, {
         businessId,
         reference: answer.reference,
@@ -407,7 +427,7 @@ describe('paying, and the gate in front of it', () => {
       sql`UPDATE businesses SET subscription_origin = NULL WHERE id = ${businessId}::uuid`,
     );
 
-    const result = await withBusiness(db, businessId, (tx) =>
+    const result = await withBusiness(settlementDb(), businessId, (tx) =>
       applySettledCharge(tx, {
         businessId,
         reference: answer.reference,
@@ -439,7 +459,7 @@ describe('paying, and the gate in front of it', () => {
       sql`UPDATE businesses SET plan_expires_at = cycle_started_at + interval '365 days' WHERE id = ${businessId}::uuid`,
     );
 
-    const result = await withBusiness(db, businessId, (tx) =>
+    const result = await withBusiness(settlementDb(), businessId, (tx) =>
       applySettledCharge(tx, {
         businessId,
         reference: answer.reference,

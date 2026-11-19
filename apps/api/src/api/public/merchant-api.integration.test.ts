@@ -32,9 +32,12 @@ import { usagePeriod } from '@rekoda/core';
 import {
   grantCapacityAddOn,
   migrate,
+  ownerDb as entitlementOwnerDb,
   requireUrls,
+  settlementDb,
   truncateAll,
   type Urls,
+  creditBonusForTest,
 } from '@rekoda/db/testing';
 
 const SECRET = 'merchant-api-secret-at-least-32-chars';
@@ -104,7 +107,7 @@ async function merchant(phone: string, name: string): Promise<Merchant> {
   ).json() as { sessionToken: string; businessId: string };
   const session = { authorization: `Bearer ${created.sessionToken}` };
 
-  await withBusiness(db, created.businessId, (tx) =>
+  await withBusiness(entitlementOwnerDb(), created.businessId, (tx) =>
     entitlementsRepo.grant(tx, {
       businessId: created.businessId,
       entitlementKey: 'REKODA_API',
@@ -700,8 +703,7 @@ describe('G-77: every public API sale is its own financial event', () => {
     /* What this release stored is what the previous release computes, and
      * what the previous release stored is what this one computes. */
     expect(stored?.request_hash).toBe(requestHash(legacy));
-    /* While the sale itself is booked with its own event id, never the
-     * application's. */
+    /* While the sale itself is booked with its own event id, never the application's. */
     const ids = await identities(shop.businessId);
     expect(ids).toHaveLength(1);
     expect(ids[0]!.source_id).toMatch(/^sale-k-[0-9a-f]{32}$/);
@@ -917,9 +919,7 @@ describe('reading', () => {
 });
 
 /**
- * Buy the API capacity this suite spends.
- *
- * §27 sells API units with the API product and no plan grants them (every
+ * Buy the API capacity this suite spends. §27 sells API units with the API product and no plan grants them (every
  * plan sells zero of all three, which is why the allowance comes from the
  * plan), so an entitled business with nothing bought is refused. That is
  * the product, not a test detail, and the two units are bought differently
@@ -929,8 +929,8 @@ describe('reading', () => {
  */
 async function creditApiCapacity(businessId: string): Promise<void> {
   const period = usagePeriod(new Date());
-  await withBusiness(db, businessId, async (tx) => {
-    await usageRepo.creditBonus(tx, businessId, period, 'API_REQUEST_UNITS', 1_000);
-  });
+  await withBusiness(settlementDb(), businessId, (tx) =>
+    creditBonusForTest(tx, businessId, period, 'API_REQUEST_UNITS', 1_000),
+  );
   await grantCapacityAddOn(urls, businessId, 'API_APPLICATIONS', 20);
 }

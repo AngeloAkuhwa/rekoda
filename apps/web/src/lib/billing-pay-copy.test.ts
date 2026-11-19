@@ -1,7 +1,10 @@
 import type { BillingChargeView } from '@rekoda/contracts';
 import { describe, expect, it } from 'vitest';
 import {
+  BILLING_PROCESSING_STRIP,
+  billingProcessingCopy,
   lapsedPlanCopy,
+  noChargeUpgradeCopy,
   checkoutInputProblem,
   checkoutRefusalCopy,
   confirmCopy,
@@ -364,5 +367,89 @@ describe('the lapsed-plan banner says what actually ended (SUB-05)', () => {
         );
       }
     }
+  });
+});
+
+describe('billingProcessingCopy (OWN-76)', () => {
+  const since = '2026-11-08T10:00:00.000Z';
+  const all = [true, false].flatMap((recovering) =>
+    [true, false].map((owner) => billingProcessingCopy({ since, recovering }, owner)),
+  );
+  it('never claims an outcome: no failure, no success, no promised plan change, no confirmation', () => {
+    for (const text of all) {
+      expect(text).not.toMatch(/fail|did not go through|declined|received your payment/i);
+      expect(text).not.toMatch(/plan will|will be updated|confirmed|extended|activated/i);
+      expect(text).toMatch(/Your records are safe/);
+      expect(text).toMatch(/result will show on this page/);
+    }
+  });
+  it('never tells the owner to stop paying outright, which could let a renewal lapse', () => {
+    for (const text of all) expect(text).not.toMatch(/do not pay|don't pay/i);
+    expect(billingProcessingCopy({ since, recovering: false }, true)).toMatch(
+      /message us on WhatsApp before paying again/,
+    );
+  });
+  it('says the team is processing it again once an operator has started a recovery', () => {
+    expect(billingProcessingCopy({ since, recovering: true }, true)).toMatch(/processing .* again/);
+  });
+  it('asks nothing of a member who is not the owner', () => {
+    expect(billingProcessingCopy({ since, recovering: false }, false)).not.toMatch(
+      /\bpay(ing)?\b/i,
+    );
+  });
+  it('the dashboard strip points to billing and claims nothing about money', () => {
+    expect(BILLING_PROCESSING_STRIP).toMatch(/See billing/);
+    expect(BILLING_PROCESSING_STRIP).not.toMatch(/fail|paid|declined/i);
+  });
+});
+
+describe('noChargeUpgradeCopy (F-2)', () => {
+  const at = (state: 'processing' | 'applied' | 'withdrawn' | 'failed') =>
+    noChargeUpgradeCopy({ plan: 'complete', state });
+  it('says the plan is being switched on only while it is, and that it is on once it is', () => {
+    expect(at('processing')).toMatch(/^We are switching your plan on now/);
+    expect(at('applied')).toMatch(/^Done\. You are on complete now/);
+    expect(
+      noChargeUpgradeCopy({ plan: 'complete', state: 'applied' }, () => 'Rekoda Complete'),
+    ).toMatch(/^Done\. You are on Rekoda Complete now/);
+  });
+  it('says nothing when there is none, or a newer request replaced it (an old address never revives it)', () => {
+    expect(noChargeUpgradeCopy(null)).toBeNull();
+  });
+  it('after a withdrawal or a stopped request, says the plan has not changed and offers the way on', () => {
+    for (const text of [at('withdrawn'), at('failed')]) {
+      expect(text).toMatch(/your plan has not changed/);
+      expect(text).toMatch(/Choose the plan again/);
+      expect(text).not.toMatch(/switching your plan on now|is on now/);
+    }
+  });
+  it('never mentions a payment, a failure of a payment, a job or an error', () => {
+    for (const state of ['processing', 'applied', 'withdrawn', 'failed'] as const) {
+      const text = at(state)!;
+      expect(text).toMatch(/Nothing was charged/);
+      expect(text).not.toMatch(/payment|did not go through|declined|job|error|worker|settlement/i);
+    }
+  });
+});
+
+describe('a zero-priced upgrade is never offered as a payment (F-2 review)', () => {
+  const free = (status: BillingChargeView['status']): BillingChargeView => ({
+    ...charge('FREE', status),
+    kind: 'upgrade',
+    plan: 'complete',
+    amountK: 0,
+  });
+  it('a pending ₦0 upgrade is not a charge waiting for money: no pay card', () => {
+    expect(pendingCharge([free('pending')])).toBeNull();
+    expect(pendingCharge([free('pending')], 'FREE')).toBeNull();
+    // A real payment beside it is still the one offered.
+    expect(pendingCharge([free('pending'), charge('B', 'pending')])?.reference).toBe('B');
+  });
+  it('the history names it as a plan switch, never "Awaiting payment" or "Paid"', () => {
+    expect(chargeStatusLabel('pending', false, 0)).toBe('Switching plan');
+    expect(chargeStatusLabel('paid', false, 0)).toBe('No charge');
+    expect(chargeStatusLabel('pending', true, 0)).toBe('Replaced by a newer choice');
+    expect(chargeStatusLabel('pending', false, 990_000)).toBe('Awaiting payment');
+    expect(chargeStatusLabel('paid', false, 990_000)).toBe('Paid');
   });
 });

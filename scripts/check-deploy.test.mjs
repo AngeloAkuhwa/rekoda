@@ -105,7 +105,7 @@ test('the database network given a route out, or web joining it', () => {
       ),
   });
   expectProblem(found, /network must be internal/);
-  expectProblem(found, /must hold exactly api, migrate, postgres, worker/);
+  expectProblem(found, /must hold exactly api, migrate, operator, postgres, settlement, worker/);
 });
 
 test('a serving process that is not restarted or health-checked', () => {
@@ -237,7 +237,7 @@ test("Caddy's log keeping request URIs, or a proxy that skips the client address
 test('the visitor header: set for web, removed on the API host (G-71)', () => {
   const unset = edited('caddyfile', '\t\theader_up X-Rekoda-Client-IP {client_ip}\n', '');
   expectProblem(problems(unset), /reverse_proxy web:3000 must set X-Rekoda-Client-IP/);
-  const passed = edited('caddyfile', '\t\theader_up -X-Rekoda-Client-IP\n', '');
+  const passed = edited('caddyfile', '\n\t\theader_up -X-Rekoda-Client-IP\n', '\n');
   expectProblem(problems(passed), /reverse_proxy api:3001 must remove X-Rekoda-Client-IP/);
   /* A second route to web inside the site, and a new hostname for web: each
    * would hand web whatever a browser sent under the name, so the visitor

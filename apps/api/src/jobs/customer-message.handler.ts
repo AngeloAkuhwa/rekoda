@@ -657,12 +657,22 @@ async function ingestCatalogueOrder(
    * Every exit that produces no order and no invoice gives back everything
    * this event holds, each unit on its own. If any give-back fails, this
    * throws: a terminal refusal is never recorded while its refund is owed.
+   *
+   * One after the other, never at once (closeout round G of PR #432): each give-back is a
+   * transaction on the application pool opened while this job's runner transaction is open, and
+   * the worker's pool (`appPoolSize`, lanes + 2) is free of a circular wait only while a lane holds
+   * at most one such transaction at a time. Both are still attempted whatever the first did.
    */
   const settle = async (): Promise<void> => {
-    const refunds = await Promise.allSettled(
-      (['CATALOGUE_ORDERS', 'DOCUMENT_GENERATION'] as const).map(giveBack),
-    );
-    if (refunds.some((r) => r.status === 'rejected')) {
+    let failed = false;
+    for (const unit of ['CATALOGUE_ORDERS', 'DOCUMENT_GENERATION'] as const) {
+      try {
+        await giveBack(unit);
+      } catch {
+        failed = true;
+      }
+    }
+    if (failed) {
       throw new Error('customer.order: a refund failed; the job retries it');
     }
   };

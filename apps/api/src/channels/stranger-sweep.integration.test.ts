@@ -19,6 +19,9 @@ import { sweepUnknownSenders } from './stranger-sweep.js';
 let urls: Urls;
 let workerDb: Db;
 let closeWorker: () => Promise<void>;
+/** Ingress records events on the application credential; the worker may no longer insert them (0204). */
+let appDb: Db;
+let closeApp: () => Promise<void>;
 const sender = new StubSender();
 const vaultKey = randomBytes(32).toString('hex');
 const matchKey = randomBytes(32).toString('hex');
@@ -27,10 +30,12 @@ beforeAll(async () => {
   urls = requireUrls();
   await migrate(urls);
   ({ db: workerDb, close: closeWorker } = createDb(urls.worker, { max: 4 }));
+  ({ db: appDb, close: closeApp } = createDb(urls.app, { max: 2 }));
 });
 
 afterAll(async () => {
   await closeWorker?.();
+  await closeApp?.();
 });
 
 beforeEach(async () => {
@@ -80,7 +85,7 @@ async function arrive(
   eventType = 'message.text',
   phoneNumberId = 'PNID',
 ) {
-  return events.recordEvent(workerDb, {
+  return events.recordEvent(appDb, {
     provider: 'meta',
     eventType,
     externalId: wamid,
@@ -202,7 +207,7 @@ describe('sweeping unknown senders', () => {
   });
 
   it('does not greet anybody for a delivery receipt', async () => {
-    await events.recordEvent(workerDb, {
+    await events.recordEvent(appDb, {
       provider: 'meta',
       eventType: 'message.status',
       externalId: 'wamid.status.1',
@@ -239,7 +244,7 @@ describe('sweeping unknown senders', () => {
   });
 
   it('does flag a message whose payload will not open', async () => {
-    await events.recordEvent(workerDb, {
+    await events.recordEvent(appDb, {
       provider: 'meta',
       eventType: 'message.text',
       externalId: 'wamid.flagme',
@@ -252,7 +257,7 @@ describe('sweeping unknown senders', () => {
   });
 
   it('sets an unopenable payload aside rather than stalling on it', async () => {
-    await events.recordEvent(workerDb, {
+    await events.recordEvent(appDb, {
       provider: 'meta',
       eventType: 'message.text',
       externalId: 'wamid.corrupt',
@@ -267,8 +272,8 @@ describe('sweeping unknown senders', () => {
   });
 
   it('leaves an attributed event alone: that one belongs to a merchant', async () => {
-    const user = await identity.upsertUserByPhone(workerDb, '+2348030000009');
-    const business = await identity.createBusinessWithOwner(workerDb, {
+    const user = await identity.upsertUserByPhone(appDb, '+2348030000009');
+    const business = await identity.createBusinessWithOwner(appDb, {
       name: 'Ada Stores',
       businessType: null,
       ownerUserId: user.id,

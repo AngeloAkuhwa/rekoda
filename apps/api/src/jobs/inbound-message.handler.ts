@@ -913,13 +913,15 @@ async function exhaustedReply(
   db: Db,
   businessId: string,
   allowance: number,
-  unit: UsageUnit = 'AI_ACTIONS',
+  unit: UsageUnit,
+  plan: string,
 ): Promise<Reply> {
   const bonus = await withBusiness(db, businessId, async (tx) => {
     const rows = await usageRepo.usageFor(tx, businessId, usagePeriod(new Date()));
     return rows.find((row) => row.unit === unit)?.bonus ?? 0;
   });
-  return replies.allowanceExhausted(allowance + bonus, unit);
+  /* A trial's allowance is one budget for its 14 days (G-109), never "this month". */
+  return replies.allowanceExhausted(allowance + bonus, unit, plan === 'trial' ? 'trial' : 'month');
 }
 
 function isVoiceNote(inbound: { messageType: string; audioId: string | null }): boolean {
@@ -1150,7 +1152,7 @@ async function readReceiptPhoto(
     await deps.replySender.send(tx, {
       businessId,
       to: inbound.from,
-      reply: await exhaustedReply(deps.db, businessId, allowance, 'DOCUMENTS_UNDERSTOOD'),
+      reply: await exhaustedReply(deps.db, businessId, allowance, 'DOCUMENTS_UNDERSTOOD', plan),
     });
     return null;
   }
@@ -1421,7 +1423,7 @@ async function transcribeVoiceNote(
     await deps.replySender.send(tx, {
       businessId,
       to: inbound.from,
-      reply: await exhaustedReply(deps.db, businessId, allowance, 'VOICE_MINUTES'),
+      reply: await exhaustedReply(deps.db, businessId, allowance, 'VOICE_MINUTES', plan),
     });
     return null;
   }
@@ -2672,7 +2674,8 @@ async function confirmPendingDraft(
       }
       return spent.granted;
     });
-    if (!granted) return exhaustedReply(deps.db, businessId, allowance, 'DOCUMENT_GENERATION');
+    if (!granted)
+      return exhaustedReply(deps.db, businessId, allowance, 'DOCUMENT_GENERATION', plan);
     documentTaken = true;
 
     /* An order costs its own unit ON TOP of the document, because automatic
@@ -2714,7 +2717,7 @@ async function confirmPendingDraft(
       });
       if (!orderGranted) {
         await refundReserved();
-        return exhaustedReply(deps.db, businessId, orderAllowance, 'CATALOGUE_ORDERS');
+        return exhaustedReply(deps.db, businessId, orderAllowance, 'CATALOGUE_ORDERS', plan);
       }
       orderTaken = true;
     }
@@ -5107,7 +5110,7 @@ async function interpretedReply(
   const granted =
     (retrying && (await holdsUnit(deps, businessId, eventId, 'AI_ACTIONS'))) ||
     (await consumeMessage(deps, businessId, eventId, period, monthlyMessages));
-  if (!granted) return exhaustedReply(deps.db, businessId, monthlyMessages, 'AI_ACTIONS');
+  if (!granted) return exhaustedReply(deps.db, businessId, monthlyMessages, 'AI_ACTIONS', plan);
 
   const interpreted = await deps.interpreter.interpret(businessId, safeText, {
     ...(fromDocument ? { document: true } : {}),

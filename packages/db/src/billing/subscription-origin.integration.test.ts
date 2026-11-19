@@ -7,8 +7,16 @@ import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db } from '../client.js';
-import { billingRepo, identity, subscriptionsRepo } from '../index.js';
-import { migrate, requireUrls, resetPlanCatalogue, truncateAll, type Urls } from '../testing.js';
+import { identity, subscriptionsRepo } from '../index.js';
+import {
+  applyFixtureCycle,
+  migrate,
+  requireUrls,
+  resetPlanCatalogue,
+  truncateAll,
+  type Urls,
+} from '../testing.js';
+import { setPlanForTest } from '../testing.js';
 
 let urls: Urls;
 let appDb: Db;
@@ -57,12 +65,14 @@ const originOf = async (businessId: string) => {
   return subscription.origin;
 };
 
-const START = new Date('2026-08-01T00:00:00Z');
-const RENEWS = new Date('2026-09-01T00:00:00Z');
+/* A paid plan set by an operator renews in the future (G-114, the operator route's rule), so the
+ * fixture cycle renews well after any day these tests run. */
+const START = new Date('2027-08-01T00:00:00Z');
+const RENEWS = new Date('2027-09-01T00:00:00Z');
 
 const providerCycle = (businessId: string) =>
   withBusiness(appDb, businessId, (tx) =>
-    subscriptionsRepo.applyCycle(tx, businessId, {
+    applyFixtureCycle(tx, businessId, {
       plan: 'chat',
       cycleStartedAt: START,
       renewsAt: RENEWS,
@@ -80,10 +90,10 @@ describe('the state writer records who created the cycle', () => {
   it('an operator plan change replaces a provider origin, even for 30 days', async () => {
     const id = await seedBusiness();
     await providerCycle(id);
-    await billingRepo.setPlan(appDb, {
+    await setPlanForTest(appDb, {
       businessId: id,
       plan: 'complete',
-      expiresAt: new Date('2026-09-15T00:00:00Z'),
+      expiresAt: new Date('2027-09-15T00:00:00Z'),
       actor: 'operator:test',
     });
     expect(await originOf(id)).toBe('operator');
@@ -91,13 +101,13 @@ describe('the state writer records who created the cycle', () => {
 
   it('re-posting the identical operator cycle keeps the origin it had', async () => {
     const id = await seedBusiness();
-    await billingRepo.setPlan(appDb, {
+    await setPlanForTest(appDb, {
       businessId: id,
       plan: 'chat',
       expiresAt: RENEWS,
       actor: 'operator:test',
     });
-    await billingRepo.setPlan(appDb, {
+    await setPlanForTest(appDb, {
       businessId: id,
       plan: 'chat',
       expiresAt: RENEWS,
@@ -105,7 +115,7 @@ describe('the state writer records who created the cycle', () => {
     });
     expect(await originOf(id)).toBe('operator');
     await providerCycle(id);
-    await billingRepo.setPlan(appDb, {
+    await setPlanForTest(appDb, {
       businessId: id,
       plan: 'chat',
       expiresAt: RENEWS,
@@ -117,7 +127,7 @@ describe('the state writer records who created the cycle', () => {
   it('an unpaid plan has no origin', async () => {
     const id = await seedBusiness();
     await providerCycle(id);
-    await billingRepo.setPlan(appDb, {
+    await setPlanForTest(appDb, {
       businessId: id,
       plan: 'expired',
       expiresAt: null,
@@ -155,7 +165,7 @@ describe('the 0167 backfill uses persisted evidence only', () => {
   it('operator when an operator move is the latest evidence', async () => {
     const id = await seedBusiness();
     await addCharge(id, '2020-01-01T00:00:00Z');
-    await billingRepo.setPlan(appDb, {
+    await setPlanForTest(appDb, {
       businessId: id,
       plan: 'chat',
       expiresAt: RENEWS,
@@ -168,7 +178,7 @@ describe('the 0167 backfill uses persisted evidence only', () => {
 
   it('ignores a paid charge whose plan change was superseded', async () => {
     const id = await seedBusiness();
-    await billingRepo.setPlan(appDb, {
+    await setPlanForTest(appDb, {
       businessId: id,
       plan: 'chat',
       expiresAt: RENEWS,
@@ -185,7 +195,7 @@ describe('the 0167 backfill uses persisted evidence only', () => {
 
   it('ignores a paid charge whose plan change was unapplied', async () => {
     const id = await seedBusiness();
-    await billingRepo.setPlan(appDb, {
+    await setPlanForTest(appDb, {
       businessId: id,
       plan: 'chat',
       expiresAt: RENEWS,
@@ -207,7 +217,7 @@ describe('the 0167 backfill uses persisted evidence only', () => {
     await ownerDb.execute(
       sql`UPDATE businesses SET cycle_started_at = NULL WHERE id = ${id}::uuid`,
     );
-    await billingRepo.setPlan(appDb, {
+    await setPlanForTest(appDb, {
       businessId: id,
       plan: 'chat',
       expiresAt: RENEWS,
@@ -222,7 +232,7 @@ describe('the 0167 backfill uses persisted evidence only', () => {
     const id = await seedBusiness();
     await providerCycle(id);
     await addCharge(id, '2020-01-01T00:00:00Z');
-    await billingRepo.setPlan(appDb, {
+    await setPlanForTest(appDb, {
       businessId: id,
       plan: 'chat',
       expiresAt: RENEWS,
@@ -236,7 +246,7 @@ describe('the 0167 backfill uses persisted evidence only', () => {
 
   it('does not take a settled upgrade over an operator cycle as provider evidence', async () => {
     const id = await seedBusiness();
-    await billingRepo.setPlan(appDb, {
+    await setPlanForTest(appDb, {
       businessId: id,
       plan: 'chat',
       expiresAt: RENEWS,

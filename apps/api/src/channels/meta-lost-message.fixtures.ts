@@ -5,6 +5,7 @@
  */
 import { expect } from 'vitest';
 import { jobsRepo, withBusiness, sql } from '@rekoda/db';
+import { ownerDb } from '@rekoda/db/testing';
 import { db, messagePayload, post, workerDb } from './meta-webhook.fixtures.js';
 
 export type Death = 'markFailed' | 'reclaimStalled';
@@ -15,11 +16,11 @@ export async function queueOnly(wamid: string, text: string, from = '23480312345
 }
 
 /**
- * A test-setup statement on `jobs`, run as the business it belongs to (`withBusiness`, so RLS applies
- * as in production) rather than through the worker pool's cross-tenant reach.
+ * A test-setup statement on `jobs`, pinned to the business it belongs to. Written as the table owner:
+ * the retry budget and run time it stages are the worker's to write, never the application's (0227).
  */
 export function asTenant(businessId: string, statement: ReturnType<typeof sql>) {
-  return withBusiness(db, businessId, (tx) => tx.execute(statement));
+  return withBusiness(ownerDb(), businessId, (tx) => tx.execute(statement));
 }
 
 /**
@@ -41,9 +42,11 @@ export async function killInboundJob(businessId: string, death: Death) {
     if (death === 'markFailed') {
       expect((await jobsRepo.markFailed(workerDb, job!, 'handler failed', 0)).state).toBe('dead');
     } else {
-      await asTenant(
-        businessId,
-        sql`UPDATE jobs SET locked_at = now() - interval '10 minutes' WHERE id = ${job!.id}::uuid`,
+      /* As the owner: the application may not age a running job's lease (0220). */
+      await withBusiness(ownerDb(), businessId, (tx) =>
+        tx.execute(
+          sql`UPDATE jobs SET locked_at = now() - interval '10 minutes' WHERE id = ${job!.id}::uuid`,
+        ),
       );
       expect(await jobsRepo.reclaimStalled(workerDb, 300_000)).toBe(1);
     }

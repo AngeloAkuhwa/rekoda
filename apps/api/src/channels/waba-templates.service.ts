@@ -543,7 +543,10 @@ export class WabaTemplateService {
     /* Stored TOKENISED, before the send — same two disciplines as every
      * message in the estate: the history never holds a real name, and an
      * undelivered reply is a visible debt. */
-    const tokenised = await this.gateway.tokenise(businessId, input.text);
+    /* On this transaction's own connection (closeout round G of PR #432): one connection for the
+     * whole reservation, never one held while waiting for another (the worker's pool budget,
+     * `appPoolSize`; the reminder sweep and API requests too). */
+    const tokenised = await this.gateway.tokenise(businessId, input.text, tx);
     const recorded = await conversationsRepo.recordOutbound(
       tx,
       { businessId, channel: 'meta', kind: 'text', body: tokenised.text },

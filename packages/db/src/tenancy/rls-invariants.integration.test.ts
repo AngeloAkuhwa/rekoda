@@ -141,7 +141,7 @@ describe('row-level security, across the whole schema', () => {
        ORDER BY c.relname, p.polname
     `);
 
-    /* Four predicates are legitimately not the tenant one, each pinned by
+    /* Five predicates are legitimately not the tenant one, each pinned by
      * POLICY rather than by table so a fourth cannot arrive unnoticed:
      *
      *   businesses.tenant_self                       its own `id` IS the tenant key
@@ -150,15 +150,40 @@ describe('row-level security, across the whole schema', () => {
      *   external_events.app_records_unattributed_ingress
      *                                                the unattributed backlog, which
      *                                                belongs to no tenant yet (0130)
+     *   external_events.worker_marks_unattributed_ingress
+     *                                                the worker marking that same backlog
+     *                                                processed (0204); UPDATE only, the
+     *                                                same predicate on both sides, so it can
+     *                                                never move a row to a tenant
      *
      * Keyed by policy because a table-level excuse is too coarse: every one
      * of these tables ALSO carries an ordinary tenant policy, and excusing
      * the table would stop checking that one too. */
+    /* And three on the job queue (migration 0217, OD-51.2), which split it by KIND between the
+     * worker and the settlement process rather than by tenant:
+     *
+     *   jobs.settlement_claim                the settlement process reaches its own two job
+     *                                        kinds across tenants, as the worker's claim does
+     *   jobs.settlement_only_its_kinds       RESTRICTIVE: whatever tenant settlement pins, no
+     *                                        job of another kind
+     *   jobs.worker_leaves_settlement_jobs   RESTRICTIVE, UPDATE only: the worker cannot claim,
+     *                                        complete or fail a live settlement job */
+    /* And two RESTRICTIVE ones (migration 0223) that narrow settlement within the tenant it pins:
+     *
+     *   external_events.settlement_only_its_events     only the Paystack events its own
+     *                                                  billing.process jobs name
+     *   dead_job_exceptions.settlement_only_its_dead_jobs  only billing.process records */
     const KNOWN_EXCEPTIONS = new Set([
+      'external_events.settlement_only_its_events',
+      'dead_job_exceptions.settlement_only_its_dead_jobs',
+      'jobs.settlement_claim',
+      'jobs.settlement_only_its_kinds',
+      'jobs.worker_leaves_settlement_jobs',
       'businesses.tenant_self',
       'memberships.membership_self',
       'shops.shop_public_read',
       'external_events.app_records_unattributed_ingress',
+      'external_events.worker_marks_unattributed_ingress',
     ]);
     const offBrand = [...rows]
       .filter(
@@ -185,6 +210,10 @@ describe('row-level security, across the whole schema', () => {
      * here either omits WITH CHECK — in which case PostgreSQL applies USING —
      * or repeats it exactly. A deliberate divergence would need its own
      * reasoning, and would fail here until somebody wrote it. */
-    expect([...rows].map((r) => `${r.relname}.${r.polname}: ${r.check}`)).toEqual([]);
+    expect(
+      /* 0217 had one deliberate divergence (the worker could leave a dead settlement job pending);
+       * 0221 removed it, so none remains. */
+      [...rows].map((r) => `${r.relname}.${r.polname}: ${r.check}`),
+    ).toEqual([]);
   });
 });

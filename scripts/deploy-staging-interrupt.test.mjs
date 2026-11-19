@@ -63,7 +63,7 @@ function host({ buildSeconds = 0 } = {}) {
   sh(dir, `git checkout -q --detach ${prev}`);
   writeFileSync(
     join(dir, '.env'),
-    `REKODA_API_PUBLIC_URL=${API}\nREKODA_RELEASE=staging-${prev.slice(0, 7)}\n`,
+    `REKODA_API_PUBLIC_URL=${API}\nREKODA_RELEASE=staging-${prev.slice(0, 7)}\nPAYSTACK_SECRET_KEY=${['sk', 'test', 'placeholderkey'].join('_')}\n`,
   );
   mkdirSync(join(dir, 'secrets'));
   const health = (sha) =>
@@ -112,7 +112,7 @@ case "$*" in
   *"image rm"*) [ -e "${fake}/image-rm-fails" ] && exit 1; echo "$3" >> "${fake}/removed"; freed ;;
   *"image prune"*|*"builder prune"*) freed ;;
   *"ps -a --format"*) [ -e "${fake}/ps-fails" ] && exit 1; cat "${fake}/containers" 2>/dev/null ;;
-  *"run --rm -T migrate"*) [ -e "${fake}/fail-migrate" ] && exit 1 ;;
+  *"run --rm -T migrate"*) [ -e "${fake}/fail-migrate" ] && exit 1 ;; *"node dist/template-check.js"*) echo 'RESULT BOOTS' ;; *" config") echo 'name: rekoda-prod' ;; *" config settlement") printf '      PAYSTACK_SECRET_KEY: sk_test_%s\n' abc ;;
   *build*) if [ -e "${fake}/oom-api-build" ] && [[ "$*" == *" api" ]]; then echo 'Killed' >&2; exit 137; fi
     if [ -e "${fake}/oom-web-build" ] && [[ "$*" == *" web" ]]; then echo 'Killed' >&2; exit 137; fi
     if [ -e "${fake}/slow-web-build" ] && [[ "$*" == *" web" ]]; then sleep 3; fi

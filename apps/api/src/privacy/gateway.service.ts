@@ -14,7 +14,7 @@ import {
 } from '@rekoda/core/privacy';
 import { encryptFacet, matchKeyFor, normaliseFacet } from '@rekoda/core/vault';
 import { CUSTOMER_NAME_MAX_CHARS, CUSTOMER_NAME_MIN_CHARS } from '@rekoda/contracts';
-import { customersRepo, suppliersRepo, withBusiness, type Db } from '@rekoda/db';
+import { customersRepo, suppliersRepo, withBusiness, type Db, type TenantDb } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { DB } from '../db/db.module.js';
 
@@ -190,7 +190,15 @@ export class PrivacyGateway {
    * Rekoda has no reason to keep a bank account number a merchant happened to
    * type, and the cheapest way to protect one is not to hold it.
    */
-  async tokenise(businessId: string, text: string): Promise<GatewayTokenised> {
+  async tokenise(businessId: string, text: string, within?: TenantDb): Promise<GatewayTokenised> {
+    /* `within`: the caller's open transaction (closeout round G of PR #432). Each lookup and
+     * creation below is a repository call that opens a transaction on the `Db` it is given; given
+     * the caller's transaction, drizzle opens a savepoint on that same connection instead of taking
+     * another one from the pool. A caller that tokenises inside its own transaction (a customer text
+     * reserving its unit, `WabaTemplateService.reserveCustomerText`) then holds one connection, not
+     * two, and what the lookups write commits or rolls back with the caller's work. Without it,
+     * each call takes its own short transaction, as before. */
+    const db = within ? (within as unknown as Db) : this.db;
     let accounts = 0;
     const pending: Array<{ kind: 'phone' | 'email'; value: string; placeholder: string }> = [];
     const seen: ResolvedCustomer[] = [];
@@ -370,7 +378,7 @@ export class PrivacyGateway {
 
     const byKey = new Map<string, { token: string; customerId: string }>();
     /* One lookup per message, however many candidates (G-60). */
-    for (const row of await customersRepo.namesByMatchKeys(this.db, businessId, [...keys])) {
+    for (const row of await customersRepo.namesByMatchKeys(db, businessId, [...keys])) {
       if (!byKey.has(row.matchKey)) byKey.set(row.matchKey, row);
     }
 
@@ -419,7 +427,7 @@ export class PrivacyGateway {
     }
 
     for (const item of pending) {
-      const resolved = await this.customerTokenFor(businessId, item.kind, item.value);
+      const resolved = await this.customerTokenFor(businessId, item.kind, item.value, db);
       out = out.split(item.placeholder).join(resolved.token);
       note(resolved.token, item.kind, item.value);
       if (!seen.some((c) => c.customerId === resolved.customerId)) seen.push(resolved);
@@ -603,6 +611,7 @@ export class PrivacyGateway {
     businessId: string,
     facet: 'phone' | 'email' | 'name',
     value: string,
+    db: Db = this.db,
   ): Promise<ResolvedCustomer> {
     /* A NEW name is keyed in one canonical composition, NFC, so two first
      * mentions of the same name in different compositions collide on
@@ -617,7 +626,7 @@ export class PrivacyGateway {
     /* A name in another Unicode composition is the same person (G-60). */
     const candidates = facet === 'name' ? this.nameKeys(businessId, value) : [matchKey];
     for (const key of candidates) {
-      const existing = await customersRepo.findCustomerByMatchKey(this.db, businessId, facet, key);
+      const existing = await customersRepo.findCustomerByMatchKey(db, businessId, facet, key);
       if (existing) {
         return { token: existing.token, customerId: existing.id, facet, created: false };
       }
@@ -635,23 +644,18 @@ export class PrivacyGateway {
     for (let attempt = 0; attempt < 5; attempt++) {
       const token = generateCustomerToken((n) => randomBytes(n));
       try {
-        const created = await customersRepo.createCustomerWithIdentities(
-          this.db,
-          businessId,
-          token,
-          [
-            {
-              facet,
-              ciphertext: encryptFacet(value, this.config.vaultKey, `${businessId}:${facet}`),
-              matchKey,
-            },
-          ],
-        );
+        const created = await customersRepo.createCustomerWithIdentities(db, businessId, token, [
+          {
+            facet,
+            ciphertext: encryptFacet(value, this.config.vaultKey, `${businessId}:${facet}`),
+            matchKey,
+          },
+        ]);
         return { token: created.token, customerId: created.id, facet, created: true };
       } catch (error) {
         if (error instanceof customersRepo.IdentityConflict) {
           const winner = await customersRepo.findCustomerByMatchKey(
-            this.db,
+            db,
             businessId,
             facet,
             matchKey,

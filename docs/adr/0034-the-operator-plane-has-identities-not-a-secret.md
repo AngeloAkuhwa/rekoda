@@ -130,3 +130,22 @@ scopes to merchant-facing routes, which are governed by sessions and the
 tenant role model. And it does not assert anything about where `/v1/ops/*` is
 reachable from: that is a deployment fact, recorded as one when the owner
 confirms it, never inferred from this repository.
+
+## Later changes recorded elsewhere (cross-reference, 17 Nov 2026)
+
+This ADR is accepted and its text above is unchanged. Two later facts change what it describes and
+are recorded where they were decided:
+
+- **A sixth scope, `ops:staging`** (G-119, OWN-77): it moves a staging test business's dates and
+  arms one-shot send faults, and exists only where the staging tools are switched on
+  (`apps/api/src/auth/operator-identity.ts`, `OPERATOR_SCOPES`). Point 4's "Five scopes" reads as
+  six since then.
+- **A second token audience, `OPERATOR_BILLING_OIDC_AUDIENCE`** (OD-51.1, OWN-91; ADR 0035
+  Amendment 5; PR #432, not merged at the time of writing): plan changes and, since 0230, refund
+  records run in the dedicated operator process, which accepts only tokens for this audience; it
+  must differ from `OPERATOR_OIDC_AUDIENCE` (`apps/api/src/operator-plane/config.ts`).
+
+Point 6 ("the audit actor is the verified subject, and nothing else") holds in the HTTP layer. On
+the app-plane operator routes it is not enforced by the database, because the application
+credential that writes those audit rows can write any actor; that is OPEN OWNER DECISION OD-54
+(`docs/REKODA_LAUNCH_READINESS.md`).

@@ -8,9 +8,11 @@
  * zero rows back. There is no path that increments without checking and no
  * path that checks without incrementing.
  *
- * The allowance arrives as an argument (from `@rekoda/core`'s plan table)
- * rather than living here, so the decision stays in core and this file stays
- * SQL. `bonus` raises the ceiling and is written by exactly one function,
+ * The allowance arrives as an argument (from `@rekoda/core`'s plan table or
+ * the catalogue), but it is no longer authoritative (migration 0222): the
+ * database computes the business's own ceiling (`usage_entitlement`) and the
+ * argument can only lower it, so a caller cannot spend more than the plan
+ * sells by passing a larger number. `bonus` raises the ceiling and is written by exactly one function,
  * `creditBonus`, whose only caller is a subscription charge the provider has
  * confirmed.
  */
@@ -18,10 +20,15 @@ import { sql } from 'drizzle-orm';
 import type { TenantDb } from '../client.js';
 
 export type { UsageUnit } from '@rekoda/core';
-import { INDEPENDENTLY_METERED_UNITS, type UsageUnit } from '@rekoda/core';
+import {
+  INDEPENDENTLY_METERED_UNITS,
+  periodBefore,
+  usagePeriod,
+  type UsageUnit,
+} from '@rekoda/core';
 
 /**
- * The meter row a unit is spent on (G-109, OWN-27, OD-26).
+ * The meter row a unit is spent on (G-109, OWN-27, OD-26), and the reservation that spent it.
  *
  * A paid business meters by calendar month. A business still on the trial
  * meters its BASE-PLAN units on ONE fixed row for the whole trial, whatever
@@ -32,20 +39,31 @@ import { INDEPENDENTLY_METERED_UNITS, type UsageUnit } from '@rekoda/core';
  * (`INDEPENDENTLY_METERED_UNITS`, the Developer API Starter) follow that
  * holding's own monthly cycle whatever the base plan is.
  *
- * A row is named by this brand so a refund cannot be given a calendar month
- * by mistake: the only ways to hold one are a consume's answer, a stored
- * record of one, and the two constructors below, which say what they are.
+ * The value is a HANDLE, opaque to callers: `<row>` or, for a spend that may be given back,
+ * `<row>#<reservation id>` (OD-51.4, migration 0216). The reservation is what a refund returns:
+ * the database gives back at most what that one reservation spent, once, to the row it was spent
+ * on. A handle with no reservation (a spend that was not refundable, or the two constructors
+ * below) names a row but can return nothing. The only ways to hold one are a reserve's answer, a
+ * stored record of one, and the constructors, which say what they are.
  */
 export type MeterRow = string & { readonly __meterRow: unique symbol };
 
 export const TRIAL_PERIOD = 'TRIAL00';
-/** The one row a trial's base-plan units are spent on. */
+/** The one row a trial's base-plan units are spent on (a row name only: it can refund nothing). */
 export const TRIAL_METER = TRIAL_PERIOD as MeterRow;
-/** A calendar-month row, for a paid business or a standalone holding's unit. */
+/** A calendar-month row, for a paid business or a standalone holding's unit (a row name only). */
 export const monthMeter = (period: string): MeterRow => period as MeterRow;
-/** A row read back from a stored reservation; a missing one was spent in its month. */
+/** A handle read back from a stored reservation; a missing one names the month (and refunds nothing). */
 export const storedMeter = (stored: string | null | undefined, period: string): MeterRow =>
   (stored && stored.length > 0 ? stored : period) as MeterRow;
+
+/** The counter row a handle names, without its reservation. */
+export const meterRowOf = (meter: MeterRow): string => meter.split('#')[0] ?? meter;
+/** The reservation a handle carries, or null for a bare row name. */
+export const reservationOf = (meter: MeterRow): string | null => {
+  const id = meter.split('#')[1];
+  return id && id.length > 0 ? id : null;
+};
 
 const independent = new Set<string>(INDEPENDENTLY_METERED_UNITS);
 
@@ -56,15 +74,37 @@ async function planOf(tx: TenantDb, businessId: string): Promise<string | undefi
   return [...rows][0]?.plan;
 }
 
-/** The row `unit` is spent on now, for a business on `plan`. */
-function meterOn(plan: string | undefined, period: string, unit: string): MeterRow {
+/**
+ * The row `unit` is spent on now, for a business on `plan`: the same rule the database applies in
+ * `rekoda_private.usage_meter_row` (migration 0222), which is the one that decides. A trial's
+ * base-plan units go on the trial row. Otherwise the asked month is kept when it is the current
+ * Africa/Lagos month, or the month before during a month's first seven days (a message that arrived
+ * on the 31st and is processed after midnight is metered on the month it arrived in; the database
+ * honours that only on a row last month already opened, and otherwise uses the current month); any
+ * other label is metered on the current month, so no label can open a fresh allowance. The handle's
+ * row is a label: a refund returns a reservation to the row the database recorded on it.
+ */
+function meterOn(
+  plan: string | undefined,
+  period: string,
+  unit: string,
+  now: Date = new Date(),
+): MeterRow {
   const trial = !plan || plan === 'trial';
-  return trial && !independent.has(unit) ? TRIAL_METER : monthMeter(period);
+  if (trial && !independent.has(unit)) return TRIAL_METER;
+  const current = usagePeriod(now);
+  if (period === current) return monthMeter(current);
+  const lagosDay = new Date(now.getTime() + 3_600_000).getUTCDate();
+  if (period === periodBefore(current) && lagosDay <= 7) return monthMeter(period);
+  return monthMeter(current);
 }
 
 /**
  * Spend `n` units, atomically, against `allowance + bonus`.
  * Returns whether the spend was GRANTED; a refusal means exhausted.
+ *
+ * For a spend that is never given back (an API request, a report export): no reservation is
+ * recorded, so there is nothing a later call could return.
  */
 export async function consumeUnit(
   tx: TenantDb,
@@ -74,15 +114,15 @@ export async function consumeUnit(
   allowance: number,
   n = 1,
 ): Promise<boolean> {
-  return (await reserveUnit(tx, businessId, period, unit, allowance, n)).granted;
+  return (await spend(tx, businessId, period, unit, allowance, n, false)).granted;
 }
 
 /**
- * `consumeUnit`, also saying WHICH meter row the spend was taken from. A caller
- * that may give the unit back later keeps that row with the reservation and
- * hands it to `refundUnit`: a refund is never worked out from the plan the
- * business is on when it runs, which may not be the plan it was on when it
- * spent the unit.
+ * `consumeUnit`, also returning the HANDLE of the spend: the meter row it was taken from and the
+ * reservation that took it. A caller that may give the unit back later keeps the handle (in memory
+ * or on the message's event) and hands it to `refundUnit`: a refund is never worked out from the
+ * plan the business is on when it runs, which may not be the plan it was on when it spent the
+ * unit, and it can return only what this reservation spent.
  */
 export async function reserveUnit(
   tx: TenantDb,
@@ -92,60 +132,52 @@ export async function reserveUnit(
   allowance: number,
   n = 1,
 ): Promise<{ granted: boolean; meter: MeterRow }> {
-  const meter = meterOn(await planOf(tx, businessId), period, unit);
-  period = meter;
-  /**
-   * Both arms carry the ceiling. The SELECT's WHERE guards the FRESH-ROW
-   * case (an allowance of zero, like orders on Chat, must refuse the
-   * very first unit); the EXISTS keeps existing rows flowing to the
-   * conflict arm, whose WHERE re-checks against `allowance + bonus` so a
-   * billing top-up raises the ceiling without new SQL. Two concurrent
-   * fresh-row consumers both pass the EXISTS=false path, one wins the
-   * insert, and the loser is re-judged by the conflict arm — the database
-   * decides, as everywhere else in this codebase.
-   */
-  /**
-   * EVERY number is cast. This is not defensive decoration.
-   *
-   * `SELECT $1, $2 WHERE $3 <= $4` gives PostgreSQL no type context, so it
-   * resolves the unknown parameters as TEXT and compares them as text. Text
-   * says `'9' <= '600'` is FALSE, because it reads the nine before it reads
-   * anything else. A merchant sending a nine-second voice note against a
-   * six-hundred-second allowance was told they had used all six hundred.
-   *
-   * It hid for as long as it did because almost every consume spends ONE
-   * unit, and `'1' <= '600'` happens to be true. It only bites where the
-   * amount is a quantity rather than a tally, and where its first digit
-   * sorts above the ceiling's: 7, 8, 9, 70 to 99, 700 upward. Voice is the
-   * only unit that spends that way today, which is exactly where it
-   * surfaced.
-   */
-  const rows = await tx.execute<{ used: number }>(sql`
-    INSERT INTO usage_counters (business_id, period, unit, used)
-    SELECT ${businessId}::uuid, ${period}::char(7), ${unit}::text, ${n}::int
-    WHERE ${n}::int <= ${allowance}::int
-       OR EXISTS (
-            SELECT 1 FROM usage_counters
-            WHERE business_id = ${businessId}::uuid
-              AND period = ${period}::char(7) AND unit = ${unit}::text)
-    ON CONFLICT (business_id, period, unit) DO UPDATE
-      SET used = usage_counters.used + ${n}::int, updated_at = now()
-      WHERE usage_counters.used + ${n}::int <= ${allowance}::int + usage_counters.bonus
-    RETURNING used
+  return spend(tx, businessId, period, unit, allowance, n, true);
+}
+
+/**
+ * The one spend, through `usage_reserve` (OD-51.4, migration 0216): no runtime role writes
+ * `usage_counters` directly any more. The function is the single statement this file used to
+ * hold: its WHERE carries the ceiling, so two simultaneous messages cannot both take the last
+ * unit, an allowance of zero refuses the very first unit, and a pack's `bonus` raises the ceiling
+ * without new SQL. Every number is a typed parameter there, so `9 <= 600` is compared as numbers
+ * (untyped, PostgreSQL compared them as text and refused a nine-second voice note against a
+ * six-hundred-second allowance).
+ */
+async function spend(
+  tx: TenantDb,
+  businessId: string,
+  period: string,
+  unit: UsageUnit,
+  allowance: number,
+  n: number,
+  refundable: boolean,
+): Promise<{ granted: boolean; meter: MeterRow }> {
+  const row = meterOn(await planOf(tx, businessId), period, unit);
+  const rows = await tx.execute<{ granted: boolean; reservation: string | null }>(sql`
+    SELECT granted, reservation FROM usage_reserve(
+      ${businessId}::uuid, ${row}::text, ${unit}::text, ${allowance}::int, ${n}::int,
+      ${refundable}::boolean)
   `);
-  return { granted: [...rows].length === 1, meter };
+  const answer = [...rows][0];
+  if (!answer?.granted) return { granted: false, meter: row };
+  return {
+    granted: true,
+    meter: (answer.reservation ? `${row}#${answer.reservation}` : row) as MeterRow,
+  };
 }
 
 /**
  * Give a unit back, same transaction. For the paths where the consume
  * happened but no value was delivered (the daily ceiling refused the model,
  * the provider was down, the answer was unusable): the merchant's meter
- * must only move when the product actually worked. GREATEST guards the
- * floor; the CHECK constraint would reject a negative anyway.
+ * must only move when the product actually worked.
  *
- * `meter` is the exact row the unit was spent on, as `reserveUnit` returned it
- * (or a stored reservation recorded it): exactly that row, never one chosen by
- * the current plan or by which counter has something to give back.
+ * `meter` is the handle `reserveUnit` returned (or a stored reservation recorded). The database
+ * returns at most what THAT reservation spent and has not already given back, to the row it was
+ * spent on (`usage_refund`, migration 0216): never a row chosen by the current plan, never more
+ * than was taken, and never twice. A handle that carries no reservation returns nothing. Answers
+ * how many units actually went back.
  */
 export async function refundUnit(
   tx: TenantDb,
@@ -153,26 +185,29 @@ export async function refundUnit(
   meter: MeterRow,
   unit: UsageUnit,
   n = 1,
-): Promise<void> {
-  await tx.execute(sql`
-    UPDATE usage_counters
-    SET used = GREATEST(used - ${n}, 0), updated_at = now()
-    WHERE business_id = ${businessId}::uuid AND period = ${meter} AND unit = ${unit}
+): Promise<number> {
+  const reservation = reservationOf(meter);
+  if (!reservation) return 0;
+  const rows = await tx.execute<{ returned: number }>(sql`
+    SELECT usage_refund(${businessId}::uuid, ${reservation}::uuid, ${unit}::text, ${n}::int)
+      AS returned
   `);
+  return Number([...rows][0]?.returned ?? 0);
 }
 
 /**
- * Add bought capacity to this month's ceiling (ADR 0024's add-on packs).
+ * Add a paid pack's capacity to this month's ceiling (ADR 0024's add-on packs).
  *
  * Separate from `used` and never netted against it, so the two questions stay
  * answerable apart: how much a merchant consumed, and how much they paid to
  * be allowed to. Netting would make a pack look like usage that never
  * happened.
  *
- * Called only after a provider has confirmed the charge, in the same
- * transaction that settles it. That transaction settles once, so this credits
- * once: there is no idempotency key here because there is no second call to
- * guard against.
+ * Through `usage_credit_pack` (OD-51.4, migration 0216), which only the settlement principal may
+ * run: it credits the units for ONE paid pack charge that is not set aside and not yet credited,
+ * and stamps the charge's credit time (OD-40) in the same call. A charge can therefore raise the
+ * ceiling once, whatever calls this and however often. Answers false when the charge was already
+ * credited (nothing changes).
  *
  * A trial business is never offered a pack (its price is 0), so a trial's base
  * units meet this only through a direct call; there the bonus is held on the
@@ -182,20 +217,37 @@ export async function refundUnit(
  * is why the period is an argument and not derived: the caller passes the
  * period the charge covers.
  */
-export async function creditBonus(
+export async function creditPack(
   tx: TenantDb,
   businessId: string,
+  reference: string,
   period: string,
   unit: UsageUnit,
   n: number,
-): Promise<void> {
-  period = meterOn(await planOf(tx, businessId), period, unit);
-  await tx.execute(sql`
-    INSERT INTO usage_counters (business_id, period, unit, bonus)
-    VALUES (${businessId}::uuid, ${period}, ${unit}, ${n})
-    ON CONFLICT (business_id, period, unit) DO UPDATE
-      SET bonus = usage_counters.bonus + ${n}, updated_at = now()
+): Promise<boolean> {
+  const row = meterOn(await planOf(tx, businessId), period, unit);
+  const rows = await tx.execute<{ credited: boolean }>(sql`
+    SELECT usage_credit_pack(
+      ${businessId}::uuid, ${reference}, ${row}::text, ${unit}::text, ${n}::int) AS credited
   `);
+  return [...rows][0]?.credited === true;
+}
+
+/**
+ * The row a unit of `period` belongs on for this business (for the test harness's bonus fixture):
+ * the trial row for a trial's base units, otherwise the month named. Not clamped to the current
+ * month the way a spend is (0222): a fixture may stage a pack on next month's row, as a renewal
+ * that crosses a month end would find it.
+ */
+export async function meterRowFor(
+  tx: TenantDb,
+  businessId: string,
+  period: string,
+  unit: string,
+): Promise<string> {
+  const plan = await planOf(tx, businessId);
+  const trial = !plan || plan === 'trial';
+  return trial && !independent.has(unit) ? TRIAL_METER : monthMeter(period);
 }
 
 export interface UsageRow extends Record<string, unknown> {

@@ -26,19 +26,30 @@
  * and nothing in this file changes.
  */
 import { Logger } from '@nestjs/common';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { addInterval, subscriptionReference } from '@rekoda/core';
 import { redactForLog } from '@rekoda/core/privacy';
-import { subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
-import { planPriceKFor, type PlanTermsConfig } from './plan-terms.js';
+import { jobsRepo, subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
+import { JobKind } from '../jobs/queue.service.js';
+import { planPriceKFor, pricingSourceOf, type PlanTermsConfig } from './plan-terms.js';
+import { chargeGate } from './paystack-key.js';
 
 export interface RenewalSweepDeps {
   /** `rekoda_worker` - "whose cycle ended" names no tenant, which is the point. */
   workerDb: Db;
-  /** `rekoda_app` - the charge and the clock are written under a tenant pin. */
+  /** `rekoda_app` - everything a renewal writes, under a tenant pin: the pending renewal charge
+   * (opened pristine, priced again by settlement before anything is applied, 0209), the grace
+   * clock (through `subscription_start_grace`, which checks the cycle and the charge itself,
+   * 0217), a block, and a cancelled cycle's lapse. No settlement credential is involved: the
+   * worker that runs this sweep holds none (OD-51.2). */
   appDb: Db;
-  /** The catalogue flag: a renewal is priced by the merchant's PINNED version. */
-  config: PlanTermsConfig;
+  /** The catalogue flag: a renewal is priced by the merchant's PINNED version. The Paystack key
+   * and the §47 confirmation decide whether the renewal can be paid at all (OWN-70). */
+  config: PlanTermsConfig & { paystackSecretKey: string; paystackPlatformConfirmed: boolean };
+  /** Blocked renewals listed per page when closing them (default 200; a test sets it small). */
+  blockPageSize?: number;
+  /** Pages listed per closing pass (default 20; a test lowers it to simulate an interrupted pass). */
+  maxBlockPages?: number;
 }
 
 export interface RenewalSweepResult {
@@ -100,6 +111,8 @@ export async function sweepRenewals(
       }
 
       try {
+        /* As the application (OD-51.2, 0217): the renewal sweep opens a pending renewal and
+         * starts its grace clock in one transaction. Opening a charge settles nothing. */
         const opened = await withBusiness(deps.appDb, business.businessId, async (tx) => {
           /* G-104: lock first, so an operator move cannot slip between pricing
            * this renewal and opening its charge. */
@@ -133,12 +146,15 @@ export async function sweepRenewals(
            * the version whose price rows never changed. A scheduled
            * downgrade is a different plan, so the stale-pin rule prices it
            * at the version on sale today. */
+          /* Priced at its own moment, not the pass's start: the database bounds a charge's pricing
+           * time to within five minutes of its opening (0209), and a long pass must not age it. */
+          const pricedAt = new Date();
           const amountK = await planPriceKFor(
             deps.config,
             tx,
             business.businessId,
             plan,
-            now,
+            pricedAt,
             fresh.nextInterval,
           );
           const reference = subscriptionReference(now, randomBytes);
@@ -154,6 +170,9 @@ export async function sweepRenewals(
             periodStart: fresh.renewsAt,
             periodEnd: addInterval(fresh.renewsAt, fresh.nextInterval, anchorDay),
             billingInterval: fresh.nextInterval,
+            /* The instant settlement re-prices it at (OD-51). */
+            pricedAt,
+            pricingSource: pricingSourceOf(deps.config),
           });
           if (!id) return false;
 
@@ -177,11 +196,32 @@ export async function sweepRenewals(
             Math.max(fresh.renewsAt.getTime(), Date.now() - 2 * 86_400_000),
           );
           await subscriptionsRepo.markRenewalFailed(tx, business.businessId, failedAt);
+
+          /* OWN-70: the same gate that refuses a live-key charge without the §47 confirmation.
+           * The renewal row and the grace clock above are kept exactly as ADR 0024 describes
+           * (OD-44 is open: no resume, no other expiry policy). What changes is that a renewal
+           * nobody can pay is RECORDED: stamped on the charge, audited, listed for an operator and
+           * alerted on. It is never marked paid and no Paystack reference or event is invented. */
+          const gate = chargeGate(deps.config);
+          if (!gate.ok) {
+            await subscriptionsRepo.markRenewalBlocked(
+              tx,
+              business.businessId,
+              reference,
+              gate.reason,
+            );
+            return 'blocked' as const;
+          }
           return true;
         });
 
         if (opened) {
           result.raised += 1;
+          if (opened === 'blocked') {
+            log.warn(
+              `business ${business.businessId}: renewal raised but cannot be paid yet (OWN-70)`,
+            );
+          }
           log.log(`business ${business.businessId}: renewal raised`);
         } else {
           result.skipped += 1;
@@ -200,5 +240,213 @@ export async function sweepRenewals(
     if (page.length < PAGE || due.length === 0 || result.raised + result.skipped === before) break;
   }
 
+  /* OWN-70: once the gate is open (the §47 confirmation recorded, or a usable key set), a renewal
+   * stamped blocked can be paid like any other, so its block is closed here, audited, and the
+   * alert clears without an operator closing each one by hand. It runs AFTER the due renewals have
+   * been raised: housekeeping, however long a pass of failing blocks takes, never delays a renewal.
+   * A pass that stops on an error is logged and resumed by the next pass from the durable cursor. */
+  if (chargeGate(deps.config).ok) {
+    try {
+      await closeBlocksTheGateNoLongerHolds(deps, deps.blockPageSize, deps.maxBlockPages);
+    } catch (error) {
+      /* The cursor keeps its last durable position; the next pass resumes from it. */
+      log.error(`blocked-renewal close pass stopped: ${redactForLog(String(error))}`);
+    }
+  }
+
+  return result;
+}
+
+/** Blocks listed per page, and pages per pass, when closing them after the gate opens. */
+const BLOCK_PAGE = 200;
+const BLOCK_PAGES = 20;
+/** How long a pass holds the cursor lease without advancing before another runner may take it. */
+const BLOCK_LEASE_SECONDS = 900;
+
+/** What one close pass did; returned for the caller and the tests. */
+export interface BlockClosePassResult {
+  /** False when another runner held the cursor lease, so this pass did nothing. */
+  ran: boolean;
+  closed: number;
+  /** Blocks that could not be closed this pass (each logged with its reference). */
+  failed: number;
+  /** The pass reached the end of the list and moved the cursor back to the start. */
+  wrapped: boolean;
+}
+
+/**
+ * Close the blocks the open gate no longer holds, bounded per pass, from a DURABLE cursor
+ * (migration 0199).
+ *
+ * The pass walks open blocks in keyset order (blocked_at, reference): `blocked_at` never changes
+ * once set and `reference` is unique, so the order is total and stable whatever is closed, added
+ * or removed meanwhile. The position lives in the database, not in this process:
+ *
+ *  - The pass first claims the cursor lease; if another runner holds it, this pass does nothing.
+ *  - Each batch is processed, THEN the cursor is advanced to the batch's last key (a
+ *    compare-and-set on the lease). A crash before the advance replays that batch next time,
+ *    which is safe: a close is conditional on the block still being open, and the failure stamp
+ *    is a plain timestamp. A failed advance (lease lost, database error) stops the pass; the batch
+ *    is not reported as durably processed.
+ *  - A block whose close fails is logged and passed over, whether or not its failure stamp could
+ *    be written, so a block that fails both cannot hold the pass at its place; a restart resumes
+ *    after it, not at the start.
+ *  - Reaching the end of the list wraps the cursor to the start: blocks that failed are retried and
+ *    blocks with an earlier key are reached on the next pass.
+ *  - On an unexpected error the lease is released and the position kept; it is never reset here.
+ *    If the release itself fails, that is logged as an alert, the lease expires unreleased (the
+ *    ops alert reports a stalled pass) and the next claim records the abandoned pass's counts.
+ */
+export async function closeBlocksTheGateNoLongerHolds(
+  /* Closing a block opens no charge, so it needs no settlement pool. */
+  deps: Omit<RenewalSweepDeps, 'settlementDb'>,
+  pageSize = BLOCK_PAGE,
+  maxPages = BLOCK_PAGES,
+  leaseSeconds = BLOCK_LEASE_SECONDS,
+): Promise<BlockClosePassResult> {
+  const owner = randomUUID();
+  const result: BlockClosePassResult = { ran: false, closed: 0, failed: 0, wrapped: false };
+  if (!(await subscriptionsRepo.claimBlockCloseCursor(deps.workerDb, owner, leaseSeconds))) {
+    log.log('blocked-renewal close pass skipped: another runner holds the close cursor');
+    return result;
+  }
+  result.ran = true;
+  let unrecordedFailed = 0;
+  try {
+    for (let page = 0; page < maxPages; page += 1) {
+      const batch = await subscriptionsRepo.blockedRenewalsCloseBatch(deps.workerDb, pageSize);
+      if (batch.length === 0) {
+        result.wrapped = true;
+        break;
+      }
+      let closed = 0;
+      let failed = 0;
+      for (const blocked of batch) {
+        /* Heartbeat (0201): renew the lease before each close, so a slow but healthy batch keeps
+         * it and no second runner takes over while this one is still working. A runner that lost
+         * the lease (it stalled past it and another took over) stops here: it closes nothing more
+         * and saves nothing. Progress drives the renewal, not a timer, so a hung runner still lets
+         * its lease expire. */
+        /* The batch's counts are kept current before the call, so a heartbeat that throws (a
+         * database error, not a lost lease) still reports the failures this batch already saw. */
+        unrecordedFailed = failed;
+        let renewed: boolean;
+        try {
+          renewed = await subscriptionsRepo.heartbeatBlockCloseCursor(
+            deps.workerDb,
+            owner,
+            leaseSeconds,
+          );
+        } catch (error) {
+          result.closed += closed;
+          throw error;
+        }
+        if (!renewed) {
+          result.closed += closed;
+          throw new Error(
+            'the close cursor lease was lost mid-batch; this runner stops without saving',
+          );
+        }
+        try {
+          const closedNow = await withBusiness(deps.appDb, blocked.businessId, async (tx) => {
+            const closedHere = await subscriptionsRepo.resolveBlockedRenewal(
+              tx,
+              blocked.businessId,
+              blocked.reference,
+              'the payment gate is open: the renewal can now be paid',
+              'system:gate_open',
+              'system',
+            );
+            /* OD-44: the block was raised before any payment existed, so there is nothing to
+             * resume. A fresh payment is started for it by its own job, enqueued in the same
+             * transaction as the close (one per charge), so a close that commits always has its
+             * initiation queued and a close that rolls back has none. */
+            if (closedHere) {
+              await jobsRepo.enqueue(tx, {
+                businessId: blocked.businessId,
+                kind: JobKind.InitiateBlockedRenewal,
+                payload: { reference: blocked.reference },
+                singletonKey: `renewal-initiate:${blocked.reference}`,
+              });
+            }
+            return closedHere;
+          });
+          // False when a concurrent runner (or an operator) already closed it: not ours to count.
+          if (closedNow) closed += 1;
+        } catch (error) {
+          failed += 1;
+          let stamped = false;
+          try {
+            stamped = await withBusiness(deps.appDb, blocked.businessId, (tx) =>
+              subscriptionsRepo.noteBlockCloseFailed(tx, blocked.businessId, blocked.reference),
+            );
+          } catch {
+            stamped = false;
+          }
+          /* Safe identifiers only: the charge reference, the business id and the block reason. */
+          log.warn(
+            `renewal_block_close_failed business=${blocked.businessId} reference=${blocked.reference} ` +
+              `reason=${blocked.reason} stamped=${stamped} error=${redactForLog(String(error))}`,
+          );
+        }
+      }
+      /* Counted for the alert even if the advance below fails: these failures happened. */
+      unrecordedFailed = failed;
+      const last = batch[batch.length - 1]!;
+      const advanced = await subscriptionsRepo.advanceBlockCloseCursor(
+        deps.workerDb,
+        owner,
+        { blockedAtUs: last.blockedAtUs, reference: last.reference },
+        { closed, failed },
+        leaseSeconds,
+      );
+      if (!advanced) {
+        throw new Error('the close cursor lease was lost; this batch is not recorded as processed');
+      }
+      result.closed += closed;
+      result.failed += failed;
+      unrecordedFailed = 0;
+      if (batch.length < pageSize) {
+        result.wrapped = true;
+        break;
+      }
+    }
+    if (!(await subscriptionsRepo.finishBlockClosePass(deps.workerDb, owner, result.wrapped))) {
+      throw new Error('the close cursor lease was lost before the pass could be finished');
+    }
+  } catch (error) {
+    /* A release that fails is never silent: the lease then expires unreleased, the ops alert
+     * reports the pass as stalled, and the next claim records what this pass saved. */
+    await subscriptionsRepo
+      .releaseBlockCloseCursor(deps.workerDb, owner, unrecordedFailed)
+      .then((released) => {
+        if (!released) {
+          log.warn(
+            'renewal_block_close_release_lost: the close cursor lease was already taken over',
+          );
+        }
+      })
+      .catch((releaseError: unknown) => {
+        log.error(
+          `ALERT renewal_block_close_release_failed unrecorded_failed=${unrecordedFailed} ` +
+            `error=${redactForLog(String(releaseError))}`,
+        );
+      });
+    const failedThisPass = result.failed + unrecordedFailed;
+    if (failedThisPass > 0) {
+      /* A pass that stopped still says so: the failures it saw happened, saved or not. */
+      log.error(
+        `ALERT renewal_block_close_pass failed=${failedThisPass} closed=${result.closed} stopped=true`,
+      );
+    }
+    throw error;
+  }
+  if (result.failed > 0) {
+    /* Every affected pass says so, whatever the alerting cadence: the ops alert
+     * (billing.renewal_block_close_failing) reads the same count from the cursor. */
+    log.error(
+      `ALERT renewal_block_close_pass failed=${result.failed} closed=${result.closed} wrapped=${result.wrapped}`,
+    );
+  }
   return result;
 }

@@ -31,7 +31,14 @@ import {
   withBusiness,
   type Db,
 } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import {
+  applyFixtureCycle,
+  migrate,
+  requireUrls,
+  truncateAll,
+  type Urls,
+  startGraceForTest,
+} from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { sweepGracePeriods } from './grace-sweep.js';
 import { StubSender } from '../channels/sender.stub.js';
@@ -109,7 +116,7 @@ async function onboard(phone: string) {
 /** Put a business on a paid cycle, as a settled first purchase would. */
 async function putOnPlan(businessId: string, plan: string, cycleStart: Date, renewsAt: Date) {
   await withBusiness(db, businessId, (tx) =>
-    subscriptionsRepo.applyCycle(tx, businessId, {
+    applyFixtureCycle(tx, businessId, {
       plan,
       cycleStartedAt: cycleStart,
       renewsAt,
@@ -134,9 +141,7 @@ describe('the grace period', () => {
   async function failedMerchant(phone: string) {
     const { businessId, auth } = await onboard(phone);
     await putOnPlan(businessId, 'chat', new Date(FAILED_AT.getTime() - 30 * 86_400_000), FAILED_AT);
-    await withBusiness(db, businessId, (tx) =>
-      subscriptionsRepo.markRenewalFailed(tx, businessId, FAILED_AT),
-    );
+    await withBusiness(db, businessId, (tx) => startGraceForTest(tx, businessId, FAILED_AT));
     return { businessId, auth };
   }
 
@@ -155,7 +160,7 @@ describe('the grace period', () => {
 
     await sweepGracePeriods(deps, dayAfterFailure(1));
     expect(sender.billingNotices).toHaveLength(1);
-    /* `rekoda_billing_grace_notice` carries the billing page as {{3}} (OD-41(b)). */
+    /* The billing slot's template carries the billing page as {{3}} (OD-41(b)). */
     expect(sender.billingNotices[0]).toMatchObject({ billingUrl: BILLING_URL });
 
     const rows = await marginRepo.costByUsageType(workerDb, usagePeriod(new Date()));

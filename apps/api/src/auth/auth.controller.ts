@@ -15,12 +15,20 @@ import {
   Post,
   Req,
   UnauthorizedException,
+  ServiceUnavailableException,
   UseGuards,
 } from '@nestjs/common';
 import { usageRepo, billingRepo, identity, withBusiness, type Db } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { OperatorGuard, OperatorScopes, type OperatorRequest } from './operator.guard.js';
-import { DB } from '../db/db.module.js';
+import { OperatorPlaneServedHere } from './operator-plane-served.guard.js';
+import { DB, OPERATOR_DB } from '../db/db.module.js';
+import { operatorActor } from './operator-actor.js';
+import {
+  OperatorPlaneRefusal,
+  resolvePlanReviewAsOperator,
+  setPlanAsOperator,
+} from '../operator-plane/plan-operations.js';
 import { InvalidPhoneError, normalisePhone } from '@rekoda/core/identity';
 import {
   createBusinessRequest,
@@ -28,7 +36,7 @@ import {
   inviteMemberRequest,
   magicRedeemRequest,
   requestOtpRequest,
-  setPlanRequest,
+  type ResolvePlanReviewResponse,
   verifyOtpRequest,
   type MagicRedeemResponse,
   type MeResponse,
@@ -43,6 +51,7 @@ import {
   businessSettingsRequest,
 } from '@rekoda/contracts';
 import { AuthService, SetupTokenInvalid } from './auth.service.js';
+import { isUuid } from '../http/uuid.js';
 import { SessionGuard, type AuthedRequest } from './session.guard.js';
 import { Roles, RolesGuard } from './roles.guard.js';
 
@@ -142,6 +151,11 @@ export class BusinessController {
     @Inject(AuthService) private readonly auth: AuthService,
     @Inject(CONFIG) private readonly config: ApiConfig,
     @Inject(DB) private readonly db: Db,
+    /**
+     * `rekoda_billing_operator` (OD-37, migration 0202), or null in a worker process: the only
+     * connection that may run the operator plan writer. Never the application pool.
+     */
+    @Inject(OPERATOR_DB) private readonly operatorDb: Db | null,
   ) {}
 
   /**
@@ -302,6 +316,8 @@ export class BusinessController {
     @Param('userId') userId: string,
   ): Promise<{ removed: boolean }> {
     const businessId = request.auth!.businessId;
+    // A malformed id is an id no member holds: the same neutral answer as a foreign or missing one.
+    if (!isUuid(userId)) return { removed: false };
     try {
       const removed = await withBusiness(this.db, businessId, (tx) =>
         identity.removeMember(tx, businessId, userId, `user:${request.auth!.userId}`),
@@ -332,6 +348,7 @@ export class BusinessController {
     const parsed = changeMemberRoleRequest.safeParse(body);
     if (!parsed.success) throw new BadRequestException('role must be accountant or delegate');
     const businessId = request.auth!.businessId;
+    if (!isUuid(userId)) return { changed: false };
     try {
       const changed = await withBusiness(this.db, businessId, (tx) =>
         identity.changeMemberRole(
@@ -366,39 +383,58 @@ export class BusinessController {
    * the audit row.
    */
   @Post('plan')
-  @UseGuards(OperatorGuard)
+  @UseGuards(OperatorPlaneServedHere, OperatorGuard)
   @OperatorScopes('ops:billing')
   @HttpCode(200)
-  async setPlan(@Req() request: OperatorRequest, @Body() body: unknown): Promise<{ plan: string }> {
-    const parsed = setPlanRequest.safeParse(body);
-    if (!parsed.success) {
-      throw new BadRequestException('businessId, plan and expiresAt are required');
-    }
+  async setPlan(
+    @Req() request: OperatorRequest,
+    @Body() body: unknown,
+  ): Promise<{ plan: string; changed: boolean }> {
+    /* The subject is checked before anything is written (a 400, not a 500 from the writer). */
+    const actor = operatorActor(request);
+    return this.onOperatorPrincipal((operatorDb) => setPlanAsOperator(operatorDb, actor, body));
+  }
 
-    const { businessId, plan, expiresAt } = parsed.data;
-    /* A paid plan that is already past its date would raise a renewal at the
-     * next sweep and carry a cycle start after its own expiry, so a later
-     * self-service upgrade would prorate to nothing (G-114). Refused rather
-     * than clamped: the operator asked for a date that cannot be true. Marking
-     * a plan lapsed is `expired`, which takes any date. */
-    if (expiresAt && !UNPAID_PLANS.has(plan) && new Date(expiresAt).getTime() <= Date.now()) {
-      throw new BadRequestException('a paid plan needs an expiry in the future');
+  /**
+   * Resolve a merchant's support-reviewed upgrade (OD-50, migration 0213): the plan moves, the
+   * paid-through date stays exactly as it is. No date is accepted (a strict body), and the
+   * database function takes none. It works only where the merchant's own upgrade request went to
+   * support review and the subscription has not changed since; a trial, an expired plan and a
+   * period that has ended are refused. Same identity, scope and audit rules as the route above.
+   */
+  @Post('plan/support-review')
+  @UseGuards(OperatorPlaneServedHere, OperatorGuard)
+  @OperatorScopes('ops:billing')
+  @HttpCode(200)
+  async resolvePlanReview(
+    @Req() request: OperatorRequest,
+    @Body() body: unknown,
+  ): Promise<ResolvePlanReviewResponse> {
+    const actor = operatorActor(request);
+    return this.onOperatorPrincipal((operatorDb) =>
+      resolvePlanReviewAsOperator(operatorDb, actor, body),
+    );
+  }
+
+  /** Runs an operator plan operation on the billing-operator principal, mapping its refusals. */
+  private async onOperatorPrincipal<T>(run: (operatorDb: Db) => Promise<T>): Promise<T> {
+    const operatorDb = this.operatorDb;
+    if (!operatorDb) {
+      throw new ServiceUnavailableException(
+        'operator plan changes are not served by this process (no operator database credential)',
+      );
     }
-    const changed = await billingRepo.setPlan(this.db, {
-      businessId,
-      plan,
-      expiresAt: expiresAt ? new Date(expiresAt) : null,
-      /* The verified subject. This route can change any business's plan in
-       * the estate, and until now it also let the caller name themselves. */
-      actor: `operator:${request.operator!.subject}`,
-    });
-    if (!changed) throw new NotFoundException('no business with that id');
-    return { plan };
+    try {
+      return await run(operatorDb);
+    } catch (error) {
+      if (error instanceof OperatorPlaneRefusal) {
+        if (error.status === 404) throw new NotFoundException(error.message);
+        throw new BadRequestException(error.message);
+      }
+      throw error;
+    }
   }
 }
-
-/** The plans nobody paid for; every other plan carries a paid cycle (G-114). */
-const UNPAID_PLANS = new Set(['trial', 'expired']);
 
 /** A member as the wire sees one. Phone included: it is the only handle an
  * owner has for a person they invited, and it is their own team. */

@@ -37,3 +37,20 @@ aaf444e10fdf4f21fd498a507cb6760233ff6086:apps/web/src/lib/billing-pay-copy.test.
 # never trusts the host's Paystack key when the running api cannot be asked. Never issued, not a
 # credential. The live line now builds the string at run time, so no such literal remains.
 9d8e15154abcac38ad06d49493299b40ae91c02f:scripts/staging-readonly-check.services.test.mjs:stripe-access-token:409
+
+# Synthetic fixture (commit cb719a8, PR #432): the settlement configuration test's stand-in for the
+# platform Paystack key (the literal word "placeholder" after the live-key prefix). Never issued,
+# not a credential. The live line now builds the string at run time, so no such literal remains.
+cb719a8a548e0d772708553bfcfe50fc44a2d5ab:apps/api/src/settlement/config.test.ts:stripe-access-token:16
+
+# Test fixtures in the staging-deploy suites (OWN-70 Paystack TEST-key refusal, 14 Nov 2026): the
+# made-up test- and live-shaped placeholders (the word "placeholderkey" after the Paystack prefix), never
+# real Paystack keys, matched by the Stripe-shaped rule. The live lines were rewritten to build the strings at run time,
+# so no matching literal remains.
+c79ea000c423af2478ec160bd5cd9ae894b78751:scripts/deploy-staging-interrupt.test.mjs:stripe-access-token:66
+c79ea000c423af2478ec160bd5cd9ae894b78751:scripts/deploy-staging-compat.test.mjs:stripe-access-token:39
+c79ea000c423af2478ec160bd5cd9ae894b78751:scripts/deploy-staging-compat.test.mjs:stripe-access-token:507
+c79ea000c423af2478ec160bd5cd9ae894b78751:scripts/deploy-staging-compat.test.mjs:stripe-access-token:508
+c79ea000c423af2478ec160bd5cd9ae894b78751:scripts/deploy-staging-compat.test.mjs:stripe-access-token:511
+c79ea000c423af2478ec160bd5cd9ae894b78751:scripts/deploy-staging-compat.test.mjs:stripe-access-token:535
+c79ea000c423af2478ec160bd5cd9ae894b78751:scripts/deploy-staging-compat.test.mjs:stripe-access-token:536

@@ -12,6 +12,7 @@ import type {
   BillingCheckoutResponse,
   BillingEmailConfirmResponse,
   BillingEmailVerifyResponse,
+  BillingOverviewResponse,
 } from '@rekoda/contracts';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -106,7 +107,11 @@ export function pendingCharge(
   charges: readonly BillingChargeView[],
   preferred?: string,
 ): BillingChargeView | null {
-  const waiting = charges.filter((charge) => charge.status === 'pending' && !charge.superseded);
+  /* A ₦0 charge (a zero-priced upgrade, switched on by settlement) is never money waiting: offering
+   * it with a Pay button beside "Nothing was charged" would contradict the page (F-2 review). */
+  const waiting = charges.filter(
+    (charge) => charge.status === 'pending' && !charge.superseded && charge.amountK > 0,
+  );
   return waiting.find((charge) => charge.reference === preferred) ?? waiting[0] ?? null;
 }
 
@@ -363,4 +368,56 @@ export function lapsedPlanCopy(input: {
       ? 'The owner can choose a plan from this page.'
       : 'The owner can start it again from this page.';
   return `${ended} Your books are still here and you can still read and export everything. ${next}`;
+}
+
+/**
+ * OWN-76: a Paystack update about a payment to Rekoda could not be processed automatically and is
+ * with Rekoda's team. The copy claims nothing about whether money moved or what the outcome will be
+ * (the update may report a failed or unfinished payment), promises no plan change, and does not
+ * imply the renewal clock has stopped. It says the result will appear here and that the records are
+ * untouched. Never "payment failed", never a reconciliation exception.
+ */
+export function billingProcessingCopy(
+  issue: { since: string; recovering: boolean },
+  owner: boolean,
+): string {
+  const checking = issue.recovering
+    ? 'Our team is processing a recent Paystack update about a payment to Rekoda again.'
+    : 'We could not process a recent Paystack update about a payment to Rekoda automatically, so our team is checking it.';
+  const next = owner
+    ? 'The result will show on this page once it is checked. If you are unsure whether a payment went through, message us on WhatsApp before paying again.'
+    : 'The result will show on this page once it is checked.';
+  return `${checking} ${next} Your records are safe.`;
+}
+
+/** The dashboard's one-line pointer to the notice above. */
+export const BILLING_PROCESSING_STRIP =
+  'We are checking a recent update about your Rekoda payment. See billing for what this means.';
+
+/**
+ * F-2: the notice after a zero-priced upgrade the API answered `processing`, from what the billing
+ * overview says became of it, never from the page's address alone. A refresh after settlement ran
+ * says the plan is on; a withdrawal or a job that stopped says the plan has not changed. Nothing is
+ * ever charged for this change, so no copy mentions a payment, and none names a job or an error.
+ */
+export function noChargeUpgradeCopy(
+  view: BillingOverviewResponse['noChargeUpgrade'],
+  planName: (plan: string) => string = (plan) => plan,
+): string | null {
+  switch (view?.state) {
+    case 'processing':
+      return 'We are switching your plan on now. Nothing was charged and your renewal date stays the same. Refresh this page in a moment to see your new plan.';
+    case 'applied':
+      return view.plan
+        ? `Done. You are on ${planName(view.plan)} now. Nothing was charged and your renewal date has not changed.`
+        : 'Done. Your new plan is on now. Nothing was charged and your renewal date has not changed.';
+    case 'withdrawn':
+      return 'That change could not be made in time, so your plan has not changed. Nothing was charged. Choose the plan again to see what it costs now.';
+    case 'failed':
+      return 'We could not switch your plan on, so your plan has not changed. Nothing was charged. Choose the plan again below, or message upgrade on WhatsApp and we will do it for you.';
+    default:
+      /* None, or replaced by a newer request: that request's own answer is what counts, and an old
+       * address must not bring back "switching it on now". */
+      return null;
+  }
 }

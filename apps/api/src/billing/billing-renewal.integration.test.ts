@@ -21,7 +21,15 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PLAN_PRICES_K } from '@rekoda/core';
 import { billingOverviewResponse } from '@rekoda/contracts';
 import { createDb, sql, subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import {
+  applyFixtureCycle,
+  migrate,
+  requireUrls,
+  truncateAll,
+  type Urls,
+  settlementDb,
+  applicationDb,
+} from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { sweepRenewals } from './renewal-sweep.js';
 import { applySettledCharge } from './billing.service.js';
@@ -102,7 +110,7 @@ async function onboard(phone: string) {
 /** Put a business on a paid cycle, as a settled first purchase would. */
 async function putOnPlan(businessId: string, plan: string, cycleStart: Date, renewsAt: Date) {
   await withBusiness(db, businessId, (tx) =>
-    subscriptionsRepo.applyCycle(tx, businessId, {
+    applyFixtureCycle(tx, businessId, {
       plan,
       cycleStartedAt: cycleStart,
       renewsAt,
@@ -233,7 +241,7 @@ describe('the renewal sweep', () => {
     const [charge] = (
       await withBusiness(db, businessId, (tx) => subscriptionsRepo.chargesFor(tx, businessId))
     ).rows;
-    await withBusiness(db, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       applySettledCharge(tx, {
         businessId,
         reference: charge!.reference,
@@ -260,7 +268,7 @@ describe('the lock order of a settling payment (G-103)', () => {
     const { businessId } = await onboard('+2348177100090');
     const reference = 'sub_lockorder_1';
     const when = new Date('2026-08-20T10:00:00Z');
-    await withBusiness(db, businessId, (tx) =>
+    await withBusiness(applicationDb(), businessId, (tx) =>
       subscriptionsRepo.openCharge(tx, {
         businessId,
         kind: 'first_purchase',
@@ -288,7 +296,7 @@ describe('the lock order of a settling payment (G-103)', () => {
     let payment!: Promise<Awaited<ReturnType<typeof applySettledCharge>>>;
     let probe: Error | null = null;
     try {
-      payment = withBusiness(db, businessId, (tx) =>
+      payment = withBusiness(settlementDb(), businessId, (tx) =>
         applySettledCharge(tx, { businessId, reference, providerReference: 'ps_x', when, config }),
       );
       // Wait until the payment is actually parked on the business row, not for

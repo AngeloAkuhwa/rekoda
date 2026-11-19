@@ -19,6 +19,7 @@ import {
   type Db,
 } from '@rekoda/db';
 import { migrate, requireUrls, storedEventId, truncateAll, type Urls } from '@rekoda/db/testing';
+import { settlementDb } from '@rekoda/db/testing';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -221,6 +222,7 @@ export function useJobsHarness(): void {
     stubStt = new StubSpeechToText();
     stubOcr = new StubTextExtraction();
     deps = {
+      settlementDb: settlementDb(),
       gateway: new PrivacyGateway(appDb, config),
       interpreter: new Interpreter(appDb, config, stubTransport),
       replySender: new ReplySender(config, stubSender),

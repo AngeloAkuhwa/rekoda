@@ -18,6 +18,7 @@
  */
 // Provider refunds, reversals and chargebacks (G-06). Split by concern across adjustments*.integration.test.ts; the shared setup is in
 // adjustments.fixtures.ts.
+import { ownerDb } from '@rekoda/db/testing';
 import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { paymentReference } from '@rekoda/core';
@@ -417,7 +418,7 @@ describe('a provider refund of a booked payment (G-06)', () => {
      * attempt the disagreement becomes an exception, never a dead job. */
     expect((await events.eventStatus(workerDb, unverifiable))?.processed).toBe(false);
     for (let attempt = 2; attempt <= 5; attempt += 1) {
-      await withBusiness(appDb, businessId, (tx) =>
+      await withBusiness(ownerDb(), businessId, (tx) =>
         tx.execute(sql`UPDATE jobs SET run_at = now() WHERE state = 'pending'`),
       );
       await drainJobs();

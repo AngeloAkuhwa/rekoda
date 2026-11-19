@@ -12,8 +12,8 @@
 import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
-import { billingRepo, createDb, type Db } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import { createDb, type Db } from '@rekoda/db';
+import { migrate, requireUrls, truncateAll, type Urls, setPlanForTest } from '@rekoda/db/testing';
 
 const SECRET = randomBytes(24).toString('hex');
 
@@ -87,7 +87,7 @@ async function ownerOf(
 }
 
 async function lapse(businessId: string): Promise<void> {
-  await billingRepo.setPlan(db, {
+  await setPlanForTest(db, {
     businessId,
     plan: 'expired',
     expiresAt: null,
@@ -156,7 +156,7 @@ describe('a lapsed plan (G-44)', () => {
 
   it('refuses nothing on a live plan', async () => {
     const { owner, businessId } = await ownerOf('0003');
-    await billingRepo.setPlan(db, {
+    await setPlanForTest(db, {
       businessId,
       plan: 'complete',
       expiresAt: new Date(Date.now() + 30 * 86_400_000),
@@ -169,7 +169,7 @@ describe('a lapsed plan (G-44)', () => {
 
   it('refuses a trial whose date has passed, though the plan is still stored as trial', async () => {
     const { owner, businessId } = await ownerOf('0005');
-    await billingRepo.setPlan(db, {
+    await setPlanForTest(db, {
       businessId,
       plan: 'trial',
       expiresAt: new Date(Date.now() - 86_400_000),
@@ -180,7 +180,7 @@ describe('a lapsed plan (G-44)', () => {
       expect(res.statusCode, url).toBe(403);
     }
     // A trial still inside its 14 days is not lapsed.
-    await billingRepo.setPlan(db, {
+    await setPlanForTest(db, {
       businessId,
       plan: 'trial',
       expiresAt: new Date(Date.now() + 86_400_000),
@@ -195,7 +195,7 @@ describe('a lapsed plan (G-44)', () => {
     const { owner, businessId } = await ownerOf('0004');
     await lapse(businessId);
     expect((await post('/v1/reports/journal', {}, owner)).statusCode).toBe(403);
-    await billingRepo.setPlan(db, {
+    await setPlanForTest(db, {
       businessId,
       plan: 'chat',
       expiresAt: new Date(Date.now() + 30 * 86_400_000),
