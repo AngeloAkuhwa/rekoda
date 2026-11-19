@@ -86,8 +86,8 @@ export async function createApp(): Promise<NestFastifyApplication> {
    * Production invariants, before a single request is served (remediation
    * A5/A6). The role check makes FORCE ROW LEVEL SECURITY real — a
    * credential that can bypass RLS turns every policy decorative — and the
-   * key fingerprints refuse a process holding the wrong VAULT_KEY or
-   * MATCH_KEY, which would otherwise split the estate: old secrets
+   * key fingerprints refuse a process holding the wrong VAULT_KEY, MATCH_KEY
+   * or (when set) CONNECTION_KEY, which would otherwise split the estate: old secrets
    * unreadable, new ones written under an impostor. Both fail the boot,
    * loudly, in front of the operator.
    */
@@ -121,6 +121,13 @@ export async function createApp(): Promise<NestFastifyApplication> {
   });
   await bootChecks.assertKeyUnchanged(db, 'VAULT_KEY', config.vaultKey);
   await bootChecks.assertKeyUnchanged(db, 'MATCH_KEY', config.matchKey);
+  /* G-13: CONNECTION_KEY seals merchants' Paystack keys, WABA tokens and settlement account
+   * numbers, so a different key splits the estate exactly as a wrong VAULT_KEY would. It stays
+   * optional (empty turns merchant connections off and seals nothing), so it is enrolled and
+   * checked only when set. */
+  if (config.connectionKey) {
+    await bootChecks.assertKeyUnchanged(db, 'CONNECTION_KEY', config.connectionKey);
+  }
   await assertStagingMarkerNotLive(db, config.paystackSecretKey);
   /* OD-37 (0206): the test harness's fixture plan writer is also the cycle-input guard's test-only
    * exemption, so a served database must not have it. Checked under production hardening (any

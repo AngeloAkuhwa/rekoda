@@ -34,9 +34,20 @@ openssl rand -hex 32
 
 ## Fingerprint enrolment at boot (remediation A6)
 
-A wrong `VAULT_KEY` or `MATCH_KEY` does not error — it decrypts nothing and
-encrypts new secrets under a key the old data does not share. So the API
-refuses to start with a key the database was not enrolled with:
+A wrong `VAULT_KEY`, `MATCH_KEY` or `CONNECTION_KEY` does not error — it
+decrypts nothing and encrypts new secrets under a key the old data does not
+share. So the API (and the worker, which boots through the same entry point)
+refuses to start with a key the database was not enrolled with.
+`CONNECTION_KEY` is enrolled and checked only when it is set (G-13): an empty
+value turns merchant connections off and seals nothing, so a process without
+it still boots, and the first process that holds it enrols it.
+
+**First boot after G-13 on an existing database:** no `CONNECTION_KEY`
+fingerprint exists yet, so that boot enrols whatever key the process holds.
+Before approving that deploy, confirm the deployed `CONNECTION_KEY` is the one
+the existing connection rows were sealed with (it has not changed since they
+were written); a key that was already wrong would otherwise be the one
+enrolled.
 
 - On **first boot** against a database, the process records a non-secret
   fingerprint of each key in `key_fingerprints` (SHA-256 over a versioned
