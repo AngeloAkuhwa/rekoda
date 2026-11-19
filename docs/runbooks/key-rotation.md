@@ -78,9 +78,8 @@ SELECT key_name, fingerprint, created_at FROM key_fingerprints ORDER BY key_name
 ```
 
 **Retiring `CONNECTION_KEY`.** A key that was set once stays enrolled when it is
-cleared, so setting a fresh, different key later is refused. When no sealed
-connection rows remain (or they are being re-wrapped under the new key in the same
-window), remove the enrolment as the owner so the next keyed boot enrols the new key:
+cleared, so setting a fresh, different key later is refused. Only when no sealed
+connection rows remain (there is no re-wrap job yet, G-14), remove the enrolment as the owner so the next keyed boot enrols the new key:
 
 ```sql
 -- as the owner role

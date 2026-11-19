@@ -91,8 +91,9 @@ export async function createApp(): Promise<NestFastifyApplication> {
    * unreadable, new ones written under an impostor. Both fail the boot,
    * loudly, in front of the operator.
    */
-  /* A refused boot closes what it has already opened (database pools, the worker) before the
-   * refusal propagates, so a caller that catches it, such as a test, is not left holding them. */
+  /* A boot check that refuses closes what the application has already opened (database pools)
+   * before the refusal propagates, so a caller that catches it, such as a test, is not left
+   * holding them. The close is bounded: a close that stalls must never hide the refusal. */
   try {
     const db = app.get<Db>(DB);
     await bootChecks.assertRoleCannotBypassRls(db, 'application');
@@ -139,7 +140,10 @@ export async function createApp(): Promise<NestFastifyApplication> {
      * pre-start smoke refuses the writer on every staging deploy whatever NODE_ENV says. */
     if (isProductionEnv(process.env)) await bootChecks.assertNoTestFixtureWriter(db);
   } catch (error) {
-    await app.close().catch(() => undefined);
+    await Promise.race([
+      app.close().catch(() => undefined),
+      new Promise((resolve) => setTimeout(resolve, 5_000).unref()),
+    ]);
     throw error;
   }
 
