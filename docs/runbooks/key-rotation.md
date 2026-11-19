@@ -78,13 +78,32 @@ SELECT key_name, fingerprint, created_at FROM key_fingerprints ORDER BY key_name
 ```
 
 **Retiring `CONNECTION_KEY`.** A key that was set once stays enrolled when it is
-cleared, so setting a fresh, different key later is refused. Only when no sealed
-connection rows remain (there is no re-wrap job yet, G-14), remove the enrolment as the owner so the next keyed boot enrols the new key:
+cleared, so setting a fresh, different key later is refused. There is no re-wrap
+job yet (G-14), so the enrolment may be removed only when no sealed connection rows
+remain, and no process may seal a new one between that check and the new key's
+enrolment:
 
-```sql
--- as the owner role
-DELETE FROM key_fingerprints WHERE key_name = 'CONNECTION_KEY';
-```
+1. Stop **every** `api` and `worker` container. Either can seal a connection with
+   the old key, so leaving one running opens a window in which a new row is sealed
+   after the check and is then unreadable under the new key.
+2. With them stopped, confirm as the owner that nothing sealed remains:
+
+   ```sql
+   -- as the owner role; both counts must be 0
+   SELECT count(*) FROM business_connections WHERE encrypted_credential IS NOT NULL;
+   SELECT count(*) FROM payment_connections  WHERE settlement_account_cipher IS NOT NULL;
+   ```
+
+3. Still with them stopped, remove the enrolment:
+
+   ```sql
+   -- as the owner role
+   DELETE FROM key_fingerprints WHERE key_name = 'CONNECTION_KEY';
+   ```
+
+4. Put the new key in `.env` for both, then start `api` first (it enrols the new
+   fingerprint) and `worker` after it. If either count in step 2 is not 0, stop:
+   do not delete the enrolment, restart with the old key and leave it in place.
 
 The fingerprint is taken over the key **exactly as deployed**, so a value that
 differs only in the case of its hex letters is refused even though it decrypts the
