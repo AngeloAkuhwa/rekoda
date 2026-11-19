@@ -147,5 +147,35 @@ Not supported, and now dispositioned:
 
 ## 7. Verification on the final candidate
 
-In progress when this file was first committed. The unsharded db and api integration suites, the three Playwright
-configurations and CI on the final head are recorded here, from their actual output, once they complete.
+Code of the candidate: `7d323c66ef404d8323db5776100437533c4cd950`. Every later commit changes documentation only.
+
+**Local (cloud session):** Node 22.23.5 against `.nvmrc` 24 (CI runs 24), pnpm 9.15.9, PostgreSQL 16.15. Fresh databases,
+run serially.
+
+| Check                                                                                                                                                  | Result                                                                                              |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| `pnpm turbo typecheck lint test build --force`                                                                                                         | 24/24 tasks                                                                                         |
+| db integration, unsharded, fresh database migrated 0000 to 0246                                                                                        | **2316/2316**, 170 files (includes upgrade from main at 0192 and from 0212, through 0246)           |
+| api integration, unsharded                                                                                                                             | **2820/2820**, 193 files                                                                            |
+| `node --test scripts/*.test.mjs`                                                                                                                       | 457/457                                                                                             |
+| Guards: boundaries, env-example, deploy, vendored-skills, staging-deploy, ui-copy, retired-claims, openapi, test layout, test years; `pnpm docs:check` | all OK                                                                                              |
+| Playwright, main suite (on `198d37a` code, while reproducing §2)                                                                                       | 92/92 once; 210/210 targeted; 552/552 over six two-core runs                                        |
+| gitleaks 8.24.3, `detect` on the clone's history (303 commits, includes `7d323c6`)                                                                     | no leaks. The working-directory scan flags only `apps/web/.next/` build output, which is gitignored |
+| Docker deploy smoke                                                                                                                                    | **not run locally** (no Docker daemon in the session); CI's Deployment (Docker) job is the evidence |
+
+**CI run 44428844959 on `7d323c6`: every check green.** That covers:
+
+- typecheck, lint, test and build;
+- db 1/2 and 2/2, api 1/2 and 2/2, and Integration (PostgreSQL);
+- Migrations (foreign owner);
+- Deployment (Docker), which includes `deploy-smoke.sh` with the new refusal strings;
+- **End-to-end (Playwright): main 92/92, purchase journey 34/34, reminders 10/10.** The new "API was unreachable" line
+  did not fire;
+- gitleaks (full history) and GitGuardian.
+
+CodeRabbit skipped itself (file limit), which is not a review.
+
+**Independent review of the corrections** (fresh read-only context, `198d37a..7d323c6`): BLOCKING 0, IMPORTANT 0,
+MINOR 3. Two are fixed in the documentation commit that follows: the HANDOFF date row, and the runbook still calling
+the approval gate "optional". The third, the 0246 wording for a main-era pack that was paid and never credited, fails
+safe and is recorded.
