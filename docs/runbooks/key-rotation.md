@@ -34,9 +34,20 @@ openssl rand -hex 32
 
 ## Fingerprint enrolment at boot (remediation A6)
 
-A wrong `VAULT_KEY` or `MATCH_KEY` does not error — it decrypts nothing and
-encrypts new secrets under a key the old data does not share. So the API
-refuses to start with a key the database was not enrolled with:
+A wrong `VAULT_KEY`, `MATCH_KEY` or `CONNECTION_KEY` does not error — it
+decrypts nothing and encrypts new secrets under a key the old data does not
+share. So the API (and the worker, which boots through the same entry point)
+refuses to start with a key the database was not enrolled with.
+`CONNECTION_KEY` is enrolled and checked only when it is set (G-13): an empty
+value turns merchant connections off and seals nothing, so a process without
+it still boots, and the first process that holds it enrols it.
+
+**First boot after G-13 on an existing database:** no `CONNECTION_KEY`
+fingerprint exists yet, so that boot enrols whatever key the process holds.
+Before approving that deploy, confirm the deployed `CONNECTION_KEY` is the one
+the existing connection rows were sealed with (it has not changed since they
+were written); a key that was already wrong would otherwise be the one
+enrolled.
 
 - On **first boot** against a database, the process records a non-secret
   fingerprint of each key in `key_fingerprints` (SHA-256 over a versioned
@@ -57,11 +68,46 @@ same change that re-wraps the data (see below), update the fingerprint as
 the owner:
 
 ```sql
--- as the owner role, inside the rotation window
+-- as the owner role, inside the rotation window; <KEY_NAME> is exactly the key you
+-- rotated: 'VAULT_KEY', 'MATCH_KEY' or 'CONNECTION_KEY'
 UPDATE key_fingerprints
    SET fingerprint = '<new fingerprint>', created_at = now()
- WHERE key_name = 'VAULT_KEY';
+ WHERE key_name = '<KEY_NAME>';
+-- check that only that row changed: every other row keeps its old created_at
+SELECT key_name, fingerprint, created_at FROM key_fingerprints ORDER BY key_name;
 ```
+
+**Retiring `CONNECTION_KEY`.** A key that was set once stays enrolled when it is
+cleared, so setting a fresh, different key later is refused. There is no re-wrap
+job yet (G-14), so the enrolment may be removed only when no sealed connection rows
+remain, and no process may seal a new one between that check and the new key's
+enrolment:
+
+1. Stop **every** `api` and `worker` container. Either can seal a connection with
+   the old key, so leaving one running opens a window in which a new row is sealed
+   after the check and is then unreadable under the new key.
+2. With them stopped, confirm as the owner that nothing sealed remains:
+
+   ```sql
+   -- as the owner role; both counts must be 0
+   SELECT count(*) FROM business_connections WHERE encrypted_credential IS NOT NULL;
+   SELECT count(*) FROM payment_connections  WHERE settlement_account_cipher IS NOT NULL;
+   ```
+
+3. Still with them stopped, remove the enrolment:
+
+   ```sql
+   -- as the owner role
+   DELETE FROM key_fingerprints WHERE key_name = 'CONNECTION_KEY';
+   ```
+
+4. Put the new key in `.env` for both, then start `api` first (it enrols the new
+   fingerprint) and `worker` after it. If either count in step 2 is not 0, stop:
+   do not delete the enrolment, restart with the old key and leave it in place.
+
+The fingerprint is taken over the key **exactly as deployed**, so a value that
+differs only in the case of its hex letters is refused even though it decrypts the
+same data. Keep the deployed value byte for byte; do not re-case it.
 
 The new fingerprint is printed by the failed boot attempt ("this process
 holds ..."), or computed as the first 16 hex chars of

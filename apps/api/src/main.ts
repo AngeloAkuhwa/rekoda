@@ -86,48 +86,66 @@ export async function createApp(): Promise<NestFastifyApplication> {
    * Production invariants, before a single request is served (remediation
    * A5/A6). The role check makes FORCE ROW LEVEL SECURITY real — a
    * credential that can bypass RLS turns every policy decorative — and the
-   * key fingerprints refuse a process holding the wrong VAULT_KEY or
-   * MATCH_KEY, which would otherwise split the estate: old secrets
+   * key fingerprints refuse a process holding the wrong VAULT_KEY, MATCH_KEY
+   * or (when set) CONNECTION_KEY, which would otherwise split the estate: old secrets
    * unreadable, new ones written under an impostor. Both fail the boot,
    * loudly, in front of the operator.
    */
-  const db = app.get<Db>(DB);
-  await bootChecks.assertRoleCannotBypassRls(db, 'application');
-  const workerDb = app.get<Db | null>(WORKER_DB);
-  if (workerDb) await bootChecks.assertRoleCannotBypassRls(workerDb, 'worker');
-  await bootChecks.assertRoleCannotAssumePlanWriter(db, 'application');
-  if (workerDb) await bootChecks.assertRoleCannotAssumePlanWriter(workerDb, 'worker');
-  /* OD-37 (0202): the payment and operator plan writers belong to their own principals. The
-   * general credentials must hold neither; each reserved connection must be exactly its role. */
-  await bootChecks.assertRoleHoldsNoReservedWriter(db, 'application');
-  if (workerDb) await bootChecks.assertRoleHoldsNoReservedWriter(workerDb, 'worker');
-  /* OD-51: null in production, where the dedicated settlement and operator processes are the
-   * only holders (the configuration refuses either credential here). A development process given
-   * one is still held to its exact principal. */
-  const settlementDb = app.get<Db | null>(SETTLEMENT_DB);
-  if (settlementDb) {
-    await bootChecks.assertDatabasePrincipal(settlementDb, 'settlement', 'rekoda_settlement');
+  /* A boot check that refuses closes what the application has already opened (database pools)
+   * before the refusal propagates, so a caller that catches it, such as a test, is not left
+   * holding them. The close is bounded: a close that stalls must never hide the refusal. */
+  try {
+    const db = app.get<Db>(DB);
+    await bootChecks.assertRoleCannotBypassRls(db, 'application');
+    const workerDb = app.get<Db | null>(WORKER_DB);
+    if (workerDb) await bootChecks.assertRoleCannotBypassRls(workerDb, 'worker');
+    await bootChecks.assertRoleCannotAssumePlanWriter(db, 'application');
+    if (workerDb) await bootChecks.assertRoleCannotAssumePlanWriter(workerDb, 'worker');
+    /* OD-37 (0202): the payment and operator plan writers belong to their own principals. The
+     * general credentials must hold neither; each reserved connection must be exactly its role. */
+    await bootChecks.assertRoleHoldsNoReservedWriter(db, 'application');
+    if (workerDb) await bootChecks.assertRoleHoldsNoReservedWriter(workerDb, 'worker');
+    /* OD-51: null in production, where the dedicated settlement and operator processes are the
+     * only holders (the configuration refuses either credential here). A development process given
+     * one is still held to its exact principal. */
+    const settlementDb = app.get<Db | null>(SETTLEMENT_DB);
+    if (settlementDb) {
+      await bootChecks.assertDatabasePrincipal(settlementDb, 'settlement', 'rekoda_settlement');
+    }
+    const operatorDb = app.get<Db | null>(OPERATOR_DB);
+    if (operatorDb) {
+      await bootChecks.assertDatabasePrincipal(operatorDb, 'operator', 'rekoda_billing_operator');
+    }
+    /* OD-51.6 (0215): this process prices from the source the database says is in force, and on the
+     * constant path carries the same compiled figures, or it does not start. The same check runs in
+     * every process that prices or settles a charge. */
+    await bootChecks.assertPricingSource(db, config.workerEnabled ? 'worker' : 'api', {
+      mode: pricingSourceOf(config),
+      constantsFingerprint: pricingConstantsFingerprint(),
+    });
+    await bootChecks.assertKeyUnchanged(db, 'VAULT_KEY', config.vaultKey);
+    await bootChecks.assertKeyUnchanged(db, 'MATCH_KEY', config.matchKey);
+    /* G-13: CONNECTION_KEY seals merchants' Paystack keys, WABA tokens and settlement account
+     * numbers, so a different key splits the estate exactly as a wrong VAULT_KEY would. It stays
+     * optional (empty turns merchant connections off and seals nothing), so it is enrolled and
+     * checked only when set. */
+    if (config.connectionKey) {
+      await bootChecks.assertKeyUnchanged(db, 'CONNECTION_KEY', config.connectionKey);
+    }
+    await assertStagingMarkerNotLive(db, config.paystackSecretKey);
+    /* OD-37 (0206): the test harness's fixture plan writer is also the cycle-input guard's test-only
+     * exemption, so a served database must not have it. Checked under production hardening (any
+     * NODE_ENV set to something other than development or test; unset counts as development, and the
+     * deployed images set production); the integration suites boot against test databases. The
+     * pre-start smoke refuses the writer on every staging deploy whatever NODE_ENV says. */
+    if (isProductionEnv(process.env)) await bootChecks.assertNoTestFixtureWriter(db);
+  } catch (error) {
+    await Promise.race([
+      app.close().catch(() => undefined),
+      new Promise((resolve) => setTimeout(resolve, 5_000).unref()),
+    ]);
+    throw error;
   }
-  const operatorDb = app.get<Db | null>(OPERATOR_DB);
-  if (operatorDb) {
-    await bootChecks.assertDatabasePrincipal(operatorDb, 'operator', 'rekoda_billing_operator');
-  }
-  /* OD-51.6 (0215): this process prices from the source the database says is in force, and on the
-   * constant path carries the same compiled figures, or it does not start. The same check runs in
-   * every process that prices or settles a charge. */
-  await bootChecks.assertPricingSource(db, config.workerEnabled ? 'worker' : 'api', {
-    mode: pricingSourceOf(config),
-    constantsFingerprint: pricingConstantsFingerprint(),
-  });
-  await bootChecks.assertKeyUnchanged(db, 'VAULT_KEY', config.vaultKey);
-  await bootChecks.assertKeyUnchanged(db, 'MATCH_KEY', config.matchKey);
-  await assertStagingMarkerNotLive(db, config.paystackSecretKey);
-  /* OD-37 (0206): the test harness's fixture plan writer is also the cycle-input guard's test-only
-   * exemption, so a served database must not have it. Checked under production hardening (any
-   * NODE_ENV set to something other than development or test; unset counts as development, and the
-   * deployed images set production); the integration suites boot against test databases. The
-   * pre-start smoke refuses the writer on every staging deploy whatever NODE_ENV says. */
-  if (isProductionEnv(process.env)) await bootChecks.assertNoTestFixtureWriter(db);
 
   /**
    * Product photos, and nothing else.
