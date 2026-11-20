@@ -491,7 +491,7 @@ A window is **complete** when its end is in the past. It is **partial** when it 
 
 ### 6.3 Arithmetic
 
-The existing `changeOf` (`period-compare.ts:73-77`) is reused unchanged, and its semantics are adopted:
+The semantics of the existing `changeOf` (`period-compare.ts:73-77`) are adopted. Its arithmetic is not reused as is: it must be exact, or refuse, when an aggregate or the percentage's intermediate product `abs × 1000` cannot be represented safely (review note 3 below):
 
 - **Absolute change:** `current − previous`, in kobo. −0 becomes 0.
 - **Percentage:** `previous > 0` gives `round(abs × 1000 / previous) / 10`, one decimal place. Otherwise **null**, shown as "not applicable".
@@ -1120,7 +1120,7 @@ The PRs are serial (single-flight). Each ships behind `BOOKS_ASSISTANT_ENABLED` 
   - MTD vs the same days;
   - different lengths;
   - zero rules (previous zero, current zero, both zero);
-  - very large values near the ₦10bn cap, with no overflow because the values are integer kobo below 2^53;
+  - very large values near the ₦10bn cap, and period totals and percentage intermediates (`abs × 1000`) at and beyond `Number.MAX_SAFE_INTEGER`, each computed exactly or refused, never rounded (review note 3);
   - percentage rounding;
   - direction.
 - **Metric registry:** unsupported pairs are refused honestly.
@@ -1517,5 +1517,6 @@ These are design questions for this proposal, recorded rather than decided. Noth
    be represented safely, with boundary tests (invariant 1).
 4. **Option C and R12.** Option C decrypts customer names in the API process for matching.
    `docs/safety-review.md` R12 allows rehydration only in the authorised output layer. Whether the API
-   process is that layer, or BA-OD-1 is an exception to R12, is an owner decision; option C is blocked
-   until it is recorded.
+   process is that layer, or BA-OD-1 is an exception to R12, is an owner decision. Option C is blocked
+   until it is recorded, and stays blocked if the owner rules that matching is outside the authorised
+   output layer, unless the owner records an explicit R12 exception.

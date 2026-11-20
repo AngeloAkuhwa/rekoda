@@ -5,8 +5,8 @@
  * were one customer's. Split from meta-understanding.integration.test.ts by concern;
  * the shared app, stubs and payload helpers are in meta-webhook.fixtures.ts.
  */
-import { describe, expect, it } from 'vitest';
-import { identity, issueRepo, sql, withBusiness } from '@rekoda/db';
+import { describe, expect, it, vi } from 'vitest';
+import { identity, issueRepo, reportsRepo, sql, withBusiness } from '@rekoda/db';
 import { STORED_BODY } from '@rekoda/core/privacy';
 import { ownerDb } from '@rekoda/db/testing';
 import { buildRunner } from '../jobs/jobs.module.js';
@@ -171,12 +171,20 @@ describe('a question that names a customer', () => {
     const business = await seedMerchant('+2348031234567');
     await seedTrading(business.id);
     const before = await customerRows(business.id);
+    /* And the business's figures are never read just to be thrown away (CodeRabbit on
+     * #437): a failing summary read must not turn "no such customer" into an error. */
+    const summary = vi.spyOn(reportsRepo, 'summaryFor');
 
-    await ask(
-      'wamid.Q5S',
-      askAbout({ topic: 'sales_summary', customer: { kind: 'mention', mention: 'Bola Ige' } }),
-      'how much did Bola Ige buy this month',
-    );
+    try {
+      await ask(
+        'wamid.Q5S',
+        askAbout({ topic: 'sales_summary', customer: { kind: 'mention', mention: 'Bola Ige' } }),
+        'how much did Bola Ige buy this month',
+      );
+      expect(summary).not.toHaveBeenCalled();
+    } finally {
+      summary.mockRestore();
+    }
 
     expect(stubSender.lastText).toContain('do not have a customer by that name');
     expect(stubSender.lastText).not.toContain('₦150,000');

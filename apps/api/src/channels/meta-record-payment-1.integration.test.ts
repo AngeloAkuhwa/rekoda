@@ -461,10 +461,16 @@ describe('a payment the merchant reports (RecordPayment)', () => {
       ...(await withBusiness(db, business.id, (tx) =>
         tx.execute<{ paid: string; due: string }>(sql`
           SELECT (SELECT amount_k::text FROM payments WHERE business_id = ${business.id}::uuid) AS paid,
-                 (SELECT balance_due_k::text FROM invoices WHERE business_id = ${business.id}::uuid) AS due`),
+                 (SELECT balance_due_k::text FROM invoices WHERE business_id = ${business.id}::uuid) AS due,
+                 (SELECT string_agg(a.amount_k::text, ',')
+                    FROM payment_allocations a
+                    JOIN payments p ON p.id = a.payment_id
+                    JOIN invoices i ON i.id = a.invoice_id
+                   WHERE a.business_id = ${business.id}::uuid) AS allocated`),
       )),
     ];
-    expect(state).toEqual({ paid: '18000000', due: '0' });
+    /* The balance is a projection; the allocation row is the link itself. */
+    expect(state).toEqual({ paid: '18000000', due: '0', allocated: '15000000' });
   });
 
   /**

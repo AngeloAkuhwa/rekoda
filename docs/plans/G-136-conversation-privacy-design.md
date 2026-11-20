@@ -80,8 +80,12 @@ one opened after erasure reads as "unreadable payload" (owner review of `3a60b0f
 `meta.controller.ts`; CodeRabbit on #437, RED first: `a webhook body batched for two businesses`). Before
 this, every event sealed the WHOLE webhook body, so a body Meta batched for two businesses was held once
 under each business's row, and erasing one business's rows did not reach its message's copy inside the
-other's. Rows stored before this change still hold whole bodies; R1-style historical clean-up (§5) or R3
-would reach them.
+other's. Rows stored before this change still hold whole bodies, and no proposal here fully reaches
+them: R1 (§5) covers `conversation_messages`, not event payloads, and R3 as proposed covers only
+processed `message.*` events of a business, not a historical whole body held in a delivery-status
+(`status.*`) row or a row with no business. How those historical copies are cleaned (for example a
+one-off re-seal of each pre-#437 row to its own event, or erasing their payloads once finished) is an
+owner decision, listed in §6.2 item 5.
 
 - **R4, built (§3):** the merchant's DELETE MY DATA now erases the payloads of finished WhatsApp
   message events.
@@ -434,7 +438,8 @@ webhook (§1.2), or any time limit on the encrypted originals (R3 is not approve
    no business; and, for rows stored before this PR only, a message's copy inside another business's row
    when Meta batched both into one webhook body (§1.2; new rows seal only their own message). R3 as
    proposed bounds only processed `message.*` events of a business; the retention of delivery-status
-   events and events with no business is left for the owner to decide (CodeRabbit on #437).
+   events and events with no business is left for the owner to decide, as is the clean-up of the
+   historical whole bodies those rows may hold (§1.2; CodeRabbit on #437).
 6. **The dashboard debtors view on an overflow.** A total past what can be stated exactly (more than
    about ₦90 trillion) makes `GET /v1/reports/debtors` fail rather than show a rounded figure. The chat
    reply points to the invoices list instead. This is practically unreachable, and is recorded rather
