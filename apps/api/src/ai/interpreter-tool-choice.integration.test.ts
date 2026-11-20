@@ -241,8 +241,19 @@ describe('a refusal, under tool_choice auto', () => {
 
     const result = await new Interpreter(db, config, transport).interpret(businessId, 'something');
 
+    // The primary's own schema failure, not the escalation's refusal.
     expect(result).toMatchObject({ outcome: 'unusable' });
+    expect(result).not.toEqual({ outcome: 'unusable', reason: 'the model declined to answer' });
     expect(transport.requests).toHaveLength(2);
+  });
+
+  it('a refused classification ends the page: refused, never unsure', async () => {
+    const businessId = await seedBusiness();
+    const transport = new StubTransport([REFUSED]);
+
+    expect(
+      await new Interpreter(db, config, transport).classifyDocument(businessId, 'TOTAL 5,000'),
+    ).toBe('refused');
   });
 });
 

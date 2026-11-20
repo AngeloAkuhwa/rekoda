@@ -288,6 +288,42 @@ describe('a receipt photo', () => {
   });
 
   /**
+   * A provider refusal is terminal (OWN-98, G-134 review): when the
+   * classifier's model declines a page, the page is never sent on to the
+   * interpreter or the escalation model to find one that answers. The
+   * merchant gets the ordinary could-not-read sentence and keeps the unit.
+   */
+  it('ends at a classifier refusal: the interpreter is never asked', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'TOTAL 12,000 diesel', confidence: 0.9 });
+    stubTransport.script(
+      {
+        toolInput: null,
+        usage: { inputTokens: 400, outputTokens: 3 },
+        stopReason: 'refusal',
+        refusalCategory: 'general_harms',
+      },
+      {
+        toolInput: { command: A_PHOTOGRAPHED_EXPENSE },
+        usage: { inputTokens: 1_800, outputTokens: 120 },
+        stopReason: 'tool_use',
+      },
+    );
+
+    await post(photoPayload('2348031234567', 'wamid.P22'));
+    await drain();
+
+    expect(stubTransport.requests).toHaveLength(1);
+    expect(stubTransport.requests[0]!.toolName).toBe('classify_document');
+    expect(stubSender.lastText).toBe(replies.couldNotRead().text);
+    const rows = await withBusiness(db, business.id, (tx) =>
+      usageRepo.usageFor(tx, business.id, usagePeriod(new Date())),
+    );
+    expect(rows.find((r) => r.unit === 'AI_ACTIONS')?.used ?? 0).toBe(0);
+  });
+
+  /**
    * A2, the probe the fix queue gated R5 on: does a retried media job buy a
    * second AI call and a second billed unit?
    *

@@ -546,12 +546,15 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
       const kind = await deps.interpreter.classifyDocument(businessId, tokenised!.text, [
         ...tokenised!.tokens.keys(),
       ]);
-      if (kind === 'junk') {
+      /* A refusal ends here too (OWN-98): the page one model declined is
+       * never handed to another. Before the meter, as junk is, so the
+       * merchant keeps the unit. */
+      if (kind === 'junk' || kind === 'refused') {
         await retireSenderContinuation(tx, businessId, inbound.from, event.receivedAt);
         await deps.replySender.send(tx, {
           businessId,
           to: inbound.from,
-          reply: replies.notABusinessDocument(),
+          reply: kind === 'junk' ? replies.notABusinessDocument() : replies.couldNotRead(),
         });
         await events.markProcessed(tx, eventId, null, businessId);
         return;

@@ -19,6 +19,9 @@
  * proceeds to the interpreter exactly as if this file did not exist. The
  * only action ever taken on its word alone is skipping a model call — never
  * writing, never posting, never refusing a document a human said was real.
+ * One exception, which is not its word but the provider's: a refusal of the
+ * page ends the message with the could-not-read reply, and the page goes to
+ * no other model (OWN-98).
  */
 
 export const CLASSIFIER_TOOL_NAME = 'classify_document';

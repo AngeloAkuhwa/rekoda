@@ -101,11 +101,14 @@ type EscalationReason = 'schema_failure' | 'no_tool_call' | 'unclear';
  * It is NOT free headroom. It is the most one call can cost in output, and a
  * call that hits the transport's 20 s timeout (the AnthropicTransport
  * default, kept by owner decision) can still be billed for what it generated
- * while being recorded as an unpriced `llm_failed` row. So it is sized to
- * what can arrive inside that timeout, not above it: 2,048 doubles the
- * pre-G-134 1,024 for thinking, and halves the worst case 4,096 allowed
- * (G-134 owner review). Raise it only on acceptance evidence: `max_tokens`
- * stops on `llm_call` rows, against `anthropic timeout` `llm_failed` rows.
+ * while being recorded as an unpriced `llm_failed` row (if the provider
+ * keeps generating after the client gives up). So it is kept near what can
+ * arrive inside that timeout rather than far above it: 2,048 doubles the
+ * pre-G-134 1,024 for thinking and halves the worst case 4,096 allowed. At
+ * typical output rates it is an upper bound the 20 s timeout may well meet
+ * first; that has not been measured (G-134 owner review). Change it only on
+ * acceptance evidence: `max_tokens` stops and `outputTokens` on `llm_call`
+ * rows, against `anthropic timeout` `llm_failed` rows.
  */
 export const COMMAND_MAX_TOKENS = 2_048;
 
@@ -298,13 +301,14 @@ export class Interpreter {
    * refused, provider down, malformed answer — returns `unsure`, and the
    * caller proceeds to the interpreter as if no classifier existed. The
    * only behaviour this method can change is SKIPPING a more expensive
-   * call; it can never block a real document.
+   * call; it can never block a real document, save that a provider refusal
+   * ends the message (OWN-98): a page one model declined goes to no other.
    */
   async classifyDocument(
     businessId: string,
     safeText: string,
     tokens?: readonly string[],
-  ): Promise<DocumentClass> {
+  ): Promise<DocumentClass | 'refused'> {
     this.refuseRawPii(safeText, tokens);
 
     const call = await this.callModel(businessId, {
@@ -319,6 +323,10 @@ export class Interpreter {
       purpose: 'classify_document',
     });
     if (call.kind !== 'ok') return 'unsure';
+    /* A provider refusal is terminal (OWN-98): the page is not sent on to
+     * the interpreter or the escalation model to find one that answers.
+     * Not a DocumentClass: the model can never choose it. */
+    if (call.reply.stopReason === 'refusal') return 'refused';
     return parseDocumentClass(call.reply.toolInput);
   }
 
