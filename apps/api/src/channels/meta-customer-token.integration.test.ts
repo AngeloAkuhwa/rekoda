@@ -539,3 +539,70 @@ describe('customer creation follows the record, not the token (owner review of #
     expect(await identitiesOf(business.id)).toEqual([]);
   });
 });
+
+/**
+ * A refusal is not a preview, and a "yes" after it must not confirm what was shown before
+ * it (owner review of #437 at 3a60b0f). The merchant last read "I could not tell which
+ * customer"; their "yes" is about that, never agreement to an older sale.
+ */
+describe('a yes after a refused record', () => {
+  it('does not confirm the older preview', async () => {
+    const business = await seedMerchant();
+    const ada = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+    await say(
+      'wamid.R1',
+      sale({ kind: 'token', token: ada.token }),
+      'sold Ada Obi 2 wigs for 100k',
+    );
+    expect(stubSender.lastText).toContain('Reply *yes*');
+    const before = await footprint(business.id);
+
+    await say('wamid.R2', payment({ kind: 'token', token: 'CUSTOMER_7K2' }), 'Bisi paid 20k');
+    expect(stubSender.lastText).toContain('could not tell which customer');
+
+    await plain('wamid.R3', 'yes');
+    expect(stubSender.lastText).toContain('nothing waiting for a yes');
+    expect(await footprint(business.id)).toEqual(before);
+  });
+
+  /* The same shape, found while testing the one above and older than #437: a yes after
+   * "I am very busy right now" (provider down) or "I could not turn that into a record"
+   * (an answer that failed the schema) posted the sale previewed before it. */
+  it.each([
+    ['the model provider is down', () => stubTransport.script(new Error('provider timeout'))],
+    ['the model answer is unusable', () => stubTransport.replyWith({ intent: 'Nonsense' })],
+  ])('does not confirm the older preview when %s', async (_why, failNext) => {
+    const business = await seedMerchant();
+    const ada = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+    await say(
+      'wamid.R7',
+      sale({ kind: 'token', token: ada.token }),
+      'sold Ada Obi 2 wigs for 100k',
+    );
+    const before = await footprint(business.id);
+
+    failNext();
+    await plain('wamid.R8', 'Bisi paid 20k');
+    expect(stubSender.lastText).not.toContain('Reply *yes*');
+
+    await plain('wamid.R9', 'yes');
+    expect(stubSender.lastText).toContain('nothing waiting for a yes');
+    expect(await footprint(business.id)).toEqual(before);
+  });
+
+  it('still lets a later, explicit preview be confirmed', async () => {
+    const business = await seedMerchant();
+    const ada = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+    await say('wamid.R4', payment({ kind: 'token', token: 'CUSTOMER_7K2' }), 'Bisi paid 20k');
+    expect(stubSender.lastText).toContain('could not tell which customer');
+
+    await say(
+      'wamid.R5',
+      sale({ kind: 'token', token: ada.token }),
+      'sold Ada Obi 2 wigs for 100k',
+    );
+    expect(stubSender.lastText).toContain('Reply *yes*');
+    await plain('wamid.R6', 'yes');
+    expect((await footprint(business.id)).invoices).toBe(1);
+  });
+});

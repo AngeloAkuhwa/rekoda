@@ -5279,10 +5279,42 @@ async function interpretedReply(
   /* A retry is granted only when the message holds its unit: attempt 1
    * took it. One refused at the allowance, or that took nothing, is metered
    * now (G-57 final review B). */
+  /**
+   * A message that was not turned into a record is answered with a sentence,
+   * and that sentence is the last thing the merchant read. It stands as their
+   * newest draft, retired (`abandoned`) at once like a question Rekoda asked,
+   * so a "yes" now is about it ("nothing waiting for a yes") and never
+   * confirms an older preview behind it (owner review of #437: before this a
+   * "yes" after "I am very busy right now" or "I could not tell which
+   * customer" posted the sale previewed before it). It carries the sentence
+   * only, never the merchant's words or a token, and it is not a preview.
+   */
+  const refusedAs = async (refusal: Reply): Promise<Reply> => {
+    const draft = await conversationsRepo.recordDraft(tx, {
+      businessId,
+      conversationMessageId,
+      intent: 'Unclear',
+      command: { intent: 'Unclear', clarification: refusal.text },
+      model: deps.config.aiModelDefault,
+      identityLink: null,
+      previewed: false,
+      confirmationContext: null,
+      requestedBy: actorId ?? null,
+      held: false,
+      separateFrom: null,
+    });
+    await conversationsRepo.retireDraft(tx, businessId, draft.id);
+    return refusal;
+  };
+
   const granted =
     (retrying && (await holdsUnit(deps, businessId, eventId, 'AI_ACTIONS'))) ||
     (await consumeMessage(deps, businessId, eventId, period, monthlyMessages));
-  if (!granted) return exhaustedReply(deps.db, businessId, monthlyMessages, 'AI_ACTIONS', plan);
+  if (!granted) {
+    return refusedAs(
+      await exhaustedReply(deps.db, businessId, monthlyMessages, 'AI_ACTIONS', plan),
+    );
+  }
 
   const interpreted = await deps.interpreter.interpret(businessId, safeText, {
     ...(fromDocument ? { document: true } : {}),
@@ -5310,19 +5342,21 @@ async function interpretedReply(
    * send it again" call for completely different things from them.
    */
   if (interpreted.outcome === 'refused') {
-    return interpreted.refusedBy === 'business'
-      ? replies.quotaReachedForBusiness()
-      : replies.busyRightNow();
+    return refusedAs(
+      interpreted.refusedBy === 'business'
+        ? replies.quotaReachedForBusiness()
+        : replies.busyRightNow(),
+    );
   }
-  if (interpreted.outcome === 'unavailable') return replies.busyRightNow();
-  if (interpreted.outcome === 'unusable') return replies.couldNotRead();
+  if (interpreted.outcome === 'unavailable') return refusedAs(replies.busyRightNow());
+  if (interpreted.outcome === 'unusable') return refusedAs(replies.couldNotRead());
   /* Two independent readers disagreed on a high-value document (item 9).
    * Nothing was drafted from either reading; the merchant states the
    * figures and the typed sentence walks the ordinary confirm gate. The
    * message unit was already refunded above with the other non-command
    * outcomes. */
   if (interpreted.outcome === 'disagreement') {
-    return replies.extractionDisagreement(interpreted.fields);
+    return refusedAs(replies.extractionDisagreement(interpreted.fields));
   }
 
   /**
@@ -5410,7 +5444,7 @@ async function interpretedReply(
   ) {
     authorisationLog.warn(`${command.intent} carried a customer token this message was not issued`);
     await refundMessage(tx, businessId, eventId, period);
-    return replies.customerNotRecognised();
+    return refusedAs(replies.customerNotRecognised());
   }
   /**
    * Which of this message's provisional phones and emails become customers
