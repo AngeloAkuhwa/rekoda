@@ -47,7 +47,7 @@ The owner asked us to compare two options before building a name-span resolver:
 | Deterministic route (H, unchanged)                                         | `[affirm]`, `[who_owes_me]` and similar                                                                                          |
 | Message the gateway refused (unchanged)                                    | `[message too long to read]` / `[message withheld: …]`                                                                           |
 | Integrate customer thread (`customer-message.handler.ts`)                  | `[customer message]`. The text is no longer tokenised either, so a phone the customer typed creates nobody.                      |
-| Every Rekoda reply (`reply.service.ts`)                                    | `[reply]`. A reply can repeat a name nobody recorded, such as a supplier on a purchase preview or a model-written clarification. |
+| Every chat reply (`reply.service.ts`)                                      | `[reply]`. A reply can repeat a name nobody recorded, such as a supplier on a purchase preview or a model-written clarification. |
 | Message to a customer (`waba-templates.service.ts`, `reserveCustomerText`) | `[reply]`. It is no longer tokenised.                                                                                            |
 | Template sends and document deliveries (unchanged)                         | `[template <name>]` and the document caption, which already held no name                                                         |
 
@@ -79,17 +79,17 @@ message is processed: by the handler, by stranger handling, and by dead-job reco
 
 ### 2.1 G-137: writes name a customer only by a token issued to this message
 
-H, after mention resolution: a non-Query command whose `customer` is a token not in `tokens.displays`
-gets the following treatment.
+H, before any customer is created (provisional or by mention): a non-Query command whose `customer` is
+a token not in `tokens.displays` gets the following treatment.
 
 - **What happens:**
   - The command is refused with `customerNotRecognised`, and nothing is drafted.
   - Its message unit is refunded, as for any refused request.
   - A warning is logged with the intent only.
 - **What counts as issued:**
-  - the gateway's own tokens for this message, from the known-name pass and from phones and emails;
-  - a mention resolved in the same message;
-  - a provisional phone or email materialised by the record.
+  - the gateway's own tokens for this message: stored ones from the known-name pass, phones and
+    emails, and provisional ones (`CUSTOMER_U…`), which the record then materialises;
+  - a mention (not a token), which is resolved after the check.
 - **Corrections (CG5).** A correction is re-interpreted from its own message, and the model never sees
   an earlier turn. So a correction carries the customer only if the correction itself names them. That
   was already true, and nothing changes here.
@@ -108,9 +108,11 @@ gets the following treatment.
   - A `Query` that names a provisional token is answered `customerNotKnown`, and nobody is created.
   - An `Unclear` message creates nobody.
 - **In H: records.**
-  - Any other intent materialises the provisional tokens.
-  - The command then carries the stored token.
+  - A record that names a customer, or carries a provisional token in any field, materialises the
+    provisional tokens. This happens only after the G-137 check, so a refused record creates nobody.
+  - Every string field of the command then carries the stored token (`withTokensReplaced`).
   - The two-record link proposal is recomputed (`linkFor`).
+  - An expense that only mentions a phone creates nobody.
 - **Other callers.** Every other `tokenise` caller keeps the old behaviour.
 
 ### 2.3 Financial corrections
@@ -225,20 +227,23 @@ name…":
 > understand it, and their name is then stored encrypted with its own token, so later messages that name
 > them are protected before they leave. When you only ask about someone you have not recorded, Rekoda
 > does not create a customer for them, so the model reads their name each time you ask. A phone number or
-> email address is always replaced with a token, whether or not you have recorded that person. Rekoda's
-> chat history records that a message arrived, not what it said. The original WhatsApp message is kept
-> encrypted, separately, and is erased when you send DELETE MY DATA, apart from any message Rekoda is
-> still processing.
+> email address Rekoda detects is replaced with a token, whether or not you have recorded that person.
+> Rekoda's chat history records that a message arrived, not what it said. The original WhatsApp message
+> is kept encrypted, separately, and is erased when you send DELETE MY DATA, apart from a message Rekoda
+> is still processing or could not process and is holding for review.
+
+(Revised after the independent review of `e15b63a`: "detects" instead of "always", and messages held for
+review named.)
 
 ### 6.1 Each claim, mapped to code and tests
 
-| Claim                                                                             | Code                                                                              | Test                                                                                                                              |
-| --------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| A record vaults a new name                                                        | H, `resolveMention`                                                               | `meta-customer-identity`; `meta-stored-body` "a sale keeps its product…"                                                          |
-| A question creates nobody; the model reads the name each time                     | H Query branch, `findMention`                                                     | `meta-question-customer` "a repeated question about an unknown name…"                                                             |
-| A phone or email is always a token, recorded or not                               | G `tokenise` (`provisional`)                                                      | `meta-customer-token` "a balance question about an unknown phone number…" (the model text holds `CUSTOMER_U01`, never the digits) |
-| The history records arrival, not content                                          | H, `customer-message.handler.ts`, `reply.service.ts`, `waba-templates.service.ts` | `meta-stored-body` (every case); `meta-webhook-ingress` "records everything else as what it was"                                  |
-| The original is encrypted and erased by DELETE MY DATA, except in-flight messages | `payload-vault.ts`; `eraseFinishedMessagePayloads`                                | `erase-text-outside-vault.integration.test.ts`                                                                                    |
+| Claim                                                                                     | Code                                                                              | Test                                                                                                                              |
+| ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| A record vaults a new name                                                                | H, `resolveMention`                                                               | `meta-customer-identity`; `meta-stored-body` "a sale keeps its product…"                                                          |
+| A question creates nobody; the model reads the name each time                             | H Query branch, `findMention`                                                     | `meta-question-customer` "a repeated question about an unknown name…"                                                             |
+| A detected phone or email is a token, recorded or not                                     | G `tokenise` (`provisional`)                                                      | `meta-customer-token` "a balance question about an unknown phone number…" (the model text holds `CUSTOMER_U01`, never the digits) |
+| The history records arrival, not content                                                  | H, `customer-message.handler.ts`, `reply.service.ts`, `waba-templates.service.ts` | `meta-stored-body` (every case); `meta-webhook-ingress` "records everything else as what it was"                                  |
+| The original is encrypted and erased by DELETE MY DATA, except in-flight or held messages | `payload-vault.ts`; `eraseFinishedMessagePayloads`                                | `erase-text-outside-vault.integration.test.ts`; `meta-consent-trial` "erasure takes two exact asks…" (through the chat path)      |
 
 ### 6.2 Remaining limitations
 
@@ -250,5 +255,14 @@ name…":
    erases them.
 4. **R2: no closure state.** The 90-day "after the account closes" commitment has no closure state to
    run from.
-5. **Draft item words.** These are merchant-authored financial descriptions, such as an expense "fuel
+5. **Payloads DELETE MY DATA does not reach.** Messages still in flight; messages that failed and await
+   review (processed with an error and not resolved), including those flagged with a reason such as
+   "participant did not normalise"; delivery-status (`status.*`) events, which hold the recipient's
+   phone; and a batched webhook body that carried two businesses' messages, because each business's row
+   holds the whole sealed body. R3 would bound all of these by time.
+6. **The dashboard debtors view on an overflow.** A total past what can be stated exactly (more than
+   about ₦90 trillion) makes `GET /v1/reports/debtors` fail rather than show a rounded figure. The chat
+   reply points to the invoices list instead. This is practically unreachable, and is recorded rather
+   than built.
+7. **Draft item words.** These are merchant-authored financial descriptions, such as an expense "fuel
    for Emeka's car". They are kept as part of the record and are outside G-136.

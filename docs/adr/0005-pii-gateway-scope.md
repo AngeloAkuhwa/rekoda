@@ -84,11 +84,14 @@ for a person nobody recorded, nothing is vaulted until a record needs them.
 Rekoda stores.
 
 - **Conversation history.** `conversation_messages.body` holds only a structural placeholder for every
-  model-routed message and every reply (`[text message]`, `[voice note]`, `[receipt photo]`,
-  `[customer message]`, `[reply]`). The text lives only in the job's memory while it runs.
+  model-routed message, every chat reply and every message to a customer (`[text message]`,
+  `[voice note]`, `[receipt photo]`, `[customer message]`, `[reply]`). Template sends and document
+  deliveries keep their existing bodies, a template name or a document caption, which name no person.
+  The text lives only in the job's memory while it runs.
 - **The webhook body** stays sealed under the vault key in `external_events.payload`. When the merchant
-  sends DELETE MY DATA, it is erased for every finished message, along with the identities and any
-  conversation text stored before G-136.
+  sends DELETE MY DATA, it is erased for every message that was processed without an open error, along
+  with the identities and any conversation text stored before G-136. Messages still being processed,
+  messages that failed and await review, and delivery-status events keep their sealed bodies.
 
 **A record's token** must be one this message was issued (G-137). Token syntax is not authority.
 
@@ -97,7 +100,8 @@ Rekoda stores.
 - the no-training API terms;
 - the approved interpretation processor (Anthropic);
 - the observability contract;
-- the vault's encryption and audit.
+- the vault's encryption and audit;
+- two-ask erasure of vault identities.
 
 No table, migration or store of unknown names is added.
 
