@@ -4,7 +4,8 @@
  */
 import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { createDb, identity, sql, withBusiness, type Db } from '@rekoda/db';
+import { createDb, customersRepo, identity, sql, withBusiness, type Db } from '@rekoda/db';
+import { encryptFacet, matchKeyFor, normaliseFacet } from '@rekoda/core/vault';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import { PrivacyGateway } from './gateway.service.js';
 import { loadConfig } from '../config.js';
@@ -74,7 +75,27 @@ describe('a question looks a name up and never creates it (G-135)', () => {
     ['stored decomposed, asked composed', 'Adébáyọ̀'.normalize('NFD'), 'Adébáyọ̀'.normalize('NFC')],
   ])('finds a known name %s, creating nothing', async (_, stored, asked) => {
     const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
-    const { token, customerId } = await gateway.resolveMention(businessId, stored);
+    /* Seeded with the key of the name EXACTLY as stored: `resolveMention` keys a new
+     * name in NFC, so it could never leave the decomposed key an older row may hold
+     * (CodeRabbit on #437). */
+    const config = loadConfig();
+    const { token, id: customerId } = await customersRepo.createCustomerWithIdentities(
+      db,
+      businessId,
+      'CUSTOMER_N7D',
+      [
+        {
+          facet: 'name',
+          ciphertext: encryptFacet(stored, config.vaultKey, `${businessId}:name`),
+          matchKey: matchKeyFor(
+            businessId,
+            'name',
+            normaliseFacet('name', stored),
+            config.matchKey,
+          ),
+        },
+      ],
+    );
     const before = await counts(businessId);
     expect(await gateway.findMention(businessId, asked)).toEqual({ token, customerId });
     expect(await counts(businessId)).toEqual(before);
