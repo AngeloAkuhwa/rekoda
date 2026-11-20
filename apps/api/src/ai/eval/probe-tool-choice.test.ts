@@ -113,22 +113,23 @@ describe('the G-134 probe, sending through the relay', () => {
    * has timed out, while case 2 is still waiting for its answer. With one
    * shared "current" slot that late record overwrote case 2's, and case 2
    * was reported with case 1's request. Timeline (ms): case 1 starts at 0
-   * and times out at 600; its record is released at 900; case 2 starts at
-   * about 600 and its answer is held until about 1,100. */
+   * and times out at 1,200; its record is released at 1,700; case 2 starts
+   * at about 1,200, its answer is held until about 2,100 and its own
+   * timeout is at about 2,400. Every margin is at least 300 ms. */
   it(
     'attributes every result to its own case when a timed-out request lands during the next case',
     { timeout: 15_000 },
     async () => {
-      const upstream = await fakeUpstream({ [MODELS.escalation]: 500 });
+      const upstream = await fakeUpstream({ [MODELS.escalation]: 900 });
       try {
         const results = await runProbe(
           probeCases(MODELS),
           { baseUrl: upstream.baseUrl, apiKey: 'upstream-key' },
           {
-            timeoutMs: 600,
+            timeoutMs: 1_200,
             beforeRecord: (model) =>
               model === MODELS.interpreter
-                ? new Promise((resolve) => setTimeout(resolve, 900))
+                ? new Promise((resolve) => setTimeout(resolve, 1_700))
                 : Promise.resolve(),
           },
         );
