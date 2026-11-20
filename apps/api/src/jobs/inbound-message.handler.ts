@@ -5288,6 +5288,17 @@ async function interpretedReply(
       customer: known ? { kind: 'token', token: known.token } : { kind: 'none' },
     };
   }
+  /* A question's token must be one this message was issued (G-135): the model
+   * sees tokens as opaque and only ever this message's. Any other names nobody
+   * here, so it is answered as unknown, never "nothing outstanding". */
+  if (
+    command.intent === 'Query' &&
+    command.customer?.kind === 'token' &&
+    !tokens.displays.has(command.customer.token)
+  ) {
+    nameNotKnown = true;
+    command = { ...command, customer: { kind: 'none' } };
+  }
   if ('customer' in command && command.customer && command.customer.kind === 'mention') {
     const mention = command.customer.mention;
     const named = await deps.gateway.resolveMention(businessId, mention);

@@ -250,12 +250,12 @@ describe('asking the books a question', () => {
   }
 
   /** One ₦150,000 invoice with ₦60,000 paid, and ₦12,000 of fuel. */
-  async function seedTrading(businessId: string) {
+  async function seedTrading(businessId: string, customerToken = 'CUSTOMER_7K2') {
     await withBusiness(db, businessId, async (tx) => {
       const sale = await issueRepo.issueSale(tx, {
         businessId,
         customerId: null,
-        customerToken: 'CUSTOMER_7K2',
+        customerToken,
         items: [{ name: 'wig', quantity: 3, unitPriceK: 5_000_000 }],
         subtotalK: 15_000_000,
         discountK: 0,
@@ -336,15 +336,18 @@ describe('asking the books a question', () => {
    */
   it('answers a customer balance by invoice number, never by name', async () => {
     const business = await seedMerchant('+2348031234567');
-    await seedTrading(business.id);
+    /* A customer the books hold: the message carries her token, as the
+     * known-name pass issues it, and the model hands that token back. */
+    const { token } = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+    await seedTrading(business.id, token);
 
     await ask(
       'wamid.Q5',
       askAbout({
         topic: 'customer_balance',
-        customer: { kind: 'token', token: 'CUSTOMER_7K2' },
+        customer: { kind: 'token', token },
       }),
-      'how much does Ada owe me',
+      'how much does Ada Obi owe me',
     );
 
     expect(stubSender.lastText).toContain('₦90,000');

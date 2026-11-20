@@ -12,6 +12,7 @@ import { replies, resolvePeriod } from '@rekoda/core';
 import { customersRepo, issueRepo, settleRepo } from '@rekoda/db';
 import {
   db,
+  deps,
   messagePayload,
   post,
   stubOcr,
@@ -488,14 +489,16 @@ describe('a short reply continues what Rekoda just asked (Build 6)', () => {
 
   it('keeps a customer as a vault token, never a name', async () => {
     const business = await seedMerchant();
+    /* The message carries the token the known-name pass issues for her. */
+    const { token } = await deps.gateway.resolveMention(business.id, 'Ada Obi');
     await say(
       'wamid.B6-pii',
       {
         ...HOW_MUCH_DID_I_SELL,
         topic: 'customer_balance',
-        customer: { kind: 'token', token: 'CUSTOMER_7K2' },
+        customer: { kind: 'token', token },
       },
-      'how much does Ada owe me',
+      'how much does Ada Obi owe me',
     );
 
     const rows = await withBusiness(db, business.id, (tx) =>
@@ -505,7 +508,7 @@ describe('a short reply continues what Rekoda just asked (Build 6)', () => {
     );
     const stored = [...rows].map((r) => r.row);
     expect(stored).toHaveLength(1);
-    expect(stored[0]).toContain('CUSTOMER_7K2');
+    expect(stored[0]).toContain(token);
     expect(stored[0]).not.toContain('Ada');
     expect(stored[0]).not.toContain('owe');
   });

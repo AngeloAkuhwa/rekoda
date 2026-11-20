@@ -183,13 +183,15 @@ describe('a question that names a customer', () => {
 
   it('a sales question naming a known customer says those figures are not kept per customer', async () => {
     const business = await seedMerchant('+2348031234567');
-    await seedTrading(business.id);
+    const { token } = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+    await seedTrading(business.id, token);
 
     await ask(
       'wamid.Q5SK',
-      askAbout({ topic: 'sales_summary', customer: { kind: 'token', token: 'CUSTOMER_7K2' } }),
-      'how much did Ada buy this month',
+      askAbout({ topic: 'sales_summary', customer: { kind: 'token', token } }),
+      'how much did Ada Obi buy this month',
     );
+    expect(lastModelText()).toContain(token);
 
     expect(stubSender.lastText).toContain('do not keep sales, spending or other figures');
     expect(stubSender.lastText).not.toContain('₦150,000');
@@ -246,6 +248,36 @@ describe('a question that names a customer', () => {
     expect(stubSender.lastText).toContain('₦150,000');
     expect(stubSender.lastText).toContain('INV-');
     expect(stubSender.lastText).not.toContain('Ada');
+  });
+
+  /**
+   * A token is opaque to the model and only ever issued for this message. One the
+   * message never carried (the model invented it, or reused one from elsewhere)
+   * names nobody here, so it is answered as unknown: never "nothing outstanding",
+   * which is a confirmed zero about somebody this message never named.
+   */
+  it('a balance question with a token this message was never issued is answered as unknown', async () => {
+    const business = await seedMerchant('+2348031234567');
+    const { token } = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+    const before = await customerRows(business.id);
+
+    await ask(
+      'wamid.Q5F1',
+      askAbout({ topic: 'customer_balance', customer: { kind: 'token', token: 'CUSTOMER_ZZ9' } }),
+      'how much does Bola Ige owe me',
+    );
+    expect(stubSender.lastText).toContain('do not have a customer by that name');
+    expect(stubSender.lastText).not.toContain('nothing outstanding');
+
+    /* A real customer's token the message did not carry is not theirs to answer either. */
+    await ask(
+      'wamid.Q5F2',
+      askAbout({ topic: 'customer_balance', customer: { kind: 'token', token } }),
+      'how much does Bola Ige owe me',
+    );
+    expect(stubSender.lastText).toContain('do not have a customer by that name');
+    expect(stubSender.lastText).not.toContain('nothing outstanding');
+    expect(await customerRows(business.id)).toEqual(before);
   });
 
   /**
