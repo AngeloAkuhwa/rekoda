@@ -483,6 +483,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
           heard.refusedIn,
           await actorOf(tx, businessId, inbound.from),
           '[voice note not read]',
+          inbound.from,
         );
         await events.markProcessed(tx, eventId, null, businessId);
         return;
@@ -515,6 +516,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
           seen.refusedIn,
           await actorOf(tx, businessId, inbound.from),
           '[photo not read]',
+          inbound.from,
         );
         await events.markProcessed(tx, eventId, null, businessId);
         return;
@@ -546,6 +548,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
           recorded.id,
           await actorOf(tx, businessId, inbound.from),
           replies.onlyText().text,
+          inbound.from,
         );
       }
       await events.markProcessed(tx, eventId, null, businessId);
@@ -660,6 +663,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
         message.id,
         await actorOf(tx, businessId, inbound.from),
         '[message not read]',
+        inbound.from,
       );
       await events.markProcessed(tx, eventId, null, businessId);
       return;
@@ -717,6 +721,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
           message.id,
           await actorOf(tx, businessId, inbound.from),
           '[photo not read]',
+          inbound.from,
         );
         await events.markProcessed(tx, eventId, null, businessId);
         return;
@@ -1172,7 +1177,12 @@ async function recordRefusal(
   conversationMessageId: string,
   requestedBy: string | null,
   text: string,
+  /** The sender, when the caller has not already established they may transact. */
+  from?: string,
 ): Promise<void> {
+  /* A member who may not change the books has nothing a "yes" could post, and
+   * their refusal must touch nothing (G-57): no draft. */
+  if (from !== undefined && !(await mayTransact(tx, businessId, from))) return;
   await conversationsRepo.recordDraft(tx, {
     businessId,
     conversationMessageId,

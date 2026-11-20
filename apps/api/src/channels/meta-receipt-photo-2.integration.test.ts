@@ -217,7 +217,16 @@ describe('a receipt photo', () => {
     const drafts = await withBusiness(db, business.id, (tx) =>
       conversationsRepo.draftsFor(tx, business.id),
     );
-    expect(drafts).toHaveLength(0);
+    /* No record a yes could post. The one draft is the refusal itself (owner review of
+     * #437): it holds the sentence only, so a yes right after it saves nothing. */
+    expect(drafts.filter((d) => d.intent !== 'Unclear')).toHaveLength(0);
+    expect(drafts).toHaveLength(1);
+    expect(conversationsRepo.isRefusalDraft(drafts[0]!)).toBe(true);
+    expect(drafts[0]!.command).toEqual({
+      intent: 'Unclear',
+      refused: true,
+      clarification: stubSender.lastText,
+    });
   });
 
   it('previews normally when both high-value readings agree', async () => {

@@ -220,10 +220,10 @@ describe('one merchant, every identity case, footprint checked after each messag
     const invented = ada.token === 'CUSTOMER_Q9Q' ? 'CUSTOMER_Q9R' : 'CUSTOMER_Q9Q';
     await say(payment({ kind: 'token', token: invented }, 20_000), 'Tola paid 20k');
     expect(stubSender.lastText).toContain('could not tell which customer');
-    await changedBy({ drafts: `${was.drafts},Unclear:abandoned` });
+    await changedBy({ drafts: `${was.drafts},Unclear:pending` });
     await plain('yes');
     expect(stubSender.lastText).toContain('nothing waiting for a yes');
-    await changedBy({});
+    await changedBy({ drafts: was.drafts.replace(/Unclear:pending$/, 'Unclear:superseded') });
 
     /* 7. A sale to an unknown email, corrected before the yes: one customer, the
      * corrected sale, the email in the vault only. */
@@ -249,13 +249,13 @@ describe('one merchant, every identity case, footprint checked after each messag
     was = afterCorrection;
 
     /* 8. The provider fails, then the model answers nonsense: nothing changes but a
-     * retired refusal each time, and no unit is kept. */
+     * refusal draft each time (holding only its sentence), and no unit is kept. */
     stubTransport.script(new Error('provider timeout'));
     await plain('Tola paid 20k');
-    await changedBy({ drafts: `${was.drafts},Unclear:abandoned` });
+    await changedBy({ drafts: `${was.drafts},Unclear:pending` });
     stubTransport.replyWith({ intent: 'Nonsense' });
     await plain('Tola paid 20k');
-    await changedBy({ drafts: `${was.drafts},Unclear:abandoned` });
+    await changedBy({ drafts: `${was.drafts},Unclear:pending` });
 
     /* 9. Meta redelivers an earlier message: deduplicated, nothing changes. */
     await post(messagePayload(OWNER, 'wamid.J1', 'sold Ada Obi 2 wigs for 100k'));
@@ -286,10 +286,11 @@ describe('one merchant, every identity case, footprint checked after each messag
     expect(stubSender.lastText).not.toContain('Reply *yes*');
     expect(await footprint(business.id)).toEqual({
       ...exhausted,
-      drafts: `${exhausted.drafts},Unclear:abandoned`,
+      drafts: `${exhausted.drafts},Unclear:pending`,
     });
+    /* The yes was about the refusal: nothing saved, the preview pointed at. */
     await plain('yes');
-    expect(stubSender.lastText).toContain('nothing waiting for a yes');
+    expect(stubSender.lastText).toContain('still a preview waiting');
     expect((await footprint(business.id)).invoices).toBe(was.invoices);
 
     was = await footprint(business.id);
