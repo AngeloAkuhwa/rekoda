@@ -211,7 +211,10 @@ describe('a receipt photo', () => {
       stopReason: 'refusal',
     });
     expect(stubSender.lastText).toBe(replies.couldNotRead().text);
-    expect(left).toEqual(NOTHING_TOUCHED);
+    /* The one draft is the refusal (owner review of #437): it holds the sentence
+     * only, so a yes after it saves nothing (its shape is pinned in
+     * meta-receipt-photo-2 and meta-customer-token). Nothing else is touched. */
+    expect(left).toEqual({ ...NOTHING_TOUCHED, drafts: 1 });
   });
 
   it('gives back the message unit an earlier attempt took when the page is junk', async () => {
@@ -221,6 +224,6 @@ describe('a receipt photo', () => {
       stopReason: 'tool_use',
     });
     expect(stubSender.lastText).toBe(replies.notABusinessDocument().text);
-    expect(left).toEqual({ ...NOTHING_TOUCHED, documents: 1 });
+    expect(left).toEqual({ ...NOTHING_TOUCHED, documents: 1, drafts: 1 });
   });
 });
