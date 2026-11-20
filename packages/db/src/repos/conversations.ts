@@ -2142,16 +2142,67 @@ export async function identityQuestionState(
 export const ERASED_BODY = '[erased]';
 
 /**
- * The structural bodies the product writes, and nothing else (independent review of
- * #437): a deterministic intent (`[affirm]`, `[number:2]`), a placeholder (`[text
- * message]`, `[voice note]`, `[receipt photo]`, `[customer message]`, `[reply]`, a
- * media type), a template name, the gateway's refusals and `[erased]`. Anything
- * else, a merchant's own bracketed sentence included, is text and is erased.
+ * The structural bodies the product writes, exactly, and nothing else (independent
+ * review and Codex on #437): a deterministic intent by its name (`[affirm]`,
+ * `[number:2]`), a placeholder (`[text message]`, `[voice note]`, `[receipt photo]`,
+ * `[customer message]`, `[reply]`), a non-text Meta message by its type, a template
+ * by its name, the gateway's refusals, and `[erased]`. A body is exempt only when it
+ * is one of these; anything else in brackets ("[ask Bola Ige]", "[ada]") is text
+ * and is erased. A kind added to the router later and missing here is erased too,
+ * which loses nothing: the body is a label, and the row stays.
  */
+const DETERMINISTIC_KINDS = [
+  'affirm',
+  'business_email',
+  'cancel',
+  'dashboard',
+  'debtors',
+  'delete_my_data',
+  'deny',
+  'greeting',
+  'help',
+  'payment_details',
+  'records',
+  'remind',
+  'resend',
+  'start',
+  'stock',
+  'stop',
+  'unsure',
+  'upgrade',
+];
+const META_TYPES = [
+  'audio',
+  'button',
+  'contacts',
+  'document',
+  'image',
+  'interactive',
+  'location',
+  'order',
+  'reaction',
+  'sticker',
+  'system',
+  'unsupported',
+  'video',
+];
 const STRUCTURAL_BODY =
-  '^\\[(?:[a-z_]+(?::[0-9]+)?|[a-z]+ message|voice note|receipt photo|reply|erased|' +
-  'template [A-Za-z0-9_.-]+|message too long to read|' +
-  'message withheld: it held a protected detail)\\]$';
+  '^\\[(?:' +
+  [
+    ...DETERMINISTIC_KINDS,
+    'number:[0-9]+',
+    ...META_TYPES.map((t) => `${t} message`),
+    'text message',
+    'voice note',
+    'receipt photo',
+    'customer message',
+    'reply',
+    'erased',
+    'template [a-z0-9_]+',
+    'message too long to read',
+    'message withheld: it held a protected detail',
+  ].join('|') +
+  ')\\]$';
 
 /**
  * Replace the stored text of this business's conversation history with a
