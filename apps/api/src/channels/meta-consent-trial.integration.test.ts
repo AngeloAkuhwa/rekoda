@@ -216,6 +216,14 @@ describe('consent (STOP/START) and erasure, as facts not sentences', () => {
     expect(leftovers.text).toBe(0);
     /* DEL1 was finished before DEL2 ran; DEL2 itself is still being processed. */
     expect(leftovers.erasedPayloads).toBe(1);
+
+    /* Meta redelivers DEL1 after its body was erased (owner review of #437): the row
+     * still names the message by its provider id, so it is a duplicate, nothing is
+     * queued and nothing is answered. */
+    const sentBefore = stubSender.sent.length;
+    await post(messagePayload('2348031234567', 'wamid.DEL1', 'delete my data'));
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(false);
+    expect(stubSender.sent.length).toBe(sentBefore);
   });
 
   it('erasure with no web URL still deletes, and names no link at all', async () => {
