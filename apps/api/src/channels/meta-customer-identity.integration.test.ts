@@ -39,7 +39,10 @@ useMetaWebhookHarness();
 describe('two records for one person', () => {
   const A_SALE_TO_TOKEN = {
     intent: 'RecordSale',
-    customer: { kind: 'token', token: 'CUSTOMER_ONE' },
+    /* The phone, as the model reads it: the gateway's provisional token for a
+     * number nobody recorded (G-135). The sale turns it into the customer; an
+     * invented token would be refused (G-137). */
+    customer: { kind: 'token', token: 'CUSTOMER_U01' },
     items: [{ name: 'wig', quantity: 3, unitPrice: 50_000 }],
     statedTotal: 150_000,
     reportedPayment: 0,
@@ -51,11 +54,12 @@ describe('two records for one person', () => {
 
   async function seedMerchant(phone: string) {
     const user = await identity.upsertUserByPhone(db, phone);
-    return identity.createBusinessWithOwner(db, {
+    const business = await identity.createBusinessWithOwner(db, {
       name: 'Ada Fashion',
       businessType: null,
       ownerUserId: user.id,
     });
+    return business;
   }
 
   async function drain() {
@@ -211,11 +215,12 @@ describe('a storefront buyer named later in Chat', () => {
 
   async function seedMerchant() {
     const user = await identity.upsertUserByPhone(db, '+2348031234567');
-    return identity.createBusinessWithOwner(db, {
+    const business = await identity.createBusinessWithOwner(db, {
       name: 'Ada Fashion',
       businessType: null,
       ownerUserId: user.id,
     });
+    return business;
   }
 
   async function drain() {

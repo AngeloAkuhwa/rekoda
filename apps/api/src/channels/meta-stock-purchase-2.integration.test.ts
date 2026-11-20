@@ -39,7 +39,8 @@ describe('stock arriving with a purchase', () => {
       'wamid.C7',
       {
         intent: 'RecordSale',
-        customer: { kind: 'token', token: 'CUSTOMER_7K2' },
+        /* Ada, recorded as CUSTOMER_7K2 (G-137: named by mention, not an invented token). */
+        customer: { kind: 'mention', mention: 'Ada' },
         items: [{ name: 'head ties', quantity: 2, unitPrice: 2_500 }],
         statedTotal: 5_000,
         reportedPayment: 5_000,

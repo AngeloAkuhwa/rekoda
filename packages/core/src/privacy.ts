@@ -457,3 +457,19 @@ export function redactForLog(text: string): string {
     .replace(PHONE, '[phone]')
     .replace(/\b\d{10,11}\b/g, '[digits]');
 }
+
+/**
+ * What the conversation history keeps of a message (G-136): what it was,
+ * never what it said. Nothing in production reads `conversation_messages.body`,
+ * and the text can still hold a name nobody recorded: an inbound message's
+ * tokenised text keeps any name the vault does not know, and a reply can
+ * repeat one (a supplier on a purchase preview, a model-written question).
+ * So none of it is kept, in either direction.
+ */
+export const STORED_BODY = {
+  text: '[text message]',
+  voice: '[voice note]',
+  photo: '[receipt photo]',
+  customerText: '[customer message]',
+  reply: '[reply]',
+} as const;

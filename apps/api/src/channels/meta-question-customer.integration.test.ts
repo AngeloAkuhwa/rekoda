@@ -324,11 +324,11 @@ describe('a question that names a customer', () => {
   });
 
   /**
-   * G-136 (known limitation, predates #437, shared with the write path): the scrub
-   * removes the words the model returned and no more. Pinned as it is today so a fix
-   * flips this test; it is not the wanted behaviour.
+   * G-136 (owner directive on #437): this pinned "[name] Okafor" while the stored copy
+   * was the text with the model's words taken out. The history now keeps a placeholder,
+   * so no word of the typed name survives, whichever words the model returned.
    */
-  it('scrubs only the words of the name the model returned (G-136)', async () => {
+  it('keeps no word of the name, whichever words the model returned (G-136)', async () => {
     const business = await seedMerchant('+2348031234567');
 
     await ask(
@@ -338,7 +338,7 @@ describe('a question that names a customer', () => {
     );
 
     const body = await storedBody(business.id, 'wamid.Q5P');
-    expect(body).not.toContain('Chiamaka');
-    expect(body).toContain('[name] Okafor');
+    expect(body).toBe(STORED_BODY.text);
+    expect(body).not.toMatch(/Chiamaka|Okafor/);
   });
 });

@@ -12,6 +12,7 @@ import {
   post,
   stubTransport,
   workerDb,
+  knownCustomer,
 } from './meta-webhook.fixtures.js';
 
 export const buy = (over: Record<string, unknown> = {}) => ({
@@ -28,11 +29,15 @@ export const buy = (over: Record<string, unknown> = {}) => ({
 
 export async function seedMerchant(phone: string) {
   const user = await identity.upsertUserByPhone(db, phone);
-  return identity.createBusinessWithOwner(db, {
+  const business = await identity.createBusinessWithOwner(db, {
     name: 'Ada Fashion',
     businessType: null,
     ownerUserId: user.id,
   });
+  /* The customer the stubbed model names as CUSTOMER_7K2, recorded so a message
+   * naming Ada is issued that token (G-137). */
+  await knownCustomer(business.id);
+  return business;
 }
 
 export async function drain() {

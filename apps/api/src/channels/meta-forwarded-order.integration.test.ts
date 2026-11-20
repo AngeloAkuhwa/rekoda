@@ -28,6 +28,7 @@ import {
   stubTransport,
   useMetaWebhookHarness,
   workerDb,
+  knownCustomer,
 } from './meta-webhook.fixtures.js';
 import { setPlanForTest } from '@rekoda/db/testing';
 
@@ -44,11 +45,15 @@ useMetaWebhookHarness();
 describe('a forwarded order', () => {
   async function seedMerchant(phone: string) {
     const user = await identity.upsertUserByPhone(db, phone);
-    return identity.createBusinessWithOwner(db, {
+    const business = await identity.createBusinessWithOwner(db, {
       name: 'Ada Fashion',
       businessType: null,
       ownerUserId: user.id,
     });
+    /* The customer the stubbed model names as CUSTOMER_7K2, recorded so a message
+     * naming Ada is issued that token (G-137). */
+    await knownCustomer(business.id);
+    return business;
   }
 
   async function drain() {
@@ -81,7 +86,9 @@ describe('a forwarded order', () => {
 
   const THE_ORDER = {
     intent: 'RecordOrder',
-    customer: { kind: 'token', token: 'CUSTOMER_7K2' },
+    /* The forwarded message names Ada; she is recorded as CUSTOMER_7K2 (G-137: a
+     * stubbed model names a customer by mention or by a token the message carried). */
+    customer: { kind: 'mention', mention: 'Ada' },
     items: [{ name: 'Ankara bale', quantity: 2 }],
     note: 'deliver to Lekki on Friday',
   };
@@ -375,17 +382,12 @@ describe('a forwarded order', () => {
 
     /* The customer the gateway would have resolved, with an email on file:
      * the forwarded message named them, and Rekoda never invents an address. */
-    await customersRepo.createCustomerWithIdentities(db, business.id, 'CUSTOMER_7K2', [
-      {
-        facet: 'email',
-        ciphertext: encryptFacet(
-          'adaeze@example.com',
-          deps.config.vaultKey,
-          `${business.id}:email`,
-        ),
-        matchKey: null,
-      },
-    ]);
+    const ada = await knownCustomer(business.id);
+    await customersRepo.addIdentityFacet(db, business.id, ada.id, {
+      facet: 'email',
+      ciphertext: encryptFacet('adaeze@example.com', deps.config.vaultKey, `${business.id}:email`),
+      matchKey: null,
+    });
 
     stubTransport.replyWith(THE_ORDER);
     await send('please I want 2 ankara bale', 'wamid.LINK');

@@ -19,6 +19,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { templateUnitFor, usagePeriod, type TemplateCategory, type UsageUnit } from '@rekoda/core';
 import { normaliseParticipant, InvalidPhoneError } from '@rekoda/core/identity';
+import { STORED_BODY } from '@rekoda/core/privacy';
 import {
   decryptFacet,
   participantIndexFor,
@@ -503,7 +504,7 @@ export class WabaTemplateService {
    * Every check and the one consumption, in the §4.3 order: entitlement,
    * connection, recipient, consent, window, meter, token. A refusal consumes
    * nothing. On success the unit is reserved and the outbound message is
-   * recorded (tokenised), ready for the provider call.
+   * recorded (as a placeholder, G-136), ready for the provider call.
    */
   private async reserveCustomerText(
     tx: TenantDb,
@@ -540,16 +541,13 @@ export class WabaTemplateService {
       return refuse({ outcome: 'unavailable', reason: 'token_missing' });
     }
 
-    /* Stored TOKENISED, before the send — same two disciplines as every
-     * message in the estate: the history never holds a real name, and an
-     * undelivered reply is a visible debt. */
-    /* On this transaction's own connection (closeout round G of PR #432): one connection for the
-     * whole reservation, never one held while waiting for another (the worker's pool budget,
-     * `appPoolSize`; the reminder sweep and API requests too). */
-    const tokenised = await this.gateway.tokenise(businessId, input.text, tx);
+    /* Recorded before the send, so an undelivered reply is a visible debt, and stored as
+     * what it was, never what it said (G-136): the text can name a person nobody recorded,
+     * and nothing reads the history back. Not tokenised either: tokenising a phone or email
+     * in it could create a customer from a message nobody recorded as a sale (G-135). */
     const recorded = await conversationsRepo.recordOutbound(
       tx,
-      { businessId, channel: 'meta', kind: 'text', body: tokenised.text },
+      { businessId, channel: 'meta', kind: 'text', body: STORED_BODY.reply },
       {
         kind: 'CUSTOMER',
         businessId,

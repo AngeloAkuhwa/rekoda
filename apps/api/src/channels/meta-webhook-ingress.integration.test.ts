@@ -223,7 +223,9 @@ describe('phoneNumberId → BusinessId routing (spec §24; PR-059)', () => {
       }),
     );
     expect(thread).toHaveLength(1);
-    expect(thread[0]!.body).toBe('do you have the bone straight?');
+    /* On the customer's own thread, as what it was: a customer's words can name
+     * anybody, so they are not kept (G-136). */
+    expect(thread[0]!.body).toBe('[customer message]');
 
     /* The raw number never landed in the conversation index (F.3/F.4). */
     const raw = await withBusiness(db, merchant.id, (tx) =>
@@ -500,7 +502,11 @@ describe('nothing raw is stored', () => {
     expect(customers).toHaveLength(0);
   });
 
-  it('records everything else TOKENISED', async () => {
+  /* Was "records everything else TOKENISED", with the goods kept in the body. Since
+   * G-136 (owner directive on #437) a model-routed message is stored as what it was:
+   * the tokenised text could still hold a name nobody recorded, and nothing reads the
+   * column back. The goods and the count live where they are used, on the draft. */
+  it('records everything else as what it was, never its words (G-136)', async () => {
     const business = await seedMerchant('+2348031234567', 'Ada Fashion');
     await post(messagePayload('2348031234567', 'wamid.SALE', 'Ada 08039998888 bought 3 wigs'));
     expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
@@ -508,10 +514,7 @@ describe('nothing raw is stored', () => {
     const [message] = await withBusiness(db, business.id, (tx) =>
       conversationsRepo.messagesFor(tx, business.id),
     );
-    expect(message!.body).not.toContain('08039998888');
-    expect(message!.body).toMatch(/CUSTOMER_[0-9A-Z]{3}/);
-    // The goods and the count survive — they are the whole point of the message.
-    expect(message!.body).toContain('3 wigs');
+    expect(message!.body).toBe('[text message]');
   });
 
   it('writes one conversation row when the same message is delivered twice', async () => {

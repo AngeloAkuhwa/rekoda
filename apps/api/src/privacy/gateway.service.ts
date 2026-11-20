@@ -77,6 +77,15 @@ export interface GatewayTokenised extends TokenisedMessage {
    * UNREAD_MESSAGE, and nothing of it is stored or sent.
    */
   readonly unread: UnreadReason | null;
+  /**
+   * A phone or email nobody recorded, standing as a per-message token until
+   * a write needs the customer (G-135, BA-OD-3): `tokenise` with
+   * `provisional` looks these up and never creates. Raw values, held for
+   * this job only, so `materialise` can create the customer a confirmed
+   * record needs. Authorised-layer only: never logged, stored or sent.
+   * Empty unless asked for.
+   */
+  readonly provisional: ReadonlyMap<string, { facet: 'phone' | 'email'; value: string }>;
 }
 
 export type UnreadReason = 'too_long' | 'protected_detail';
@@ -107,6 +116,7 @@ function unreadAs(reason: UnreadReason): GatewayTokenised {
     facets: new Map(),
     customers: [],
     unread: reason,
+    provisional: new Map(),
   };
 }
 
@@ -117,7 +127,18 @@ function unreadAs(reason: UnreadReason): GatewayTokenised {
 export interface LiveTokens {
   readonly displays: Map<string, string>;
   readonly facets: Map<string, TypedFacet[]>;
+  /** This message's provisional tokens (`GatewayTokenised.provisional`), emptied by `materialise`. */
+  readonly provisional?: Map<string, { facet: 'phone' | 'email'; value: string }>;
 }
+
+/**
+ * A provisional token: `CUSTOMER_U` and two characters. `U` is outside the
+ * Crockford alphabet every stored token is drawn from (`generateCustomerToken`),
+ * so a provisional token can never name a recorded customer, and it has the
+ * stored tokens' length, so the structural-PII probe reads it the same way.
+ */
+const provisionalToken = (n: number): string =>
+  `CUSTOMER_U${n.toString(36).toUpperCase().padStart(2, '0')}`;
 
 /**
  * Decide whether this message split one person in two.
@@ -190,7 +211,17 @@ export class PrivacyGateway {
    * Rekoda has no reason to keep a bank account number a merchant happened to
    * type, and the cheapest way to protect one is not to hold it.
    */
-  async tokenise(businessId: string, text: string, within?: TenantDb): Promise<GatewayTokenised> {
+  async tokenise(
+    businessId: string,
+    text: string,
+    within?: TenantDb,
+    /**
+     * `provisional`: a phone or email nobody recorded is looked up, never
+     * created, and stands as a provisional token until `materialise` (G-135).
+     * For the merchant's chat, where the message may only be a question.
+     */
+    options: { provisional?: boolean } = {},
+  ): Promise<GatewayTokenised> {
     /* `within`: the caller's open transaction (closeout round G of PR #432). Each lookup and
      * creation below is a repository call that opens a transaction on the `Db` it is given; given
      * the caller's transaction, drizzle opens a savepoint on that same connection instead of taking
@@ -426,11 +457,29 @@ export class PrivacyGateway {
       return unreadAs('protected_detail');
     }
 
+    const provisional = new Map<string, { facet: 'phone' | 'email'; value: string }>();
+    const provisionalBy = new Map<string, string>();
     for (const item of pending) {
-      const resolved = await this.customerTokenFor(businessId, item.kind, item.value, db);
-      out = out.split(item.placeholder).join(resolved.token);
-      note(resolved.token, item.kind, item.value);
-      if (!seen.some((c) => c.customerId === resolved.customerId)) seen.push(resolved);
+      const found = options.provisional
+        ? await this.findCustomerFor(businessId, item.kind, item.value, db)
+        : await this.customerTokenFor(businessId, item.kind, item.value, db);
+      if (found) {
+        out = out.split(item.placeholder).join(found.token);
+        note(found.token, item.kind, item.value);
+        if (!seen.some((c) => c.customerId === found.customerId)) seen.push(found);
+        continue;
+      }
+      /* Nobody recorded this phone or email: a per-message token, the same
+       * one for the same detail typed twice, and no customer (G-135). */
+      const key = `${item.kind}:${normaliseFacet(item.kind, item.value)}`;
+      let token = provisionalBy.get(key);
+      if (!token) {
+        token = provisionalToken(provisional.size + 1);
+        provisionalBy.set(key, token);
+        provisional.set(token, { facet: item.kind, value: item.value });
+      }
+      out = out.split(item.placeholder).join(token);
+      note(token, item.kind, item.value);
     }
     for (const c of names) {
       note(c.token, 'name', c.typed);
@@ -447,7 +496,40 @@ export class PrivacyGateway {
       facets: typed,
       customers: seen,
       unread: null,
+      provisional,
     };
+  }
+
+  /**
+   * Turn this message's provisional tokens into customers, for a record the
+   * merchant is about to see a preview of (G-135). Exactly what `tokenise`
+   * did for every phone and email before: found, or created and vaulted. The
+   * live table is rekeyed to the stored tokens, so the reply and the draft
+   * carry only those; `replaced` maps each provisional token to its customer's.
+   */
+  async materialise(
+    businessId: string,
+    live: LiveTokens,
+  ): Promise<{ replaced: Map<string, string>; resolved: ResolvedCustomer[] }> {
+    const replaced = new Map<string, string>();
+    const resolved: ResolvedCustomer[] = [];
+    for (const [token, { facet, value }] of live.provisional ?? []) {
+      const customer = await this.customerTokenFor(businessId, facet, value);
+      replaced.set(token, customer.token);
+      if (!resolved.some((c) => c.customerId === customer.customerId)) resolved.push(customer);
+      const typed = [...(live.facets.get(customer.token) ?? []), ...(live.facets.get(token) ?? [])];
+      live.facets.delete(token);
+      live.displays.delete(token);
+      live.facets.set(customer.token, typed);
+      live.displays.set(customer.token, displayOf(typed));
+    }
+    live.provisional?.clear();
+    return { replaced, resolved };
+  }
+
+  /** The link a materialised customer reveals, by the same rule `tokenise` applies. */
+  linkFor(referenced: readonly ResolvedCustomer[]): IdentityLinkProposal | null {
+    return proposeLink([...referenced]);
   }
 
   /**
@@ -629,6 +711,31 @@ export class PrivacyGateway {
    * phone number produces a different key for every merchant — a dump reveals
    * nothing about which merchants share a customer.
    */
+  /** The customer a phone, email or name already belongs to, or null. Creates nothing. */
+  private async findCustomerFor(
+    businessId: string,
+    facet: 'phone' | 'email' | 'name',
+    value: string,
+    db: Db = this.db,
+  ): Promise<ResolvedCustomer | null> {
+    const canonical = facet === 'name' ? value.normalize('NFC') : value;
+    const matchKey = matchKeyFor(
+      businessId,
+      facet,
+      normaliseFacet(facet, canonical),
+      this.config.matchKey,
+    );
+    /* A name in another Unicode composition is the same person (G-60). */
+    const candidates = facet === 'name' ? this.nameKeys(businessId, value) : [matchKey];
+    for (const key of candidates) {
+      const existing = await customersRepo.findCustomerByMatchKey(db, businessId, facet, key);
+      if (existing) {
+        return { token: existing.token, customerId: existing.id, facet, created: false };
+      }
+    }
+    return null;
+  }
+
   private async customerTokenFor(
     businessId: string,
     facet: 'phone' | 'email' | 'name',
@@ -645,14 +752,8 @@ export class PrivacyGateway {
     const normalised = normaliseFacet(facet, canonical);
     const matchKey = matchKeyFor(businessId, facet, normalised, this.config.matchKey);
 
-    /* A name in another Unicode composition is the same person (G-60). */
-    const candidates = facet === 'name' ? this.nameKeys(businessId, value) : [matchKey];
-    for (const key of candidates) {
-      const existing = await customersRepo.findCustomerByMatchKey(db, businessId, facet, key);
-      if (existing) {
-        return { token: existing.token, customerId: existing.id, facet, created: false };
-      }
-    }
+    const existing = await this.findCustomerFor(businessId, facet, value, db);
+    if (existing) return existing;
 
     /**
      * Two failures are possible from here and they want opposite responses.

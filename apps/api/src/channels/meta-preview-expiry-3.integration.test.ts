@@ -102,7 +102,7 @@ describe('a preview has a time limit (G-23)', () => {
           items: [{ name: 'wig', quantity: 4, unitPrice: 100_000 }],
           statedTotal: 400_000,
         },
-        'sorry, 4 wigs not 3',
+        'sorry, 4 wigs for Ada not 3',
       );
       expect(await states(business.id)).toEqual(['superseded', 'pending']);
 
@@ -153,7 +153,7 @@ describe('a preview has a time limit (G-23)', () => {
         items: [{ name: 'wig', quantity: 4, unitPrice: 100_000 }],
         statedTotal: 400_000,
       });
-      await post(messagePayload('2348031234567', 'wamid.G23-q2', 'sorry, 4 wigs not 3'));
+      await post(messagePayload('2348031234567', 'wamid.G23-q2', 'sorry, 4 wigs for Ada not 3'));
       await post(messagePayload('2348031234567', 'wamid.G23-q2-yes', 'yes'));
       await drain();
       await runRetriesNow(ownerDb, business.id);
@@ -226,7 +226,8 @@ describe('a preview has a time limit (G-23)', () => {
 
     /* Inside the new window, the exact phrase erases, as it always has. */
     await plain('wamid.G23-del3', 'delete my data');
-    expect(stubSender.lastText).toContain('deleted (1 record)');
+    /* One more than the test seeds: seedMerchant records Ada (G-137), and erasure takes her name too. */
+    expect(stubSender.lastText).toContain('deleted (2 records)');
     expect(await facets()).toEqual([]);
   });
 });

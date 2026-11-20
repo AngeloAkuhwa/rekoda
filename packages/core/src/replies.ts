@@ -112,6 +112,17 @@ export function erasureNotYours(): Reply {
 }
 
 /**
+ * A record named a customer by a reference this message never carried
+ * (G-137): nothing was drafted, because the reference could be somebody else's.
+ */
+export function customerNotRecognised(): Reply {
+  return reply(
+    'I could not tell which customer that is for, so I have not recorded it. ' +
+      "Tell me the record again with the customer's name or phone number.",
+  );
+}
+
+/**
  * A write refused by role, not by understanding.
  *
  * An accountant's access is view only across the whole product (spec §35):

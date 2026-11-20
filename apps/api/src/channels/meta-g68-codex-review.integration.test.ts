@@ -19,6 +19,7 @@ import {
   stubTransport,
   useMetaWebhookHarness,
   workerDb,
+  knownCustomer,
 } from './meta-webhook.fixtures.js';
 import { setPlanForTest } from '@rekoda/db/testing';
 
@@ -46,11 +47,15 @@ describe('G-68 final review 3: resend closes the question, window-long answer, m
 
   async function seedMerchant(phone = `+${OWNER}`) {
     const user = await identity.upsertUserByPhone(db, phone);
-    return identity.createBusinessWithOwner(db, {
+    const business = await identity.createBusinessWithOwner(db, {
       name: 'Ada Fashion',
       businessType: null,
       ownerUserId: user.id,
     });
+    /* The customer the stubbed model names as CUSTOMER_7K2, recorded so a message
+     * naming Ada is issued that token (G-137). */
+    await knownCustomer(business.id);
+    return business;
   }
 
   async function drain() {
@@ -202,11 +207,15 @@ describe('G-68 Codex review: erasure events, emoji, failed rebuild send, gates, 
 
   async function seedMerchant(phone = `+${OWNER}`) {
     const user = await identity.upsertUserByPhone(db, phone);
-    return identity.createBusinessWithOwner(db, {
+    const business = await identity.createBusinessWithOwner(db, {
       name: 'Ada Fashion',
       businessType: null,
       ownerUserId: user.id,
     });
+    /* The customer the stubbed model names as CUSTOMER_7K2, recorded so a message
+     * naming Ada is issued that token (G-137). */
+    await knownCustomer(business.id);
+    return business;
   }
 
   async function addDelegate(businessId: string) {

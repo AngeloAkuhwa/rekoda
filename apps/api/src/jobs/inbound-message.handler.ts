@@ -105,11 +105,7 @@ import type {
 import type { ReplySender } from '../replies/reply.service.js';
 import type { PaymentIntentsService } from '../payments/payment-intents.service.js';
 import { openPayload } from '../privacy/payload-vault.js';
-import {
-  redactForLog,
-  redactStructuralPiiAroundTokens,
-  replaceOutsideTokens,
-} from '@rekoda/core/privacy';
+import { redactForLog, STORED_BODY } from '@rekoda/core/privacy';
 import { describeFailure, JobDeferred, type JobContext, type JobHandler } from './runner.js';
 import { JobKind } from './queue.service.js';
 import { TranscriptionUnavailable, type SpeechToText, type Transcript } from '../ai/stt.js';
@@ -451,7 +447,11 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
      * router and goes to the model path as an ordinary message. */
     const route: Route = read ? { route: 'model', reason: 'unrecognised' } : routeMessage(text);
     const tokenised =
-      route.route === 'deterministic' ? null : await deps.gateway.tokenise(businessId, text);
+      route.route === 'deterministic'
+        ? null
+        : /* Provisional (G-135): a phone or email nobody recorded creates no
+           * customer until a record needs one, so a question never does. */
+          await deps.gateway.tokenise(businessId, text, undefined, { provisional: true });
 
     /**
      * A deterministic message is stored as WHAT IT WAS, not what it said.
@@ -471,16 +471,34 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
      * and silently return without answering the merchant. The body is filled
      * in now that there is something to store.
      */
+    /**
+     * What the history keeps of a model-routed message: what it WAS, never
+     * what it said (G-136, owner directive on #437, 20 Nov 2026).
+     *
+     * The tokenised text still holds any name nobody recorded, and the only
+     * thing that could take one out was a scrub after a successful
+     * interpretation, which replaced only the words the model returned and
+     * never ran on a refusal, a failure, an `Unclear` or a supplier. Nothing
+     * in production reads this column (the model is given only the current
+     * message, in memory), so the text is not kept at all: a structural
+     * placeholder, written in the job's own transaction, is all that ever
+     * commits. The words live only in `safeText` while this job runs.
+     */
+    const stored =
+      route.route === 'deterministic'
+        ? describeIntent(route.intent)
+        : tokenised!.unread
+          ? tokenised!.text
+          : spoken
+            ? STORED_BODY.voice
+            : read
+              ? STORED_BODY.photo
+              : STORED_BODY.text;
     const claimed = spoken?.messageId ?? read?.messageId ?? null;
     const message = claimed
       ? {
           id: claimed,
-          isNew: await conversationsRepo.setInboundBody(
-            tx,
-            businessId,
-            claimed,
-            route.route === 'deterministic' ? describeIntent(route.intent) : tokenised!.text,
-          ),
+          isNew: await conversationsRepo.setInboundBody(tx, businessId, claimed, stored),
         }
       : await conversationsRepo.recordInbound(
           tx,
@@ -488,7 +506,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
             businessId,
             channel: 'meta',
             kind: 'text',
-            body: route.route === 'deterministic' ? describeIntent(route.intent) : tokenised!.text,
+            body: stored,
             providerMessageId: inbound.externalId,
           },
           merchantThread(businessId),
@@ -583,6 +601,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
       ? {
           displays: new Map(tokenised.tokens),
           facets: new Map([...tokenised.facets].map(([token, typed]) => [token, [...typed]])),
+          provisional: new Map(tokenised.provisional),
         }
       : null;
 
@@ -1029,7 +1048,7 @@ async function readReceiptPhoto(
       businessId,
       channel: 'meta',
       kind: 'media',
-      body: '[receipt photo]',
+      body: STORED_BODY.photo,
       providerMessageId: inbound.externalId,
     },
     merchantThread(businessId),
@@ -1302,7 +1321,7 @@ async function transcribeVoiceNote(
       businessId,
       channel: 'meta',
       kind: 'voice',
-      body: '[voice note]',
+      body: STORED_BODY.voice,
       providerMessageId: inbound.externalId,
     },
     merchantThread(businessId),
@@ -5259,25 +5278,49 @@ async function interpretedReply(
   let command = interpreted.command;
   let nameNotKnown = false;
   /**
+   * A phone or email nobody recorded stood as a provisional token (G-135).
+   *
+   * A question names nobody by it: it is answered as unknown and creates
+   * nothing (BA-OD-3). A record the merchant will see a preview of needs the
+   * customer, so it is found or created now, exactly as the gateway used to
+   * do for every message, and the command carries the stored token. Anything
+   * else (an unclear message) leaves it as it was: nobody is created.
+   */
+  if (tokens.provisional?.size) {
+    const asked = command.intent === 'Query' ? command.customer : null;
+    if (asked?.kind === 'token' && tokens.provisional.has(asked.token)) {
+      nameNotKnown = true;
+      command = { ...command, customer: { kind: 'none' } } as StructuredBusinessCommand;
+    } else if (command.intent !== 'Query' && command.intent !== 'Unclear') {
+      const made = await deps.gateway.materialise(businessId, tokens);
+      const fresh = made.resolved.filter(
+        (c) => !referenced.some((r) => r.customerId === c.customerId),
+      );
+      referenced = [...referenced, ...fresh];
+      link ??= deps.gateway.linkFor(referenced);
+      if ('customer' in command && command.customer?.kind === 'token') {
+        const stored = made.replaced.get(command.customer.token);
+        if (stored) {
+          command = {
+            ...command,
+            customer: { kind: 'token', token: stored },
+          } as StructuredBusinessCommand;
+        }
+      }
+    }
+  }
+  /**
    * A question resolves a name by LOOKUP only (OD-3, owner ruling 20 Nov 2026).
    *
    * A read must not add a customer: find-or-create below is for records the
    * merchant will confirm. A known name becomes its token, exactly as a sale
    * would find it. An unknown one names nobody: the question is answered
-   * honestly and the name, which is still a person's name, is scrubbed from
-   * the stored message all the same.
+   * honestly, and the stored message never held the name (G-136).
    */
   if (command.intent === 'Query' && command.customer?.kind === 'mention') {
     const mention = command.customer.mention;
     const known = await deps.gateway.findMention(businessId, mention);
     if (known) deps.gateway.noteMention(tokens, known.token, mention);
-    const scrubbed = redactStructuralPiiAroundTokens(
-      replaceOutsideTokens(safeText, mention, known?.token ?? '[name]', tokens.displays.keys()),
-      tokens.displays.keys(),
-    );
-    if (scrubbed !== safeText) {
-      await conversationsRepo.setInboundBody(tx, businessId, conversationMessageId, scrubbed);
-    }
     /* Answered through the ordinary path, not by returning here: a question
      * leaves its read-only Query draft, which is what stops a later "yes"
      * reaching past it to an older preview (`hasReadsAfter`, Codex on #437). */
@@ -5315,21 +5358,30 @@ async function interpretedReply(
       customer: { kind: 'token', token: named.token },
     } as StructuredBusinessCommand;
 
-    /* The inbound row was stored BEFORE the model named this customer, so it
-     * still carries the name. Scrubbed now, in the same transaction: the
-     * conversation history must not hold a customer's real name, and "we
-     * only learned it was a name a moment ago" is not an exemption. */
-    /* However it was spaced, and never inside a token (G-60). */
-    /* And what then reads as PII is not stored either (final review on
-     * #273): "send to <new name> 0123456789" held no account number until
-     * the name became a short token within reach of "send to". */
-    const scrubbed = redactStructuralPiiAroundTokens(
-      replaceOutsideTokens(safeText, mention, named.token, tokens.displays.keys()),
-      tokens.displays.keys(),
-    );
-    if (scrubbed !== safeText) {
-      await conversationsRepo.setInboundBody(tx, businessId, conversationMessageId, scrubbed);
-    }
+    /* Nothing to scrub from the stored message: it holds a placeholder, never
+     * the text (G-136), so the name the model just resolved was never kept. */
+  }
+
+  /**
+   * A write names a customer only by a token this message was issued (G-137).
+   *
+   * The model sees tokens as opaque and only ever this message's: the
+   * gateway's output, a name resolved just above, or a phone it materialised.
+   * Any other well-formed token is one the model made up or copied, and it
+   * may belong to another real customer of this business, so a payment
+   * preview would point at their invoice and a "yes" would post it there.
+   * Token syntax is not authority: nothing is drafted, the unit goes back as
+   * for any refused request, and the merchant is asked to say who.
+   */
+  if (
+    command.intent !== 'Query' &&
+    'customer' in command &&
+    command.customer?.kind === 'token' &&
+    !tokens.displays.has(command.customer.token)
+  ) {
+    authorisationLog.warn(`${command.intent} carried a customer token this message was not issued`);
+    await refundMessage(tx, businessId, eventId, period);
+    return replies.customerNotRecognised();
   }
 
   /**

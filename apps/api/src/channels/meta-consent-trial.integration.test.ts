@@ -28,6 +28,7 @@ import {
   stubTransport,
   useMetaWebhookHarness,
   workerDb,
+  knownCustomer,
 } from './meta-webhook.fixtures.js';
 import { setPlanForTest } from '@rekoda/db/testing';
 
@@ -36,7 +37,15 @@ useMetaWebhookHarness();
 describe('consent (STOP/START) and erasure, as facts not sentences', () => {
   async function seedMerchant(phone: string, name: string) {
     const user = await identity.upsertUserByPhone(db, phone);
-    return identity.createBusinessWithOwner(db, { name, businessType: null, ownerUserId: user.id });
+    const business = await identity.createBusinessWithOwner(db, {
+      name,
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    /* The customer the stubbed model names as CUSTOMER_7K2, recorded so a message
+     * naming Ada is issued that token (G-137). */
+    await knownCustomer(business.id);
+    return business;
   }
 
   it('STOP persists, suppresses proactive deliveries, and START undoes it', async () => {
@@ -163,7 +172,8 @@ describe('consent (STOP/START) and erasure, as facts not sentences', () => {
 
     await post(messagePayload('2348031234567', 'wamid.DEL2', 'delete my data'));
     expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
-    expect(stubSender.lastText).toContain('deleted (2 records)');
+    /* One more than the test seeds: seedMerchant records Ada (G-137), and erasure takes her name too. */
+    expect(stubSender.lastText).toContain('deleted (3 records)');
     /* The rest is on the deployment's own data deletion page: REKODA_WEB_URL,
      * through config.webUrl, the only link and the last thing in the reply. */
     expect((stubSender.lastText ?? '').match(/\S+:\/\/\S+/g)).toEqual([
@@ -196,7 +206,8 @@ describe('consent (STOP/START) and erasure, as facts not sentences', () => {
     await post(messagePayload('2348031234567', 'wamid.DELN2', 'delete my data'));
     expect(await buildRunner(workerDb, db, noWeb).runOnce()).toBe(true);
 
-    expect(stubSender.lastText).toContain('deleted (1 record)');
+    /* One more than the test seeds: seedMerchant records Ada (G-137), and erasure takes her name too. */
+    expect(stubSender.lastText).toContain('deleted (2 records)');
     expect(stubSender.lastText).toContain('Your conversations and account can be deleted too');
     // No scheme, no www, and no bare `name.tld` a phone would still link.
     expect(stubSender.lastText).not.toMatch(/:\/\/|www\.|[a-z0-9-]\.[a-z]{2,}/i);
@@ -226,7 +237,8 @@ describe('consent (STOP/START) and erasure, as facts not sentences', () => {
 
     await post(messagePayload('2348031234567', 'wamid.DELF2', 'delete my data'));
     expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
-    expect(stubSender.lastText).toContain('deleted (1 record)');
+    /* One more than the test seeds: seedMerchant records Ada (G-137), and erasure takes her name too. */
+    expect(stubSender.lastText).toContain('deleted (2 records)');
 
     const confirmations = await withBusiness(db, business.id, (tx) =>
       tx.execute<{ command: string; claimed_at: Date | null }>(
@@ -324,7 +336,15 @@ describe('consent (STOP/START) and erasure, as facts not sentences', () => {
 describe('the trial clock and the upgrade door', () => {
   async function seedMerchant(phone: string, name: string) {
     const user = await identity.upsertUserByPhone(db, phone);
-    return identity.createBusinessWithOwner(db, { name, businessType: null, ownerUserId: user.id });
+    const business = await identity.createBusinessWithOwner(db, {
+      name,
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    /* The customer the stubbed model names as CUSTOMER_7K2, recorded so a message
+     * naming Ada is issued that token (G-137). */
+    await knownCustomer(business.id);
+    return business;
   }
 
   /** Age the trial past its date, as the full trial length would. */
@@ -418,6 +438,7 @@ describe('metering the things that cost money', () => {
       businessType: null,
       ownerUserId: user.id,
     });
+    await knownCustomer(business.id);
 
     // Burn the trial's 25 documents, leaving the allowance exactly spent.
     const period = usagePeriod(new Date());

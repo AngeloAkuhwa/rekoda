@@ -1,0 +1,256 @@
+/**
+ * Which customer a message may name, end to end (owner directive on #437, 20 Nov 2026).
+ *
+ * G-137: a record names a customer only by a token this message was issued. The model
+ * sees tokens as opaque and only this message's, so any other well-formed token is
+ * invented or copied, and it may be another real customer's: a payment would be
+ * previewed against their invoice and a "yes" would post it there. Token syntax is
+ * not authority, so nothing is drafted.
+ *
+ * G-135 part 2 (BA-OD-3): a phone or email nobody recorded creates no customer when
+ * the message is only a question. It stands as a provisional token until a record
+ * needs the customer, and a question names nobody by it.
+ */
+import { describe, expect, it } from 'vitest';
+import { conversationsRepo, identity, issueRepo, sql, withBusiness } from '@rekoda/db';
+import {
+  db,
+  deps,
+  messagePayload,
+  post,
+  stubSender,
+  stubTransport,
+  useMetaWebhookHarness,
+} from './meta-webhook.fixtures.js';
+import { drain } from './meta-voice-note.fixtures.js';
+
+useMetaWebhookHarness();
+
+const OWNER = '2348031234567';
+
+async function seedMerchant() {
+  const user = await identity.upsertUserByPhone(db, `+${OWNER}`);
+  return identity.createBusinessWithOwner(db, {
+    name: 'Ada Fashion',
+    businessType: null,
+    ownerUserId: user.id,
+  });
+}
+
+async function say(wamid: string, command: unknown, text: string) {
+  stubTransport.replyWith(command);
+  await post(messagePayload(OWNER, wamid, text));
+  await drain();
+}
+
+async function plain(wamid: string, text: string) {
+  await post(messagePayload(OWNER, wamid, text));
+  await drain();
+}
+
+const footprint = (businessId: string) =>
+  withBusiness(db, businessId, async (tx) => {
+    const [row] = [
+      ...(await tx.execute<{
+        customers: number;
+        drafts: number;
+        invoices: number;
+        payments: number;
+      }>(sql`
+        SELECT (SELECT count(*)::int FROM customers WHERE business_id = ${businessId}::uuid) AS customers,
+               (SELECT count(*)::int FROM command_drafts
+                 WHERE business_id = ${businessId}::uuid AND intent NOT IN ('Query', 'Unclear')) AS drafts,
+               (SELECT count(*)::int FROM invoices WHERE business_id = ${businessId}::uuid) AS invoices,
+               (SELECT count(*)::int FROM payments WHERE business_id = ${businessId}::uuid) AS payments`)),
+    ];
+    return row!;
+  });
+
+const sale = (customer: Record<string, unknown>) => ({
+  intent: 'RecordSale',
+  customer,
+  items: [{ name: 'wig', quantity: 2, unitPrice: 50_000 }],
+  statedTotal: 100_000,
+  reportedPayment: 0,
+  paymentMethod: 'transfer',
+  discount: null,
+  deliveryFee: null,
+  dueDescription: null,
+});
+
+const payment = (customer: Record<string, unknown>) => ({
+  intent: 'RecordPayment',
+  customer,
+  amount: 20_000,
+  relativeAmount: null,
+  documentRef: null,
+  paymentMethod: 'cash',
+});
+
+const balanceOf = (customer: Record<string, unknown> | null) => ({
+  intent: 'Query',
+  topic: 'customer_balance',
+  customer,
+  period: 'month',
+  periodText: null,
+  format: 'chat',
+});
+
+const lastModelText = () => stubTransport.requests.at(-1)?.userText ?? '';
+
+/** One ₦100,000 unpaid invoice to `token`. */
+async function invoiceTo(businessId: string, token: string) {
+  await withBusiness(db, businessId, (tx) =>
+    issueRepo.issueSale(tx, {
+      businessId,
+      customerId: null,
+      customerToken: token,
+      items: [{ name: 'wig', quantity: 2, unitPriceK: 5_000_000 }],
+      subtotalK: 10_000_000,
+      discountK: 0,
+      deliveryFeeK: 0,
+      vatK: 0,
+      totalK: 10_000_000,
+      paidK: 0,
+      balanceDueK: 10_000_000,
+      method: 'transfer',
+      sourceType: 'chat',
+      sourceId: `draft-${token}`,
+      actor: 'system',
+    }),
+  );
+}
+
+describe('a record names a customer only by a token this message was issued (G-137)', () => {
+  it("a payment carrying another customer's real token is not drafted and cannot be confirmed", async () => {
+    const business = await seedMerchant();
+    const bola = await deps.gateway.resolveMention(business.id, 'Bola Ige');
+    await invoiceTo(business.id, bola.token);
+    const before = await footprint(business.id);
+
+    /* The message names Ada; the model hands back Bola's token. */
+    await say('wamid.T1', payment({ kind: 'token', token: bola.token }), 'Ada paid 20k');
+
+    expect(stubSender.lastText).toContain('could not tell which customer');
+    expect(await footprint(business.id)).toEqual(before);
+    await plain('wamid.T1-yes', 'yes');
+    expect(await footprint(business.id)).toEqual(before);
+  });
+
+  it('a sale carrying a token nobody issued is not drafted', async () => {
+    const business = await seedMerchant();
+    const before = await footprint(business.id);
+
+    await say('wamid.T2', sale({ kind: 'token', token: 'CUSTOMER_7K2' }), 'sold 2 wigs for 100k');
+
+    expect(stubSender.lastText).toContain('could not tell which customer');
+    expect(await footprint(business.id)).toEqual(before);
+  });
+
+  it('a known customer typed in the message still previews and confirms', async () => {
+    const business = await seedMerchant();
+    const ada = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+
+    await say(
+      'wamid.T3',
+      sale({ kind: 'token', token: ada.token }),
+      'sold Ada Obi 2 wigs for 100k',
+    );
+    expect(lastModelText()).toContain(ada.token);
+    expect(stubSender.lastText).not.toContain('could not tell which customer');
+    await plain('wamid.T3-yes', 'yes');
+
+    expect((await footprint(business.id)).invoices).toBe(1);
+  });
+});
+
+describe('a phone or email nobody recorded creates no customer until a record needs one (G-135)', () => {
+  it('a balance question about an unknown phone number creates nothing and names nobody', async () => {
+    const business = await seedMerchant();
+    const before = await footprint(business.id);
+
+    await say(
+      'wamid.P1',
+      balanceOf({ kind: 'token', token: 'CUSTOMER_U01' }),
+      'how much does 08039998888 owe me',
+    );
+
+    expect(lastModelText()).toContain('CUSTOMER_U01');
+    expect(lastModelText()).not.toContain('08039998888');
+    expect(stubSender.lastText).toContain('do not have a customer by that name');
+    expect(await footprint(business.id)).toEqual(before);
+  });
+
+  it('a balance question about a known phone number is answered for that customer', async () => {
+    const business = await seedMerchant();
+    const known = await deps.gateway.tokenise(business.id, 'call 08039998888');
+    const token = [...known.tokens.keys()].find((t) => t.startsWith('CUSTOMER_'))!;
+    await invoiceTo(business.id, token);
+    const before = await footprint(business.id);
+
+    await say('wamid.P2', balanceOf({ kind: 'token', token }), 'how much does 08039998888 owe me');
+
+    expect(stubSender.lastText).toContain('₦100,000 in total');
+    expect(await footprint(business.id)).toEqual(before);
+  });
+
+  it('an unclear message with an unknown email creates nothing', async () => {
+    const business = await seedMerchant();
+    const before = await footprint(business.id);
+
+    await say(
+      'wamid.P3',
+      { intent: 'Unclear', clarification: 'What would you like me to do?' },
+      'ada.obi@example.com',
+    );
+
+    expect(await footprint(business.id)).toEqual(before);
+  });
+
+  it('a sale to an unknown phone number creates the customer and carries their stored token', async () => {
+    const business = await seedMerchant();
+
+    await say(
+      'wamid.P4',
+      sale({ kind: 'token', token: 'CUSTOMER_U01' }),
+      'sold 2 wigs to 08039998888 for 100k',
+    );
+
+    expect((await footprint(business.id)).customers).toBe(1);
+    const draft = await withBusiness(db, business.id, (tx) =>
+      conversationsRepo.pendingDraftToAnswer(tx, business.id, { asOf: new Date() }),
+    );
+    const customer = (draft?.command as { customer?: { token?: string } }).customer;
+    expect(customer?.token).toMatch(/^CUSTOMER_/);
+    expect(customer?.token).not.toBe('CUSTOMER_U01');
+    /* The preview reads the phone back to the merchant, never the token. */
+    expect(stubSender.lastText).not.toContain('CUSTOMER_');
+
+    await plain('wamid.P4-yes', 'yes');
+    expect(await footprint(business.id)).toMatchObject({ customers: 1, invoices: 1 });
+    const snapshot = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ token: string }>(
+        sql`SELECT snapshot_json ->> 'customerToken' AS token FROM invoices
+            WHERE business_id = ${business.id}::uuid`,
+      ),
+    );
+    expect([...snapshot][0]?.token).toBe(customer?.token);
+  });
+
+  it('an unknown phone asked about and then sold to becomes one customer, at the sale', async () => {
+    const business = await seedMerchant();
+
+    await say(
+      'wamid.P5a',
+      balanceOf({ kind: 'token', token: 'CUSTOMER_U01' }),
+      'how much does 08039998888 owe me',
+    );
+    expect((await footprint(business.id)).customers).toBe(0);
+    await say(
+      'wamid.P5b',
+      sale({ kind: 'token', token: 'CUSTOMER_U01' }),
+      'sold 2 wigs to 08039998888 for 100k',
+    );
+    expect((await footprint(business.id)).customers).toBe(1);
+  });
+});

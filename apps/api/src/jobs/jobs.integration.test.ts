@@ -337,7 +337,11 @@ describe('a customer name never reaches the model twice', () => {
     for (const m of messages) expect(m.body ?? '').not.toMatch(/Obi/);
   });
 
-  it('never rewrites a token while scrubbing a name', async () => {
+  /* Was "never rewrites a token while scrubbing a name": the after-model scrub is gone
+   * with G-136 (the history keeps a placeholder, so there is nothing to scrub). What
+   * stays true: the model reads the known phone as its token, untouched, and the
+   * history keeps no word of the message. */
+  it('hands the model a known token untouched beside a new name, and keeps no words', async () => {
     const businessId = await seedBusiness('Names Token Ltd', '+2348140020011');
     await customersRepo.createCustomerWithIdentities(appDb, businessId, 'CUSTOMER_ADA', [
       {
@@ -358,8 +362,11 @@ describe('a customer name never reaches the model twice', () => {
     const messages = await withBusiness(appDb, businessId, (tx) =>
       tx.select().from(schema.conversationMessages),
     );
-    const inbound = messages.find((m) => (m.body ?? '').includes('referred'));
-    expect(inbound?.body ?? '').toMatch(/^CUSTOMER_ADA referred CUSTOMER_[0-9A-Z]+, sold/);
+    const request = stubTransport.requests[stubTransport.requests.length - 1]!;
+    expect(request.userText).toMatch(/^CUSTOMER_ADA referred Ada, sold 3 wigs/);
+    expect(messages.filter((m) => m.direction === 'inbound').map((m) => m.body)).toEqual([
+      '[text message]',
+    ]);
   });
 
   it('tokenises the SECOND message before the model ever sees it', async () => {

@@ -29,6 +29,7 @@ import {
   stubTransport,
   useMetaWebhookHarness,
   workerDb,
+  knownCustomer,
 } from './meta-webhook.fixtures.js';
 
 useMetaWebhookHarness();
@@ -36,7 +37,15 @@ useMetaWebhookHarness();
 describe("the plan's own example, end to end", () => {
   async function seedMerchant(phone: string, name: string) {
     const user = await identity.upsertUserByPhone(db, phone);
-    return identity.createBusinessWithOwner(db, { name, businessType: null, ownerUserId: user.id });
+    const business = await identity.createBusinessWithOwner(db, {
+      name,
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    /* The customer the stubbed model names as CUSTOMER_7K2, recorded so a message
+     * naming Ada is issued that token (G-137). */
+    await knownCustomer(business.id);
+    return business;
   }
 
   const THE_SALE = {
@@ -360,7 +369,7 @@ describe("the plan's own example, end to end", () => {
       items: [{ name: 'wig', quantity: 4, unitPrice: 50_000 }],
       statedTotal: 200_000,
     });
-    await send('no, 4 not 3', 'wamid.FIX');
+    await send('no, 4 for Ada not 3', 'wamid.FIX');
     expect(stubSender.lastText).toContain('replaced the earlier version');
     expect(stubSender.lastText).toContain('Total: ₦200,000');
 
