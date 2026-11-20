@@ -807,3 +807,51 @@ export async function resolveExceptionAsOperator(
   });
   return done ? 'resolved' : 'not_found';
 }
+
+/** What an erased webhook payload reads as. Not sealed, and readable by nothing that needs a message. */
+export const ERASED_PAYLOAD = { erased: true } as const;
+
+/**
+ * Drop the sealed body of this business's finished WhatsApp message events
+ * (G-136 R4, owner directive on #437, 20 Nov 2026).
+ *
+ * Only `meta` events of a `message.*` type that were processed without error,
+ * or whose error an operator resolved: nothing still waiting, retrying, dead or
+ * open as an exception, and no payment provider's event (those are payment
+ * evidence and keep their payload). The row stays, so ingress still knows the
+ * message by its provider id and never processes it twice. `dryRun` counts
+ * and writes nothing. Returns the count only.
+ */
+export async function eraseFinishedMessagePayloads(
+  tx: TenantDb,
+  businessId: string,
+  options: { dryRun?: boolean; before?: Date; limit?: number } = {},
+): Promise<number> {
+  const limit = options.limit ?? 5_000;
+  if (!Number.isSafeInteger(limit) || limit <= 0) {
+    throw new Error(`eraseFinishedMessagePayloads: limit must be a positive integer, got ${limit}`);
+  }
+  const before = options.before?.toISOString() ?? null;
+  const eligible = sql`
+    SELECT id FROM external_events
+    WHERE business_id = ${businessId}::uuid
+      AND provider = 'meta'
+      AND event_type LIKE 'message.%'
+      AND processed_at IS NOT NULL
+      AND (error IS NULL OR resolved_at IS NOT NULL)
+      AND payload <> ${JSON.stringify(ERASED_PAYLOAD)}::jsonb
+      AND (${before}::timestamptz IS NULL OR created_at < ${before}::timestamptz)
+    ORDER BY created_at, id
+    LIMIT ${limit}`;
+  if (options.dryRun) {
+    const rows = await tx.execute<{ n: number }>(
+      sql`SELECT count(*)::int AS n FROM (${eligible}) e`,
+    );
+    return [...rows][0]?.n ?? 0;
+  }
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE external_events SET payload = ${JSON.stringify(ERASED_PAYLOAD)}::jsonb
+    WHERE business_id = ${businessId}::uuid AND id IN (${eligible})
+    RETURNING id`);
+  return [...rows].length;
+}

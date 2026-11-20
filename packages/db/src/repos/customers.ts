@@ -9,6 +9,8 @@
  * Both tables are under row-level security, so every read and write here goes
  * through a tenant pin.
  */
+import { eraseStoredText } from './conversations.js';
+import { eraseFinishedMessagePayloads } from './events.js';
 import { and, eq, sql } from 'drizzle-orm';
 import type { Db, TenantDb } from '../client.js';
 import { withBusiness } from '../client.js';
@@ -485,6 +487,44 @@ export async function eraseAllIdentities(
   });
 
   return deleted.length;
+}
+
+/**
+ * The text outside the vault that can still name a customer, erased with them
+ * (G-136 R4, owner directive on #437): conversation text stored before G-136
+ * (`eraseStoredText`) and the sealed bodies of finished WhatsApp messages
+ * (`eraseFinishedMessagePayloads`). In bounded batches, in the caller's
+ * transaction, audited with counts only.
+ */
+export async function eraseTextOutsideTheVault(
+  tx: TenantDb,
+  businessId: string,
+  sourceType: string,
+): Promise<{ messageText: number; messagePayloads: number }> {
+  const BATCH = 5_000;
+  const all = async (batch: (limit: number) => Promise<number>) => {
+    let total = 0;
+    for (;;) {
+      const n = await batch(BATCH);
+      total += n;
+      if (n < BATCH) return total;
+    }
+  };
+  const messageText = await all((limit) => eraseStoredText(tx, businessId, { limit }));
+  const messagePayloads = await all((limit) =>
+    eraseFinishedMessagePayloads(tx, businessId, { limit }),
+  );
+  await tx.insert(auditEvents).values({
+    businessId,
+    actor: 'system',
+    entity: 'conversation_messages',
+    entityId: null,
+    action: 'erased',
+    newValue: { messageTextErased: messageText, messagePayloadsErased: messagePayloads },
+    reason: 'the merchant asked for erasure',
+    sourceType,
+  });
+  return { messageText, messagePayloads };
 }
 
 /** Whether this customer holds a known (matchable) name (G-60). */

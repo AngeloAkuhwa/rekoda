@@ -2137,3 +2137,50 @@ export async function identityQuestionState(
     ? { state: row.state, expiresAt: new Date(row.expires_at), freshPreviewWaiting: row.fresh }
     : null;
 }
+
+/** What an erased message body reads as: a fact that a message was here, nothing it said. */
+export const ERASED_BODY = '[erased]';
+
+/**
+ * Replace the stored text of this business's conversation history with a
+ * placeholder (G-136 R1 and R4, owner directive on #437, 20 Nov 2026).
+ *
+ * Only rows whose body is not already a structural placeholder (`[...]`):
+ * since G-136 every new model-routed message is stored as one, so what is left
+ * is text written before it, which can hold a name nobody recorded. The rows
+ * themselves stay (ids, direction, timing, provider ids, the drafts and
+ * receipts that reference them); no financial record is touched.
+ *
+ * Bounded (`limit` rows per call, oldest first) and `before` a cutoff, so an
+ * operator run walks a business in batches. `dryRun` counts and writes
+ * nothing. Returns the count only: nothing of what was erased is read out.
+ */
+export async function eraseStoredText(
+  tx: TenantDb,
+  businessId: string,
+  options: { dryRun?: boolean; before?: Date; limit?: number } = {},
+): Promise<number> {
+  const limit = options.limit ?? 5_000;
+  if (!Number.isSafeInteger(limit) || limit <= 0) {
+    throw new Error(`eraseStoredText: limit must be a positive integer, got ${limit}`);
+  }
+  const before = options.before?.toISOString() ?? null;
+  const eligible = sql`
+    SELECT id FROM conversation_messages
+    WHERE business_id = ${businessId}::uuid
+      AND body !~ '^\\[[^]]*\\]$'
+      AND (${before}::timestamptz IS NULL OR created_at < ${before}::timestamptz)
+    ORDER BY created_at, id
+    LIMIT ${limit}`;
+  if (options.dryRun) {
+    const rows = await tx.execute<{ n: number }>(
+      sql`SELECT count(*)::int AS n FROM (${eligible}) e`,
+    );
+    return [...rows][0]?.n ?? 0;
+  }
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE conversation_messages SET body = ${ERASED_BODY}
+    WHERE business_id = ${businessId}::uuid AND id IN (${eligible})
+    RETURNING id`);
+  return [...rows].length;
+}
