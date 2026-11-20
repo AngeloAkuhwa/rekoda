@@ -20,10 +20,10 @@
  *   node dist/ai/eval/probe-tool-choice.js --plan   print the request bodies
  *   node dist/ai/eval/probe-tool-choice.js --send   three billed calls (cents)
  *
- * Prints one JSON line per request. With `--send` it starts with an outcome
- * (`valid`, `malformed_tool_input`, `no_tool_input` or `provider_error`;
- * `--plan` has none, its answer being the relay's own), then status, stop
- * reason, block types, tool calls, the model that answered, whether the transport accepted tool input, whether the answer
+ * Prints one JSON line per request. With `--send` each line carries an
+ * `outcome` (`valid`, `malformed_tool_input`, `no_tool_input` or
+ * `provider_error`; `--plan` has none, its answer being the relay's own),
+ * with the status, stop reason, block types, tool calls, the model that answered, whether the transport accepted tool input, whether the answer
  * passed the schema, token usage and elapsed time against the 20 s timeout.
  * Never prints the key. A provider error message is printed: it can only
  * quote this synthetic request. Never wire this into CI: `--send` spends.

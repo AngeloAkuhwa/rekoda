@@ -34,10 +34,13 @@
  * `format`, `enum`, `const`, `minItems` and `properties`. It does not check
  * that the value of `type`, `required`, `items` (beyond being a schema),
  * `anyOf` (beyond being a list), `description`, `title` or `default` is
- * well formed: `type: 'objekt'`, `required: 'a'`, `enum: []` or `anyOf: []`
- * pass through unchanged. Such a schema is invalid JSON Schema, which the API
+ * well formed: on a nested node, `type: 'objekt'`, `required: 'a'` or
+ * `anyOf: []` passes through unchanged (at the root, a `type` other than
+ * `object` is refused). Such a schema is invalid JSON Schema, which the API
  * refuses with or without `strict`, so this check neither causes nor hides
- * that 400. The schemas sent today are the business command (refused here,
+ * that 400. One case is valid JSON Schema yet unproven under strict: an
+ * empty `enum` (unsatisfiable) is sent strict, and whether the strict
+ * grammar accepts it is not documented. No schema sent today has one. The schemas sent today are the business command (refused here,
  * over the union limit) and the document classifier (sent strict), each
  * pinned by `strict-schema.test.ts`. A new tool schema gets its own case
  * there before it ships.
