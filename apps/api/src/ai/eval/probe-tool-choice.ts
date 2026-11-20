@@ -26,6 +26,7 @@
  * Never prints the key. A provider error message is printed: it can only
  * quote this synthetic request. Never wire this into CI: `--send` spends.
  */
+import { randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { businessCommandToolSchema, parseBusinessCommand } from '@rekoda/contracts';
@@ -90,6 +91,7 @@ export function probeCases(models: {
 
 interface Exchange {
   body: Record<string, unknown>;
+  relayFailed?: boolean;
   status?: number;
   response?: Record<string, unknown>;
 }
@@ -126,7 +128,23 @@ export async function runProbe(
   upstream: { baseUrl: string; apiKey: string } | null,
 ): Promise<Array<Record<string, unknown>>> {
   let current: Exchange | null = null;
+  /* A per-run secret the transport presents to the relay. The relay serves
+   * only the one request the transport makes (POST /v1/messages with this
+   * token), so no other local process can use it to make billed calls or
+   * have the real key sent to a host of its choosing. */
+  const relayToken = randomBytes(24).toString('hex');
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+    if (
+      req.method !== 'POST' ||
+      req.url !== '/v1/messages' ||
+      req.headers['x-api-key'] !== relayToken
+    ) {
+      res.writeHead(403, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({ type: 'error', error: { type: 'relay_refused', message: 'relay' } }),
+      );
+      return;
+    }
     void (async () => {
       const raw = await readBody(req);
       const exchange: Exchange = { body: JSON.parse(raw) as Record<string, unknown> };
@@ -136,8 +154,11 @@ export async function runProbe(
         res.end(JSON.stringify(cannedReply(exchange.body)));
         return;
       }
-      const forwarded = await fetch(new URL(req.url ?? '/', upstream.baseUrl), {
+      /* The SDK appends the path to the base URL, so a gateway's own path
+       * prefix is kept here too. */
+      const forwarded = await fetch(`${upstream.baseUrl.replace(/\/+$/, '')}/v1/messages`, {
         method: 'POST',
+        signal: AbortSignal.timeout(30_000),
         headers: {
           'content-type': 'application/json',
           'x-api-key': upstream.apiKey,
@@ -155,8 +176,11 @@ export async function runProbe(
       res.writeHead(forwarded.status, { 'content-type': 'application/json' });
       res.end(text);
     })().catch(() => {
+      /* The relay's own failure (upstream unreachable, or no answer in 30 s),
+       * marked as such so it is never read as Anthropic's. */
+      if (current) current.relayFailed = true;
       res.writeHead(502, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: 'relay' } }));
+      res.end(JSON.stringify({ type: 'error', error: { type: 'relay_failed', message: 'relay' } }));
     });
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -167,8 +191,8 @@ export async function runProbe(
     for (const probe of cases) {
       current = null;
       /* The key the transport sends goes only to the relay in this process;
-       * the relay sends the real one upstream. */
-      const transport = new AnthropicTransport('probe', 20_000, relay);
+       * the relay checks it and sends the real one upstream. */
+      const transport = new AnthropicTransport(relayToken, 20_000, relay);
       const started = Date.now();
       let verdict: Record<string, unknown>;
       try {
@@ -198,6 +222,7 @@ export async function runProbe(
         ...(upstream
           ? {
               status: exchange?.status ?? null,
+              ...(exchange?.relayFailed ? { relayFailed: true } : {}),
               blocks: content.map((block) => block.type),
               toolCalls: content.filter((b) => b.type === 'tool_use').map((b) => b.name),
               ...(error ? { error: { type: error.type, message: error.message } } : {}),
