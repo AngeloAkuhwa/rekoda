@@ -95,8 +95,21 @@ type EscalationReason = 'schema_failure' | 'no_tool_call' | 'refusal' | 'unclear
  * design, not escalated (G-134 review). Only the tokens produced are billed,
  * so a high ceiling costs nothing on an ordinary answer; it is the same for
  * every model, so no model ID selects a different request.
+ *
+ * The transport's 20 s timeout (transport-factory.ts) is the other limit:
+ * an answer still thinking at 20 s ends as ProviderUnreachable (busy reply,
+ * slot handed back, an unpriced `llm_failed` row) rather than at this
+ * ceiling. Whether to wait longer is an owner decision recorded in G-134.
  */
 export const COMMAND_MAX_TOKENS = 4_096;
+
+/**
+ * The classifier's ceiling. Its answer is one enum value, but the model
+ * named in AI_MODEL_CLASSIFIER may think first (any 5.5 model does), and a
+ * cut-off classification fails open to `unsure` every time, silently
+ * disabling the junk gate. Billed only for what is produced.
+ */
+export const CLASSIFIER_MAX_TOKENS = 1_024;
 
 /**
  * Asking a model what a merchant meant (MASTER-PLAN §5.3.3, ADR 0007).
@@ -289,7 +302,7 @@ export class Interpreter {
       toolName: CLASSIFIER_TOOL_NAME,
       toolDescription: CLASSIFIER_TOOL_DESCRIPTION,
       toolSchema: CLASSIFIER_TOOL_SCHEMA,
-      maxTokens: 128,
+      maxTokens: CLASSIFIER_MAX_TOKENS,
       purpose: 'classify_document',
     });
     if (call.kind !== 'ok') return 'unsure';

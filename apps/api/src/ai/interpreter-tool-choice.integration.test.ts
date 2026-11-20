@@ -246,6 +246,16 @@ describe('room to answer after thinking (review of bd9c5b3)', () => {
 
     expect(transport.requests.map((r) => r.maxTokens)).toEqual([4_096, 4_096]);
   });
+
+  it('gives the classifier room too, so a thinking classifier model is not cut off every time', async () => {
+    const businessId = await seedBusiness();
+    const transport = new StubTransport([
+      { toolInput: { type: 'receipt' }, usage: USAGE, stopReason: 'tool_use' },
+    ]);
+    await new Interpreter(db, config, transport).classifyDocument(businessId, 'TOTAL 5,000');
+
+    expect(transport.requests.map((r) => r.maxTokens)).toEqual([1_024]);
+  });
 });
 
 describe('the provider refusing the request itself (the staging 400)', () => {
