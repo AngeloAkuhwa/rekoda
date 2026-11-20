@@ -101,7 +101,7 @@ export class AnthropicTransport implements ModelTransport {
         cacheWriteTokens: response.usage.cache_creation_input_tokens ?? 0,
         cacheReadTokens: response.usage.cache_read_input_tokens ?? 0,
       },
-      stopReason: response.stop_reason,
+      stopReason: stopReasonOf(response.stop_reason),
       ...(response.stop_reason === 'refusal'
         ? { refusalCategory: refusalCategoryOf(response.stop_details?.category) }
         : {}),
@@ -217,6 +217,26 @@ const REFUSAL_CATEGORIES = new Set([
   'reasoning_extraction',
   'general_harms',
 ]);
+
+/**
+ * The API's stop reasons. The value is stored on a usage row, so anything
+ * else (a gateway behind AI_BASE_URL can put any text there) is stored as
+ * `unrecognised`, never as itself.
+ */
+const STOP_REASONS = new Set([
+  'end_turn',
+  'max_tokens',
+  'stop_sequence',
+  'tool_use',
+  'pause_turn',
+  'refusal',
+  'model_context_window_exceeded',
+]);
+
+function stopReasonOf(reason: string | null | undefined): string | null {
+  if (reason === null || reason === undefined) return null;
+  return STOP_REASONS.has(reason) ? reason : 'unrecognised';
+}
 
 function refusalCategoryOf(category: string | null | undefined): string | null {
   if (category === null || category === undefined) return null;

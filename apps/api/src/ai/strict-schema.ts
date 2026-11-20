@@ -157,6 +157,15 @@ function convert(node: unknown, counts: { unions: number; optional: number }): u
         }
         out[key] = value;
         break;
+      case 'enum':
+      case 'const': {
+        const values = key === 'enum' ? value : [value];
+        if (!Array.isArray(values) || values.some((v) => typeof v === 'object' && v !== null)) {
+          throw new NotStrict(`${key} with a non-primitive value`);
+        }
+        out[key] = structuredClone(value);
+        break;
+      }
       case 'minItems':
         if (value !== 0 && value !== 1) throw new NotStrict(`minItems ${String(value)}`);
         out[key] = value;

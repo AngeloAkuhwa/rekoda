@@ -108,8 +108,8 @@ describe('a good call', () => {
     const transport = StubTransport.answering(A_SALE);
     await new Interpreter(db, config, transport).interpret(businessId, 'CUSTOMER_7K2 bought wigs');
 
-    // Enforced twice: constrained decoding cannot emit a number above the
-    // maximum, and parseBusinessCommand rejects it if it somehow does.
+    // Guidance to the model; parseBusinessCommand is what enforces it (the
+    // tool is not strict, G-134).
     const schema = JSON.stringify(transport.requests[0]!.toolSchema);
     expect(schema).toContain('10000000000');
     expect(transport.requests[0]!.toolSchema['type']).toBe('object');
@@ -173,8 +173,7 @@ describe('a call that produced nothing usable', () => {
         { toolInput: null, usage: { inputTokens: 100, outputTokens: 20 }, stopReason: 'end_turn' },
       ]),
     );
-    // Forced tool use should make this impossible. "Should" is why it is
-    // handled rather than asserted.
+    // Reachable under tool_choice auto (G-134): prose is never read.
     expect((await interpreter.interpret(businessId, 'x')).outcome).toBe('unusable');
   });
 });

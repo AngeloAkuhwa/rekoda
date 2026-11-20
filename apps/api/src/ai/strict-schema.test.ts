@@ -124,6 +124,11 @@ describe('what keeps a schema non-strict', () => {
     );
   });
 
+  it('an enum or const holding an object or an array (G-134 owner review)', () => {
+    expect(refused(object({ a: { enum: ['x', { y: 1 }] } }))).toMatch(/enum with a non-primitive/);
+    expect(refused(object({ a: { const: ['x'] } }))).toMatch(/const with a non-primitive/);
+  });
+
   it('anyOf beside type or properties', () => {
     expect(refused(object({ a: { type: 'string', anyOf: [{ type: 'string' }] } }))).toMatch(
       /anyOf beside/,
