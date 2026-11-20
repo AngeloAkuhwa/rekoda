@@ -49,13 +49,13 @@ describe('a question that names a customer', () => {
     while (worked) worked = await runner.runOnce();
   }
 
-  /** One ₦150,000 invoice to CUSTOMER_7K2, nothing paid. */
-  async function seedTrading(businessId: string) {
+  /** One ₦150,000 invoice to `customerToken`, nothing paid. */
+  async function seedTrading(businessId: string, customerToken = 'CUSTOMER_7K2') {
     await withBusiness(db, businessId, (tx) =>
       issueRepo.issueSale(tx, {
         businessId,
         customerId: null,
-        customerToken: 'CUSTOMER_7K2',
+        customerToken,
         items: [{ name: 'wig', quantity: 3, unitPriceK: 5_000_000 }],
         subtotalK: 15_000_000,
         discountK: 0,
@@ -124,6 +124,7 @@ describe('a question that names a customer', () => {
   it('a known name never reaches the model: the question carries its token', async () => {
     const business = await seedMerchant('+2348031234567');
     const { token } = await deps.gateway.resolveMention(business.id, 'Bola Ige');
+    const before = await customerRows(business.id);
 
     await ask(
       'wamid.Q5T',
@@ -133,6 +134,7 @@ describe('a question that names a customer', () => {
 
     expect(lastModelText()).toContain(token);
     expect(lastModelText()).not.toContain('Bola');
+    expect(await customerRows(business.id)).toEqual(before);
   });
 
   it('a name another business holds is unknown here, and neither business gains a customer', async () => {
@@ -191,6 +193,59 @@ describe('a question that names a customer', () => {
 
     expect(stubSender.lastText).toContain('do not keep sales, spending or other figures');
     expect(stubSender.lastText).not.toContain('₦150,000');
+  });
+
+  /**
+   * A short follow-up must not resume the refused question into the business's totals
+   * (independent review of #437): "last month" after "how much did Ada buy this month"
+   * is read afresh by the model, never answered from the sales ledger as Ada's.
+   */
+  it.each([
+    ['a known customer', true],
+    ['an unknown name', false],
+  ])('"last month" after a sales question naming %s resumes nothing', async (_, known) => {
+    const business = await seedMerchant('+2348031234567');
+    const customer = known
+      ? { kind: 'token', token: (await deps.gateway.resolveMention(business.id, 'Ada Obi')).token }
+      : { kind: 'mention', mention: 'Bola Ige' };
+    await seedTrading(business.id, known ? (customer as { token: string }).token : 'CUSTOMER_7K2');
+    /* An older open read, which the refusal must supersede. */
+    await ask('wamid.Q5L0', askAbout({ topic: 'sales_summary' }), 'what did I sell this month');
+
+    await ask(
+      'wamid.Q5L1',
+      askAbout({ topic: 'sales_summary', customer }),
+      known ? 'how much did Ada Obi buy this month' : 'how much did Bola Ige buy this month',
+    );
+    if (known) expect(lastModelText()).not.toContain('Ada Obi');
+
+    await ask(
+      'wamid.Q5L2',
+      { intent: 'Unclear', clarification: 'Which customer do you mean?' },
+      'last month',
+    );
+
+    /* Read afresh: the model was asked about "last month" (`replyWith` clears the
+     * request log, so any request here is this message's), and no sales figure came back. */
+    expect(stubTransport.requests.map((r) => r.userText)).toContain('last month');
+    expect(stubSender.lastText).toContain('Which customer do you mean?');
+    expect(stubSender.lastText).not.toMatch(/sales|invoiced|₦/i);
+  });
+
+  it('a debtors question naming a known customer is answered as their balance', async () => {
+    const business = await seedMerchant('+2348031234567');
+    const { token } = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+    await seedTrading(business.id, token);
+
+    await ask(
+      'wamid.Q5D',
+      askAbout({ topic: 'debtors', customer: { kind: 'token', token } }),
+      'who owes me, Ada Obi?',
+    );
+
+    expect(stubSender.lastText).toContain('₦150,000');
+    expect(stubSender.lastText).toContain('INV-');
+    expect(stubSender.lastText).not.toContain('Ada');
   });
 
   /**

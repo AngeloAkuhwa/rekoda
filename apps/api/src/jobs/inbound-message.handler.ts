@@ -3362,6 +3362,20 @@ async function confirmPurchase(
  * returned as a continuation so the merchant's "last month" resumes it. Every
  * answer returns the read's subject the same way, for a follow-up.
  */
+/**
+ * The subject left by a question about a customer that was not answered with
+ * figures (G-135): a balance with nobody in it. It supersedes any older open
+ * read, and a balance has no period, so "last month" next resumes nothing
+ * (`resumedRead`) and is read afresh, never widened to the business's totals.
+ */
+const NO_PERIOD_TO_RESUME: ContinuationState = {
+  kind: 'query',
+  topic: 'customer_balance',
+  period: null,
+  customerToken: null,
+  documentRef: null,
+};
+
 async function answerQuery(
   tx: TenantDb,
   businessId: string,
@@ -3373,7 +3387,7 @@ async function answerQuery(
     customerToken: string | null = null,
   ): ContinuationState => ({
     kind: 'query',
-    topic: command.topic,
+    topic,
     period,
     customerToken,
     documentRef: null,
@@ -3383,11 +3397,16 @@ async function answerQuery(
    * review of #437): "how much did Ada buy this month" must not be answered with
    * the whole business's sales as if they were hers. Only a balance is kept per
    * customer; anything else is asked again, never widened to the business. */
-  if (command.topic !== 'customer_balance' && command.customer?.kind === 'token') {
-    return { reply: replies.customerFiguresNotKept(), continuation: subject(null) };
+  /* "Who owes me, Ada?" filed as the debtors list is her balance. */
+  const topic =
+    command.topic === 'debtors' && command.customer?.kind === 'token'
+      ? 'customer_balance'
+      : command.topic;
+  if (topic !== 'customer_balance' && command.customer?.kind === 'token') {
+    return { reply: replies.customerFiguresNotKept(), continuation: NO_PERIOD_TO_RESUME };
   }
 
-  switch (command.topic) {
+  switch (topic) {
     case 'sales_summary':
     case 'expenses_summary': {
       /* The window the merchant named: one of the model's three, or their
@@ -3411,7 +3430,7 @@ async function answerQuery(
             ? fromWords
             : null;
       if (!period) {
-        const subject = command.topic === 'sales_summary' ? 'sales' : 'spending';
+        const subject = topic === 'sales_summary' ? 'sales' : 'spending';
         /* A window the merchant NAMED that core cannot draw ("yesterday",
          * "in March") gets its own honest sentence, never the bare question
          * that reads as if they said nothing. Either way the question stays
@@ -3419,11 +3438,11 @@ async function answerQuery(
         const uncountable = words !== '' && fromWords === null;
         return {
           reply: uncountable ? replies.periodNotCountable(subject) : replies.whichPeriod(subject),
-          continuation: { kind: 'clarification', expects: 'period', topic: command.topic },
+          continuation: { kind: 'clarification', expects: 'period', topic: topic },
         };
       }
       return {
-        reply: await answerPeriodQuery(tx, businessId, command.topic, period, now),
+        reply: await answerPeriodQuery(tx, businessId, topic, period, now),
         continuation: subject(period),
       };
     }
@@ -5340,16 +5359,9 @@ async function interpretedReply(
       ? {
           ...acknowledged,
           reply: replies.customerNotKnown(),
-          /* The plain subject of a question with nobody in it, never a
-           * clarification a later "last month" could resume into the
-           * business's totals. */
-          continuation: {
-            kind: 'query' as const,
-            topic: command.topic,
-            period: null,
-            customerToken: null,
-            documentRef: null,
-          },
+          /* Never a subject a later "last month" could resume into the
+           * business's totals (independent review of #437). */
+          continuation: NO_PERIOD_TO_RESUME,
         }
       : acknowledged;
 
