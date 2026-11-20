@@ -14,6 +14,7 @@ import {
   customersRepo,
   identity,
   issueRepo,
+  reportsRepo,
   settleRepo,
   sql,
   withBusiness,
@@ -244,5 +245,24 @@ describe('what one customer still owes', () => {
     `);
 
     await expect(owed(businessId, ada.token)).rejects.toThrow(/integer kobo/);
+  });
+
+  /* The debtors list ("who owes me") reads the same column the same way. */
+  it('the debtors list also refuses a total past the safe-integer range', async () => {
+    const businessId = await seedBusiness();
+    const ada = await seedCustomer(businessId, 'ADA6');
+    const bola = await seedCustomer(businessId, 'BOLA6');
+    await invoice(businessId, ada, 100_000);
+    await invoice(businessId, bola, 100_000);
+    await ownerDb().execute(sql`
+      UPDATE invoices SET balance_due_k = 4503599627370497 + (row_number - 1)
+      FROM (SELECT id, row_number() OVER (ORDER BY invoice_number) AS row_number
+            FROM invoices WHERE business_id = ${businessId}::uuid) n
+      WHERE invoices.id = n.id
+    `);
+
+    await expect(
+      withBusiness(db, businessId, (tx) => reportsRepo.debtorsFor(tx, businessId, 8)),
+    ).rejects.toThrow(/integer kobo/);
   });
 });

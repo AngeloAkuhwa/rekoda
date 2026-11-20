@@ -1753,6 +1753,18 @@ export function customerBalanceAnswer(
 }
 
 /**
+ * A balance whose figures could not be stated exactly (an amount past what
+ * Rekoda can count to the kobo). Never a rounded figure; the records are
+ * unchanged and the dashboard is the next step.
+ */
+export function balanceNotStated(): Reply {
+  return reply(
+    'I could not total that balance exactly, so I have not sent a figure. ' +
+      'Your records are unchanged. Open your dashboard to see each invoice.',
+  );
+}
+
+/**
  * A balance question about a name the books do not hold (OD-3).
  *
  * Not "they owe nothing": that is a claim about somebody Rekoda has never

@@ -64,6 +64,7 @@ import {
   type RequestKind,
   type Route,
   type UsageUnit,
+  MoneyError,
 } from '@rekoda/core';
 import { normalisePhone, InvalidPhoneError } from '@rekoda/core/identity';
 import { extractInboundEvents, metaWebhookBody } from '@rekoda/contracts';
@@ -149,6 +150,24 @@ const authorisationLog = new Logger('InboundMessageJob');
  * stays charged; only "nothing delivered" gives units back (final review).
  */
 const ALREADY_ANSWERED = Symbol('already answered');
+
+/**
+ * A balance read whose figures would not survive as exact kobo (a bigint past
+ * 2^53: `MoneyError` from the repository) is answered, never rounded and
+ * never left to kill the job: a retried job would buy the interpretation again
+ * and the merchant would hear nothing (owner directive on #437).
+ */
+async function exactOrRefused<T>(read: () => Promise<T>): Promise<T | null> {
+  try {
+    return await read();
+  } catch (error) {
+    if (error instanceof MoneyError) {
+      paymentLog.error(`a balance could not be stated exactly: ${error.message}`);
+      return null;
+    }
+    throw error;
+  }
+}
 
 export interface InboundMessageDeps {
   gateway: PrivacyGateway;
@@ -1936,7 +1955,8 @@ async function deterministicReply(
     case 'debtors': {
       // Answered from the same SQL the dashboard uses. Invoice numbers, not
       // customer names: this text crosses WhatsApp in the clear.
-      const debtors = await reportsRepo.debtorsFor(tx, businessId, 8);
+      const debtors = await exactOrRefused(() => reportsRepo.debtorsFor(tx, businessId, 8));
+      if (!debtors) return replies.balanceNotStated();
       /* Oldest promise first, with how late each one is: a debtors list is a
        * work queue, and a merchant standing in a shop needs to know who to
        * call before they need the total. */
@@ -3467,7 +3487,8 @@ async function answerQuery(
     }
 
     case 'debtors': {
-      const debtors = await reportsRepo.debtorsFor(tx, businessId, 8);
+      const debtors = await exactOrRefused(() => reportsRepo.debtorsFor(tx, businessId, 8));
+      if (!debtors) return { reply: replies.balanceNotStated(), continuation: subject(null) };
       return {
         reply: replies.debtorList(
           debtors.rows.map((r) => ({
@@ -3488,7 +3509,10 @@ async function answerQuery(
        * anybody we know. Asking is better than answering about the wrong
        * person, or about everybody. */
       if (!token) return { reply: replies.paymentNoOpenInvoice(), continuation: subject(null) };
-      const owed = await issueRepo.openInvoicesForCustomer(tx, businessId, token);
+      const owed = await exactOrRefused(() =>
+        issueRepo.openInvoicesForCustomer(tx, businessId, token),
+      );
+      if (!owed) return { reply: replies.balanceNotStated(), continuation: subject(null) };
       return {
         reply: replies.customerBalanceAnswer(
           owed.rows.map((r) => ({ invoiceNumber: r.invoiceNumber, balanceDueK: r.balanceDueK })),

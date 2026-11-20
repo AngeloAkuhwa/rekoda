@@ -7,6 +7,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import { identity, issueRepo, sql, withBusiness } from '@rekoda/db';
+import { STORED_BODY } from '@rekoda/core/privacy';
+import { ownerDb } from '@rekoda/db/testing';
 import { buildRunner } from '../jobs/jobs.module.js';
 import {
   db,
@@ -291,6 +293,39 @@ describe('a question that names a customer', () => {
       '1 additional outstanding invoice, included in the total',
     );
     expect(stubSender.lastText).not.toContain('Ada');
+  });
+
+  /**
+   * A total that would not survive as exact kobo is refused, never rounded, and the
+   * merchant is told so rather than left without a reply while the job dies and is
+   * retried (owner directive on #437). Each balance is a safe integer; their sum is not.
+   */
+  it('a balance too large to state exactly gets an honest reply, not a rounded one', async () => {
+    const business = await seedMerchant('+2348031234567');
+    const { token } = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+    await seedTrading(business.id, token);
+    await seedTrading(business.id, token);
+    await ownerDb().execute(sql`
+      UPDATE invoices SET balance_due_k = 4503599627370497 + (n.row_number - 1)
+      FROM (SELECT id, row_number() OVER (ORDER BY invoice_number) AS row_number
+            FROM invoices WHERE business_id = ${business.id}::uuid) n
+      WHERE invoices.id = n.id
+    `);
+
+    await ask(
+      'wamid.Q5BIG',
+      askAbout({ topic: 'customer_balance', customer: { kind: 'token', token } }),
+      'how much does Ada Obi owe me',
+    );
+
+    expect(stubSender.lastText).toContain('could not total that balance exactly');
+    expect(stubSender.lastText).not.toMatch(/₦\d/);
+    const job = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ processed: boolean }>(sql`
+        SELECT processed_at IS NOT NULL AS processed FROM external_events
+        WHERE business_id = ${business.id}::uuid AND external_id = 'wamid.Q5BIG'`),
+    );
+    expect([...job][0]?.processed).toBe(true);
   });
 
   /**
