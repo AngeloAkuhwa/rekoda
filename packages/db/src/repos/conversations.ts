@@ -9,7 +9,7 @@
  * to obtain one; storing a raw message through it is not an oversight that
  * could happen, it is a value the caller would have to construct by hand.
  */
-import { type SQL, and, desc, eq, isNull, sql } from 'drizzle-orm';
+import { type SQL, and, desc, eq, isNull, notInArray, sql } from 'drizzle-orm';
 import {
   CONFIRMATION_TTL_SECONDS,
   PURCHASE_QUESTION_SECONDS,
@@ -619,7 +619,8 @@ export function pendingDraft(
 export function pendingDraftToAnswer(
   tx: TenantDb,
   businessId: string,
-  options: { asOf?: Date } = {},
+  /* `except`: drafts to look past, such as another member's refusal (owner review of #437). */
+  options: { asOf?: Date; except?: readonly string[] } = {},
 ): Promise<DraftRow | null> {
   return newestPendingDraft(tx, businessId, { ...options, reads: 'skip' });
 }
@@ -627,7 +628,7 @@ export function pendingDraftToAnswer(
 async function newestPendingDraft(
   tx: TenantDb,
   businessId: string,
-  options: { asOf?: Date | undefined; reads: ReadDrafts },
+  options: { asOf?: Date | undefined; reads: ReadDrafts; except?: readonly string[] | undefined },
 ): Promise<DraftRow | null> {
   const rows = await tx
     .select({
@@ -654,6 +655,7 @@ async function newestPendingDraft(
         eq(commandDrafts.state, 'pending'),
         readsFilter(options.reads),
         seenBy(options.asOf),
+        options.except?.length ? notInArray(commandDrafts.id, [...options.except]) : undefined,
       ),
     )
     /* The newest PENDING draft is what the merchant's "yes" will execute, so
@@ -695,6 +697,33 @@ export async function closeRefusalDraft(
     )
     .returning({ id: commandDrafts.id });
   return updated.length === 1;
+}
+
+/**
+ * Whether `requestedBy` has recorded any draft since `draftId`, in any state and of any
+ * intent, a question included (owner review of #437): their refusal is then no longer the
+ * last thing they read, so a "yes" or "no" of theirs is not about it.
+ */
+export async function hasDraftsAfterBy(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  requestedBy: string,
+  options: { asOf?: Date } = {},
+): Promise<boolean> {
+  const seen = options.asOf
+    ? sql`AND created_at <= ${options.asOf.toISOString()}::timestamptz`
+    : sql``;
+  const rows = await tx.execute<{ found: boolean }>(sql`
+    SELECT EXISTS (
+      SELECT 1 FROM command_drafts
+       WHERE business_id = ${businessId}::uuid
+         AND requested_by = ${requestedBy}::uuid
+         AND insertion_seq > (
+           SELECT d.insertion_seq FROM command_drafts d
+            WHERE d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid)
+         ${seen}) AS found`);
+  return [...rows][0]?.found === true;
 }
 
 /** Whether a draft is a refusal's (`closeRefusalDraft`), never a request. */
@@ -2231,7 +2260,7 @@ const META_TYPES = [
  * Exempt only in the direction the product writes it (owner review of #437 at
  * 3a60b0f): what a merchant or a customer SENT is inbound, so an inbound body is
  * exempt only as one of the inbound labels; "[reply]" and "[template name]" are
- * only ever Rekoda's own outbound messages. Before this a merchant's pre-G-136
+ * only ever Rekoda's own outbound messages, and is the only outbound label kept. Before this a merchant's pre-G-136
  * message typed as "[template chiamaka]" matched a label and kept its text.
  */
 const anchored = (labels: readonly string[]) => '^\\[(?:' + labels.join('|') + ')\\]$';
@@ -2247,7 +2276,10 @@ const INBOUND_STRUCTURAL_BODY = anchored([
   'message too long to read',
   'message withheld: it held a protected detail',
 ]);
-const OUTBOUND_STRUCTURAL_BODY = anchored(['reply', 'erased', 'template [a-z0-9_]+']);
+/* No "[template name]": the shape alone does not prove Rekoda's template writer made it
+ * (a merchant's message to a customer was stored as its text before G-136), and erasing
+ * a real label loses nothing (CodeRabbit on #437). */
+const OUTBOUND_STRUCTURAL_BODY = anchored(['reply', 'erased']);
 
 /**
  * Replace the stored text of this business's conversation history with a

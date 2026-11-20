@@ -246,6 +246,16 @@ describe('one merchant, every identity case, footprint checked after each messag
       plaintext: [],
       textStored: 0,
     });
+    /* The second invoice is the corrected three-wig sale (CodeRabbit on #437). */
+    const totals = await withBusiness(db, business.id, async (tx) =>
+      [
+        ...(await tx.execute<{ total: string }>(
+          sql`SELECT total_k::text AS total FROM invoices
+               WHERE business_id = ${business.id}::uuid ORDER BY created_at`,
+        )),
+      ].map((r) => r.total),
+    );
+    expect(totals).toEqual(['10000000', '15000000']);
     was = afterCorrection;
 
     /* 8. The provider fails, then the model answers nonsense: nothing changes but a

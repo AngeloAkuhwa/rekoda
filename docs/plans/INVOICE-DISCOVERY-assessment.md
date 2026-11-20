@@ -4,7 +4,7 @@
 >
 > 1. **Proposal:** this document is a technical assessment, not a specification. The spec is amended only in the documentation stage (BA-OD-15).
 > 2. **Owner rulings:** recorded as **OWN-99** in `docs/REKODA_OWNER_DECISIONS.md`. Most decisions are approved as recommended; BA-OD-1, BA-OD-21, BA-OD-25, BA-OD-33 and BA-OD-35 stay gated on named evidence.
-> 3. **Implementation:** only BA-OD-3 part 1 (a balance question about a name never creates a customer) is implemented, in PR #437 under **G-135**, not merged, not deployed. BA-OD-3 part 2 (a phone or email typed in a question) is **not built**. Nothing else in this document is built.
+> 3. **Implementation:** only BA-OD-3 part 1 (a balance question about a name never creates a customer) is implemented, in PR #437 under **G-135**, not merged, not deployed. BA-OD-3 part 2 (a phone or email typed in a question) is also code complete in PR #437 under G-135, not merged and not deployed. Nothing else in this document is built.
 >
 > **Revision 2 (20 Nov 2026).** This revision combines two owner specifications into one assessment:
 >
@@ -58,7 +58,7 @@ Every other decision is approved as recommended.
 | Item                                                 | Status                                                                                                                                                                                                                                                                                                                                                        |
 | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | P0 item 1 (BA-OD-3)                                  | **Part 1 in its first PR (#437, not merged)**: a question resolves a customer _name_ by lookup only, and a customer named on a topic with no per-customer figures is not answered with the business's totals. Gap **G-135**; the ADR 0005 conflict it raises is an OPEN OWNER DECISION (ADR 0005 Amendment 1, PROPOSED). Partial-name scrubbing is **G-136**. |
-| P0 item 1, part 2                                    | Phones and emails typed in any message are still resolved find-or-create before the model. That is the next PR.                                                                                                                                                                                                                                               |
+| P0 item 1, part 2                                    | Code complete in PR #437 (G-135; not merged, not deployed): a phone or email nobody recorded stands as a provisional token and becomes a customer only as the customer of a record.                                                                                                                                                                           |
 | P0 items 2–4 (BA-OD-16, BA-OD-17, the expense label) | Follow, one PR each.                                                                                                                                                                                                                                                                                                                                          |
 
 ## Contents
@@ -1500,3 +1500,22 @@ Resolve these first: OD-1, OD-3, OD-20, OD-21, OD-22, OD-23, OD-24 / OD-25, OD-3
 - 10 PRs (P0 and 1–9) behind one flag.
 
 **Every requirement in both specifications maps to a stage in §21.** None is dropped, and none is deferred without an owner decision.
+
+## Review notes awaiting owner decisions (CodeRabbit on #437, 20 Nov 2026)
+
+These are design questions for this proposal, recorded rather than decided. Nothing here is built.
+
+1. **Timing adjustments in the sales reconciliation.** A credit posted in a later window for an earlier
+   invoice is a known adjustment, not "other or unattributed" sales; the breakdown should show it on
+   its own line and keep the reconciliation total.
+2. **Cost coverage for historical sales.** `invoice_items` carries no `product_id`, and a line whose
+   name matched no product leaves no stock movement, so no stored record establishes line-level
+   coverage for sales recorded before this work. The owner decides which records count; until then
+   gross profit for such a sale is withheld (BA-OD-21).
+3. **Aggregate and intermediate bounds.** The ₦10bn cap bounds one value, not a period total or the
+   percentage's intermediate product. Each computation must be exact or refused when a value cannot
+   be represented safely, with boundary tests (invariant 1).
+4. **Option C and R12.** Option C decrypts customer names in the API process for matching.
+   `docs/safety-review.md` R12 allows rehydration only in the authorised output layer. Whether the API
+   process is that layer, or BA-OD-1 is an exception to R12, is an owner decision; option C is blocked
+   until it is recorded.

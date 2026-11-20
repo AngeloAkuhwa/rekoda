@@ -106,7 +106,7 @@ import type {
 import type { ReplySender } from '../replies/reply.service.js';
 import type { PaymentIntentsService } from '../payments/payment-intents.service.js';
 import { openPayload } from '../privacy/payload-vault.js';
-import { neutraliseTokens, redactForLog, STORED_BODY } from '@rekoda/core/privacy';
+import { neutraliseTokens, protectedSpans, redactForLog, STORED_BODY } from '@rekoda/core/privacy';
 import { describeFailure, JobDeferred, type JobContext, type JobHandler } from './runner.js';
 import { JobKind } from './queue.service.js';
 import { TranscriptionUnavailable, type SpeechToText, type Transcript } from '../ai/stt.js';
@@ -1198,6 +1198,44 @@ async function recordRefusal(
   });
 }
 
+/**
+ * The newest pending draft a "yes" or "no" from `from` can be about, past refusals that are
+ * not theirs to answer (owner review of #437; CodeRabbit and Qodo on it):
+ *  - another member's refusal is looked past and LEFT as it is, so it still guards that
+ *    member's own older preview when they answer it;
+ *  - the sender's own refusal is theirs to answer only while it is the last thing they
+ *    recorded (`ownRefusal`); once they have recorded anything since, it is stale and is
+ *    closed here.
+ */
+async function pastRefusals(
+  tx: TenantDb,
+  businessId: string,
+  from: string,
+  asOf: Date,
+): Promise<{
+  draft: conversationsRepo.DraftRow | null;
+  ownRefusal: conversationsRepo.DraftRow | null;
+  except: string[];
+}> {
+  const actor = await actorOf(tx, businessId, from);
+  const except: string[] = [];
+  for (;;) {
+    const draft = await conversationsRepo.pendingDraftToAnswer(tx, businessId, { asOf, except });
+    if (!draft || !conversationsRepo.isRefusalDraft(draft)) {
+      return { draft, ownRefusal: null, except };
+    }
+    const mine = actor !== null && draft.requestedBy === actor;
+    if (
+      mine &&
+      !(await conversationsRepo.hasDraftsAfterBy(tx, businessId, draft.id, actor, { asOf }))
+    ) {
+      return { draft, ownRefusal: draft, except };
+    }
+    if (mine) await conversationsRepo.closeRefusalDraft(tx, businessId, draft.id);
+    else except.push(draft.id);
+  }
+}
+
 /** What a voice note or photo reader answered instead of reading: a refusal, already sent. */
 interface RefusedReading {
   readonly refusedIn: string;
@@ -1923,17 +1961,25 @@ async function deterministicReply(
      * but only a request the merchant could have confirmed is reported as
      * cancelled. A "no" after nothing but a read gets what a "no" after
      * nothing gets. */
-    /* A refusal is not a request (`refusedAs`): it is closed and never
-     * reported as cancelled; whatever waits behind it is what this no drops. */
-    let cancellable = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
-      asOf: ctx.receivedAt,
-    });
-    while (cancellable && conversationsRepo.isRefusalDraft(cancellable)) {
-      await conversationsRepo.closeRefusalDraft(tx, businessId, cancellable.id);
-      cancellable = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
-        asOf: ctx.receivedAt,
-      });
+    /* A refusal is not a request (`refusedAs`). A bare "no" straight after the
+     * sender's own refusal is about the refusal: it closes it, keeps whatever
+     * waits behind it, and says so (CodeRabbit on #437). "cancel" still drops
+     * everything, the refusal included, and never reports the refusal as
+     * cancelled. Another member's refusal is looked past (`pastRefusals`). */
+    const past = await pastRefusals(tx, businessId, ctx.from, ctx.receivedAt);
+    if (past.ownRefusal) {
+      await conversationsRepo.closeRefusalDraft(tx, businessId, past.ownRefusal.id);
+      if (intent.kind === 'deny') {
+        const behind = await pastRefusals(tx, businessId, ctx.from, ctx.receivedAt);
+        if (behind.draft?.previewed === true) return replies.previewBehindRefusal();
+        return (await withoutChat(tx, businessId))
+          ? replies.nothingToDeclineWithoutChat()
+          : replies.nothingToDecline();
+      }
     }
+    const cancellable = past.ownRefusal
+      ? (await pastRefusals(tx, businessId, ctx.from, ctx.receivedAt)).draft
+      : past.draft;
     await conversationsRepo.supersedePendingDrafts(tx, businessId, { asOf: ctx.receivedAt });
     const dropped = (cancellable ? 1 : 0) + (closedQuestion ? 1 : 0) + (closedHeld ? 1 : 0);
     /* A bare "no" or "cancel" with nothing to refuse is answered, never met
@@ -2742,34 +2788,23 @@ async function confirmPendingDraft(
   let draft = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
     asOf: receivedAt,
   });
-  /* The newest thing waiting is a refusal (`refusedAs`): this yes is about
-   * the refusal when it was this member's, so it saves nothing and says
-   * whether a preview is still waiting. Another member's refusal is not what
-   * this member read: it is closed, and the yes answers what is behind it. */
-  while (draft && conversationsRepo.isRefusalDraft(draft)) {
-    await conversationsRepo.closeRefusalDraft(tx, businessId, draft.id);
-    /* About this yes only when the refusal is still the newest thing waiting:
-     * a preview recorded after it (and confirmed since) means the merchant has
-     * moved on, and the refusal is just closed (Qodo on #437). */
-    const newest = await conversationsRepo.latestDraftToAnswer(tx, businessId, {
-      asOf: receivedAt,
-    });
-    const own =
-      newest?.id === draft.id &&
-      draft.requestedBy !== null &&
-      draft.requestedBy === (await actorOf(tx, businessId, sender.from));
-    if (own) {
+  /* The newest thing waiting is a refusal (`refusedAs`): this yes is about it
+   * when it is the sender's own and still the last thing they recorded, so it
+   * saves nothing and says whether a preview is still waiting. Another member's
+   * refusal is looked past without being touched (`pastRefusals`). */
+  {
+    const past = await pastRefusals(tx, businessId, sender.from, receivedAt);
+    if (past.ownRefusal) {
+      await conversationsRepo.closeRefusalDraft(tx, businessId, past.ownRefusal.id);
       if (retrying) {
         await refundRecordedReservations(tx, businessId, eventId, usagePeriod(receivedAt));
       }
-      const behind = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
-        asOf: receivedAt,
-      });
-      return behind?.previewed === true
+      const behind = await pastRefusals(tx, businessId, sender.from, receivedAt);
+      return behind.draft?.previewed === true
         ? replies.previewBehindRefusal()
         : replies.nothingToConfirm();
     }
-    draft = await conversationsRepo.pendingDraftToAnswer(tx, businessId, { asOf: receivedAt });
+    draft = past.draft;
   }
   if (!draft) {
     /* Nothing existed for this yes to agree to. If a preview has been
@@ -5761,7 +5796,14 @@ async function interpretedReply(
    * question, and storing the proposal anyway would mean a later `yes` joining
    * two customer records nobody was ever asked about.
    */
-  const acknowledged = await acknowledge(tx, businessId, command, correcting, link, receivedAt);
+  /* A question about a name the books do not hold reads nothing: answering it
+   * through `acknowledge` would read the business's own figures only to throw
+   * them away, and a failure of that read would leave no reply (CodeRabbit on
+   * #437). The answer is the one set just below. */
+  const acknowledged =
+    nameNotKnown && command.intent === 'Query'
+      ? { reply: replies.customerNotKnown(), linkAsked: false, continuation: NO_PERIOD_TO_RESUME }
+      : await acknowledge(tx, businessId, command, correcting, link, receivedAt);
   /* A balance question about a name the books do not hold: honest about
    * that, never "they owe nothing" (G-135). The draft and continuation are
    * the ordinary ones of a question with no customer. */
@@ -5818,14 +5860,22 @@ async function interpretedReply(
      * alone would vault ONE supplier called "[phone]" for every supplier known
      * only by number, merging their payables (independent review of the owner
      * review's fixes). What remains, if anything, is the name. */
+    /* Nor is a customer token: a supplier named after a pseudonym would take
+     * that customer's token into the supplier vault (CodeRabbit on #437). Every
+     * token span is found the way the gateway finds them (`protectedSpans`). */
     const raw = (command as { supplierMention?: unknown }).supplierMention;
-    const mention =
-      typeof raw === 'string'
-        ? raw
-            .replace(/\[(?:phone|email|customer)\]/g, ' ')
-            .replace(/\s+/g, ' ')
-            .trim()
-        : '';
+    const words = typeof raw === 'string' ? raw : '';
+    let untokened = '';
+    let cursor = 0;
+    for (const span of protectedSpans(words, tokens.displays.keys())) {
+      untokened += `${words.slice(cursor, span.start)} `;
+      cursor = Math.max(cursor, span.end);
+    }
+    untokened += words.slice(cursor);
+    const mention = untokened
+      .replace(/\[(?:phone|email|customer)\]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
     const supplier =
       mention.length > 0 ? await deps.gateway.resolveSupplierMention(businessId, mention) : null;
     stored = { ...command, supplierMention: null, supplierId: supplier?.supplierId ?? null };

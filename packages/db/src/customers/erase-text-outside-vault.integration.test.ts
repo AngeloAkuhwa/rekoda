@@ -238,7 +238,6 @@ describe('what counts as a label the product writes (owner review of #437)', () 
       ['inbound', '[image message]'],
       ['inbound', '[message withheld: it held a protected detail]'],
       ['outbound', '[reply]'],
-      ['outbound', '[template rekoda_trial_ending]'],
       ['outbound', '[erased]'],
     ];
     const erased: Array<['inbound' | 'outbound', string]> = [
@@ -256,6 +255,9 @@ describe('what counts as a label the product writes (owner review of #437)', () 
       ['inbound', '[number:2a]'],
       ['inbound', '[]'],
       ['outbound', '[template Ada Obi]'],
+      /* Shaped like a template label, which proves nothing about who wrote it. */
+      ['outbound', '[template rekoda_trial_ending]'],
+      ['outbound', '[template ada_obi]'],
       ['outbound', '[text message]'],
       ['outbound', 'Saved: 2 wigs for Chiamaka'],
     ];

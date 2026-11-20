@@ -180,8 +180,9 @@ DELETE MY DATA (`eraseDataWork`, `apps/api/src/commands/privacy-commands.ts`) ru
 - **Conversation text.** `conversationsRepo.eraseStoredText` sets `[erased]` on every body of the
   business that is not one of the exact labels the product writes **in that row's direction** (owner
   review of `3a60b0f`): an inbound body is kept only as an inbound label (`[text message]`, `[affirm]`,
-  `[number:2]`, `[image message]`, the gateway's refusals); an outbound body only as `[reply]` or
-  `[template name]`. A merchant's pre-G-136 message typed as "[template chiamaka]" or "[reply]" is their
+  `[number:2]`, `[image message]`, the gateway's refusals); an outbound body only as `[reply]`. A
+  `[template name]` body is erased too (CodeRabbit on #437): the shape does not prove which writer
+  made it, and erasing a label loses nothing. A merchant's pre-G-136 message typed as "[template chiamaka]" or "[reply]" is their
   words and is erased. So is anything only shaped like a label: other case, Unicode, punctuation,
   padding, a second line. A label added later and missing from the list is erased, which loses nothing.
   Document captions and notices (number and amount) are erased too.
@@ -328,7 +329,9 @@ only unprocessed events, which R3 never touches. Deduplication uses `(provider, 
 payload, so an erased row still deduplicates a redelivery (tested).
 
 **Proposal:** a daily sweep, per business, erases the payloads of `meta` `message.*` events finished more
-than 30 days ago: exactly R4's selection (`eraseFinishedMessagePayloads`) with `before = now - 30 days`.
+than 30 days ago: R4's selection (`eraseFinishedMessagePayloads`) with a cutoff on `processed_at`, so the
+30 days run from when each event finished. Today's `before` option compares `created_at`; R3 needs a
+`finishedBefore` option on `processed_at` (CodeRabbit on #437).
 
 - **No new write grant is needed.** The worker does its work on the application connection, which
   already holds UPDATE on `external_events.payload` under RLS. What the worker lacks is a way to find
@@ -388,14 +391,16 @@ name…" (revised after the owner review of `3a60b0f`; **not applied** to any pa
 >
 > **Phone numbers and email addresses.** One that Rekoda detects is replaced with a token before the
 > model sees it, whether or not you have recorded that person. It becomes a customer only when it is the
-> customer of a sale, invoice, payment or order. Anywhere else in a record, such as a plumber's number
-> in an expense, it is saved as "[phone]" or "[email]", not as the number.
+> customer of a sale, invoice, payment or order, or when Rekoda asks you in the preview whether it
+> belongs to the customer you named ("same customer?"). Anywhere else in a record, such as a plumber's
+> number in an expense, it is saved as "[phone]" or "[email]", not as the number.
 >
 > **What the chat history keeps.** It records that a message arrived and what kind it was, not what it
 > said. The original WhatsApp message is kept encrypted, separately, while Rekoda processes it. When you
 > send DELETE MY DATA, the originals of the messages Rekoda has finished processing are erased along
 > with your customers' details. Messages still being processed at that moment, delivery receipts, and
-> your books are kept.
+> your books are kept. When WhatsApp delivered one of your messages together with another business's
+> message, a copy of it can remain, encrypted, with that other business's message.
 
 What it deliberately does not claim: that every piece of personal information is always detected (the
 existing caveat stays), that erasure reaches a message's copy held in another business's batched webhook
@@ -425,8 +430,9 @@ existing caveat stays), that erasure reaches a message's copy held in another bu
 5. **Payloads DELETE MY DATA does not reach.** Messages not yet processed when it runs (its own
    message included); delivery-status (`status.*`) events, which hold the recipient's phone; events with
    no business; and a message's copy inside another business's row when Meta batched both into one
-   webhook body (§1.2). R3 would bound the first three by time; the last needs ingress to seal only each
-   event's own message.
+   webhook body (§1.2). R3 as proposed bounds only processed `message.*` events of a business; the
+   retention of delivery-status events and events with no business is left for the owner to decide, and
+   the cross-business copy needs ingress to seal only each event's own message (CodeRabbit on #437).
 6. **The dashboard debtors view on an overflow.** A total past what can be stated exactly (more than
    about ₦90 trillion) makes `GET /v1/reports/debtors` fail rather than show a rounded figure. The chat
    reply points to the invoices list instead. This is practically unreachable, and is recorded rather

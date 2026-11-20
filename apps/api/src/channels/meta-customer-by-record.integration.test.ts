@@ -116,6 +116,40 @@ describe('customer creation follows the record, not the token (owner review of #
     expect(suppliers).toBe(1);
   });
 
+  it('a supplier named only by a customer token is no supplier (CodeRabbit on #437)', async () => {
+    const business = await seedMerchant();
+    const bola = await deps.gateway.resolveMention(business.id, 'Bola Ige');
+
+    await say(
+      'wamid.S11',
+      {
+        intent: 'RecordPurchase',
+        supplierMention: bola.token,
+        description: 'cement',
+        amount: 40_000,
+        reportedPayment: 40_000,
+        paymentMethod: 'cash',
+        productMention: null,
+        quantity: null,
+        supplierReference: null,
+      },
+      'bought cement from Bola Ige for 40k cash',
+    );
+    await plain('wamid.S11-yes', 'yes');
+
+    const suppliers = await withBusiness(
+      db,
+      business.id,
+      async (tx) =>
+        [
+          ...(await tx.execute<{ n: number }>(
+            sql`SELECT count(*)::int AS n FROM suppliers WHERE business_id = ${business.id}::uuid`,
+          )),
+        ][0]!.n,
+    );
+    expect(suppliers).toBe(0);
+  });
+
   it('a second facet beside a sale customer creates nobody when no preview asks about it', async () => {
     const business = await seedMerchant();
 

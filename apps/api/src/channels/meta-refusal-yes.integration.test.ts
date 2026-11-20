@@ -194,4 +194,48 @@ describe('a yes after a refused record', () => {
     );
     expect(drafts).toEqual([]);
   });
+
+  /* CodeRabbit on #437: a "no" straight after a refusal is about the refusal. */
+  it('a no after a refusal keeps the older preview and says it is waiting', async () => {
+    const business = await seedMerchant();
+    const ada = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+    await say(
+      'wamid.R25',
+      sale({ kind: 'token', token: ada.token }),
+      'sold Ada Obi 2 wigs for 100k',
+    );
+    await say('wamid.R26', payment({ kind: 'token', token: 'CUSTOMER_7K2' }), 'Bisi paid 20k');
+
+    await plain('wamid.R27', 'no');
+    expect(stubSender.lastText).toContain('still a preview waiting');
+    await plain('wamid.R28', 'yes');
+    expect((await footprint(business.id)).invoices).toBe(1);
+  });
+
+  /* CodeRabbit on #437: another member's yes must not use up the owner's refusal. */
+  it("another member's yes leaves the owner's refusal standing before the owner's preview", async () => {
+    const business = await seedMerchant();
+    const ada = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+    const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+    await identity.addMembership(db, business.id, delegate.id, 'delegate');
+
+    await say(
+      'wamid.R29',
+      sale({ kind: 'token', token: ada.token }),
+      'sold Ada Obi 2 wigs for 100k',
+    );
+    stubTransport.replyWith(sale({ kind: 'token', token: ada.token }));
+    await post(messagePayload(DELEGATE, 'wamid.R30', 'sold Ada Obi 2 wigs for 100k'));
+    await drain();
+    await say('wamid.R31', payment({ kind: 'token', token: 'CUSTOMER_7K2' }), 'Bisi paid 20k');
+
+    await post(messagePayload(DELEGATE, 'wamid.R32', 'yes'));
+    await drain();
+    expect((await footprint(business.id)).invoices).toBe(1);
+
+    /* The owner's yes is still about the owner's refusal, never the owner's older sale. */
+    await plain('wamid.R33', 'yes');
+    expect(stubSender.lastText).toContain('Nothing was saved from your last message');
+    expect((await footprint(business.id)).invoices).toBe(1);
+  });
 });
