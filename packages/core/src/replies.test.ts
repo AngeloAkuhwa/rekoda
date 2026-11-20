@@ -287,6 +287,7 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   voiceUnreadable: [replies.voiceUnreadable()],
   whichPeriod: [replies.whichPeriod('sales'), replies.whichPeriod('spending')],
   previewBehindQuestion: [replies.previewBehindQuestion()],
+  previewBehindRefusal: [replies.previewBehindRefusal()],
   periodNotCountable: [replies.periodNotCountable('sales'), replies.periodNotCountable('spending')],
   salesAnswer: [
     replies.salesAnswer({
@@ -433,6 +434,7 @@ describe('every reply', () => {
     replies.expiredNothingToCancel(),
     replies.whichPeriod('sales'),
     replies.previewBehindQuestion(),
+    replies.previewBehindRefusal(),
     replies.periodNotCountable('spending'),
     replies.nothingToDecline(),
     replies.nothingToCancel(),
