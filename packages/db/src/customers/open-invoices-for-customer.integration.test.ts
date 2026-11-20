@@ -202,10 +202,30 @@ describe('what one customer still owes', () => {
       }
     }
 
+    /* The precondition the RED depended on, asserted rather than assumed: the
+     * rows now sit physically out of number order. */
+    const physical = await owner.execute<{ invoice_number: string }>(sql`
+      SELECT invoice_number FROM invoices
+      WHERE business_id = ${businessId}::uuid ORDER BY ctid
+    `);
+    expect([...physical].map((r) => r.invoice_number)).not.toEqual([...numbers].sort());
+
     const first = await owed(businessId, ada.token);
     expect(first.rows.map((r) => r.invoiceNumber)).toEqual([...numbers].sort());
     const again = await owed(businessId, ada.token);
     expect(again.rows.map((r) => r.invoiceNumber)).toEqual(first.rows.map((r) => r.invoiceNumber));
+  });
+
+  it('lists the oldest 20 and totals and counts all 23, mixed amounts included', async () => {
+    const businessId = await seedBusiness();
+    const ada = await seedCustomer(businessId, 'ADA5');
+    const numbers: string[] = [];
+    for (let n = 1; n <= 23; n += 1) numbers.push(await invoice(businessId, ada, n * 1_000));
+
+    const result = await owed(businessId, ada.token);
+    expect(result.count).toBe(23);
+    expect(result.totalK).toBe((23 * 24 * 1_000) / 2);
+    expect(result.rows.map((r) => r.invoiceNumber)).toEqual(numbers.slice(0, 20));
   });
 
   it('refuses a total past the safe-integer range rather than rounding kobo away', async () => {
