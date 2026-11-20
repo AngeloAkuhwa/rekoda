@@ -44,7 +44,7 @@ The owner asked us to compare two options before building a name-span resolver:
 | Typed text, model route (H)                                                | `[text message]`                                                                                                                 |
 | Voice note (H)                                                             | `[voice note]`. The transcript is never stored.                                                                                  |
 | Photo or document (H)                                                      | `[receipt photo]`. The extracted text is never stored.                                                                           |
-| Deterministic route (H, unchanged)                                         | `[affirm]`, `[who_owes_me]` and similar                                                                                          |
+| Deterministic route (H, unchanged)                                         | `[affirm]`, `[debtors]` and similar                                                                                              |
 | Message the gateway refused (unchanged)                                    | `[message too long to read]` / `[message withheld: …]`                                                                           |
 | Integrate customer thread (`customer-message.handler.ts`)                  | `[customer message]`. The text is no longer tokenised either, so a phone the customer typed creates nobody.                      |
 | Every chat reply (`reply.service.ts`)                                      | `[reply]`. A reply can repeat a name nobody recorded, such as a supplier on a purchase preview or a model-written clarification. |
@@ -112,7 +112,14 @@ a token not in `tokens.displays` gets the following treatment.
     provisional tokens. This happens only after the G-137 check, so a refused record creates nobody.
   - Every string field of the command then carries the stored token (`withTokensReplaced`).
   - The two-record link proposal is recomputed (`linkFor`).
-  - An expense that only mentions a phone creates nobody.
+  - A record with no customer whose fields never carry the token (the model wrote "plumber", not the
+    number) creates nobody. If the model copies the token into a field, for example an expense
+    description, the number is vaulted as a customer so that the books keep a token, never the
+    plaintext number. This matches how every record worked before this PR; BA-OD-3 governs reads.
+    **Owner choice:** replace the token in a customer-less record's text with a neutral `[phone]`
+    instead. That is more private, but the merchant's description then loses the number.
+  - All of a message's provisional tokens are materialised together, as `tokenise` used to, so a
+    phone and an email in one record still raise the one-person question.
 - **Other callers.** Every other `tokenise` caller keeps the old behaviour.
 
 ### 2.3 Financial corrections

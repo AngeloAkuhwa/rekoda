@@ -5332,8 +5332,10 @@ async function interpretedReply(
    * nobody). Only a record that names a customer, or carries a provisional
    * token in any of its fields, needs them: those are found or created now,
    * exactly as the gateway used to do for every message, and every field of
-   * the command carries the stored token instead. An expense that merely
-   * mentions a phone, or an unclear message, creates nobody.
+   * the command carries the stored token instead: a number a record keeps in
+   * its words is kept in the vault, never as plaintext in the books. A record
+   * whose fields never carry the token (the model wrote "plumber", not the
+   * number), a question and an unclear message create nobody.
    */
   if (tokens.provisional?.size) {
     const asked = command.intent === 'Query' ? command.customer : null;
