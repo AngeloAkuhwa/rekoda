@@ -9,7 +9,7 @@
  * only when no provider call was billed, and nothing written to the books.
  *
  * The transport is scripted (the shapes the real one returns are pinned in
- * transports.test.ts); everything else is real: PostgreSQL, quota counters,
+ * anthropic-tool-call.test.ts); everything else is real: PostgreSQL, quota counters,
  * the schema border.
  */
 import { randomBytes } from 'node:crypto';

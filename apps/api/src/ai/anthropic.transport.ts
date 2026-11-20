@@ -103,7 +103,7 @@ export class AnthropicTransport implements ModelTransport {
       },
       stopReason: response.stop_reason,
       ...(response.stop_reason === 'refusal'
-        ? { refusalCategory: response.stop_details?.category ?? null }
+        ? { refusalCategory: refusalCategoryOf(response.stop_details?.category) }
         : {}),
     };
   }
@@ -203,4 +203,22 @@ const ERROR_CLASSES: Array<[new (...args: never[]) => Error, string]> = [
 
 function className(error: Error): string {
   return ERROR_CLASSES.find(([cls]) => error instanceof cls)?.[1] ?? 'APIError';
+}
+
+/**
+ * The API's refusal categories. The value is stored on a usage row, so
+ * anything outside this list (a gateway can put any text there) is stored as
+ * `unrecognised`, never as itself.
+ */
+const REFUSAL_CATEGORIES = new Set([
+  'cyber',
+  'bio',
+  'frontier_llm',
+  'reasoning_extraction',
+  'general_harms',
+]);
+
+function refusalCategoryOf(category: string | null | undefined): string | null {
+  if (category === null || category === undefined) return null;
+  return REFUSAL_CATEGORIES.has(category) ? category : 'unrecognised';
 }

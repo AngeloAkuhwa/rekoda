@@ -183,6 +183,16 @@ describe('the Anthropic transport', () => {
     expect(JSON.stringify(reply)).not.toContain('declined');
   });
 
+  it('keeps a refusal category only from the API vocabulary, never text a gateway put there', async () => {
+    respond = json({
+      ...ANSWER,
+      stop_reason: 'refusal',
+      stop_details: { type: 'refusal', category: 'CUSTOMER_7K2 owes 50k', explanation: null },
+    });
+    const reply = await transport().send(REQUEST);
+    expect(reply.refusalCategory).toBe('unrecognised');
+  });
+
   it('reads no tool input from an answer cut off at max_tokens', async () => {
     respond = json({ ...ANSWER, stop_reason: 'max_tokens' });
     const reply = await transport().send(REQUEST);
