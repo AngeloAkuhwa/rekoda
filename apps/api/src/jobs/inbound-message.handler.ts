@@ -547,9 +547,23 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
         ...tokenised!.tokens.keys(),
       ]);
       /* A refusal ends here too (OWN-98): the page one model declined is
-       * never handed to another. Before the meter, as junk is, so the
-       * merchant keeps the unit. */
+       * never handed to another. Before the meter, as junk is, so no message
+       * unit is taken. A refused page was not understood, so its page unit
+       * goes back, as for any unreadable input (OWN-98; CodeRabbit and Codex
+       * on 0412af4): taken off this message once, so a retry or redelivery
+       * never refunds it twice. The read's bill and daily slot stay. A junk
+       * page WAS understood (as not a business document) and keeps its unit
+       * (J7, docs/REKODA_LAUNCH_READINESS.md). */
       if (kind === 'junk' || kind === 'refused') {
+        if (kind === 'refused') {
+          await giveBackUnit(
+            deps,
+            businessId,
+            eventId,
+            usagePeriod(event.receivedAt),
+            'DOCUMENTS_UNDERSTOOD',
+          );
+        }
         await retireSenderContinuation(tx, businessId, inbound.from, event.receivedAt);
         await deps.replySender.send(tx, {
           businessId,
