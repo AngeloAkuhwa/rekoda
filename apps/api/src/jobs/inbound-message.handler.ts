@@ -2748,7 +2748,14 @@ async function confirmPendingDraft(
    * this member read: it is closed, and the yes answers what is behind it. */
   while (draft && conversationsRepo.isRefusalDraft(draft)) {
     await conversationsRepo.closeRefusalDraft(tx, businessId, draft.id);
+    /* About this yes only when the refusal is still the newest thing waiting:
+     * a preview recorded after it (and confirmed since) means the merchant has
+     * moved on, and the refusal is just closed (Qodo on #437). */
+    const newest = await conversationsRepo.latestDraftToAnswer(tx, businessId, {
+      asOf: receivedAt,
+    });
     const own =
+      newest?.id === draft.id &&
       draft.requestedBy !== null &&
       draft.requestedBy === (await actorOf(tx, businessId, sender.from));
     if (own) {
@@ -5411,7 +5418,15 @@ async function interpretedReply(
    * preview.
    */
   const refusedAs = async (refusal: Reply): Promise<Reply> => {
-    await recordRefusal(deps, tx, businessId, conversationMessageId, actorId ?? null, refusal.text);
+    await recordRefusal(
+      deps,
+      tx,
+      businessId,
+      conversationMessageId,
+      actorId ?? null,
+      refusal.text,
+      from,
+    );
     return refusal;
   };
 

@@ -3,7 +3,7 @@
  * meta-customer-token.integration.test.ts by concern.
  */
 import { describe, expect, it } from 'vitest';
-import { identity } from '@rekoda/db';
+import { conversationsRepo, identity, withBusiness } from '@rekoda/db';
 import {
   db,
   deps,
@@ -153,5 +153,45 @@ describe('a yes after a refused record', () => {
     expect(stubSender.lastText).toContain('Reply *yes*');
     await plain('wamid.R6', 'yes');
     expect((await footprint(business.id)).invoices).toBe(1);
+  });
+
+  /* Qodo on #437: a refusal the merchant moved past is no longer what a yes is about. */
+  it('a yes after a newer preview was saved never says nothing was saved', async () => {
+    const business = await seedMerchant();
+    const ada = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+    await say(
+      'wamid.R19',
+      sale({ kind: 'token', token: ada.token }),
+      'sold Ada Obi 2 wigs for 100k',
+    );
+    await say('wamid.R20', payment({ kind: 'token', token: 'CUSTOMER_7K2' }), 'Bisi paid 20k');
+    await say(
+      'wamid.R21',
+      sale({ kind: 'token', token: ada.token }),
+      'sold Ada Obi 2 wigs for 100k',
+    );
+    await plain('wamid.R22', 'yes');
+    expect(stubSender.lastText).toContain('Saved');
+
+    await plain('wamid.R23', 'yes');
+    expect(stubSender.lastText).not.toContain('Nothing was saved from your last message');
+  });
+
+  /* Qodo on #437 (G-57): a view-only member's refused question leaves no draft. */
+  it("a view-only member's question the provider could not answer leaves no draft", async () => {
+    const business = await seedMerchant();
+    const accountant = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+    await identity.addMembership(db, business.id, accountant.id, 'accountant');
+    const before = await footprint(business.id);
+
+    stubTransport.script(new Error('provider timeout'));
+    await post(messagePayload(DELEGATE, 'wamid.R24', 'who owes me the most this month'));
+    await drain();
+
+    expect(await footprint(business.id)).toEqual(before);
+    const drafts = await withBusiness(db, business.id, (tx) =>
+      conversationsRepo.draftsFor(tx, business.id),
+    );
+    expect(drafts).toEqual([]);
   });
 });
