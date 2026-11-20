@@ -483,6 +483,28 @@ export class PrivacyGateway {
   }
 
   /**
+   * A NAME the model reported, looked up and never created (OD-3, owner ruling
+   * 20 Nov 2026).
+   *
+   * A question about the books is a read, and a read must not add a customer:
+   * "how much does Bola owe me" about a name nobody recorded used to vault
+   * Bola as a new customer. Same keys as `resolveMention` (every Unicode
+   * composition the name may have been stored in), so a known name is found
+   * exactly as a sale would find it. Null when the business has no such
+   * customer.
+   */
+  async findMention(
+    businessId: string,
+    mention: string,
+  ): Promise<{ token: string; customerId: string } | null> {
+    for (const key of this.nameKeys(businessId, mention)) {
+      const existing = await customersRepo.findCustomerByMatchKey(this.db, businessId, 'name', key);
+      if (existing) return { token: existing.token, customerId: existing.id };
+    }
+    return null;
+  }
+
+  /**
    * Whether a name the model resolved AFTER tokenising split one person in
    * two (G-60 owner decision, 14 Oct 2026). A storefront buyer's name is
    * untrusted and never matches, so "Chidi Okafor 0803…" finds the phone

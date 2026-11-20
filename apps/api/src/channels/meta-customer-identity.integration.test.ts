@@ -487,9 +487,15 @@ describe('a storefront buyer named later in Chat', () => {
     await drain();
     expect(stubSender.lastText).not.toContain('same customer');
 
+    const asked = await ledger(business.id);
     await post(messagePayload('2348031234567', 'wamid.SF6-yes', 'yes'));
     await drain();
-    expect((await ledger(business.id)).customers).toBe(2);
+    /* A question creates no customer (OD-3, owner ruling 20 Nov 2026): the
+     * storefront buyer's name is untrusted and matches nobody, so only the
+     * buyer's own record exists, and the later yes changes nothing. This
+     * count was 2 while a question vaulted the name as a new customer. */
+    expect((await ledger(business.id)).customers).toBe(1);
+    expect(await ledger(business.id)).toEqual(asked);
   });
 
   it('forgets the question when the preview carrying it was never delivered', async () => {

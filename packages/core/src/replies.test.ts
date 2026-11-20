@@ -301,6 +301,7 @@ const ALL: Record<string, readonly replies.Reply[]> = {
     replies.customerBalanceAnswer([], 0),
     replies.customerBalanceAnswer(debtors, NAIRA_MILLIONS),
   ],
+  customerNotKnown: [replies.customerNotKnown()],
   suppliersAnswer: [replies.suppliersAnswer(0), replies.suppliersAnswer(NAIRA_MILLIONS)],
   unreconciledAnswer: [replies.unreconciledAnswer(0), replies.unreconciledAnswer(412)],
   reportRequestAnswer: [replies.reportRequestAnswer()],

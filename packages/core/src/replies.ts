@@ -1731,6 +1731,20 @@ export function customerBalanceAnswer(rows: DebtorLine[], totalK: number): Reply
   return reply(`They owe you ${formatKobo(totalK)} in total.\n\n${lines.join('\n')}`);
 }
 
+/**
+ * A balance question about a name the books do not hold (OD-3).
+ *
+ * Not "they owe nothing": that is a claim about somebody Rekoda has never
+ * recorded. And no customer is created to answer it, because a question is
+ * a read.
+ */
+export function customerNotKnown(): Reply {
+  return reply(
+    'I do not have a customer by that name in your records. Check the spelling, ' +
+      'or send *who owes me* to see everyone who owes you.',
+  );
+}
+
 /** Money owed OUT, to suppliers. The other side of the debtors question. */
 export function suppliersAnswer(owedK: number): Reply {
   if (owedK === 0) return reply('You do not owe any supplier anything right now.');

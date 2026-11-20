@@ -6,7 +6,15 @@
  * webhook.fixtures.ts.
  */
 import { describe, expect, it } from 'vitest';
-import { conversationsRepo, events, identity, jobsRepo, quotaRepo, withBusiness } from '@rekoda/db';
+import {
+  conversationsRepo,
+  events,
+  identity,
+  jobsRepo,
+  quotaRepo,
+  sql,
+  withBusiness,
+} from '@rekoda/db';
 import { buildRunner } from '../jobs/jobs.module.js';
 import { issueRepo, settleRepo, spendRepo } from '@rekoda/db';
 import {
@@ -343,6 +351,85 @@ describe('asking the books a question', () => {
     expect(stubSender.lastText).toContain('INV-');
     expect(stubSender.lastText).not.toContain('CUSTOMER_');
     expect(stubSender.lastText).not.toContain('Ada');
+  });
+
+  /** Every customer row and every vaulted facet: a read must leave both as they were. */
+  const customerRows = (businessId: string) =>
+    withBusiness(db, businessId, async (tx) => {
+      const [row] = [
+        ...(await tx.execute<{ customers: number; facets: number }>(sql`
+          SELECT (SELECT count(*)::int FROM customers WHERE business_id = ${businessId}::uuid)
+                   AS customers,
+                 (SELECT count(*)::int FROM customer_identities WHERE business_id = ${businessId}::uuid)
+                   AS facets`)),
+      ];
+      return row!;
+    });
+
+  /**
+   * OD-3 (owner ruling, 20 Nov 2026): a question never creates a customer.
+   *
+   * A balance question about a name nobody recorded used to resolve the name
+   * like a sale does, find-or-create: a new customer was vaulted, and the
+   * reply said that brand-new customer "has nothing outstanding", a claim
+   * about somebody the books have never seen.
+   */
+  it('creates no customer for a balance question about a name it does not know', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await seedTrading(business.id);
+    const before = await customerRows(business.id);
+
+    await ask(
+      'wamid.Q5U',
+      askAbout({ topic: 'customer_balance', customer: { kind: 'mention', mention: 'Bola Ige' } }),
+      'how much does Bola Ige owe me',
+    );
+
+    expect(await customerRows(business.id)).toEqual(before);
+    expect(stubSender.lastText).toContain('do not have a customer by that name');
+    expect(stubSender.lastText).not.toContain('nothing outstanding');
+    /* The name is still not kept in the conversation history. */
+    const stored = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ body: string }>(
+        sql`SELECT body FROM conversation_messages WHERE provider_message_id = 'wamid.Q5U'`,
+      ),
+    );
+    expect([...stored].map((r) => r.body).join(' ')).not.toContain('Bola');
+  });
+
+  it('answers a balance question about a known name by lookup, creating nothing', async () => {
+    const business = await seedMerchant('+2348031234567');
+    const { token } = await deps.gateway.resolveMention(business.id, 'Bola Ige');
+    await withBusiness(db, business.id, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId: business.id,
+        customerId: null,
+        customerToken: token,
+        items: [{ name: 'wig', quantity: 1, unitPriceK: 4_000_000 }],
+        subtotalK: 4_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 4_000_000,
+        paidK: 0,
+        balanceDueK: 4_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'draft-known',
+        actor: 'system',
+      }),
+    );
+    const before = await customerRows(business.id);
+
+    await ask(
+      'wamid.Q5K',
+      askAbout({ topic: 'customer_balance', customer: { kind: 'mention', mention: 'Bola Ige' } }),
+      'how much does Bola Ige owe me',
+    );
+
+    expect(await customerRows(business.id)).toEqual(before);
+    expect(stubSender.lastText).toContain('₦40,000');
+    expect(stubSender.lastText).toContain('INV-');
   });
 
   it('answers the debtors question the same way the free command does', async () => {

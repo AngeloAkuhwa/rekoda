@@ -5229,6 +5229,32 @@ async function interpretedReply(
    * made mechanical.
    */
   let command = interpreted.command;
+  /**
+   * A question resolves a name by LOOKUP only (OD-3, owner ruling 20 Nov 2026).
+   *
+   * A read must not add a customer: find-or-create below is for records the
+   * merchant will confirm. A known name becomes its token, exactly as a sale
+   * would find it. An unknown one names nobody: the question is answered
+   * honestly and the name, which is still a person's name, is scrubbed from
+   * the stored message all the same.
+   */
+  if (command.intent === 'Query' && command.customer?.kind === 'mention') {
+    const mention = command.customer.mention;
+    const known = await deps.gateway.findMention(businessId, mention);
+    if (known) deps.gateway.noteMention(tokens, known.token, mention);
+    const scrubbed = redactStructuralPiiAroundTokens(
+      replaceOutsideTokens(safeText, mention, known?.token ?? '[name]', tokens.displays.keys()),
+      tokens.displays.keys(),
+    );
+    if (scrubbed !== safeText) {
+      await conversationsRepo.setInboundBody(tx, businessId, conversationMessageId, scrubbed);
+    }
+    if (!known && command.topic === 'customer_balance') return replies.customerNotKnown();
+    command = {
+      ...command,
+      customer: known ? { kind: 'token', token: known.token } : { kind: 'none' },
+    };
+  }
   if ('customer' in command && command.customer && command.customer.kind === 'mention') {
     const mention = command.customer.mention;
     const named = await deps.gateway.resolveMention(businessId, mention);
