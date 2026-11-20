@@ -64,8 +64,11 @@ for a person nobody recorded, nothing is vaulted until a record needs them.
    Layer 1 or layer 2 replaces it with its token before any model call, in questions and in records
    alike.
 2. **An unknown phone or email.** Layer 2 still replaces it before any model call, but with a provisional
-   per-message token (`CUSTOMER_U…`) and no customer. A question names nobody by it. A record finds or
-   creates the customer, as layer 2 always did, and carries the stored token.
+   per-message token (`CUSTOMER_U…`) and no customer. A question names nobody by it. It becomes a
+   customer only as the `customer` of a sale, payment or order (found or created, as layer 2 always did,
+   and the record carries the stored token), or as the second facet beside that customer that PR #77's
+   owner rule asks about in the preview. Anywhere else in a record's words it is kept as `[phone]` or
+   `[email]`, and creates nobody (owner review of #437 at `3a60b0f`).
 3. **An unknown name in a read-only question** (`Query`).
    - Nothing is created (BA-OD-3).
    - The reply says the books hold no customer by that name.
@@ -86,14 +89,17 @@ Rekoda stores.
 - **Conversation history.** `conversation_messages.body` holds only a structural placeholder for every
   model-routed message, every chat reply and every message to a customer (`[text message]`,
   `[voice note]`, `[receipt photo]`, `[customer message]`, `[reply]`). Template sends and document
-  deliveries keep their existing bodies, a template name or a document caption, which name no person.
-  The text lives only in the job's memory while it runs.
+  deliveries keep their existing bodies, a template name or a document caption (its number and amount),
+  which name no person. The text lives only in the job's memory while it runs.
 - **The webhook body** stays sealed under the vault key in `external_events.payload`. When the merchant
-  sends DELETE MY DATA, it is erased for every message that was processed without an open error, along
-  with the identities and any conversation text stored before G-136. Messages still being processed,
-  messages that failed and await review, and delivery-status events keep their sealed bodies.
+  sends DELETE MY DATA, it is erased for every message Rekoda has finished processing, whatever outcome
+  its handler noted, along with the identities and any conversation text stored before G-136. Messages
+  not yet processed, delivery-status events and events with no business keep their sealed bodies, and so
+  does a message's copy inside another business's row when Meta batched both into one webhook body.
 
-**A record's token** must be one this message was issued (G-137). Token syntax is not authority.
+**A record's token** must be one this message was issued (G-137). Token syntax is not authority: a
+record whose `customer` is any other token is refused, and any other customer token in a record's words
+reads `[customer]`.
 
 **Bounds that do not change:**
 
