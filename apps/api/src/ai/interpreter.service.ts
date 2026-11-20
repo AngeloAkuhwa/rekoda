@@ -51,6 +51,9 @@ export class RawProtectedFieldError extends Error {
   }
 }
 
+/** The `unusable` reason for a provider refusal. Logs only; never shown. */
+const REFUSAL_REASON = 'the model declined to answer';
+
 export type Interpretation =
   | { outcome: 'command'; command: StructuredBusinessCommand }
   /** The model answered, and what it produced did not survive the schema. */
@@ -84,24 +87,34 @@ type ModelCall =
  * Why the escalation model was asked. On the cost row, because "what does
  * escalation cost" is only actionable when it can be split by what causes it.
  */
-type EscalationReason = 'schema_failure' | 'no_tool_call' | 'refusal' | 'unclear';
+type EscalationReason = 'schema_failure' | 'no_tool_call' | 'unclear';
 
 /**
- * The output ceiling for a command reading (interpreter, escalation, verifier).
+ * The output ceiling for a Claude command reading (interpreter, escalation).
  *
  * A command is a few hundred tokens, but the ceiling also holds whatever the
  * model thinks first: Claude Sonnet 5.5 thinks by default and Claude Opus 5.5
  * cannot stop, and an answer cut off at the ceiling is unusable and, by
- * design, not escalated (G-134 review). Only the tokens produced are billed,
- * so a high ceiling costs nothing on an ordinary answer; it is the same for
- * every model, so no model ID selects a different request.
+ * design, not escalated (G-134 review). It is the same for every model, so no
+ * model ID selects a different request.
  *
- * The transport's 20 s timeout (the AnthropicTransport default) is the other limit:
- * an answer still thinking at 20 s ends as ProviderUnreachable (busy reply,
- * slot handed back, an unpriced `llm_failed` row) rather than at this
- * ceiling. Whether to wait longer is an owner decision recorded in G-134.
+ * It is NOT free headroom. It is the most one call can cost in output, and a
+ * call that hits the transport's 20 s timeout (the AnthropicTransport
+ * default, kept by owner decision) can still be billed for what it generated
+ * while being recorded as an unpriced `llm_failed` row. So it is sized to
+ * what can arrive inside that timeout, not above it: 2,048 doubles the
+ * pre-G-134 1,024 for thinking, and halves the worst case 4,096 allowed
+ * (G-134 owner review). Raise it only on acceptance evidence: `max_tokens`
+ * stops on `llm_call` rows, against `anthropic timeout` `llm_failed` rows.
  */
-export const COMMAND_MAX_TOKENS = 4_096;
+export const COMMAND_MAX_TOKENS = 2_048;
+
+/**
+ * The independent verifier's ceiling (OpenAI, `max_completion_tokens`): its
+ * value before G-134. The thinking room above is a Claude 5.5 matter, and
+ * the verifier's provider and request did not change.
+ */
+export const VERIFIER_MAX_TOKENS = 1_024;
 
 /**
  * The classifier's ceiling. Its answer is one enum value, but the model
@@ -123,8 +136,8 @@ export const CLASSIFIER_MAX_TOKENS = 1_024;
  *
  * ESCALATION (AI hardening item 3) is one bounded retry on the escalation
  * model when the primary's answer cannot safely proceed: it failed the
- * schema, never called the tool, declined (a provider refusal), or said
- * Unclear. At most one per message,
+ * schema, never called the tool, or said Unclear. A provider refusal is
+ * terminal and never escalates. At most one per message,
  * structurally — the escalation's own answer is never re-escalated. It
  * consumes the same shared quota, its cost is recorded under its own role
  * with the reason on the row, and when it is also uncertain the merchant
@@ -251,7 +264,7 @@ export class Interpreter {
       toolName: TOOL_NAME,
       toolDescription: TOOL_DESCRIPTION,
       toolSchema: this.toolSchema,
-      maxTokens: COMMAND_MAX_TOKENS,
+      maxTokens: VERIFIER_MAX_TOKENS,
       purpose: 'verify_document_extraction',
       transport: this.verifier,
       provider: 'openai',
@@ -420,7 +433,8 @@ export class Interpreter {
      * primary's outcome, and an evaluation must still see that it failed. */
     const schemaValid =
       request.toolName === TOOL_NAME
-        ? reply.toolInput !== null &&
+        ? reply.stopReason !== 'refusal' &&
+          reply.toolInput !== null &&
           parseBusinessCommand((reply.toolInput as { command?: unknown }).command).ok
         : null;
     await this.recordUsage(businessId, request, reply, schemaValid);
@@ -429,6 +443,11 @@ export class Interpreter {
 
   /** The tool answer through the strict schema, or the reason it failed. */
   private parseCommandReply(reply: ModelReply): Interpretation {
+    /* A refusal yields nothing, whatever came back with it: the provider
+     * declined this request, and no part of that answer is read. */
+    if (reply.stopReason === 'refusal') {
+      return { outcome: 'unusable', reason: REFUSAL_REASON };
+    }
     if (reply.toolInput === null) {
       /* Reachable on any model: the tool is asked for with tool_choice `auto`
        * (Claude Sonnet 5.5 and Opus 5.5 refuse a forced choice), and the
@@ -563,9 +582,14 @@ export class Interpreter {
  * fault to fix, not an ambiguity a better reader resolves, and escalating it
  * would pay Opus prices to reproduce it.
  *
- * A refusal escalates once, under its own reason: the escalation model runs
- * its own safety classifiers, and a bookkeeping sentence declined by one is
- * most likely a false positive. The bound is the same single retry.
+ * A refusal is terminal (G-134 owner review). It is the provider's safety
+ * decision about this request, and re-sending the same request to another
+ * model to find one that answers is not a retry the approved design ever
+ * named (ai-model-strategy.md lists schema failure, no tool call and
+ * Unclear). Before G-134 a refusal with no tool block escalated as
+ * `no_tool_call` by accident; it now ends here. The merchant gets the
+ * ordinary "could not turn that into a record" reply and their message unit
+ * back, and the usage row keeps the category for review.
  */
 function escalationReasonFor(
   first: Interpretation,
@@ -573,7 +597,7 @@ function escalationReasonFor(
 ): EscalationReason | null {
   if (first.outcome === 'unusable') {
     if (stopReason === 'max_tokens' || stopReason === 'model_context_window_exceeded') return null;
-    if (stopReason === 'refusal') return 'refusal';
+    if (stopReason === 'refusal') return null;
     return first.reason.includes('without calling the tool') ? 'no_tool_call' : 'schema_failure';
   }
   if (first.outcome === 'command' && first.command.intent === 'Unclear') return 'unclear';

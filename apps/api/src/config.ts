@@ -1573,7 +1573,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
      * ₦40,000 — a number that can be absorbed while someone investigates,
      * rather than discovered on an invoice. ₦8 is a planning average, not a
      * per-call bound: these ceilings count calls, and since G-134 a command
-     * reading may produce up to 4,096 output tokens (COMMAND_MAX_TOKENS), so
+     * reading may produce up to 2,048 output tokens (COMMAND_MAX_TOKENS), so
      * the worst day is higher than this arithmetic. Measure output tokens in
      * acceptance before relying on it; changing a quota is a commercial call.
      */

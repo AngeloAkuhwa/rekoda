@@ -191,7 +191,11 @@ describe('an answer without the tool, under tool_choice auto', () => {
 });
 
 describe('a refusal, under tool_choice auto', () => {
-  it('escalates once with the reason "refusal" and keeps the category, never the explanation', async () => {
+  /* A refusal is the provider's safety decision about this request. It is
+   * terminal: the request is never re-sent to another model to look for one
+   * that will answer (owner review of d250f5c). Schema failures, prose and
+   * Unclear still get their one escalation; a refusal does not. */
+  it('is terminal: unusable, no escalation, the category kept and never the explanation', async () => {
     const businessId = await seedBusiness();
     const transport = new StubTransport([REFUSED, GOOD]);
 
@@ -200,20 +204,40 @@ describe('a refusal, under tool_choice auto', () => {
       'CUSTOMER_7K2 bought 3 wigs for 150k',
     );
 
-    expect(result).toMatchObject({ outcome: 'command' });
+    expect(result).toEqual({ outcome: 'unusable', reason: 'the model declined to answer' });
+    // The GOOD reply was never asked for.
+    expect(transport.requests).toHaveLength(1);
     const metas = await metasOf(businessId);
+    expect(metas).toHaveLength(1);
     expect(metas[0]).toMatchObject({
       role: 'interpreter',
       stopReason: 'refusal',
       refusalCategory: 'general_harms',
       schemaValid: false,
     });
-    expect(metas[1]).toMatchObject({ role: 'escalation', escalationReason: 'refusal' });
+    expect(metas[0]).not.toHaveProperty('escalationReason');
+    // One provider call was billed, so exactly one slot is spent.
+    expect(await withBusiness(db, businessId, (tx) => quotaRepo.callsToday(tx, businessId))).toBe(
+      1,
+    );
   });
 
-  it('answers unusable when the escalation refuses as well', async () => {
+  it('is terminal even when a tool block came back with it', async () => {
     const businessId = await seedBusiness();
-    const transport = new StubTransport([REFUSED, REFUSED]);
+    /* The transport already yields no input for a refusal; this pins the
+     * interpreter's own rule should a transport ever hand one over. */
+    const refusedWithInput: ModelReply = { ...REFUSED, toolInput: { command: A_SALE } };
+    const transport = new StubTransport([refusedWithInput, GOOD]);
+
+    const result = await new Interpreter(db, config, transport).interpret(businessId, 'wigs');
+
+    expect(result).toEqual({ outcome: 'unusable', reason: 'the model declined to answer' });
+    expect(transport.requests).toHaveLength(1);
+  });
+
+  it('an escalation that refuses falls back to the primary outcome, with no third call', async () => {
+    const businessId = await seedBusiness();
+    const transport = new StubTransport([GARBAGE, REFUSED, GOOD]);
 
     const result = await new Interpreter(db, config, transport).interpret(businessId, 'something');
 
@@ -237,14 +261,15 @@ describe('an incomplete answer, under tool_choice auto', () => {
 describe('room to answer after thinking (review of bd9c5b3)', () => {
   /* Claude Sonnet 5.5 thinks by default and Opus 5.5 cannot stop thinking;
    * the thinking shares max_tokens with the tool call, and a cut-off answer
-   * is unusable without escalation. The ceiling is billed only for what is
-   * produced, so it is set with room to spare, the same for every model. */
+   * is unusable without escalation. The ceiling is also the most a call can
+   * cost, including a call that timed out and is billed unrecorded, so it is
+   * sized to what can arrive inside the 20 s timeout (owner review). */
   it('asks every command reading with a ceiling well above the command itself', async () => {
     const businessId = await seedBusiness();
     const transport = new StubTransport([GARBAGE, GOOD]);
     await new Interpreter(db, config, transport).interpret(businessId, 'CUSTOMER_7K2 bought wigs');
 
-    expect(transport.requests.map((r) => r.maxTokens)).toEqual([4_096, 4_096]);
+    expect(transport.requests.map((r) => r.maxTokens)).toEqual([2_048, 2_048]);
   });
 
   it('gives the classifier room too, so a thinking classifier model is not cut off every time', async () => {
@@ -284,6 +309,34 @@ describe('room to answer after thinking (review of bd9c5b3)', () => {
       await new Interpreter(db, config, transport).classifyDocument(businessId, 'lyrics'),
     ).toBe('unsure');
     expect(transport.requests).toHaveLength(1);
+  });
+
+  it('leaves the OpenAI verifier at its own ceiling: the Claude thinking room is not its', async () => {
+    const businessId = await seedBusiness();
+    const bigSale = {
+      ...A_SALE,
+      items: [{ name: 'generator', quantity: 1, unitPrice: 650_000 }],
+      statedTotal: 650_000,
+      reportedPayment: 300_000,
+    };
+    const reading: ModelReply = {
+      toolInput: { command: bigSale },
+      usage: USAGE,
+      stopReason: 'tool_use',
+    };
+    const verifier = new StubTransport([reading]);
+    await new Interpreter(
+      db,
+      {
+        ...config,
+        aiModelVisionVerifier: 'gpt-test-verifier',
+        aiDualExtractThresholdK: 50_000_000,
+      },
+      new StubTransport([reading]),
+      verifier,
+    ).interpret(businessId, 'INVOICE CUSTOMER_7K2 generator 650,000', { document: true });
+
+    expect(verifier.requests.map((r) => r.maxTokens)).toEqual([1_024]);
   });
 
   it('a classification cut off at the ceiling fails open to unsure: what the ceiling prevents', async () => {
