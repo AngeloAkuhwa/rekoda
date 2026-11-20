@@ -76,10 +76,12 @@ events only). Dead-job recovery never reopens a WhatsApp message: it covers `pay
 `billing.process` only (`DEAD_JOB_EXCEPTION_KINDS`). A finished message's body is never read again, and
 one opened after erasure reads as "unreadable payload" (owner review of `3a60b0f`).
 
-**Each event row seals the WHOLE webhook body** (`meta.controller.ts` passes `parsed.data` for every event
-in it). A body Meta batched with messages for two businesses is therefore held once under each business's
-event row. Erasing one business's rows does not reach its message's copy inside the other business's row.
-Narrowing what ingress seals to the event's own message would close this; it is not built (§6.2).
+**Each event row seals only its own message** (`bodyForEvent` in `@rekoda/contracts`, applied by
+`meta.controller.ts`; CodeRabbit on #437, RED first: `a webhook body batched for two businesses`). Before
+this, every event sealed the WHOLE webhook body, so a body Meta batched for two businesses was held once
+under each business's row, and erasing one business's rows did not reach its message's copy inside the
+other's. Rows stored before this change still hold whole bodies; R1-style historical clean-up (§5) or R3
+would reach them.
 
 - **R4, built (§3):** the merchant's DELETE MY DATA now erases the payloads of finished WhatsApp
   message events.
@@ -399,12 +401,12 @@ name…" (revised after the owner review of `3a60b0f`; **not applied** to any pa
 > said. The original WhatsApp message is kept encrypted, separately, while Rekoda processes it. When you
 > send DELETE MY DATA, the originals of the messages Rekoda has finished processing are erased along
 > with your customers' details. Messages still being processed at that moment, delivery receipts, and
-> your books are kept. When WhatsApp delivered one of your messages together with another business's
-> message, a copy of it can remain, encrypted, with that other business's message.
+> your books are kept. A message delivered before this change together with another business's
+> message can still have an encrypted copy stored with that other business's message.
 
 What it deliberately does not claim: that every piece of personal information is always detected (the
-existing caveat stays), that erasure reaches a message's copy held in another business's batched webhook
-(§1.2), or any time limit on the encrypted originals (R3 is not approved).
+existing caveat stays), that erasure reaches a copy stored before this change in another business's batched
+webhook (§1.2), or any time limit on the encrypted originals (R3 is not approved).
 
 ### 6.1 Each claim, mapped to code and tests
 
@@ -429,10 +431,10 @@ existing caveat stays), that erasure reaches a message's copy held in another bu
    run from.
 5. **Payloads DELETE MY DATA does not reach.** Messages not yet processed when it runs (its own
    message included); delivery-status (`status.*`) events, which hold the recipient's phone; events with
-   no business; and a message's copy inside another business's row when Meta batched both into one
-   webhook body (§1.2). R3 as proposed bounds only processed `message.*` events of a business; the
-   retention of delivery-status events and events with no business is left for the owner to decide, and
-   the cross-business copy needs ingress to seal only each event's own message (CodeRabbit on #437).
+   no business; and, for rows stored before this PR only, a message's copy inside another business's row
+   when Meta batched both into one webhook body (§1.2; new rows seal only their own message). R3 as
+   proposed bounds only processed `message.*` events of a business; the retention of delivery-status
+   events and events with no business is left for the owner to decide (CodeRabbit on #437).
 6. **The dashboard debtors view on an overflow.** A total past what can be stated exactly (more than
    about ₦90 trillion) makes `GET /v1/reports/debtors` fail rather than show a rounded figure. The chat
    reply points to the invoices list instead. This is practically unreachable, and is recorded rather

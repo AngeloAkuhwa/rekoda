@@ -15,6 +15,7 @@ import { conversationsRepo, identity, withBusiness, sql } from '@rekoda/db';
 import { STORED_BODY } from '@rekoda/core/privacy';
 import {
   db,
+  deps,
   messagePayload,
   post,
   stubSender,
@@ -23,6 +24,7 @@ import {
   useMetaWebhookHarness,
 } from './meta-webhook.fixtures.js';
 import { arrangeAudio, drain, voicePayload } from './meta-voice-note.fixtures.js';
+import { openPayload } from '../privacy/payload-vault.js';
 
 useMetaWebhookHarness();
 
@@ -196,5 +198,49 @@ describe('the stored copy of a message keeps no name (G-136)', () => {
     expect(body).not.toBe(STORED_BODY.text);
     expect(body).toMatch(/^\[/);
     expect(stubTransport.requests).toHaveLength(0);
+  });
+});
+
+/**
+ * A delivery Meta batched for two businesses (CodeRabbit on #437): each business's event
+ * row seals only its own message, so one business's DELETE MY DATA leaves no copy of its
+ * message under the other's row.
+ */
+describe('a webhook body batched for two businesses', () => {
+  it("seals each business's message under its own event only", async () => {
+    const owners = ['2348031230001', '2348031230002'];
+    const businesses = [];
+    for (const [n, phone] of owners.entries()) {
+      const user = await identity.upsertUserByPhone(db, `+${phone}`);
+      businesses.push(
+        await identity.createBusinessWithOwner(db, {
+          name: `Shop ${n}`,
+          businessType: null,
+          ownerUserId: user.id,
+        }),
+      );
+    }
+    const one = messagePayload(owners[0]!, 'wamid.BATCH-A', 'sold Chiamaka Okafor 2 wigs');
+    const two = messagePayload(owners[1]!, 'wamid.BATCH-B', 'Bola Ige paid 5k');
+    one.entry[0]!.changes[0]!.value.messages.push(two.entry[0]!.changes[0]!.value.messages[0]!);
+    await post(one);
+
+    const sealed = async (businessId: string) =>
+      withBusiness(db, businessId, async (tx) => {
+        const [row] = [
+          ...(await tx.execute<{ payload: unknown; external_id: string }>(sql`
+            SELECT payload, external_id FROM external_events
+             WHERE business_id = ${businessId}::uuid AND event_type LIKE 'message.%'`)),
+        ];
+        return JSON.stringify(
+          openPayload(row!.payload, deps.config.vaultKey, 'meta', row!.external_id),
+        );
+      });
+    const first = await sealed(businesses[0]!.id);
+    const second = await sealed(businesses[1]!.id);
+    expect(first).toContain('Chiamaka Okafor');
+    expect(first).not.toContain('Bola Ige');
+    expect(second).toContain('Bola Ige');
+    expect(second).not.toContain('Chiamaka Okafor');
   });
 });

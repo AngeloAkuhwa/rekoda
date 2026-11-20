@@ -455,6 +455,16 @@ describe('a payment the merchant reports (RecordPayment)', () => {
       tx.execute(sql`SELECT 1 FROM customer_credits WHERE business_id = ${business.id}::uuid`),
     );
     expect([...credits]).toHaveLength(0);
+    /* And the confirmation really recorded the payment (CodeRabbit on #437): the whole
+     * ₦180,000, the invoice paid in full, the ₦30,000 excess unapplied. */
+    const [state] = [
+      ...(await withBusiness(db, business.id, (tx) =>
+        tx.execute<{ paid: string; due: string }>(sql`
+          SELECT (SELECT amount_k::text FROM payments WHERE business_id = ${business.id}::uuid) AS paid,
+                 (SELECT balance_due_k::text FROM invoices WHERE business_id = ${business.id}::uuid) AS due`),
+      )),
+    ];
+    expect(state).toEqual({ paid: '18000000', due: '0' });
   });
 
   /**

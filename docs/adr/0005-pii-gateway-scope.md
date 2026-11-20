@@ -94,8 +94,9 @@ Rekoda stores.
 - **The webhook body** stays sealed under the vault key in `external_events.payload`. When the merchant
   sends DELETE MY DATA, it is erased for every message Rekoda has finished processing, whatever outcome
   its handler noted, along with the identities and any conversation text stored before G-136. Messages
-  not yet processed, delivery-status events and events with no business keep their sealed bodies, and so
-  does a message's copy inside another business's row when Meta batched both into one webhook body.
+  not yet processed, delivery-status events and events with no business keep their sealed bodies. Each
+  event seals only its own message; a row stored before #437 may still hold a body Meta batched with
+  another business's message, which that business's erasure does not reach.
 
 **A record's token** must be one this message was issued (G-137). Token syntax is not authority: a
 record whose `customer` is any other token is refused, and any other customer token in a record's words
