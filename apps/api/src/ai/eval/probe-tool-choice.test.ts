@@ -3,6 +3,8 @@
  * transport's own, for the real prompt, tools and ceilings, and nothing
  * leaves the process.
  */
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { describe, expect, it } from 'vitest';
 import { PROBE_MESSAGE, probeCases, runProbe } from './probe-tool-choice.js';
 import { SYSTEM_PROMPT, TOOL_NAME } from '../prompt.js';
@@ -60,5 +62,90 @@ describe('the G-134 probe, in plan mode', () => {
   it('a synthetic message only: no phone number, no name, no amount beyond the sentence', () => {
     expect(PROBE_MESSAGE).not.toMatch(/\+?\d{10,}/);
     expect(PROBE_MESSAGE).toContain('CUSTOMER_7K2');
+  });
+});
+
+describe('the G-134 probe, sending through the relay', () => {
+  /* A stand-in for the provider: it answers the FIRST request only after
+   * the transport has given up on it, and every later one at once, so a
+   * late answer for case 1 arrives while later cases are running. */
+  async function slowFirstUpstream(holdMs: number) {
+    const seen: Array<{ url: string; key: string; model: string }> = [];
+    const server = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (c: Buffer) => chunks.push(c));
+      req.on('end', () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
+          model: string;
+          tools: Array<{ name: string }>;
+        };
+        seen.push({ url: req.url ?? '', key: String(req.headers['x-api-key']), model: body.model });
+        const answer = () => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              id: 'msg_x',
+              type: 'message',
+              role: 'assistant',
+              model: body.model,
+              content: [{ type: 'tool_use', id: 't', name: body.tools[0]?.name, input: {} }],
+              stop_reason: 'tool_use',
+              stop_sequence: null,
+              stop_details: null,
+              usage: { input_tokens: 1, output_tokens: 1 },
+            }),
+          );
+        };
+        if (seen.length === 1) setTimeout(answer, holdMs);
+        else answer();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as AddressInfo).port;
+    return {
+      baseUrl: `http://127.0.0.1:${port}/gateway`,
+      seen,
+      close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    };
+  }
+
+  it('attributes every result to its own case, even when an earlier case answers late', async () => {
+    const upstream = await slowFirstUpstream(600);
+    try {
+      const results = await runProbe(
+        probeCases(MODELS),
+        { baseUrl: upstream.baseUrl, apiKey: 'upstream-key' },
+        150,
+      );
+
+      expect(results.map((r) => r['case'])).toEqual(['interpreter', 'escalation', 'classifier']);
+      // Case 1 timed out: no status of its own yet, and never another case's.
+      expect(results[0]).toMatchObject({ model: MODELS.interpreter, status: null });
+      expect(String(results[0]!['transportError'])).toMatch(/timeout/);
+      // Cases 2 and 3 carry their own answers.
+      expect(results[1]).toMatchObject({
+        model: MODELS.escalation,
+        status: 200,
+        toolCalls: [TOOL_NAME],
+      });
+      expect(results[2]).toMatchObject({
+        model: MODELS.classifier,
+        status: 200,
+        toolCalls: [CLASSIFIER_TOOL_NAME],
+      });
+      // The real key goes upstream, under the gateway's own path prefix.
+      expect(upstream.seen.map((s) => s.model)).toEqual([
+        MODELS.interpreter,
+        MODELS.escalation,
+        MODELS.classifier,
+      ]);
+      expect(new Set(upstream.seen.map((s) => `${s.url} ${s.key}`))).toEqual(
+        new Set(['/gateway/v1/messages upstream-key']),
+      );
+      // Nothing printed carries the key.
+      expect(JSON.stringify(results)).not.toContain('upstream-key');
+    } finally {
+      await upstream.close();
+    }
   });
 });

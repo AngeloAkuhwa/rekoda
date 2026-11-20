@@ -126,32 +126,32 @@ async function readBody(req: IncomingMessage): Promise<string> {
 export async function runProbe(
   cases: readonly ProbeCase[],
   upstream: { baseUrl: string; apiKey: string } | null,
+  /** The transport's timeout; the production default. Tests shorten it. */
+  timeoutMs = 20_000,
 ): Promise<Array<Record<string, unknown>>> {
-  let current: Exchange | null = null;
-  /* A per-run secret the transport presents to the relay. The relay serves
-   * only the one request the transport makes (POST /v1/messages with this
-   * token), so no other local process can use it to make billed calls or
-   * have the real key sent to a host of its choosing. */
-  const relayToken = randomBytes(24).toString('hex');
+  /* One secret per case, which the transport presents to the relay as its
+   * key. It does two jobs:
+   *   - the relay serves only POST /v1/messages carrying a token it issued,
+   *     so no other local process can make billed calls through it or have
+   *     the real key sent to a host of its choosing;
+   *   - each request is recorded under its own case's token, never under a
+   *     shared "current" slot, so a case that timed out and answers (or
+   *     even arrives) late can only ever land on its own result. */
+  const exchanges = new Map<string, Exchange | null>();
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
-    if (
-      req.method !== 'POST' ||
-      req.url !== '/v1/messages' ||
-      req.headers['x-api-key'] !== relayToken
-    ) {
+    const token = String(req.headers['x-api-key'] ?? '');
+    if (req.method !== 'POST' || req.url !== '/v1/messages' || !exchanges.has(token)) {
       res.writeHead(403, { 'content-type': 'application/json' });
       res.end(
         JSON.stringify({ type: 'error', error: { type: 'relay_refused', message: 'relay' } }),
       );
       return;
     }
-    /* This request's own record: a late failure of an earlier case must
-     * mark that case, never the one running now. */
     let exchange: Exchange | null = null;
     void (async () => {
       const raw = await readBody(req);
       exchange = { body: JSON.parse(raw) as Record<string, unknown> };
-      current = exchange;
+      exchanges.set(token, exchange);
       if (!upstream) {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify(cannedReply(exchange.body)));
@@ -192,10 +192,11 @@ export async function runProbe(
   const results: Array<Record<string, unknown>> = [];
   try {
     for (const probe of cases) {
-      current = null;
       /* The key the transport sends goes only to the relay in this process;
        * the relay checks it and sends the real one upstream. */
-      const transport = new AnthropicTransport(relayToken, 20_000, relay);
+      const caseToken = randomBytes(24).toString('hex');
+      exchanges.set(caseToken, null);
+      const transport = new AnthropicTransport(caseToken, timeoutMs, relay);
       const started = Date.now();
       let verdict: Record<string, unknown>;
       try {
@@ -215,7 +216,7 @@ export async function runProbe(
         };
       }
       const elapsedMs = Date.now() - started;
-      const exchange = current as Exchange | null;
+      const exchange = exchanges.get(caseToken) ?? null;
       const response = exchange?.response;
       const content = (response?.['content'] as Array<{ type: string; name?: string }>) ?? [];
       const error = response?.['error'] as { type?: string; message?: string } | undefined;
@@ -230,7 +231,7 @@ export async function runProbe(
               toolCalls: content.filter((b) => b.type === 'tool_use').map((b) => b.name),
               ...(error ? { error: { type: error.type, message: error.message } } : {}),
               elapsedMs,
-              withinTimeout: elapsedMs < 20_000,
+              withinTimeout: elapsedMs < timeoutMs,
             }
           : { requestBody: exchange?.body ?? null }),
         ...verdict,
