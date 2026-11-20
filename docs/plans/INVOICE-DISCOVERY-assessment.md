@@ -510,7 +510,7 @@ Additions, all in core:
 
 ### 6.4 Missing data versus recorded zero
 
-A window that **ends before the business's first record** is "no records yet", not zero. The first record is the earliest of `businesses.created_at`, the opening-balance `asAt` and the first ledger posting. A partially covered window ("since January" for a business that started in March) is labelled "records start on 4 March".
+A window that **ends before the business's first record** is "no records yet", not zero. The first record is the earlier of the opening-balance `asAt` and the first ledger posting; `businesses.created_at` is not a record (a business created in January whose first posting is in March has no records for February, not a recorded zero). A window between creation and the first record is labelled "no records yet" too. A partially covered window ("since January" for a business that started in March) is labelled "records start on 4 March".
 
 Year-over-year comparisons with no prior-year data say so instead of showing 100% growth.
 
@@ -522,7 +522,7 @@ The ledger dates a figure by **when it was posted** (`summaryFor`, G-118):
 - Backdated postings land in their stated date while the month is open.
 - Closed months cannot change (`0034` triggers).
 
-**Report reproducibility.** A report for a closed period is reproducible. A report covering an open period records its as-of timestamp, and its stored JSON (§13) is the evidence of what it said.
+**Report reproducibility.** A report's ledger figures for a closed period are reproducible. Its invoice-row breakdowns are not, unless taken as at the report: a credit note posted in a later month changes today's `credited_k` on an October invoice, so a regenerated October customer breakdown can differ. The stored result (§13) is the evidence of what a report said; a regenerated breakdown either uses values as at the period end or is labelled as recomputed. A report covering an open period records its as-of timestamp, and its stored JSON (§13) is the evidence of what it said.
 
 ---
 
@@ -701,17 +701,17 @@ The rejected alternative reads the context from the last read-only `command_draf
 
 The engine is deterministic: rules over `BooksResult`, in core `analytics.ts`. Each rule has a precondition, a threshold and a fixed template. No model is involved in the MVP (OD-27).
 
-| ID  | Finding                                                               | Precondition and threshold (proposed, OD-31)                                        |
-| --- | --------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| I1  | Sales up or down X% vs the comparison                                 | Comparison valid (§6.2); \|% \| ≥ 5 or \|Δ\| ≥ ₦10,000                              |
-| I2  | Collections did not keep pace with sales                              | Sales up, and collection rate down ≥ 10 points                                      |
-| I3  | Receivable concentration: "3 customers hold 65% of what you are owed" | ≥ 5 debtors; top-3 share ≥ 50%                                                      |
-| I4  | Strongest day, week or month in the range                             | ≥ 3 buckets with activity                                                           |
-| I5  | Expenses grew faster than sales                                       | Both periods have sales > 0 and expenses > 0                                        |
-| I6  | Overdue amount rose                                                   | Ageing at both ends of the window                                                   |
-| I7  | Largest expense category share                                        | ≥ 3 categorised expenses; "not categorised" is reported, never ranked as a category |
-| I8  | Sustained trend: "sales rose for 4 months in a row"                   | ≥ 4 consecutive buckets in one direction                                            |
-| I9  | Product or customer concentration in sales                            | OD-20 and OD-24 apply                                                               |
+| ID  | Finding                                                               | Precondition and threshold (proposed, OD-31)                                                                                                                |
+| --- | --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| I1  | Sales up or down X% vs the comparison                                 | Comparison valid (§6.2); \|% \| ≥ 5 or \|Δ\| ≥ ₦10,000; the X% template needs a non-null percentage, otherwise the absolute-change template of §6.3 is used |
+| I2  | Collections did not keep pace with sales                              | Sales up, and collection rate down ≥ 10 points                                                                                                              |
+| I3  | Receivable concentration: "3 customers hold 65% of what you are owed" | ≥ 5 debtors; top-3 share ≥ 50%                                                                                                                              |
+| I4  | Strongest day, week or month in the range                             | ≥ 3 buckets with activity                                                                                                                                   |
+| I5  | Expenses grew faster than sales                                       | Both periods have sales > 0 and expenses > 0                                                                                                                |
+| I6  | Overdue amount rose                                                   | Ageing at both ends of the window                                                                                                                           |
+| I7  | Largest expense category share                                        | ≥ 3 categorised expenses; "not categorised" is reported, never ranked as a category                                                                         |
+| I8  | Sustained trend: "sales rose for 4 months in a row"                   | ≥ 4 consecutive buckets in one direction                                                                                                                    |
+| I9  | Product or customer concentration in sales                            | OD-20 and OD-24 apply                                                                                                                                       |
 
 **Data-confidence labels**, attached to the result and printed in the PDF methodology section:
 

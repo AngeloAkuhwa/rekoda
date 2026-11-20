@@ -1723,12 +1723,22 @@ export function expensesAnswer(input: {
  * about; anybody reading over their shoulder does not, and this text is
  * plaintext on somebody else's servers.
  */
-export function customerBalanceAnswer(rows: DebtorLine[], totalK: number): Reply {
-  if (rows.length === 0) {
+export function customerBalanceAnswer(
+  rows: DebtorLine[],
+  totalK: number,
+  /** Every open invoice of theirs, from SQL; `rows` may list fewer. */
+  count: number = rows.length,
+): Reply {
+  if (count === 0) {
     return reply('That customer has nothing outstanding. Every invoice of theirs is paid.');
   }
   const lines = rows.map((r) => `${r.invoiceNumber}: ${formatKobo(r.balanceDueK)}`);
-  return reply(`They owe you ${formatKobo(totalK)} in total.\n\n${lines.join('\n')}`);
+  const unlisted = count - rows.length;
+  const more =
+    unlisted > 0
+      ? `\n…and ${unlisted} more unpaid invoice${unlisted === 1 ? '' : 's'}, included in the total.`
+      : '';
+  return reply(`They owe you ${formatKobo(totalK)} in total.\n\n${lines.join('\n')}${more}`);
 }
 
 /**

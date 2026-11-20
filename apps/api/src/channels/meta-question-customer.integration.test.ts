@@ -251,6 +251,47 @@ describe('a question that names a customer', () => {
   });
 
   /**
+   * The total is every open invoice's, from SQL, not the sum of the lines listed
+   * (CodeRabbit on #437): the reply lists at most 20, and a customer with 21 open
+   * invoices of ₦1,000 owes ₦21,000, never ₦20,000.
+   */
+  it('a balance over more open invoices than it lists still totals all of them', async () => {
+    const business = await seedMerchant('+2348031234567');
+    const { token } = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+    for (let n = 0; n < 21; n += 1) {
+      await withBusiness(db, business.id, (tx) =>
+        issueRepo.issueSale(tx, {
+          businessId: business.id,
+          customerId: null,
+          customerToken: token,
+          items: [{ name: 'wig', quantity: 1, unitPriceK: 100_000 }],
+          subtotalK: 100_000,
+          discountK: 0,
+          deliveryFeeK: 0,
+          vatK: 0,
+          totalK: 100_000,
+          paidK: 0,
+          balanceDueK: 100_000,
+          method: 'transfer',
+          sourceType: 'chat',
+          sourceId: `draft-q${n}`,
+          actor: 'system',
+        }),
+      );
+    }
+
+    await ask(
+      'wamid.Q5M',
+      askAbout({ topic: 'customer_balance', customer: { kind: 'token', token } }),
+      'how much does Ada Obi owe me',
+    );
+
+    expect(stubSender.lastText).toContain('₦21,000 in total');
+    expect(stubSender.lastText).toContain('1 more unpaid invoice');
+    expect(stubSender.lastText).not.toContain('Ada');
+  });
+
+  /**
    * A token is opaque to the model and only ever issued for this message. One the
    * message never carried (the model invented it, or reused one from elsewhere)
    * names nobody here, so it is answered as unknown: never "nothing outstanding",

@@ -3346,6 +3346,20 @@ async function confirmPurchase(
 }
 
 /**
+ * The subject left by a question about a customer that was not answered with
+ * figures (G-135): a balance with nobody in it. It supersedes any older open
+ * read, and a balance has no period, so "last month" next resumes nothing
+ * (`resumedRead`) and is read afresh, never widened to the business's totals.
+ */
+const NO_PERIOD_TO_RESUME: ContinuationState = {
+  kind: 'query',
+  topic: 'customer_balance',
+  period: null,
+  customerToken: null,
+  documentRef: null,
+};
+
+/**
  * What the books say, in answer to a spoken question.
  *
  * The model decided WHICH question was asked and over what period. It
@@ -3362,20 +3376,6 @@ async function confirmPurchase(
  * returned as a continuation so the merchant's "last month" resumes it. Every
  * answer returns the read's subject the same way, for a follow-up.
  */
-/**
- * The subject left by a question about a customer that was not answered with
- * figures (G-135): a balance with nobody in it. It supersedes any older open
- * read, and a balance has no period, so "last month" next resumes nothing
- * (`resumedRead`) and is read afresh, never widened to the business's totals.
- */
-const NO_PERIOD_TO_RESUME: ContinuationState = {
-  kind: 'query',
-  topic: 'customer_balance',
-  period: null,
-  customerToken: null,
-  documentRef: null,
-};
-
 async function answerQuery(
   tx: TenantDb,
   businessId: string,
@@ -3472,8 +3472,9 @@ async function answerQuery(
       const owed = await issueRepo.openInvoicesForCustomer(tx, businessId, token);
       return {
         reply: replies.customerBalanceAnswer(
-          owed.map((r) => ({ invoiceNumber: r.invoiceNumber, balanceDueK: r.balanceDueK })),
-          owed.reduce((n, r) => n + r.balanceDueK, 0),
+          owed.rows.map((r) => ({ invoiceNumber: r.invoiceNumber, balanceDueK: r.balanceDueK })),
+          owed.totalK,
+          owed.count,
         ),
         /* The subject as its vault token, never the name: what a later
          * build needs to continue ("send it as PDF") about the same person,

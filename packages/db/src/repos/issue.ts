@@ -1271,14 +1271,21 @@ export async function invoiceByNumber(
  *
  * Oldest first. A balance question is usually the prelude to a chase, and the
  * oldest debt is the one that matters.
+ *
+ * At most 20 invoices are listed, but `totalK` and `count` cover every open
+ * invoice of theirs: window aggregates are evaluated before LIMIT, so the
+ * total a reply states is never just the sum of the lines it shows
+ * (CodeRabbit on #437).
  */
 export async function openInvoicesForCustomer(
   tx: TenantDb,
   businessId: string,
   customerToken: string,
-): Promise<OpenInvoice[]> {
-  const rows = await tx.execute<OpenInvoiceRow>(sql`
-    SELECT i.id, i.invoice_number, i.balance_due_k::bigint AS balance_due_k
+): Promise<{ rows: OpenInvoice[]; totalK: number; count: number }> {
+  const rows = await tx.execute<OpenInvoiceRow & { open_total_k: string; open_count: number }>(sql`
+    SELECT i.id, i.invoice_number, i.balance_due_k::bigint AS balance_due_k,
+           sum(i.balance_due_k) OVER ()::bigint AS open_total_k,
+           count(*) OVER ()::int AS open_count
     FROM invoices i
     LEFT JOIN customers c ON c.id = i.customer_id AND c.business_id = i.business_id
     WHERE i.business_id = ${businessId}::uuid
@@ -1288,7 +1295,12 @@ export async function openInvoicesForCustomer(
     ORDER BY i.created_at ASC
     LIMIT 20
   `);
-  return [...rows].map(readOpenInvoice);
+  const all = [...rows];
+  return {
+    rows: all.map(readOpenInvoice),
+    totalK: all[0] ? Number(all[0].open_total_k) : 0,
+    count: all[0] ? Number(all[0].open_count) : 0,
+  };
 }
 
 /* ── credit notes ────────────────────────────────────────────────────────── */

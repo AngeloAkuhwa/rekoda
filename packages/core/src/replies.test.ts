@@ -300,6 +300,7 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   customerBalanceAnswer: [
     replies.customerBalanceAnswer([], 0),
     replies.customerBalanceAnswer(debtors, NAIRA_MILLIONS),
+    replies.customerBalanceAnswer(debtors, NAIRA_MILLIONS, debtors.length + 3),
   ],
   customerNotKnown: [replies.customerNotKnown()],
   customerFiguresNotKept: [replies.customerFiguresNotKept()],
