@@ -145,4 +145,82 @@ describe('a receipt photo', () => {
     expect(stubSender.lastText).toContain('Reply *yes*');
     expect(await readsUsed(business.id)).toBe(1);
   });
+
+  /**
+   * CodeRabbit and Codex on 1404dfb: attempt 1 passed the classifier, took
+   * the message unit (committed on its own, so it survives the rollback) and
+   * failed on its reply; the retry's classifier then ends the message. A
+   * refusal delivers nothing, so everything the message holds goes back
+   * (OWN-98, spec §4.3 rule 4). Junk keeps the page it understood (J7), but
+   * telling the merchant a page is not a business document never costs a
+   * message, on any attempt.
+   */
+  async function retryEndsAtTheClassifier(phone: string, wamid: string, ending: unknown) {
+    const business = await seedMerchant(`+${phone}`);
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'TOTAL 12,000 diesel', confidence: 0.9 });
+    const usage = { inputTokens: 400, outputTokens: 12 };
+    stubTransport.script(
+      { toolInput: { type: 'unsure' }, usage, stopReason: 'tool_use' },
+      { toolInput: { command: A_PHOTOGRAPHED_EXPENSE }, usage, stopReason: 'tool_use' },
+      ending as Parameters<typeof stubTransport.script>[0],
+    );
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS gate_retry_once`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION gate_retry_fail_once() RETURNS trigger
+          SECURITY DEFINER AS $$
+        BEGIN
+          IF NEW.usage_type = 'SERVICE_MESSAGE' AND nextval('gate_retry_once') = 1 THEN
+            RAISE EXCEPTION 'gate retry: first reply fails';
+          END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER gate_retry_fail_once BEFORE INSERT ON usage_events
+          FOR EACH ROW EXECUTE FUNCTION gate_retry_fail_once()`);
+
+      await post(photoPayload(phone, wamid));
+      await drain();
+      const held = await g57Footprint(business.id);
+      expect({ documents: held.documents, ai: held.ai_actions }).toEqual({ documents: 1, ai: 1 });
+
+      await ownerDb.execute(sql`UPDATE jobs SET run_at = now() - interval '1 minute'
+             WHERE business_id = ${business.id}::uuid AND state <> 'done'`);
+      await drain();
+      const [job] = await ownerDb.execute<{ attempts: number; state: string }>(sql`
+        SELECT attempts, state FROM jobs
+         WHERE business_id = ${business.id}::uuid AND kind = 'inbound.message'`);
+      expect([Number(job?.attempts), job?.state]).toEqual([2, 'done']);
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS gate_retry_fail_once ON usage_events`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS gate_retry_fail_once()`);
+      await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS gate_retry_once`);
+      await close();
+      // The stub's last reply outlives reset(): leave it answering as the file expects.
+      stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
+    }
+    return g57Footprint(business.id);
+  }
+
+  it('gives back the message unit an earlier attempt took when the classifier refuses', async () => {
+    const refusal = { toolInput: null, usage: { inputTokens: 400, outputTokens: 3 } };
+    const left = await retryEndsAtTheClassifier('2348031234589', 'wamid.P-GATE-REFUSED', {
+      ...refusal,
+      stopReason: 'refusal',
+    });
+    expect(stubSender.lastText).toBe(replies.couldNotRead().text);
+    expect(left).toEqual(NOTHING_TOUCHED);
+  });
+
+  it('gives back the message unit an earlier attempt took when the page is junk', async () => {
+    const left = await retryEndsAtTheClassifier('2348031234588', 'wamid.P-GATE-JUNK', {
+      toolInput: { type: 'junk' },
+      usage: { inputTokens: 400, outputTokens: 12 },
+      stopReason: 'tool_use',
+    });
+    expect(stubSender.lastText).toBe(replies.notABusinessDocument().text);
+    expect(left).toEqual({ ...NOTHING_TOUCHED, documents: 1 });
+  });
 });

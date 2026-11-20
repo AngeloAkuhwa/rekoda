@@ -51,6 +51,9 @@ export class RawProtectedFieldError extends Error {
   }
 }
 
+/** The `unusable` reason for a provider refusal. Logs only; never shown. */
+const REFUSAL_REASON = 'the model declined to answer';
+
 export type Interpretation =
   | { outcome: 'command'; command: StructuredBusinessCommand }
   /** The model answered, and what it produced did not survive the schema. */
@@ -87,6 +90,44 @@ type ModelCall =
 type EscalationReason = 'schema_failure' | 'no_tool_call' | 'unclear';
 
 /**
+ * The output ceiling for a Claude command reading (interpreter, escalation).
+ *
+ * A command is a few hundred tokens, but the ceiling also holds whatever the
+ * model thinks first: Claude Sonnet 5.5 thinks by default and Claude Opus 5.5
+ * cannot stop, and an answer cut off at the ceiling is unusable and, by
+ * design, not escalated (G-134 review). It is the same for every model, so no
+ * model ID selects a different request.
+ *
+ * It is NOT free headroom. It is the most one call can cost in output, and a
+ * call that hits the transport's 20 s timeout (the AnthropicTransport
+ * default, kept by owner decision) can still be billed for what it generated
+ * while being recorded as an unpriced `llm_failed` row (if the provider
+ * keeps generating after the client gives up). So it is kept near what can
+ * arrive inside that timeout rather than far above it: 2,048 doubles the
+ * pre-G-134 1,024 for thinking and halves the worst case 4,096 allowed. At
+ * typical output rates it is an upper bound the 20 s timeout may well meet
+ * first; that has not been measured (G-134 owner review). Change it only on
+ * acceptance evidence: `max_tokens` stops and `outputTokens` on `llm_call`
+ * rows, against `anthropic timeout` `llm_failed` rows.
+ */
+export const COMMAND_MAX_TOKENS = 2_048;
+
+/**
+ * The independent verifier's ceiling (OpenAI, `max_completion_tokens`): its
+ * value before G-134. The thinking room above is a Claude 5.5 matter, and
+ * the verifier's provider and request did not change.
+ */
+export const VERIFIER_MAX_TOKENS = 1_024;
+
+/**
+ * The classifier's ceiling. Its answer is one enum value, but the model
+ * named in AI_MODEL_CLASSIFIER may think first (any 5.5 model does), and a
+ * cut-off classification fails open to `unsure` every time, silently
+ * disabling the junk gate. Billed only for what is produced.
+ */
+export const CLASSIFIER_MAX_TOKENS = 1_024;
+
+/**
  * Asking a model what a merchant meant (MASTER-PLAN §5.3.3, ADR 0007).
  *
  * The order is: reserve → call → record → parse. Each step earns its place.
@@ -98,7 +139,8 @@ type EscalationReason = 'schema_failure' | 'no_tool_call' | 'unclear';
  *
  * ESCALATION (AI hardening item 3) is one bounded retry on the escalation
  * model when the primary's answer cannot safely proceed: it failed the
- * schema, never called the tool, or said Unclear. At most one per message,
+ * schema, never called the tool, or said Unclear. A provider refusal is
+ * terminal and never escalates. At most one per message,
  * structurally — the escalation's own answer is never re-escalated. It
  * consumes the same shared quota, its cost is recorded under its own role
  * with the reason on the row, and when it is also uncertain the merchant
@@ -141,7 +183,7 @@ export class Interpreter {
       toolName: TOOL_NAME,
       toolDescription: TOOL_DESCRIPTION,
       toolSchema: this.toolSchema,
-      maxTokens: 1_024,
+      maxTokens: COMMAND_MAX_TOKENS,
       purpose: 'interpret_message',
     });
     if (primary.kind === 'refused') return { outcome: 'refused', refusedBy: primary.refusedBy };
@@ -171,7 +213,7 @@ export class Interpreter {
       toolName: TOOL_NAME,
       toolDescription: TOOL_DESCRIPTION,
       toolSchema: this.toolSchema,
-      maxTokens: 1_024,
+      maxTokens: COMMAND_MAX_TOKENS,
       purpose: 'interpret_message',
       extraMeta: { escalationReason: reason, escalatedFrom: this.config.aiModelDefault },
     });
@@ -225,7 +267,7 @@ export class Interpreter {
       toolName: TOOL_NAME,
       toolDescription: TOOL_DESCRIPTION,
       toolSchema: this.toolSchema,
-      maxTokens: 1_024,
+      maxTokens: VERIFIER_MAX_TOKENS,
       purpose: 'verify_document_extraction',
       transport: this.verifier,
       provider: 'openai',
@@ -259,13 +301,14 @@ export class Interpreter {
    * refused, provider down, malformed answer — returns `unsure`, and the
    * caller proceeds to the interpreter as if no classifier existed. The
    * only behaviour this method can change is SKIPPING a more expensive
-   * call; it can never block a real document.
+   * call; it can never block a real document, save that a provider refusal
+   * ends the message (OWN-98): a page one model declined goes to no other.
    */
   async classifyDocument(
     businessId: string,
     safeText: string,
     tokens?: readonly string[],
-  ): Promise<DocumentClass> {
+  ): Promise<DocumentClass | 'refused'> {
     this.refuseRawPii(safeText, tokens);
 
     const call = await this.callModel(businessId, {
@@ -276,10 +319,14 @@ export class Interpreter {
       toolName: CLASSIFIER_TOOL_NAME,
       toolDescription: CLASSIFIER_TOOL_DESCRIPTION,
       toolSchema: CLASSIFIER_TOOL_SCHEMA,
-      maxTokens: 128,
+      maxTokens: CLASSIFIER_MAX_TOKENS,
       purpose: 'classify_document',
     });
     if (call.kind !== 'ok') return 'unsure';
+    /* A provider refusal is terminal (OWN-98): the page is not sent on to
+     * the interpreter or the escalation model to find one that answers.
+     * Not a DocumentClass: the model can never choose it. */
+    if (call.reply.stopReason === 'refusal') return 'refused';
     return parseDocumentClass(call.reply.toolInput);
   }
 
@@ -394,7 +441,8 @@ export class Interpreter {
      * primary's outcome, and an evaluation must still see that it failed. */
     const schemaValid =
       request.toolName === TOOL_NAME
-        ? reply.toolInput !== null &&
+        ? reply.stopReason !== 'refusal' &&
+          reply.toolInput !== null &&
           parseBusinessCommand((reply.toolInput as { command?: unknown }).command).ok
         : null;
     await this.recordUsage(businessId, request, reply, schemaValid);
@@ -403,9 +451,16 @@ export class Interpreter {
 
   /** The tool answer through the strict schema, or the reason it failed. */
   private parseCommandReply(reply: ModelReply): Interpretation {
+    /* A refusal yields nothing, whatever came back with it: the provider
+     * declined this request, and no part of that answer is read. */
+    if (reply.stopReason === 'refusal') {
+      return { outcome: 'unusable', reason: REFUSAL_REASON };
+    }
     if (reply.toolInput === null) {
-      // Forced tool use should make this impossible. "Should" is why it is
-      // handled rather than asserted.
+      /* Reachable on any model: the tool is asked for with tool_choice `auto`
+       * (Claude Sonnet 5.5 and Opus 5.5 refuse a forced choice), and the
+       * transport also yields no input for a refusal, a cut-off answer or a
+       * second call. Nothing the model wrote instead is ever read. */
       return { outcome: 'unusable', reason: 'the model answered without calling the tool' };
     }
     const raw = (reply.toolInput as { command?: unknown }).command;
@@ -467,6 +522,11 @@ export class Interpreter {
           policyVersion: PRIVACY_POLICY_VERSION,
           priced: cost.priced,
           stopReason: reply.stopReason,
+          /* A fixed vocabulary (`cyber`, `general_harms`, ...), never the
+           * provider's free-text explanation. */
+          ...(reply.refusalCategory === undefined
+            ? {}
+            : { refusalCategory: reply.refusalCategory }),
           ...(schemaValid === null ? {} : { schemaValid }),
           ...reply.usage,
           ...(request.extraMeta ?? {}),
@@ -524,18 +584,28 @@ export class Interpreter {
 /**
  * Whether the primary's answer can safely proceed, and if not, why not.
  *
- * `max_tokens` is the one schema failure that must NOT escalate: the output
- * was cut off mid-JSON by the transport's own limit, so the same message on
- * a pricier model hits the same ceiling — that is a configuration fault to
- * fix, not an ambiguity a better reader resolves, and escalating it would
- * pay Opus prices to reproduce it.
+ * `max_tokens` and `model_context_window_exceeded` must NOT escalate: the
+ * answer was cut off by a limit the escalation model shares, so the same
+ * message on a pricier model hits the same ceiling. That is a configuration
+ * fault to fix, not an ambiguity a better reader resolves, and escalating it
+ * would pay Opus prices to reproduce it.
+ *
+ * A refusal is terminal (G-134 owner review). It is the provider's safety
+ * decision about this request, and re-sending the same request to another
+ * model to find one that answers is not a retry the approved design ever
+ * named (ai-model-strategy.md lists schema failure, no tool call and
+ * Unclear). Before G-134 a refusal with no tool block escalated as
+ * `no_tool_call` by accident; it now ends here. The merchant gets the
+ * ordinary "could not turn that into a record" reply and their message unit
+ * back, and the usage row keeps the category for review.
  */
 function escalationReasonFor(
   first: Interpretation,
   stopReason: string | null,
 ): EscalationReason | null {
   if (first.outcome === 'unusable') {
-    if (stopReason === 'max_tokens') return null;
+    if (stopReason === 'max_tokens' || stopReason === 'model_context_window_exceeded') return null;
+    if (stopReason === 'refusal') return null;
     return first.reason.includes('without calling the tool') ? 'no_tool_call' : 'schema_failure';
   }
   if (first.outcome === 'command' && first.command.intent === 'Unclear') return 'unclear';

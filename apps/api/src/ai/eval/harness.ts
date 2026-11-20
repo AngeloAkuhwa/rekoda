@@ -211,6 +211,11 @@ export async function runEvalCase(
     try {
       const kind = await interpreter.classifyDocument(businessId, evalCase.input);
       if (kind === 'junk') return abstention(evalCase, 'rejected_document');
+      /* Production ends a refused page with the could-not-read reply and
+       * never interprets it (OWN-98): the model answered, unusably. */
+      if (kind === 'refused') {
+        return scoreCase(evalCase, { outcome: 'unusable', reason: 'the model declined to answer' });
+      }
     } catch (error) {
       return invalidCase(
         evalCase,

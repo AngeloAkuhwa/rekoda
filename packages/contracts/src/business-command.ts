@@ -269,9 +269,11 @@ export function parseBusinessCommand(
  * produces something plausible, validation rejects it, and the merchant gets a
  * clarifying question for a message that was perfectly clear.
  *
- * The ₦10bn ceiling travels with it. A transcript saying "record a ₦900bn
- * sale" is then refused twice — once by constrained decoding that cannot emit
- * a number above `maximum`, and again by the parser if it somehow does.
+ * The ₦10bn ceiling travels with it as guidance to the model. It is enforced
+ * by `parseBusinessCommand`, on every answer: the tool is not sent strict
+ * (G-134: the schema is over the strict-mode limits), so decoding is not
+ * constrained to `maximum`, and a "record a ₦900bn sale" answer is refused
+ * by the parser.
  */
 export function businessCommandToolSchema(): Record<string, unknown> {
   const schema = z.toJSONSchema(z.object({ command: StructuredBusinessCommand })) as Record<

@@ -546,12 +546,31 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
       const kind = await deps.interpreter.classifyDocument(businessId, tokenised!.text, [
         ...tokenised!.tokens.keys(),
       ]);
-      if (kind === 'junk') {
+      /* A refusal ends here too (OWN-98): the page one model declined is
+       * never handed to another. Before the meter, as junk is, so this
+       * attempt takes no message unit. But an earlier attempt may have
+       * passed this gate, taken the message unit (committed on its own) and
+       * rolled back (CodeRabbit and Codex on 1404dfb), so:
+       *   - refused: nothing was understood or delivered, so everything the
+       *     message holds goes back, the page unit included, as for any
+       *     unreadable input (OWN-98; CodeRabbit and Codex on 0412af4);
+       *   - junk: the page WAS understood (as not a business document) and
+       *     keeps its unit (J7, docs/REKODA_LAUNCH_READINESS.md), but being
+       *     told so never costs a message, so a held message unit goes back.
+       * Each unit is taken off this message once, so a retry or redelivery
+       * never refunds it twice. The read's bill and daily slot stay. */
+      if (kind === 'junk' || kind === 'refused') {
+        const period = usagePeriod(event.receivedAt);
+        if (kind === 'refused') {
+          await releaseHeldUnits(deps, businessId, eventId, period);
+        } else {
+          await giveBackUnit(deps, businessId, eventId, period, 'AI_ACTIONS');
+        }
         await retireSenderContinuation(tx, businessId, inbound.from, event.receivedAt);
         await deps.replySender.send(tx, {
           businessId,
           to: inbound.from,
-          reply: replies.notABusinessDocument(),
+          reply: kind === 'junk' ? replies.notABusinessDocument() : replies.couldNotRead(),
         });
         await events.markProcessed(tx, eventId, null, businessId);
         return;
@@ -944,7 +963,7 @@ async function recordVisionRead(
   usage: ExtractionUsage,
   messageId: string,
   log: Logger,
-  extra?: { reason?: string },
+  extra?: { reason?: string; refusalCategory?: string | null },
 ): Promise<void> {
   const cost = costOfCall(usage.model, usage.tokens, deps.config.planningFxNairaPerUsd);
   if (!cost.priced) {
@@ -966,6 +985,7 @@ async function recordVisionRead(
         priced: cost.priced,
         messageId,
         ...(extra?.reason ? { reason: extra.reason } : {}),
+        ...(extra?.refusalCategory === undefined ? {} : { refusalCategory: extra.refusalCategory }),
         ...usage.tokens,
       },
     }),
@@ -1164,14 +1184,26 @@ async function readReceiptPhoto(
     /* Our failure, not the merchant's, so THEIR unit goes back. The image
      * is dropped here and goes nowhere else: no vision model, no retry
      * against a hosted engine, no exception "just this once". */
-    log.warn('the OCR engine could not be reached');
     const failure = error instanceof TextExtractionUnavailable ? error : null;
+    /* Named for what happened (G-134 review N1): a refusal and an illegible
+     * page both billed us, and only the provider being unreachable did not. */
+    log.warn(
+      failure?.refusal
+        ? 'the vision engine declined the image'
+        : failure?.usage
+          ? 'the page had no legible text'
+          : 'the OCR engine could not be reached',
+    );
     if (failure?.usage) {
       /* The engine answered, billed us, and read nothing usable. Real
        * money: a priced row, and the daily slot stays counted — the
-       * ceiling bounds spend, not success. */
+       * ceiling bounds spend, not success. A refusal (OWN-98) is recorded
+       * as one, with its allow-listed category. */
       await recordVisionRead(deps, businessId, failure.usage, recorded.id, log, {
-        reason: 'the page had no legible text',
+        reason: failure.refusal
+          ? 'the vision engine declined the image'
+          : 'the page had no legible text',
+        ...(failure.refusal ? { refusalCategory: failure.refusal.category } : {}),
       });
     } else if (failure?.maybeBilled) {
       /* A hosted read that TIMED OUT may still be on the invoice. Zero

@@ -241,16 +241,6 @@ describe('the Anthropic transport', () => {
     expect(bodies).toHaveLength(1);
   });
 
-  it('FORCES the tool, so the model cannot answer with prose', async () => {
-    respond = json(ANSWER);
-    await transport().send(REQUEST);
-
-    expect(bodies[0]?.tool_choice).toEqual({ type: 'tool', name: 'record_business_command' });
-    // Parsing free text is the thing the whole schema exists to avoid.
-    expect(bodies[0]?.messages).toEqual([{ role: 'user', content: REQUEST.userText }]);
-    expect(bodies[0]?.max_tokens).toBe(700);
-  });
-
   it('reads the tool input and every usage counter, cache included', async () => {
     respond = json(ANSWER);
     const reply = await transport().send(REQUEST);

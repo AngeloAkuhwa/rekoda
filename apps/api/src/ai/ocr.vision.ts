@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { TextExtractionUnavailable, type ExtractedText, type TextExtraction } from './ocr.js';
 import { buildAnthropicClient } from './anthropic.client.js';
+import { refusalCategoryOf } from './anthropic.transport.js';
 
 /**
  * Hosted extraction: the vision model as the text reader (ADR 0027).
@@ -94,6 +95,17 @@ export class VisionTextExtraction implements TextExtraction {
           : {}),
       },
     };
+
+    /* A provider refusal is terminal (OWN-98, G-134 review): nothing that
+     * came back with it is the page, so none of it is handed on to the
+     * classifier or the interpreter. It ends as an unreadable page does,
+     * with its bill. The reason names neither the text nor the explanation. */
+    if (response.stop_reason === 'refusal') {
+      throw new TextExtractionUnavailable('the vision engine declined the image', {
+        usage,
+        refusal: { category: refusalCategoryOf(response.stop_details?.category) },
+      });
+    }
 
     const text = response.content
       .filter((block): block is Anthropic.TextBlock => block.type === 'text')

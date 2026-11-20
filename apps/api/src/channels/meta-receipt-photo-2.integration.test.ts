@@ -288,6 +288,123 @@ describe('a receipt photo', () => {
   });
 
   /**
+   * A classifier refusal is terminal (OWN-98): no other model reads the page,
+   * the merchant gets could-not-read, and the page unit goes back as for any
+   * unreadable input (CodeRabbit, Codex on 0412af4), once across a real retry
+   * and a redelivery; the bill and day slot stay. From 5, a double refund shows.
+   */
+  it('ends at a classifier refusal: no other model, the page unit back once', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    const read = { provider: 'anthropic' as const, model: 'claude-sonnet-5' };
+    const tokens = { inputTokens: 1_500, outputTokens: 5 };
+    stubOcr.answerWith({
+      text: 'TOTAL 12,000 diesel',
+      confidence: 0.9,
+      usage: { ...read, tokens },
+    });
+    const usage = { inputTokens: 400, outputTokens: 3 };
+    const refusal = { toolInput: null, usage, stopReason: 'refusal' as const };
+    stubTransport.script(refusal, refusal, refusal);
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`
+        INSERT INTO usage_counters (business_id, period, unit, used)
+        VALUES (${business.id}::uuid, ${usageRepo.TRIAL_PERIOD}, 'DOCUMENTS_UNDERSTOOD', 5)`);
+      /* The reply's usage row fails once, so the job really retries. */
+      await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS refusal_retry_once`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION refusal_retry_fail_once() RETURNS trigger
+          SECURITY DEFINER AS $$
+        BEGIN
+          IF NEW.usage_type = 'SERVICE_MESSAGE' AND nextval('refusal_retry_once') = 1 THEN
+            RAISE EXCEPTION 'refusal retry: first reply fails';
+          END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER refusal_retry_fail_once BEFORE INSERT ON usage_events
+          FOR EACH ROW EXECUTE FUNCTION refusal_retry_fail_once()`);
+      await post(photoPayload('2348031234567', 'wamid.P22'));
+      await drain();
+      await ownerDb.execute(sql`UPDATE jobs SET run_at = now() - interval '1 minute'
+             WHERE business_id = ${business.id}::uuid AND state <> 'done'`);
+      await drain();
+      await post(photoPayload('2348031234567', 'wamid.P22'));
+      await drain();
+      const [job] = await ownerDb.execute<{ attempts: number; state: string }>(sql`
+        SELECT attempts, state FROM jobs
+         WHERE business_id = ${business.id}::uuid AND kind = 'inbound.message'`);
+      expect([Number(job?.attempts), job?.state]).toEqual([2, 'done']);
+      const [kept] = await ownerDb.execute<{ reads: number; slots: number }>(sql`
+        SELECT (SELECT count(*)::int FROM usage_events WHERE business_id = ${business.id}::uuid
+                  AND usage_type = 'ocr_vision' AND provider_cost_micros > 0) AS reads,
+               (SELECT coalesce(sum(extractions), 0)::int FROM doc_extraction_counters
+                 WHERE business_id = ${business.id}::uuid) AS slots`);
+      expect([kept?.reads, kept?.slots]).toEqual([stubOcr.calls.length, stubOcr.calls.length]);
+      const asked = new Set(stubTransport.requests.map((r) => r.toolName));
+      expect(asked).toEqual(new Set(['classify_document'])); // never the interpreter
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS refusal_retry_fail_once ON usage_events`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS refusal_retry_fail_once()`);
+      await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS refusal_retry_once`);
+      await close();
+      // The stub's last reply outlives reset(): leave it answering, as before this test.
+      stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
+    }
+
+    expect(stubSender.lastText).toBe(replies.couldNotRead().text);
+    expect(await readsUsed(business.id)).toBe(5);
+    const rows = await withBusiness(db, business.id, (tx) =>
+      usageRepo.usageFor(tx, business.id, usagePeriod(new Date())),
+    );
+    expect(rows.find((r) => r.unit === 'AI_ACTIONS')?.used ?? 0).toBe(0); // no message unit
+  });
+
+  /**
+   * A vision refusal (OWN-98) ends as an unreadable photo does: its bill is
+   * recorded, the page unit goes back and no other model reads the page.
+   * Its usage row says it was a refusal, with the allow-listed category, so
+   * acceptance can tell it from an illegible page (G-134 review N1). The
+   * reply is the photo reply (N2, recorded): it claims no successful read.
+   */
+  it('records a vision refusal as a refusal, never as an illegible page', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.failWith(
+      new TextExtractionUnavailable('the vision engine declined the image', {
+        usage: {
+          provider: 'anthropic',
+          model: 'claude-sonnet-5',
+          tokens: { inputTokens: 1_500, outputTokens: 5 },
+        },
+        refusal: { category: 'general_harms' },
+      }),
+    );
+
+    await post(photoPayload('2348031234567', 'wamid.P23'));
+    await drainWithDailyLimit(1);
+
+    expect(stubTransport.requests).toHaveLength(0);
+    expect(stubSender.lastText).toBe(replies.photoUnavailable().text);
+    const rows = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ provider_cost_micros: number; meta: Record<string, unknown> }>(sql`
+        SELECT provider_cost_micros, meta FROM usage_events
+        WHERE business_id = ${business.id}::uuid AND usage_type = 'ocr_vision'
+      `),
+    );
+    expect([...rows]).toHaveLength(1);
+    const row = [...rows][0]!;
+    expect(Number(row.provider_cost_micros)).toBe(3_050);
+    expect(row.meta).toMatchObject({
+      role: 'vision',
+      priced: true,
+      reason: 'the vision engine declined the image',
+      refusalCategory: 'general_harms',
+    });
+  });
+
+  /**
    * A2, the probe the fix queue gated R5 on: does a retried media job buy a
    * second AI call and a second billed unit?
    *
