@@ -1,868 +1,1376 @@
-# Invoice discovery, search, retrieval and summaries — technical assessment
+# Books assistant: invoice discovery, analytics, comparisons and report PDFs — technical assessment
 
 > **Status: PROPOSAL FOR OWNER REVIEW. Not approved. No code written.**
-> Baseline: `main` at `dbe99b741d4ce68b69c5b798fc22db8415cb8999` (PR #436, G-134).
-> Date: 20 November 2026.
-> Every repository claim below is cited to a path at that SHA. Inferences are marked _(inference)_.
-> Where I could not measure something, I say so.
-> Not yet listed in `docs/REKODA_REFERENCE_MANIFEST.md`. If this proposal is kept, it needs a manifest row.
+>
+> **Revision 2 (20 Nov 2026).** This revision combines two owner specifications into one assessment:
+>
+> 1. "Invoice Discovery, Advanced Search, Retrieval & Intelligent Document Summaries" (assessed in revision 1, commit `9d7227b`).
+> 2. The follow-up directive "Unified Document Discovery, Intelligent Business Analytics, Dynamic Comparative Reporting & Professional PDF Reports".
+>
+> Every requirement from (1) is kept. The original 15 owner decisions keep their numbers (OD-1 to OD-15) and are reassessed in §23. New decisions continue from OD-16.
+>
+> **Baseline:** `main` at `dbe99b741d4ce68b69c5b798fc22db8415cb8999`. The branch head adds only this document.
+>
+> Every repository claim is cited as `path:line` at that SHA. Inferences are marked _(inference)_. Where I could not measure something, I say so.
+>
+> **Not yet listed in `docs/REKODA_REFERENCE_MANIFEST.md`.** It needs a row there if it is kept.
+
+## Contents
+
+1. Acknowledgment
+2. Verified implementation inventory
+3. Combined feature coverage matrix
+4. Recommended architecture
+5. Analytical query contract
+6. Time-comparison semantics
+7. Financial metric definitions
+8. Advanced invoice search design
+9. Conversational context design
+10. Insights engine
+11. PDF rendering architecture
+12. Report design specification
+13. Generation and delivery lifecycle
+14. Voice integration
+15. Performance and cost assessment
+16. Security and financial integrity review
+17. Existing files to modify
+18. Justified new files
+19. Database migration assessment
+20. Dependency assessment
+21. Development stages and PR boundaries
+22. Testing and staging acceptance matrix
+23. Owner decision register (consolidated)
+24. Final architecture recommendation
 
 ---
 
-## 1. Executive summary
+## 1. Acknowledgment
 
-**What gets built.** One read-only capability: the merchant asks about their invoices in plain language, typed or spoken. Rekoda answers from the database, deterministically.
+The follow-up directive **continues and expands** the approved document-discovery specification. It does not replace it. Everything below treats the following as one product capability over one set of authoritative data sources:
 
-Four operations sit over one search engine:
+- invoice retrieval, search, filtering, summaries, PDF resend and voice;
+- business analytics, period comparisons, insights and report PDFs.
 
-| Operation | What it does |
-| --- | --- |
-| **find** | A short numbered list of matching invoices. |
-| **retrieve** | Sends the already-stored PDF to the requesting member's own WhatsApp. |
-| **summarise** | Facts for one invoice. The issued snapshot and the current account position are kept apart. |
-| **aggregate** | Counts and totals across a filtered set, computed in SQL. |
+That capability is called the **books assistant** in this document. The scope is not reduced to "invoice lookup plus a sales chart".
 
-Follow-ups resolve against a short-lived, member-scoped result set: "the second one", "send the PDF", "only the unpaid ones", "sort by amount".
+The repository already carries an owner ruling that covers most of the analytics scope:
 
-**Who does what:**
-- **The deterministic router** handles reference-only requests with no model call. Example: "send INV-2026-000001".
-- **The existing Anthropic interpreter** handles everything else. It returns one new validated intent, `InvoiceQuery`, which holds **criteria only**: words, references, a customer token or mention, raw period and amount text.
-- **`@rekoda/core`** parses dates and amounts, builds the filter and ranks the results.
-- **`packages/db`** runs bounded keyset queries under `withBusiness()`.
-- **Templates** render every reply.
+- **OWN-44** (`docs/REKODA_OWNER_DECISIONS.md:150`, 23 Oct 2026) makes "financial insights and period comparisons" MVP scope. It covers daily, weekly, monthly and custom ranges; absolute and percentage change "only where mathematically valid"; rankings; trends; PDF and Excel output; and web charts.
+- It also requires that "every figure comes from verified tenant-scoped records computed by `@rekoda/core`; the model explains and summarises but invents no value".
+- It ends: "audit the existing reports API, web reports page and chat query first and build only the gap".
+- Backlog row **N2** (`docs/REKODA_LAUNCH_BACKLOG.md:92`) records:
+  - slice 1 merged (#372): the comparison engine and `GET /v1/reports/compare`;
+  - slice 2 (product rankings) **blocked on an open owner decision**;
+  - not started: trends, PDF and Excel, web charts, and natural-language custom ranges in chat.
 
-The model never sees invoice data and never produces a figure.
-
-**Merchant experience** (target):
-
-> **Merchant:** find Ada's unpaid invoices from last month
->
-> **Rekoda:** I found 2 unpaid invoices for Ada Obi from October 2026:
-> 1. INV-2026-000011 · ₦120,000 · issued 12 Oct · ₦70,000 still owed
-> 2. INV-2026-000007 · ₦30,000 · issued 3 Oct · ₦30,000 still owed
->
-> Reply with a number to see one, or *send 1* for its PDF.
->
-> **Merchant:** send 1
->
-> **Rekoda:** Sending INV-2026-000011 now. _(The PDF follows.)_
-
-**What blocks it today.** This is not only missing glue. Several foundations are absent or conflict with the requirements:
-- Customer names are stored only as ciphertext with an exact-match HMAC. Partial or fuzzy name search is impossible without a privacy design decision (§7, OD-1).
-- A read question about an unknown name or phone **creates a customer record** today (§7.4, OD-3).
-- Stored PDFs are linked to invoices only by free text (§8).
-- A sale paid in full when it was recorded has **no invoice PDF at all**, only a receipt (§8.2).
-- Chat understands only four named periods; "yesterday" and explicit dates are refused (§6.4).
-- Deliveries always go to the owner's phone, whoever asked (§9).
-
-These are resolvable. Several need owner rulings first, listed in §17.
+This proposal is the plan for the rest of N2, together with the invoice-discovery capability.
 
 ---
 
-## 2. Current implementation inventory
+## 2. Verified implementation inventory
 
-### 2.1 Ingestion, routing and interpretation
+Findings come from seven read-only audits plus my own spot checks. They are grouped by area.
+
+### 2.1 Chat ingestion, routing and interpretation
+
+| Concern | Where | Verified fact |
+| --- | --- | --- |
+| Inbound job | `apps/api/src/jobs/inbound-message.handler.ts` | Order: `continueConversation` (:612-622) → `deterministicReply` (:1593) → `interpretedReply` (:5013). A photo skips the router; everything else is routed (:452). |
+| Deterministic router | `packages/core/src/router.ts` | Intents at :27-62 include records, debtors, stock, `remind{invoiceNumber}`, payment_details, dashboard, resend and upgrade. Exact phrases are in the table at :176-385. Anything over 60 characters goes to the model (:1109). |
+| Invoice numbers in the router | `router.ts:173-174, :1187-1203` | Only `remind INV YYYY NNNNNN` is parsed. Everything else that holds a number goes to the model, deliberately (`router.test.ts:243, :351-352`). |
+| Period follow-ups | `router.ts:1225-1286` | `periodAnswer` takes whole-message periods plus lead words ("what about", "and for", Pidgin forms). "Last week" and "past month" are deliberately excluded. |
+| Command contract | `packages/contracts/src/business-command.ts:105-244` | A `z.discriminatedUnion('intent')` over 8 intents. `Query` (:212-227) has `topic`, `customer`, `period` (today, week, month, custom), `periodText` and `format` (chat, pdf, excel). **`format` is never read** (grep: construction sites only). |
+| Tool schema and strict mode | `business-command.ts:278-301`; `apps/api/src/ai/strict-schema.ts:50-55`; `anthropic.transport.ts:73, :144-157` | `z.toJSONSchema` with `oneOf` changed to `anyOf`. Limits are 16 union parameters and 24 optional ones. The business command is refused strict mode; the G-134 row records 26 union parameters. **I did not re-measure it** (no `node_modules`). `tool_choice` is auto with `disable_parallel_tool_use`. |
+| Interpreter | `apps/api/src/ai/interpreter.service.ts:178-229, :602-613`; `prompt.ts:23, :33, :68` | Primary call plus one escalation. A refusal is terminal (OWN-98). The prompt says "you do not chat, advise, or write prose" and "Rekoda recomputes every total". |
+| Query answers | `inbound-message.handler.ts:3365-3489` | Sales and expenses go through `periodAnswer` → `resolvePeriod` → `reportsRepo.summaryFor`. Debtors, `customer_balance` (`openInvoicesForCustomer`), supplier balances and unreconciled are also handled. `report_request` → `reportRequestAnswer()` (`replies.ts:1762`) points to the dashboard; "WhatsApp delivery of it is not wired" (:1754-1761). |
+| Replies | `packages/core/src/replies.ts` | All templates. "Every figure here came from SQL" (:1615-1620). **No reply compares periods.** `recordsSummary` (:1814) shows this month at a glance. `help()` (:41-56) lists no reports or questions. |
+| View-only classifier | `packages/core/src/request-kind.ts:532`; handler :5091-5117 | Accountants: READ is allowed, WRITE and UNKNOWN are refused before any model call (OWN-25). Report and statement words count as reads (:300-340, :1764-1766, :2007-2025). G-100 is open (`REKODA_LAUNCH_READINESS.md:277`). |
+
+### 2.2 Reporting and ledger
+
+| Function or area | Where | Verified fact |
+| --- | --- | --- |
+| `summaryFor(from,to)` | `packages/db/src/repos/reports.ts:862-1014` | **The ledger-based window summary** (G-118, merged as #384, `c868cce`). Returns `salesK` (revenue plus VAT, voids netted, credit notes excluded), `handPostedK`, `invoices` (count), `creditedK`, `moneyInK` (cash from customers, net of reversals and chargebacks), `refundedK`, `moneyOutK` (recorded spend, stock at full value), `expenses` (count), `cashInK`, `cashOutK`. Window: `e.created_at BETWEEN from AND to`. **No COGS and no profit.** |
+| `overviewFor` | `reports.ts:79-120` | Month-to-date. `salesK = SUM(credit_k)` on account 4000 only, **so voids and credit notes are not subtracted** (verified :94). This differs from `summaryFor`, so `records` in chat can disagree with the sales answer after a void _(inference from the SQL; no test pins the difference)_. |
+| `cashflowFor(months)` | `reports.ts:145-181` | Monthly cash-account debits and credits with no posting-purpose filter. **Opening-balance cash and transfers between the merchant's own cash accounts count as both in and out** (verified :152-163). |
+| `debtorsFor`, `ageingFor` | `reports.ts:207-247, :275-327` | Per invoice, open statuses. Ageing uses Lagos dates with buckets current, 1-30, 31-60, 61-90 and 90+. |
+| `accountSumsFor(period 'YYYY-MM')` | `reports.ts:424-459` | Per-account sums for one month plus cumulative. Feeds the four statements. |
+| `expenseScheduleFor`, `revenueScheduleFor` | `reports.ts:515-579, :621-688` | By expense category; by `invoices.sale_source` (channel). Monthly only. **`expenseScheduleFor` labels a NULL category as "fees"** (:564), which states a classification the entry does not have. |
+| Activity and registers | `reports.ts:343, :717, :786, :1049` | `activityFor`, `invoicesFor`, `receiptsFor`, `auditFor`. |
+| Missing | (grep for `top.?(customer\|product)`, `best.?sell`, `byCustomer`, `GROUP BY`) | **No daily or weekly series, no top-customer and no top-product function.** |
+| Period engine | `packages/core/src/periods.ts:22, :44-161`; `period-compare.ts:60-140` | `PeriodName` is today, week (the last 7 days), month (month to date) or last_month. `resolveCustomRange` caps at 366 days and clamps to today. `changeOf`: `percent = previous > 0 ? round(abs*1000/previous)/10 : null` (one decimal place). `comparePeriods` gives sales, credited, collected, refunded, spent, cashMovement and `previousIsEmpty`. `previousWindow` compares a whole month with the previous whole month; **any other window, month-to-date included, with the equal-length span immediately before**. **No quarter, year, yesterday or like-for-like elapsed comparison.** |
+| Compare API | `apps/api/src/reports/reports.controller.ts:2508-2557` | `GET /v1/reports/compare?from&to`. **No caller in `apps/web`** and none in chat. |
+| Statements | `packages/core/src/statements.ts:141-280`; `reports.controller.ts:413-557, :2628-2635` | P&L (`costOfSalesK` from the COGS role, `grossProfitK`, `netProfit`), balance sheet, direct cash flow and trial balance. Monthly only. |
+| COGS | `packages/core/src/ledger.ts:654-662`; `sale-commands.ts:74-79, :219-235`; `order-commands.ts:149-169`; `costing.ts:35-65`; `stock.ts:181-216, :457-520` | COGS is posted at sale time at the weighted-average `products.unit_cost_k`. **A line with no matched product or no cost posts no COGS, and no per-sale "uncosted" flag is stored**, so gross profit is overstated by uncosted revenue. The web reports page warns about this (`apps/web/src/app/app/reports/page.tsx:544-550`). |
+| Expenses | `packages/db/src/schema/finance.ts:275-305`; `packages/core/src/expenses.ts:38-154` | `category` is nullable text. Ten fixed categories are assigned by rules from the model's word or the description, falling back to `other`. Stock purchases are `category='stock'` and debit Inventory. |
+| Products | `finance.ts:120-134`; `commerce.ts:32-87, :211-228` | `invoice_items` has no `product_id`. Sale stock movements are keyed by `product_id`, with `source_id` = the **invoice number**, only when the line's folded name matched a product (`stock.ts:88-123`). **No product categories exist.** `sale_source` is on invoices. |
+| Customers | `party-statements.ts:78` | `customerStatementFor` covers one customer. No ranking exists. |
+| Ledger schema | `finance.ts:347-424`; `issue.ts:262-374` | Indexes `ledger_entries (business_id, created_at)` and `(business_id, account_id, created_at)` exist. **Backdating sets `created_at`**; there is no separate effective date. |
+| Period close | `migrations/0034_period_close.sql:54-80`; `0067`; `repos/close.ts:43-207` | Triggers reject postings at or before the closed month. Closed history cannot change. |
+| Opening balances | `ledger.ts:288-335`; `opening.ts:54-63` | Dated at the merchant's `asAt`, credited to owner's equity. Opening receivables create real invoices. |
+| Web | `apps/web/src/app/app/page.tsx:6-158`; `CashflowChart.tsx:10-21`; `apps/web/package.json` | The dashboard has a **hand-written SVG cash-flow chart. No chart library is installed.** |
+
+### 2.3 Invoices, payments, documents and storage
+
+These rows are carried over from revision 1 and verified again.
 
 | Concern | Where | Fact |
 | --- | --- | --- |
-| Inbound job | `apps/api/src/jobs/inbound-message.handler.ts` | Runs `continueConversation` (:612-622), then `deterministicReply` (:1593), then `interpretedReply` (:5013). |
-| Deterministic router | `packages/core/src/router.ts` | Intents :27-62: greeting, help, number, affirm, deny, cancel, stop, start, records, debtors, stock, `remind{invoiceNumber}`, payment_details, dashboard, resend, upgrade, business_email, delete_my_data. Exact-phrase table :176-385. Messages over `MAX_COMMAND_CHARS = 60` (:1109) go to the model. |
-| Invoice numbers in the router | `router.ts:173-174, :1187-1203` | Only `remind INV YYYY NNNNNN` is parsed. Every other message holding an invoice number goes to the model, deliberately: tests at `router.test.ts:243, :351-352`. |
-| Business-command contract | `packages/contracts/src/business-command.ts` | `z.discriminatedUnion('intent', …)` (:235-244). Eight intents: RecordSale, RecordPayment, RecordExpense, RecordPurchase, AdjustInventory, RecordOrder, Query, Unclear. |
-| `Query` | `business-command.ts:212-227` | `topic` is one of debtors, customer_balance, supplier_balances, sales_summary, expenses_summary, unreconciled, report_request. Also `customer`, `period` (today, week, month, custom), `periodText`, `format`. **No invoice topic and no document reference.** |
-| `CustomerRef` | `business-command.ts:68-72` | `{token}`, `{mention}` or `{none}`. |
-| Tool schema | `business-command.ts:278-301` | `z.toJSONSchema`, with `oneOf` changed to `anyOf`. |
-| Strict-mode gate | `apps/api/src/ai/strict-schema.ts:50-55` | Limits: 16 union-typed and 24 optional parameters. The business command is refused strict (test `strict-schema.test.ts:24-31` asserts more than 16 and pins no number). `docs/REKODA_LAUNCH_READINESS.md` G-134 row records 26. **I did not re-measure it** (no `node_modules` in this container). |
-| Transport | `apps/api/src/ai/anthropic.transport.ts:73, :144-157` | `tool_choice {type:'auto', disable_parallel_tool_use:true}`; `strict` only when eligible. |
-| Interpreter | `apps/api/src/ai/interpreter.service.ts:178-229, :602-613` | At most a primary call plus one escalation. Escalation happens on a schema failure, a missing tool or `Unclear`. A refusal is terminal (OWN-98). |
-| Prompt | `apps/api/src/ai/prompt.ts:57-58, :68` | No invoice-lookup guidance. Line 68 tells the model it cannot issue documents or send messages. |
-| Query answers | `inbound-message.handler.ts:3365-3474` | Period queries go through `periodAnswer` and `reportsRepo.summaryFor`. `customer_balance` goes through `issueRepo.openInvoicesForCustomer`. `command.format` is never read. |
-| Fallback replies | `packages/core/src/replies.ts` | `notYet(what)` :1905, `clarification(q)` :199, `help()` :41-56. No template says "I cannot open an invoice". The staging reply was therefore most likely an `Unclear` clarification written by the model and passed through verbatim _(inference; the staging transcript was not inspected)_. |
+| `invoices` | `finance.ts:43-118` | Money columns in kobo: `subtotal_k`, `discount_k`, `delivery_fee_k`, `vat_k`, `total_k`, `paid_k`, `balance_due_k`, `credited_k`. Also `invoice_number`, `customer_id` (nullable), `status` (CHECK in `0131:34-35`: issued, partially_paid, paid, voided, credited), `due_date`, `snapshot_json`, `doc_hash`. The issue time is `created_at`. |
+| Numbering | `numbering.ts:47-57`; `issue.ts:201-225` | `doc_counters` per business, document type and Lagos year. Format `INV-YYYY-NNNNNN`. |
+| Snapshot | `issue.ts:453-475` | Items, totals, `paidK` at issue, `customerToken`, due date. **Chat invoices have `customer_id = NULL`**; the customer exists only as the snapshot token (`issue.ts:1154-1187`). |
+| Balance projection | `repos/projections.ts:51-101`; `settle.ts:291-295`; `payment-adjustment-commands.ts:53-120` | `paid_k`, `balance_due_k`, `credited_k` and `status` are kept current through allocations, reversals, refunds, chargebacks and credit applications. |
+| Invoice reads | `issue.ts:1036-1292`; `reports.ts:717`; `merchant-api.ts:147-215` | `invoiceByNumber` (`upper()` match), `openInvoicesForCustomer` (open only, limit 20), unfiltered registers, and a public-API keyset on `(created_at, id)`. **No search: no `ILIKE`, `pg_trgm` or `tsvector` anywhere.** |
+| Indexes | `0000_init.sql:416-424`; `0003_hot_path_indexes.sql:21,23` | `(business_id, invoice_number)` UNIQUE, `(business_id, status)`, `(business_id, customer_id)`, `invoice_items(invoice_id)`, `alloc(invoice_id)`. No `created_at`, `due_date` or snapshot-token index. |
+| `documents` | `schema/ops.ts:184-200` | `kind` (free text, **no CHECK**), `storage_key`, `ref_number`, `bytes`, `created_at`. **No `invoice_id`.** Written kinds: `invoice_pdf`, `receipt_pdf`, `quote_pdf`. The comment lists `snapshot_pdf`, `excel_export` and `records_csv`, which nothing writes. |
+| Render | `sale-commands.ts:54-69`; `render-document.handler.ts:41-215` | One handler branches on the payload (`receiptId`, `quoteId`, `invoiceId`). **A sale that is paid gets a receipt and no invoice PDF** ("one paper, not both"). Each branch puts to R2, then records the document, then enqueues `document.deliver` with `deliver:<docId>`. The render reads the **live** business name; the invoice PDF prints the customer **token** under "Billed to" (`:68`; `invoice-layout.ts:86-87`). |
+| Storage | `documents/storage.ts:16-49`; `r2.storage.ts:19-81` | `put`, `get` (returns `null` on `NoSuchKey`) and `delete`. Private bucket, no presigned URLs. |
+| Delivery | `deliver-document.handler.ts:44-258`; `meta.sender.ts:317-407` | **Always to `ownerPhoneFor`** (:65). STOP is overridden when `requestedByMerchant`. 24-hour window, then the `META_DOCUMENT_TEMPLATE` notice. The PDF is uploaded as raw bytes. **A missing object throws and is retried up to 5 times** (:80-84). Captions and labels are known only for receipt, invoice and quote (:224-258). No outbound size limit. |
+| Resend | handler :2202-2221; `issue.ts:1015-1033` | Sends the **newest document of any kind**. Requires `mayTransact`. Job key `redeliver:<docId>:<eventId>`. |
+| Statement PDF and Excel | `reports.controller.ts:474-557` | Rendered **synchronously** and streamed. Never stored. Metered with one `REPORT_EXPORTS` unit through `consumeUnit` (no refund, :274-307). |
+| Jobs | `queue.service.ts:6-68`; `0004_jobs.sql:15, :38-40` | `jobs.kind` has no CHECK. The singleton key is unique while a job is pending or running. 5 attempts, then dead. |
+| Retention | `retention.ts:20`; `repos/retention.ts:115-140`; `0122`; `0129:27-28` | Only whole-business deletion feeds `pending_object_deletions`. Its `reason` CHECK allows a fixed set. **No per-document deletion path exists.** |
 
-### 2.2 Invoices, payments and balances
-
-| Concern | Where | Fact |
-| --- | --- | --- |
-| `invoices` | `packages/db/src/schema/finance.ts:43-118` | Money fields (bigint kobo): `subtotal_k`, `discount_k`, `delivery_fee_k`, `vat_k`, `total_k`, `paid_k`, `balance_due_k`, `credited_k`. Other fields: `invoice_number`, `customer_id` (nullable), `status`, `due_date`, `snapshot_json`, `doc_hash`, `order_id`, `sale_source`, `ledger_transaction_id`. Issue time is `created_at`; there is no `issued_at` column. |
-| Status | `migrations/0131_status_check_constraints.sql:34-35` | `issued`, `partially_paid`, `paid`, `voided`, `credited`. |
-| Numbering | `schema/ops.ts:244-253`; `repos/issue.ts:201-225`; `packages/core/src/numbering.ts:47-57` | `doc_counters` per business, type and Lagos year. Format `INV-YYYY-NNNNNN`. |
-| Line items | `finance.ts:120-134` | `invoice_items`: `name`, `quantity` (integer), `unit_price_k`, `line_total_k`. **No description column and no product link.** |
-| Sales | `repos/issue.ts:444-698` (`issueSale`) | **No sales table.** A sale is an invoice, with an optional payment, allocation and receipt. |
-| Issued snapshot | `issue.ts:453-475`; `packages/core/src/documents.ts:82` | `snapshot_json`: document number, issue time, `customerToken`, items, totals, `paidK`, optional due date, currency. Hashed into `doc_hash`. |
-| Customer link | `issue.ts:1154-1157, :1177-1187` | **Chat-issued invoices have `customer_id = NULL`.** The customer exists only as `snapshot_json->>'customerToken'`. Readers match `c.token = $t OR snapshot_json->>'customerToken' = $t`. |
-| Current balance | `finance.ts`; `repos/settle.ts:291-295, :1175-1179`; `issue.ts:807, :1597-1603`; `repos/projections.ts:51-101` | Denormalised projection: `paid_k`, `balance_due_k`, `credited_k`, `status`. `rebuildInvoiceProjection` rebuilds it from allocations and credit applications. |
-| Refund, reversal, chargeback | `apps/api/src/commands/payment-adjustment-commands.ts:53-120` | `unwindAllocations`, then a projection rebuild. |
-| Credit notes | `issue.ts:1340-1418, :1564` | Raise `credited_k` and may set `credited`. The balance falls only when `applyCreditToInvoice` runs. |
-| Existing invoice reads | `issue.ts` | `latestOpenInvoice` :1036, `openInvoiceForPayment` :1159, `invoiceByNumber` :1233 (`upper()` comparison), `openInvoicesForCustomer` :1275 (open only, oldest first, limit 20). |
-| Report reads | `repos/reports.ts` | `invoicesFor(limit, offset)` :717, unfiltered; `debtorsFor` :207; `ageingFor` :275; `summaryFor` :862-1014, from the ledger. |
-| Public API | `apps/api/src/api/public/merchant-v1.controller.ts:114-138`; `repos/merchant-api.ts:147-215` | Keyset on `(created_at, id)` with an optional status. Exact invoice number. Contract statuses omit `credited` (`packages/contracts/src/public/v1/merchant.ts:47`), a probable 500 on a credited invoice _(inference; queued separately as a suggested task)_. |
-| Dashboard | `apps/web/src/app/app/invoices/page.tsx:29-33`; `apps/api/src/reports/reports.controller.ts:868-899` | Paginated list with no search or filter. |
-| Indexes | `0000_init.sql:416-424`; `0003_hot_path_indexes.sql:21,23`; `0012`; `0031` | `(business_id, invoice_number)` UNIQUE, `(business_id, status)`, `(business_id, customer_id)`, `invoice_items(invoice_id)`, `payment_allocations(invoice_id)`. **Missing:** an index on `created_at`, on `due_date` and on the snapshot token. **No `pg_trgm`, `tsvector` or `ILIKE` anywhere.** |
-| RLS | `migrations/0001_rls.sql:31-55`; `0026` | FORCE RLS with `tenant_isolation` on invoices, items, payments, allocations, receipts, documents and counters. `withBusiness` is at `packages/db/src/client.ts:147`. |
-| Timezone | `packages/core/src/periods.ts:14, :44-88`; `repos/reports.ts:12-14, :297` | A fixed Lagos UTC+1 offset. Businesses have no timezone column. |
-
-### 2.3 Documents, storage and delivery
+### 2.4 PDF engine and brand
 
 | Concern | Where | Fact |
 | --- | --- | --- |
-| `documents` | `schema/ops.ts:184-200`; `0000_init.sql:307-315` | `kind`, `storage_key` (unique), `ref_number` (nullable text), `bytes`, `created_at`. **No `invoice_id`, hash, or deleted state.** The comment "Public URL derives from this" (:190) is not implemented; nothing presigns. |
-| Render at issue | `apps/api/src/commands/sale-commands.ts:54-69`; `apps/api/src/jobs/render-document.handler.ts:41-118` | A `document.render` job is queued in the issuing transaction. It renders **the receipt if the sale was paid, otherwise the invoice: "One paper, not both"**. The PDF goes to R2 under `documents/<biz>/<kind>/<random>.pdf`, then `document.deliver` is queued. |
-| Render inputs | `render-document.handler.ts:60-75` | Snapshot fields, plus the **live** business name (:61, :67). `customerLabel` is the snapshot **token** (:68), printed as "Billed to" (`packages/core/src/invoice-layout.ts:86-87`). |
-| Storage | `apps/api/src/documents/r2.storage.ts:39-49` | `get` returns `null` on `NoSuchKey` and rethrows other errors. Also `put` and `delete`. |
-| Delivery | `apps/api/src/jobs/deliver-document.handler.ts:44-245` | Recipient is always `identity.ownerPhoneFor` (:65). STOP is overridden when `requestedByMerchant` (:63-69). Window check (:140-148). Raw bytes are uploaded to Meta (`meta.sender.ts:317-330, :388-407`). Filename `${refNumber}.pdf` (:87). A missing object **throws and retries** (:80-84). Outside the window it falls back to the `META_DOCUMENT_TEMPLATE` notice (:166, :184-210). Usage rows are `SERVICE_MESSAGE` or `UTILITY_TEMPLATE` (:119-129, :193-203). |
-| Resend | `inbound-message.handler.ts:2202-2221`; `repos/issue.ts:1015-1033` | Exact phrases only. Sends the **newest document of any kind** in the business. Requires `mayTransact`. The job key `redeliver:<docId>:<eventId>` stops a redelivered webhook queuing twice. |
-| Job retries | `packages/db/src/schema/ops.ts:340`; `repos/jobs.ts:481-510` | 5 attempts with exponential backoff (cap 300 s), then `dead`. |
+| Library | `apps/api/package.json`; `pnpm-lock.yaml:1599` | **pdfkit 0.20.2** (MIT) with fontkit. Pure JavaScript. |
+| Model | `packages/core/src/invoice-layout.ts:17-40`; `apps/api/src/documents/pdf.ts:74-94, :163-329` | Pure core layouts return `LayoutBlock {kind, text, value?}` with 13 kinds. One renderer, `renderBlocksPdf`, does a one-column flow with label and amount pairs. Pagination via `ensureRoom`, a "Page N of M" footer when there is more than one page, A5 by default and A4 for statements, 36 pt margins. **No colour, no table model, no charts.** Vector calls are used only for rules and one box (:218-255). |
+| Fonts | `apps/api/assets/fonts/NotoSans-{Regular,SemiBold}.ttf`; `pdf.ts:39-57`; `scripts/fetch-pdf-fonts.mjs` | Embedded Noto Sans, chosen because ₦ is not in WinAnsi. A missing font raises `FontsMissing` (503 on the web). |
+| Tests | `pdf.integration.test.ts:46-262`; `*-layout.test.ts` | Byte-level checks (magic bytes, embedded font, page count, row kept with its figure) plus layout-block assertions. **No text extraction and no visual comparison.** |
+| Brand tokens | `design-system/rekoda/MASTER.md:88-201`; `docs/REKODA_DESIGN_SYSTEM.md` §2, §6, §8 | Teal scale (accent `#0f766e`), sand scale (text `#1c1b19`, muted `#6b6862`, border `#ddd9d0`). Status colours are not series colours. Chart series: in `#0d9488`, out `#9d3557`. Type: Calistoga for display, Inter for body, tabular numerals for money. **There is no PDF or print guidance**, and no Inter or Calistoga TTF exists in the repo. |
+| Container | `Dockerfile` (`node:24-bookworm-slim`, no `apt-get`); `docs/runbooks/deploy.md:179, :1118` | No Chromium or native canvas libraries. The staging host is 4 GB / 2 vCPU with recorded memory pressure. |
 
-### 2.4 Customers, identity, privacy and roles
+### 2.5 Customers, identity, privacy and roles
 
-| Concern | Where | Fact |
-| --- | --- | --- |
-| `customers` | `0000_init.sql:87-92`; `schema/privacy.ts:18-34` | `id`, `business_id`, `token` only. No identity. |
-| `customer_identities` | `0000_init.sql:77-85`; `packages/core/src/vault.ts:64-77, :132-145` | One row per facet (`name`, `phone`, `email`, `address`): AES-256-GCM `ciphertext` and an HMAC `match_key`. |
-| One customer per value | `0005_identity_match_unique.sql:16-26` | UNIQUE `(business_id, facet, match_key)`. Two customers cannot share a trusted normalised name or a phone. |
-| Name normalisation | `vault.ts:258-264`; `gateway.service.ts:592-601` | Trim, lowercase, collapse whitespace; NFC and NFD forms. Exact only, so "Ada" does not match "Ada Obi". |
-| Untrusted names | `gateway.service.ts:548-581` | Storefront buyer names have `match_key = NULL`, so they are not matchable. |
-| Linking | `repos/customers.ts:526-597`; `0023_identity_link.sql` | Merchant-confirmed links only. |
-| Missing fields | (grep: `alias`, `company_name`, `verified`) | **No customer business-name field, no aliases, no verified flag.** |
-| Gateway | `apps/api/src/privacy/gateway.service.ts:180-411` | Phones and emails become stable `CUSTOMER_x` tokens. Known names are swapped for tokens through `namesByMatchKeys` (`repos/customers.ts:76-110`). Invoice numbers pass through unchanged. |
-| Mention resolution | `inbound-message.handler.ts:5232-5262`; `gateway.service.ts:610-672` | `resolveMention` → `customerTokenFor` **finds or creates** a customer, for every command with a `customer` field, **Query included**. |
-| Phone resolution | `gateway.service.ts:240-246` (comment) | "resolving one can create a customer and vault its identity". |
-| Phone normalisation | `packages/core/src/identity.ts:35-88`; `vault.ts:250-255` | `normalisePhone` returns E.164 `+234…`. The vault's own phone fold is a different canonical form, and match keys use it. |
-| Erasure | `repos/customers.ts:466-488`; `privacy-commands.ts:23-36` | Business-wide removal of every facet; customer rows and tokens remain. No per-customer erasure. |
-| Roles | `schema/tenancy.ts:159-177`; `inbound-message.handler.ts:2139-2146` | `owner`, `accountant`, `delegate`. `mayTransact` = owner or delegate. `Query` and `Unclear` are allowed for any member (:5200-5219). `debtors` and `records` have no role check (:1917-1934). |
-| Command bus | `apps/api/src/commands/command-bus.service.ts:109-116, :177-192` | G-99 merged (#299): chat writes require owner or delegate. |
-| Entitlements | `packages/core/src/entitlements.ts:41-47`; `packages/core/src/chat-access.ts:44-81` | Chat on trial, chat and complete. `resend` is universal (OWN-45). debtors and records are kept on lapse. Model-path questions are refused on an expired plan (`handler ~:5058-5071`). |
+These rows are unchanged from revision 1.
 
-### 2.5 Voice
-
-| Concern | Where | Fact |
-| --- | --- | --- |
-| Pipeline | `inbound-message.handler.ts:1287-1565` | Claim the wamid, then lapse check, entitlement, fetch, duration probe, max-duration check, daily ceilings, monthly `VOICE_MINUTES`, transcription, cost row. The transcript then enters the **same** `routeMessage` and interpreter path (:447-454). |
-| Flag | `apps/api/src/config.ts:1567, :1330-1335`; `.env.example:622-637` | `VOICE_TRANSCRIPTION_ENABLED`, default off. Boot refuses it without `OPENAI_API_KEY`. |
-| Provider | `apps/api/src/ai/stt.openai.ts:46-79` | `whisper-1`, `verbose_json`. **`confidence` is always `null`** (:79). Nothing reads confidence. |
-| Limits | `config.ts:841, :1588-1593`; `meta.sender.ts:38` | 120 s per note; 1,800 s per business per day; 36,000 s global per day; 16 MiB. |
-| Docs | `docs/REKODA_CURRENT_STATE.md:195-200`; `REKODA_LAUNCH_READINESS.md:600-606` (J6) | "IMPLEMENTED, NOT LIVE-VERIFIED (off by default)". Open: G-64 and G-66. **No document states whether staging has voice on.** |
+- **Names and phones live only in `customer_identities`** as AES-256-GCM ciphertext with an exact business-scoped HMAC `match_key` (`vault.ts:64-145`; `0000_init.sql:77-92`). There is one customer per trusted normalised value (`0005_identity_match_unique.sql:16-26`). There is no customer business-name field, no aliases and no verified flag. Storefront names are untrusted and cannot be matched.
+- **The gateway tokenises phones and known names** before the model (`gateway.service.ts:180-411`). **Resolving a mention or an unknown phone creates a customer, on reads too** (handler :5232-5262; gateway :240-246, :610-672).
+- **Roles:** owner, accountant (view only) and delegate. `mayTransact` = owner or delegate (handler :2139-2146). Every member may use `debtors` and `records`. `resend` requires `mayTransact`. `roleOfPhone` does not filter `memberships.active` (`identity.ts:577-589`): verify before launch.
+- **Entitlements and units:**
+  - `REKODA_CHAT` is on trial, chat and complete.
+  - Router reads are free.
+  - A message that reaches the model takes one `AI_ACTIONS` unit.
+  - `REPORT_EXPORTS` per plan: trial 10, chat 50, integrate 100, complete 200, expired 0 (`allowances.ts:252-321`; OWN-4).
+  - `DOCUMENT_GENERATION` covers invoices and receipts only.
+  - Retrieval and resend are free on any plan (OWN-45, OWN-60).
 
 ### 2.6 Conversation state
 
-| Concern | Where | Fact |
-| --- | --- | --- |
-| Drafts | `0008_command_drafts.sql`; `repos/conversations.ts:659-744` | Pending writes by database ordinal; TTL 300 s (`packages/core/src/risk.ts:218`); one conditional claim (CG3). |
-| Continuations | `0154_conversation_continuations.sql`, `0155`, `0158`; `packages/core/src/continuation.ts` | Member-scoped (`user_id`), at most one open per member, TTL 600 s (:57). Kinds: `clarification` and `query` (with a `document_ref` column). |
-| Invoice choice list | `continuation.ts:131-158, :279-287`; `0154` CHECK | **`ChoiceClarification` with up to 9 `{ordinal, ref:{kind:'invoice', invoiceNumber}}` options already exists, is validated in the database, and is unused**: "nothing in Build 6 asks one yet". `documentRef` is always written as null (`handler :3379, :4793`). |
+- **Repository:** `packages/db/src/repos/continuations.ts` (`openContinuation` :99, `currentContinuation` :177, `consumeContinuation` :217, …). Revision 1 named the wrong file; corrected here.
+- **Table** (`0154`, `0155`, `0156`, `0158`):
+  - Member-scoped, with at most one open row per member; TTL 600 s.
+  - `kind` is `clarification` or `query`.
+  - `topic`, `period`, `expects` and `document_ref` are **closed CHECK lists**.
+  - The only jsonb column is `options`, validated by a database function as **1–9 `{ordinal, ref:{kind:'invoice', invoiceNumber}}` entries**. That list type exists and nothing uses it.
+  - The migration header says "No column holds words anybody typed" (0154:26).
+- **Resume path:** `resumedRead` (`continuation.ts:272-295`) resumes only period reads for sales and expenses. **A topic switch ("what about expenses?") does not exist.**
 
-### 2.7 Owner decisions and gaps that bind this feature
+### 2.7 Voice
 
-| Ref | Ruling or gap |
+Unchanged from revision 1:
+
+- the transcript enters the same router and interpreter (handler :447-454);
+- the model is `whisper-1` and **confidence is always null** (`stt.openai.ts:79`);
+- the feature flag `VOICE_TRANSCRIPTION_ENABLED` is off by default;
+- `VOICE_MINUTES` are metered;
+- **no document records whether staging has voice on.**
+
+### 2.8 Rulings and gaps that bind this work
+
+| Ruling or gap | Summary |
 | --- | --- |
-| OWN-60 (`REKODA_OWNER_DECISIONS.md:111`) | Retrieving or resending a historical document needs **no active plan**. No new chargeable usage. Nothing is sent after retention or deletion. |
-| OWN-45 (:149) | Any-plan and lapsed owners may resend. No document unit. |
-| OWN-25 (:189) | A view-only member's READ continues; WRITE is refused before the AI. |
-| OWN-98 (20 Nov) | A refusal is terminal. The 20 s timeout stays. |
-| G-67 (`REKODA_LAUNCH_READINESS.md:244`) | Residuals: (1) `latestDocumentFor` has no retention filter; (2) a delegate's resend goes to the owner; (3) **"OWN-60's retrieve of a specific older document has no path yet"**. This feature closes (3). |
-| G-100 (:277) | "find…", "look up…" and "pull up…" are classified UNKNOWN for view-only members. |
-| G-60 (:237) | Name-matching and one-token rules. |
-| Spec | `REKODA_CANONICAL_SPEC.md` §3.1 (:104): Chat must "answer questions about the merchant's own books". Appendix C (:1925): the AI processor boundary. Appendix F (:2182): conversation identity, scoped hashes. **The spec has no section on document retrieval or search**, so this feature needs a spec amendment or an owner ruling to absorb it (see §17). |
+| OWN-44 | §1. |
+| OWN-60 / OWN-45 | Historical retrieval is free and needs no active plan. |
+| OWN-25 | View-only members may read. |
+| OWN-98 | A refusal is terminal; the 20 s timeout stays. |
+| OWN-4 | Report exports are metered. |
+| OWN-5 | Portability is never metered. |
+| G-67 | Residuals: no retention filter on resend; a delegate's resend goes to the owner; "retrieve of a specific older document has no path yet". |
+| G-100 | View-only read phrasings. |
+| G-118 | `summaryFor` definitions. **The readiness row still says "PR OPEN" although #384 merged.** Stale; corrected in Stage I. |
+| Spec | §5.1 (`REKODA_CANONICAL_SPEC.md:247-248`): "Reports / financial Q&A — read the ledger, never recompute from source events"; "AI explains; deterministic logic or a human decides". There is no spec section on retrieval, search or insights (OD-15). |
+| `docs/pricing-model.md` | :63 says "unlimited PDF/Excel reports" for Chat, which contradicts :144-152 and OWN-4. Stale; corrected in Stage I. |
 
 ---
 
-## 3. Gap analysis
+## 3. Combined feature coverage matrix
 
-| Requirement | Exists | Missing or must change |
-| --- | --- | --- |
-| Retrieve by exact reference | `invoiceByNumber` (`issue.ts:1233`); stored PDFs; `document.deliver` | A router phrase set for reference retrieval; a document-by-invoice resolver; an `InvoiceQuery` intent; delivery to the **requester**; distinct failure replies. |
-| Retrieve by customer name | Exact HMAC name match; token-to-invoice SQL (snapshot OR `customer_id`) | **Partial and fuzzy matching are impossible on vault ciphertext** (OD-1). A **lookup-only** resolver (no create, OD-3). Multi-customer disambiguation. |
-| By phone | Gateway phone tokenisation; `normalisePhone` | Gateway tokenisation **creates** a customer (OD-3). There is no "phone not known" answer path. |
-| By customer business name | — | **No field** (OD-2). Today it is just a name facet. |
-| By item or description | `invoice_items.name`, `quantity`, `unit_price_k` | A tenant-scoped item-name filter (no text search exists). No description or product columns: "generator repair" matches only an item name. |
-| Date filters | `resolvePeriod` (today, week, month, last_month); `resolveCustomRange` (`periods.ts:142`); `periodAnswer` | No yesterday, last week, explicit dates, before or after, or "past N days" in chat (`handler :3390-3415` calls these "uncountable"). Index on `(business_id, created_at)`. |
-| Amount filters | `parseAmountText` (`packages/core/src/money.ts:45`, handles 45k and 1.5m) | Comparators (more than, between, less than) and conversion of bounds to kobo. |
-| Status, outstanding, overdue | Projection columns; `due_date` | A filter builder; a `due_date` index; an overdue definition (OD-9). |
-| Sorting and pagination | Keyset on `(created_at, id)` in the public API | Additional sort keys with stable tie-breaks; "more" paging in chat. |
-| Ranking | — | Documented tiers, implemented deterministically. |
-| Single-invoice summary | Snapshot and projection; receipts; allocations | Summary assembler, templates, payment history query. |
-| Multi-invoice aggregates | `debtorsFor`, `ageingFor`, `summaryFor` (ledger) | Aggregates over the **same filter** as the list, in SQL. |
-| Follow-ups and selection | `conversation_continuations`; unused invoice `ChoiceClarification` | A new continuation kind holding the result set and criteria (migration: the kind CHECK). Ordinal phrases ("the second one"). |
-| Voice | Full pipeline into the same router | Reference canonicalisation for speech, and a confirm-before-act rule (no confidence signal is available). |
-| PDF delivery | `document.deliver`; R2 `get` | Delivery to the requesting member; immediate handling of a missing object; an invoice-to-document link; a retention filter. |
-| Customer-directed send | — (`sendDocument` has one caller; customer text goes only through Integrate) | Not built. Gated (OD-8). |
-| Read-only guarantee | Writes happen only through the command bus | The mention, phone and name creation paths (OD-3). Before-and-after financial-state tests. |
-| Anthropic compatibility | `strict-schema.ts`; G-134 probe `apps/api/src/ai/eval/probe-tool-choice.ts` | Re-measure the schema; re-probe with the expanded schema on the three models. |
+Legend:
+- **R**: reuse as is.
+- **E**: extend an existing function or file.
+- **N**: new, inside a justified file (§18).
+- **OD**: depends on an owner decision.
+
+| # | Requirement | Plan | Primary location |
+| --- | --- | --- | --- |
+| **Invoice discovery (spec 1)** | | | |
+| 1 | Retrieve by exact reference (typed and voice) | E router fast path; N `invoiceByReference`; R `document.deliver` | `router.ts`, `invoice-search.ts`, deliver handler |
+| 2 | By customer name | E gateway lookup-only; N search | `gateway.service.ts` (OD-1, OD-3) |
+| 3 | By phone | E gateway lookup-only | (OD-3) |
+| 4 | By customer business name | Treated as a name | (OD-2) |
+| 5 | By item or description, quantity | N item predicate | `invoice-search.ts` |
+| 6 | Dates, amounts, status, outstanding, overdue, due date | E periods.ts, money.ts; N filter builder | core (OD-9, OD-10, OD-19) |
+| 7 | Compound filters, sorting, keyset pagination, ranking tiers | N | core `analytics.ts`, `invoice-search.ts` |
+| 8 | Disambiguation and selection | R continuation `options` (invoice choice list) | continuations |
+| 9 | Single-invoice summary (as issued versus now) | N assembler and templates | core |
+| 10 | Multi-invoice aggregates | N `invoiceAggregate` | `invoice-search.ts` |
+| 11 | Follow-ups ("the second one", "only unpaid") | E continuation with a context column | (OD-33) |
+| 12 | Stored-PDF retrieval and failure outcomes | E deliver handler (requester, missing-object check) | (OD-4, OD-5, OD-7, OD-11) |
+| 13 | Customer-directed send | Not built; gated | (OD-8) |
+| **Analytics (spec 2)** | | | |
+| 14 | Today vs yesterday, week vs week, month vs month, quarter, year, YoY, custom vs custom, last N vs previous N | E periods.ts, period-compare.ts | core (OD-18, OD-19) |
+| 15 | Daily, weekly and monthly trends; strongest period | N series from `summaryFor`'s definitions | `reports.ts` (refactor) |
+| 16 | Sales: gross, net, count, average, by customer, product, channel; top transactions and days | E `summaryFor`, `revenueScheduleFor`; N rankings | `reports.ts` (OD-16, OD-20) |
+| 17 | Collections and receivables: rate, ageing, overdue, payment patterns | R `ageingFor`, `debtorsFor`; N rate and days-to-pay | (OD-34) |
+| 18 | Expenses: total, trend, category, share, ratio | E `expenseScheduleFor` for windows | (fix the NULL→"fees" label) |
+| 19 | Profitability: COGS, gross profit, margin, net | E `accountSumsFor` for windows; R `buildProfitAndLoss` | (OD-21) |
+| 20 | Product performance | N ranking | (OD-20) |
+| 21 | Customer performance | N ranking with rehydrated names | (OD-24) |
+| 22 | Cash flow: receipts, payments, net, opening and closing | E cash measures excluding own-account transfers and opening balances | (OD-17) |
+| 23 | Dynamic query representation (no per-phrase methods) | N `Analyse` intent plus a core metric registry | contracts, core |
+| 24 | Insights with data-confidence labels | N deterministic rules plus templates | core `analytics.ts` (OD-27, OD-31) |
+| 25 | Conversational context (topic switch, period switch, "generate the PDF") | E continuation context | (OD-33) |
+| 26 | Professional report PDF with charts, KPIs, tables and methodology | E `pdf.ts`; N `report-layout.ts` | (OD-28, OD-30) |
+| 27 | Auto versus explicit PDF policy | Policy in core | (OD-22) |
+| 28 | Store, deliver, retry, idempotency, retention | E render and deliver handlers; R R2 | (OD-23, OD-25, OD-26) |
+| 29 | Visual QA of PDFs | Dev-only tooling | (OD-29) |
+| 30 | Voice for all of the above | R existing pipeline | (OD-13) |
+| 31 | Anthropic compatibility of the expanded schema | Measure plus an owner-run probe | §5.4 |
+
+Nothing in either specification is deferred without an owner decision.
 
 ---
 
 ## 4. Recommended architecture
 
 ```
-WhatsApp text ─┐
-               ├─► inbound-message.handler (existing claim, idempotency, role, entitlement)
-voice note ────┘        │  (voice: existing STT → transcript text)
-                        ▼
-              continueConversation ── open invoice-result continuation? ── ordinal / "send it" / refine
-                        │ no
-                        ▼
-              routeMessage (core)  ── NEW: invoice_ref intents (show|send|summarise <ref>) ──┐
-                        │ no match                                                     │
-                        ▼                                                              │
-              gateway.tokenise ► interpreter (existing, tool_choice auto)               │
-                        │  returns InvoiceQuery {operation, criteria} (zod-validated)   │
-                        ▼                                                              ▼
-              core: buildInvoiceFilter(criteria, now)  ─ periods / amounts / refs / ranking rules
-                        ▼
-              resolver (api): customer lookup-only (no create) ► db: invoiceSearch(tx, filter, page)
-                        ▼                         (withBusiness, RLS, keyset, LIMIT ≤ 10)
-              outcome: none | one | many | needs_clarification
-                        ▼
-              replies (core templates)  +  continuation (result set, criteria, TTL)
-                        ▼  retrieve
-              documentForInvoice ► document.deliver (to requester; existing upload/window/STOP)
+ text ─┐                          (existing claim, idempotency, role, entitlement, metering)
+ voice ┴─► inbound-message.handler ──► STT (voice only, existing)
+                 │
+                 ├─ continueConversation ── open books continuation? ── ordinal / "send it" /
+                 │                                                       topic or period switch / "PDF"
+                 ├─ routeMessage (core) ── NEW invoice_ref intents ("send INV-…")
+                 └─ interpreter (existing) ──► InvoiceQuery | Analyse   (criteria only, zod-validated)
+                                    │
+                    core: resolve periods, amounts, references, comparison windows, metric plan
+                                    │
+          apps/api/src/jobs/books-answer.ts (NEW orchestration; one entry point for all paths)
+             ├─ db: invoice-search.ts (NEW)   ── records: list / one / aggregate
+             └─ db: reports.ts (EXTENDED)     ── ledger figures: windows, series, schedules, rankings
+                                    │
+                  core: BooksResult (one immutable, validated data object)
+             ┌──────────────────────┼─────────────────────────────┐
+     replies.ts templates     continuation context        report PDF (when requested, OD-22)
+     (chat answer)            (follow-ups, 600 s)         job document.render{report}: core report-layout
+                                                           → pdf.ts → R2 (PDF + JSON) → documents row
+                                                           → document.deliver (to requester)
 ```
 
-**Design rules.** Each one names the invariant it serves.
+**Principles.** Each one names the rule it serves.
 
-1. **One engine.** Typed text, voice, the router fast path and follow-ups all call one core function, `buildInvoiceFilter`, and one repository function, `invoiceSearch`. There is no voice-specific logic beyond reference canonicalisation.
-2. **The model proposes criteria only** (invariant 2). It never supplies an ID, a business, a figure or a match decision. An invoice reference from the model is treated as text and checked against SQL.
-3. **No new writes to financial tables.** The feature's writes are a continuation row, message rows, usage rows, an audit row (optional) and a `document.deliver` job. Retrieval never passes through `CommandBus.run`: it is not a command. It runs under `withBusiness()` like `resendReply` does today.
-4. **Delivery reuses `document.deliver`.** It gains a `recipientUserId` (the requesting member). It never re-renders.
-5. **Replies are templates** fed computed values (CLAUDE.md §5). Names are rehydrated only in `ReplyService` (`apps/api/src/replies/reply.service.ts:31, :114`).
+1. **One result object feeds every output.** The chat answer, the PDF and the follow-up context are all rendered from the same `BooksResult`, computed once. A PDF never re-queries. The result is carried in the render job's payload (§13), so the chat answer and the PDF cannot contradict each other.
+2. **The model proposes criteria; deterministic code disposes** (invariant 2, OWN-44, spec §5.1). The model never sees a figure, an ID or a result, and never writes SQL.
+3. **The ledger is the authority for money in a period** (spec §5.1, G-118). Every period figure comes from `summaryFor` definitions or the same SQL generalised to buckets. Invoice-level facts (status, balance, items) come from the invoice projection and snapshot. Each metric names its source (§7).
+4. **No new writes to financial tables.** Retrieval and analytics bypass `CommandBus` entirely and run under `withBusiness()` with RLS, as `resendReply` does today.
+5. **Reuse over invention.** Existing pieces stay where they are and are extended rather than wrapped:
+   - router, continuations, `summaryFor`, `comparePeriods`, `changeOf`, `previousWindow`, `ageingFor`, the schedules, `buildProfitAndLoss`;
+   - pdfkit and `renderBlocksPdf`, R2, `document.render`, `document.deliver`;
+   - the STT pipeline.
 
 ---
 
-## 5. Command-contract proposal
+## 5. Analytical query contract
 
-### 5.1 One intent, not five
+### 5.1 Two intents, one engine
 
-Recommendation: **one new intent, `InvoiceQuery`, with an `operation` discriminator field.** I recommend against extending `Query`:
-- `Query` is consumed by eight call sites in `answerQuery` and by the view-only classifier.
-- Adding nested criteria to it would make every period question carry invoice fields.
+Recommendation: add **two** intents to `StructuredBusinessCommand` (`packages/contracts/src/business-command.ts`):
 
-Five intents would multiply union branches and parameters in the tool schema (§5.4).
+- `InvoiceQuery` asks for **records**: find, retrieve, summarise or aggregate invoices.
+- `Analyse` asks for **business figures**: metrics over periods, comparisons, series, breakdowns, rankings and report output.
+
+They are separate because they have different filters and different sources (invoice rows versus ledger windows). Merging them into one intent would put about 25 optional fields into every call. Five or more intents would multiply union branches.
+
+**Compatibility with `Query`:**
+- `Query` stays for backward compatibility: its topics, continuations (CHECK lists) and eval cases.
+- `Query.sales_summary` and `expenses_summary` are re-pointed internally to the same engine, so the definitions cannot drift.
+- The prompt steers new analytical phrasing to `Analyse` and keeps `Query` for its existing topics.
+- The redundancy can be retired later (OD-15 records it).
 
 ```ts
-// packages/contracts/src/business-command.ts (proposed; illustrative, not final)
-const invoiceRefText = z.string().trim().min(3).max(40);          // raw as heard/typed
-const amountText     = text(40);                                   // "45k", "₦1.5m"
+// Proposed (illustrative; field names subject to Stage B review)
+const phrase = (n: number) => text(n);           // raw words; core resolves them
 export const InvoiceCriteria = z.object({
-  references:  z.array(invoiceRefText).max(3).nullable(),          // "INV-2026-000001", "invoice 14"
-  customer:    CustomerRef.nullable(),                             // token | mention | none
-  itemText:    text(80).nullable(),                                // "bags of rice", "generator repair"
+  references:   z.array(text(40)).max(3).nullable(),
+  customer:     CustomerRef.nullable(),
+  itemText:     phrase(80).nullable(),
   itemQuantity: z.number().int().positive().max(1_000_000).nullable(),
-  periodText:  text(60).nullable(),                                // "last month", "between Monday and Friday"
-  dateField:   z.enum(['issued', 'due']).nullable(),               // default issued
-  amountText:  amountText.nullable(),                              // "more than 100k", "between 50k and 200k"
-  amountField: z.enum(['total', 'outstanding', 'paid']).nullable(),// default total
-  payment:     z.enum(['unpaid', 'partly_paid', 'paid', 'outstanding', 'overdue']).nullable(),
+  periodText:   phrase(60).nullable(),
+  dateField:    z.enum(['issued', 'due']).nullable(),
+  amountText:   phrase(40).nullable(),                     // "more than 100k"
+  amountField:  z.enum(['total', 'outstanding', 'paid']).nullable(),
+  payment:      z.enum(['unpaid', 'partly_paid', 'paid', 'outstanding', 'overdue']).nullable(),
   includeVoided: z.boolean().nullable(),
-  sort:        z.enum(['newest','oldest','highest','lowest','largest_balance','most_overdue','customer']).nullable(),
-  limit:       z.number().int().min(1).max(10).nullable(),         // "my five latest"
+  sort: z.enum(['newest','oldest','highest','lowest','largest_balance','most_overdue','customer']).nullable(),
+  limit: z.number().int().min(1).max(10).nullable(),
 });
 export const InvoiceQuery = z.object({
-  intent:    z.literal('InvoiceQuery'),
+  intent: z.literal('InvoiceQuery'),
   operation: z.enum(['find', 'retrieve', 'summarise', 'aggregate']),
-  detail:    z.enum(['brief', 'itemised', 'payments']).nullable(),
-  groupBy:   z.enum(['customer', 'month']).nullable(),
-  criteria:  InvoiceCriteria,
+  detail: z.enum(['brief', 'itemised', 'payments']).nullable(),
+  groupBy: z.enum(['customer', 'month']).nullable(),
+  criteria: InvoiceCriteria,
+});
+
+export const METRICS = ['sales', 'collections', 'expenses', 'receivables', 'overdue',
+  'cash_flow', 'gross_profit', 'profit', 'invoice_count', 'average_sale', 'collection_rate'] as const;
+export const Analyse = z.object({
+  intent: z.literal('Analyse'),
+  metrics: z.array(z.enum(METRICS)).min(1).max(4),
+  periodText: phrase(60).nullable(),                 // "this month", "Q3", "since January"
+  compareText: phrase(60).nullable(),                // "last month", "same month last year", "yesterday"
+  series: z.enum(['day', 'week', 'month', 'quarter']).nullable(),   // "trend", "month by month"
+  breakdown: z.enum(['customer', 'product', 'expense_category', 'channel']).nullable(),
+  rank: z.enum(['top', 'bottom']).nullable(),
+  rankBy: z.enum(['value', 'quantity', 'count', 'balance']).nullable(),
+  limit: z.number().int().min(1).max(10).nullable(),
+  customer: CustomerRef.nullable(),                  // "Ada's sales this month"
+  output: z.enum(['answer', 'pdf']).nullable(),      // explicit "PDF/report" words only
+  depth: z.enum(['brief', 'detailed']).nullable(),
 });
 ```
 
-### 5.2 Validation rules
+### 5.2 What deterministic code does
 
-**Done in deterministic code, never by the model:**
-- **References.** Canonicalised in core by `canonicaliseInvoiceRef`: accepts `INV-2026-000001`, `inv 2026 000001`, `INV2026000001`, `invoice 2026-1`. A **year-less** sequence ("invoice 14") becomes a **candidate set**, never a single match (§10.2). Anything else is `unparseable`, and the reply quotes it back.
-- **Amounts.** `amountText` goes through a new core `parseAmountBound`, built on `parseAmountText` (`money.ts:45`). It returns `{op: 'eq'|'gt'|'gte'|'lt'|'lte'|'between', loK, hiK}` in integer kobo. "Exactly" defaults to `eq`; a bare amount means `eq` with no tolerance (OD-10). Bounds are capped at the existing ₦10bn ceiling (`business-command.ts:22`). **The model never sends a number for money in this intent; `amountText` is a string.** This is deliberate: it avoids the float `naira` type for filters.
-- **Periods.** `periodText` goes through a new core `parsePeriodPhrase(text, now)`, which returns a `DateRange` or `ambiguous` or `uncountable`, using Lagos midnight (`periods.ts:44-88`). It extends `periodAnswer` and does not replace it.
-- **Bounds.** `limit` is clamped to 10, and `references` to at most 3.
+The model returns words. Core turns them into an `AnalysisPlan` or an `InvoiceFilter`, or a refusal or clarification:
 
-**Rejected by the zod schema:** unknown keys, empty criteria for `retrieve` or `summarise`, and an aggregate with a reference. `superRefine` rules:
-- `retrieve` needs a reference, a customer, or a resolvable follow-up;
-- `aggregate` ignores `sort` and `limit`.
+- **Periods.** `periodText` and `compareText` go to `parsePeriodPhrase` (extended `periods.ts`, §6). A missing `compareText` together with comparison words means the default comparison for that period (§6.3).
+- **Metric registry** (core `analytics.ts`). A fixed table gives each metric:
+  - its source function;
+  - its unit (kobo, count or percent);
+  - its definition text (printed in the PDF methodology);
+  - the breakdowns and series it supports;
+  - its data preconditions.
 
-**Consequences:**
-- **Clarification.** `Unclear` stays the model's only way to ask. Deterministic clarifications (ambiguous date, many customers, many invoices) are core templates with a continuation. They are not model text.
-- **Results.** The model never sees a result. Results exist only in the continuation and in the reply.
-- **Backward compatibility.** Existing intents are unchanged. `parseBusinessCommand` gains one branch. `command-persistence.ts:50` (fields that persist, such as `Query: ['periodText']`) needs an `InvoiceQuery` entry that persists criteria text only, after gateway scrubbing. The view-only classifier treats `InvoiceQuery` as READ (OWN-25; closes part of G-100).
+  For example, `gross_profit` needs a cost-coverage statement (OD-21), and `breakdown: product` follows OD-20. A metric and breakdown pair outside the registry gets an honest "I can't break X down by Y yet" plus what it can do. This registry is what makes the engine dynamic: requests are compositions validated against data, not one method per phrase.
+- **Amounts.** `amountText` goes to `parseAmountBound` (extended `money.ts`, built on `parseAmountText` :45). The result is integer kobo. **No money number travels in either intent.**
+- **References.** `canonicaliseInvoiceRef` (extended `numbering.ts`): exact forms, and year-less forms become a candidate set.
+- **Bounds.** Every limit is clamped. A missing period for a metric question gets the existing "which period?" clarification with continuation (`whichPeriod`, `replies.ts:1590`).
+- **Output.** `output: 'pdf'` is honoured only under the PDF policy (OD-22) and the metering rules (OD-23).
 
-### 5.3 Router fast path (no model, no AI unit)
+### 5.3 Router fast paths (no model, no AI unit)
 
-These go in `packages/core/src/router.ts`. Matching is on the normalised whole message (`:132`) and stays within the 60-character limit:
-- `show|open|find|get|view|send|resend|give me|pdf for` + optional "invoice" or "the PDF for" + `<ref>`
-- `summarise|summary of|details of|balance on|how much is left on` + `<ref>`
+| Phrase | Router intent |
+| --- | --- |
+| "send/show/find/resend INV-…", "summary of INV-…" | `invoice_ref` |
+| "my invoices", "unpaid invoices", "overdue invoices" | `invoice_list{payment}` (whole-message only) |
+| "sales yesterday", "sales today vs yesterday", "compare this month", "how am I doing" | `analyse_preset{preset}`, a small fixed table |
+| "PDF", "send the PDF", "full report" | Only when a books continuation is open (§9) |
 
-The output is `{kind:'invoice_ref', action:'show'|'send'|'summarise', ref}`. Router tests must pin the forms that still go to the model:
-- `INV-2026-000004 paid 20k` stays a model case (`router.test.ts:351`);
-- "send payment link for INV-…" stays a model case (:243).
+Pinned router tests keep the existing model cases routing to the model.
 
 ### 5.4 Anthropic schema impact
 
-The business command is already non-strict (more than 16 unions), so strict eligibility does not change. `strict-schema.ts` will keep refusing it. That is correct, because a strict over-limit schema is itself a 400 (G-134 row).
+**Strict mode is unchanged.** The schema is already over the union limit and will stay non-strict, and the strict-schema check keeps refusing it. That is correct, because a strict over-limit schema is a 400 (G-134 row).
 
-**Must be measured in Stage B, not assumed:**
-1. The new union and optional counts: test `strict-schema.test.ts` should pin the exact number.
-2. The tool-definition size in tokens, using the existing `usage_events` token meta.
-3. Prompt-cache effect, if any.
-4. A complete production-shaped request through `probe-tool-choice.ts --send` on Sonnet 5.5, Opus 5.5 and Haiku 5.5. This needs owner-run staging credentials; it is never run in CI.
-5. Eval dataset additions (`apps/api/src/ai/eval/dataset.ts`) for every example in the requirements, scored by the existing harness.
+**Must be measured in Stage B, never assumed:**
+1. The exact union and optional counts, pinned in `strict-schema.test.ts`.
+2. Tool-definition tokens per call. The schema grows for **every** message, including sales, payments and photos, so the cost per call by model must be reported.
+3. Eval accuracy on all existing intents before and after (`apps/api/src/ai/eval/`). Any regression blocks the PR.
+4. The owner-run production-shaped probe (`apps/api/src/ai/eval/probe-tool-choice.ts --send`) on Sonnet 5.5, Opus 5.5 and Haiku 5.5. This is live spend, so it is the owner's action.
 
-A paid evaluation run is an owner action under the live-spend boundary.
-
-**Alternative if schema growth hurts accuracy.** A second, narrow strict tool used only after the classifier says "invoice question". I do not recommend it now: it adds a call per message.
+**Fallback if accuracy or cost suffers (OD-35):** route through the existing classifier (`apps/api/src/ai/classifier.ts`) to a narrow, strict-eligible "books question" tool. That adds a call per books question but keeps the main schema unchanged.
 
 ---
 
-## 6. Search architecture
+## 6. Time-comparison semantics
 
-### 6.1 Query strategy
+All boundaries are in Lagos time: a fixed UTC+1 (`periods.ts:14`). There is no business timezone column, so "the merchant's timezone" is Lagos for every business (NG-only launch). If non-Nigerian merchants ever exist, a migration and a decision are needed; that is out of scope.
 
-There is one repository function, `invoiceSearch(tx, businessId, filter, page)`, in a new `packages/db/src/repos/invoice-search.ts`. It builds **one parameterised SQL statement** from a typed filter. There is no string concatenation of user text, and every pattern is bound, with `%` and `_` escaped.
+### 6.1 Period vocabulary (`parsePeriodPhrase`)
 
-```sql
-SELECT i.id, i.invoice_number, i.created_at, i.due_date, i.status, i.total_k, i.paid_k,
-       i.balance_due_k, i.credited_k, i.snapshot_json->>'customerToken' AS snap_token, c.token
-FROM invoices i LEFT JOIN customers c ON c.business_id = i.business_id AND c.id = i.customer_id
-WHERE i.business_id = $biz                                   -- plus RLS
-  AND ($tokens IS NULL OR c.token = ANY($tokens) OR i.snapshot_json->>'customerToken' = ANY($tokens))
-  AND ($from IS NULL OR i.created_at >= $from) AND ($to IS NULL OR i.created_at < $to)
-  AND ($status IS NULL OR i.status = ANY($status))
-  AND (amount predicate on total_k | balance_due_k | paid_k)
-  AND ($item IS NULL OR EXISTS (SELECT 1 FROM invoice_items ii
-        WHERE ii.business_id = i.business_id AND ii.invoice_id = i.id
-          AND lower(ii.name) LIKE $itemPattern ESCAPE '\'
-          AND ($qty IS NULL OR ii.quantity = $qty)))
-  AND (keyset predicate on (sortKey, id))
-ORDER BY <sortKey>, i.id
-LIMIT $pageSize + 1;
-```
-
-- **Counts** for "I found 14" come from a `COUNT(*)` over the same predicate, never from `rows.length` (CLAUDE.md §5).
-- **Aggregates** (§9.3) use the same predicate with `SUM` and `COUNT FILTER`.
-
-### 6.2 Indexes
-
-Each is justified by a predicate above. They ship in one new migration, in Stage C.
-
-| Index | Serves | Why it is needed |
-| --- | --- | --- |
-| `invoices (business_id, created_at DESC, id DESC)` | Date ranges, newest and oldest sort, keyset | None exists. The public API keyset already sorts on this and scans. |
-| `invoices (business_id, (snapshot_json->>'customerToken'))` | Chat-invoice customer lookup | Chat invoices have `customer_id NULL` (`issue.ts:1154`). The OR branch is unindexed today. |
-| `invoices (business_id, due_date) WHERE status IN ('issued','partially_paid')` | Overdue and due ranges | No `due_date` index exists. |
-| `documents (business_id, ref_number, kind, created_at)` | Document-by-invoice resolution | Only `documents_business_ix` exists. |
-| _(conditional)_ `invoice_items` trigram index | Item text search | **Not proposed initially.** The item predicate runs inside one business's invoices already narrowed by other filters. Add it only if `EXPLAIN (ANALYZE)` on a seeded 20,000-invoice business exceeds budget (§13). `pg_trgm` would be a new extension and needs approval. |
-
-**Reference lookups.** Lookups are canonicalised to upper case **in code**, then matched with `invoice_number = $ref` on the existing unique index. Existing `upper()` lookups (`issue.ts:1169, :1251`) are left as they are.
-
-### 6.3 Matching and ranking policy
-
-Matching is deterministic and documented in `packages/core/src/invoice-search.ts`. Tiers are checked in order; a higher tier always wins and lower tiers are not mixed in:
-
-| Tier | Rule | Auto-select? |
-| --- | --- | --- |
-| T1 | Exact canonical reference in this business | Yes, when exactly one. |
-| T2 | Customer resolved to exactly one customer, plus every other filter | Yes, only if the result count is 1, or the request says "last" or "latest". |
-| T3 | Exact structured matches: amount `eq`, quantity, date, status | Only if the count is 1. |
-| T4 | Item-name word match: every query word, normalised, appears as a word or word-prefix of a line name | No. List the candidates. |
-| T5 | Partial item match: some words | No. List the candidates and label them "closest matches". |
-| T6 | Fuzzy customer-name candidates (OD-1) | Never. The customer must be chosen first. |
-
-- **Semantic search, RAG, embeddings and vector databases: not proposed.**
-  - Every searchable fact is a structured column, or a short item name the merchant typed.
-  - Embeddings would duplicate tenant data into a second store, which needs its own RLS, staleness handling and erasure.
-  - They would put item text, and possibly customer tokens, through a new processor (Appendix C).
-  - Their output still needs SQL verification.
-  - Nothing in the requirements needs meaning beyond word overlap on item names. Revisit only with measured misses from staging acceptance.
-
-### 6.4 Dates (`parsePeriodPhrase`)
-
-Supported phrases:
-- today, yesterday;
-- this week, last week (OD-6);
-- this month, last month;
-- "past/last N days";
-- an explicit date ("12 Nov", "12/11/2026", "12 November");
-- ranges ("between Monday and Friday", "from 1 to 15 Nov");
-- before or after a date;
-- a month name ("October"): the most recent past October, never the future.
-
-Rules:
-- The boundaries are Lagos midnights (`periods.ts`). The maximum span is 366 days (`MAX_CUSTOM_RANGE_DAYS`, `periods.ts:95`).
-- **Ambiguities ask one question**, through a continuation with `expects: 'period'` (the existing mechanism). Examples:
-  - `05/06` is ambiguous between dd/mm and mm/dd;
-  - "Monday" when today is Monday: is it today or last week?
-- Default: Nigerian dd/mm, and ask only when both readings are valid and differ (OD-6).
-
-### 6.5 Amounts
-
-`parseAmountBound` accepts:
-- `₦45,000`, `45000`, `45k`, `1.5m`, `N45k`, "45 thousand";
-- "more than", "over", "above" (gt); "at least" (gte); "less than", "under", "below" (lt); "between X and Y" (inclusive);
-- "around 45k", which is **asked, not guessed** (OD-10).
-
-Results are integer kobo, with an `ok` or `ambiguous` outcome. Unit tests table every form.
-
-### 6.6 Sorting and pagination
-
-| Sort | Order |
+| Phrase | Window |
 | --- | --- |
-| newest | `created_at DESC, id DESC` (default) |
-| oldest | `created_at ASC, id ASC` |
-| highest / lowest | `total_k` |
-| largest_balance | `balance_due_k DESC` (open only) |
-| most_overdue | `due_date ASC` (open and overdue only) |
-| customer | By rehydrated display name. **This cannot be done in SQL**, because names are ciphertext. Within one page only, or OD-1. |
+| today, yesterday, "the day before yesterday", a named weekday ("this Monday", "last Monday") | Whole Lagos days |
+| this week, last week | Calendar week, Monday start (OD-19). "Past 7 days" and "last 7 days" are rolling. |
+| this month, last month, a named month ("October", "October 2026") | A bare month name means its most recent occurrence that is not in the future. |
+| this quarter, last quarter, "Q3", "Q3 2026" | Calendar quarters Jan–Mar, Apr–Jun, Jul–Sep, Oct–Dec (OD-19). |
+| this year, last year, "2025" | Calendar year. |
+| "past N days/weeks/months" | Rolling, ending now. |
+| "since January", "from 1 Sep to 15 Oct", "between Monday and Friday", "before 5 Nov", "after 5 Nov" | Custom range, bounded by the earliest data (§6.4) and by today. |
+| An explicit date such as "12/11", "12 Nov", "12 November 2026" | dd/mm by default. Ask only when both readings are valid and differ (OD-19). |
 
-- **Page size** is 5 in chat (WhatsApp readability), 10 at most.
-- **"More"** continues from the stored keyset cursor in the continuation.
-- **Stability:** every sort ends with `id`.
+- **Limits:** a single window spans at most 366 days (`MAX_CUSTOM_RANGE_DAYS`). A **series** may span up to 24 months or 8 quarters (OD-31).
+- **Ambiguity** ("Monday" said on a Monday, "05/06") gets one question, through the existing `expects:'period'` continuation.
 
-### 6.7 Performance budget
+### 6.2 Complete versus partial periods
 
-Budget: p95 search query ≤ 50 ms, and end-to-end router-path reply ≤ 2 s excluding Meta. These are targets, to be measured.
+A window is **complete** when its end is in the past. It is **partial** when it contains now.
 
-Verified in Stage H by an integration test that seeds 20,000 invoices across 2 businesses and asserts:
-- `EXPLAIN` uses the composite indexes;
-- the query reads no other business's rows.
-
----
-
-## 7. Customer identity resolution
-
-### 7.1 What the vault allows
-
-- Names and phones exist only as AES-GCM ciphertext and an exact HMAC (`vault.ts:64-145`).
-- SQL can answer one question: "is there a customer whose normalised name is exactly X?"
-- It cannot answer "names starting with Chukwu" or "names like Ada".
-- Because of the unique index (`0005`), **two customers can never share an exact trusted name**. "Two Adas" exist only as different full names: "Ada Obi" and "Ada Bello".
-
-### 7.2 Proposed resolver
-
-A new `apps/api/src/privacy/customer-lookup.service.ts` with a **lookup-only** API, `resolveForRead(tx, businessId, ref)`:
-
-| Input | Result |
-| --- | --- |
-| `{token}` from the gateway's known-name or phone pass | That customer. |
-| `{mention}` (a name the gateway did not know exactly) | `none`, or a candidates list from the OD-1 mechanism. It **never creates.** |
-| Phone in the message | `normalisePhone`, then the vault phone fold, then an exact match-key lookup. `none` if unknown, and it never creates (needs OD-3). |
-| Several tokens | Ask which one. |
-
-Display names for candidate lists are rehydrated in `ReplyService` only.
-
-### 7.3 Partial and fuzzy names (OD-1)
-
-This is a privacy-architecture decision:
-
-| Option | Mechanism | Supports | Cost / risk |
+| Request | Primary window | Comparison window | Label |
 | --- | --- | --- | --- |
-| **A. Exact only** | Today's HMAC | "Ada Obi" only | No change. Fails "Ada's invoices" when the customer is stored as "Ada Obi". |
-| **B. Word-level blind index** | A new facet `name_word`: one HMAC per normalised word of each trusted name. Migration plus a backfill job that decrypts existing names under `VAULT_KEY`. | "Ada" → every customer with the word Ada, indexed. | Leaks word-equality structure to anyone with database access but no key. Backfill and erasure must cover the new rows. No prefixes or typos. |
-| **C. Bounded in-process match** | Decrypt the business's trusted `name` facets (one indexed query, capped at 5,000) in the API process, which already holds `VAULT_KEY`. Match in memory with a token-prefix test plus a strict similarity threshold (for example Jaro-Winkler ≥ 0.92). | Word, prefix and cautious typo tolerance. | A new **use** of the vault: decryption for matching, not only for output. Linear cost per query (≈5,000 short AES-GCM decrypts; to be measured). Needs an explicit privacy ruling and a cap. Nothing new is stored. |
+| "Am I doing better today than yesterday?" at 14:05 | Today 00:00–14:05 | **Yesterday 00:00–14:05** (like-for-like) | "So far today vs yesterday by this time". Yesterday's full day is shown as a second line, labelled. |
+| "Sales today vs yesterday" | Same | Same | Same |
+| "This week vs last week" on Thursday | Mon 00:00 to now | Last Mon 00:00 to the same weekday and time | "Week to date vs the same point last week", plus last week in full. |
+| "This month vs last month" on 20 Nov | 1 Nov to now | **1 Oct to 20 Oct, same time** | "Month to date vs the same days of October", plus October in full. The day is clamped to the shorter month: 31 Mar compares with 28 or 29 Feb. |
+| "This quarter vs last quarter" | Quarter to date | The same elapsed days of the previous quarter | As above. |
+| "This year vs last year" | Year to date | The same elapsed period last year | As above. |
+| "October vs September" | Complete | Complete | "Full months". |
+| "Last 30 days vs the 30 before" | Rolling | The equal span before | Rolling. |
+| "Same month last year" | Month, to date if current | The same month a year earlier, clamped to the same elapsed day | YoY. |
+| Two custom ranges of different lengths | As given | As given | **Both lengths are stated, and the daily average is compared** as well as the totals. A percentage on totals is shown only when the lengths are equal (OD-18). |
 
-**Recommendation: C with a hard cap.** Over the cap, fall back to A and B. If the owner wants indexed scale later, add B.
+**This replaces `previousWindow`'s behaviour for partial windows.** Today a partial month compares with the equal-length span before: 1–20 Nov against 12–31 Oct (`period-compare.ts:113-140`). That also changes `GET /v1/reports/compare`, which has no web caller (§2.2). The changed behaviour is pinned by tests.
 
-Either way, **fuzzy candidates are never auto-selected** (T6). The reply lists at most 5 names and asks which one.
+**Clamp semantics.** `resolveCustomRange` clamps a range to the end of today (`periods.ts:142-161`), which includes hours that have not happened yet. Like-for-like comparisons use **now**, not the end of today.
 
-### 7.4 Read-only must not create customers (OD-3): conflict with current code
+### 6.3 Arithmetic
 
-Two paths create customers during reads today:
+The existing `changeOf` (`period-compare.ts:73-77`) is reused unchanged, and its semantics are adopted:
 
-| Path | Where | What happens |
-| --- | --- | --- |
-| Mention resolution | `handler :5232-5262` | Runs for `Query` as well. "How much does Bob owe" with an unknown Bob creates and vaults Bob. This is pre-existing, and there is no test for it _(traced in code)_. |
-| Gateway phone tokenisation | `gateway.service.ts:240-246` | Runs **before** the model, so before anyone knows whether the message is a read. |
+- **Absolute change:** `current − previous`, in kobo. −0 becomes 0.
+- **Percentage:** `previous > 0` gives `round(abs × 1000 / previous) / 10`, one decimal place. Otherwise **null**, shown as "not applicable".
+- **Direction:** the sign of the absolute change, rendered as words ("up", "down", "no change"), never colour alone.
 
-For the new intent, the handler can skip `resolveMention` when the command is `InvoiceQuery`. That part is easy.
+Additions, all in core:
+- **Average sale** = `salesK ÷ invoices`, rounded half-up to the kobo. Null when the count is 0.
+- **Count change:** absolute only.
 
-The phone path is harder. Options:
+**Zero rules.** These templates are fixed in core:
+- **Previous period zero, current positive:** "₦X this period; nothing was recorded in the comparison period, so there is no percentage."
+- **Current zero:** "No sales were recorded so far today." This is not "you sold nothing", because the books only hold what was recorded.
+- **Both zero:** "No recorded sales in either period."
 
-| Option | Benefit | Risk |
-| --- | --- | --- |
-| (a) Provisional phone tokens: look up only, and create a customer only when a write's draft is confirmed | Reads become truly read-only | It touches every write path. |
-| (b) Accept and document | Nothing changes | A searched-for unknown phone leaves an empty customer row with a vaulted phone. |
+### 6.4 Missing data versus recorded zero
 
-Recommendation:
-- (a) as its own prerequisite PR, P0 in the roadmap;
-- also fix the `Query` mention path, which is pre-existing behaviour and needs a recorded gap ID.
+A window that **ends before the business's first record** is "no records yet", not zero. The first record is the earliest of `businesses.created_at`, the opening-balance `asAt` and the first ledger posting. A partially covered window ("since January" for a business that started in March) is labelled "records start on 4 March".
 
-### 7.5 Customer business names (OD-2)
+Year-over-year comparisons with no prior-year data say so instead of showing 100% growth.
 
-There is **no business-name field.** A merchant who calls a customer "Bright Stores" has stored that as the customer's name facet. Recommendation: treat a business name as a name in this feature, with no schema change, and record the limitation.
+### 6.5 Posting-date semantics
 
-A separate `business_name` facet would need:
-- an input path at quote, sale and storefront;
-- vault, erasure and linking rules;
-- a product decision.
+The ledger dates a figure by **when it was posted** (`summaryFor`, G-118):
 
-### 7.6 The merchant is not a customer
+- A void posted in November reduces November's sales, not October's. This matches the statements and is stated in the methodology section.
+- Backdated postings land in their stated date while the month is open.
+- Closed months cannot change (`0034` triggers).
 
-The requesting member's own phone must never resolve as the customer filter. If the gateway returns a token whose phone equals the sender's phone, answer "That is your own number" instead of searching _(proposed; needs a test)_.
-
----
-
-## 8. Document retrieval
-
-### 8.1 Resolution
-
-A new repository function, `documentsForInvoice(tx, businessId, invoiceNumber)`:
-- selects `documents WHERE business_id = $b AND ref_number = $n AND kind IN ('invoice_pdf')`, ordered by `created_at ASC`;
-- the **first** row is the original;
-- it also returns the receipt documents for that invoice (via `receipts.invoice_id` → `receipt_number` → `ref_number`).
-
-**Proposed migration.** Add a nullable `invoice_id` to `documents`, written by `recordDocument` from now on, with a tenant composite FK. Backfill by `ref_number` join inside a migration: the data is deterministic and has no PII. Rationale: `ref_number` is free text with no FK, so integrity relies on convention. **OD-11 if the owner prefers the join-only approach** (no migration). The `ref_number` index is required either way.
-
-### 8.2 Distinct outcomes
-
-Each outcome has its own template.
-
-| State | Detection | Reply (draft) |
-| --- | --- | --- |
-| Invoice not in this business | No row (RLS-scoped) | "I can't find invoice INV-2026-000099 in your records. Check the number, or send *my invoices*." The same reply is used for another tenant's number, so nothing leaks. |
-| Exists, paid at recording (no invoice PDF by design) | Invoice exists, no `invoice_pdf`, and a receipt exists | "INV-2026-000003 was paid when you recorded it, so I issued receipt RCT-2026-000002 instead. Reply *1* to get the receipt." (OD-4) |
-| Exists, no PDF ever made | No document rows. Render failed or is still pending (`document.render` job state) | "That invoice is recorded, but its PDF was never created. I have not made a new one." Recovery is OD-5. |
-| Row exists, object missing | `storage.get` returns `null` (`r2.storage.ts:48`) | **Today this throws and retries 5 times silently** (`deliver-document.handler.ts:80-84`), after the merchant was already told "Sending…". Proposed: check the object exists (HEAD) before replying, so the reply is "Its PDF is missing from storage. I've flagged it; your records are unaffected." Raise an ops exception. |
-| Storage temporarily down | `get` or HEAD throws a non-NoSuchKey error | "I can't reach your documents just now. Please ask again in a few minutes." Nothing is queued. |
-| Unauthorised member | Role check (OD-7) | The existing role reply. |
-| Removed by retention | The business was deleted (whole-business sweep only today, `repos/retention.ts:115-140`), or a future per-document deletion | Cannot occur for a live business today. Per-document expiry does not exist. The `latestDocumentFor` retention residual (G-67 (1)) applies to any future per-document deletion. |
-
-### 8.3 What is never done
-
-Never re-render, never allocate a number, never touch `doc_counters`, never mutate the snapshot, never presign a URL.
-
-The re-render path is not byte-stable anyway:
-- it reads the **live** business name (`render-document.handler.ts:61-67`);
-- pdfkit's CreationDate is not pinned.
-
-So a regenerated PDF would not be "the original" (relevant to OD-5).
+**Report reproducibility.** A report for a closed period is reproducible. A report covering an open period records its as-of timestamp, and its stored JSON (§13) is the evidence of what it said.
 
 ---
 
-## 9. WhatsApp delivery and rich summaries
+## 7. Financial metric definitions
 
-### 9.1 Retrieve to the requester (A) versus send to a customer (B)
+Every metric reads the source named here. Words used to the merchant follow OWN-44 and spec §5.1: invoiced sales, cash collected, expenses and profit are never interchangeable.
 
-**A. Retrieve to the requester.** Reuse `document.deliver` with a new optional payload field `recipientUserId`:
-- the handler resolves that member's phone inside the same business;
-- when the field is absent, it falls back to `ownerPhoneFor`, so behaviour is unchanged;
-- job key `retrieve:<docId>:<eventId>`: idempotent across webhook redelivery, while a fresh request sends again (matching resend);
-- caption: "INV-2026-000011 (as issued 12 Oct)", with no customer name. Filename: `INV-2026-000011.pdf`;
-- STOP override, window and template fallback, usage rows, retries and dead-lettering are all unchanged.
-
-This closes the G-67 residual "a delegate's resend delivers to the owner". **The change in delivery target needs OD-7.**
-
-**B. Send to a customer.** **Not in scope without OD-8.**
-- No flow sends a PDF to a customer today.
-- Customer messaging exists only on Integrate WABA connections: the customer's own window and STOP, and a `SERVICE_MESSAGE` unit (`apps/api/src/channels/waba-templates.service.ts:258-371`).
-- "Send this invoice to Ada" will get an honest reply, "I can send it to you, and you can forward it", until approved.
-
-**Known limitation, pre-existing and out of scope.** A crash after Meta accepts a send but before the job commits re-sends the PDF, because the send runs inside the job transaction (`runner.ts:185-204`) _(inference)_. This is acceptable for a merchant's own copy. Record it.
-
-### 9.2 Single-invoice summary
-
-Assembled by core `summariseInvoice(snapshot, projection, payments, credits, now)` and rendered by templates:
-
-```
-INV-2026-000011 · Ada Obi
-As issued on 12 Oct 2026
-  3 × Rice 50kg @ ₦40,000 = ₦120,000
-  Total ₦120,000 · Paid at issue ₦0 · Due 26 Oct
-Today
-  Paid since: ₦50,000 (2 payments, last on 2 Nov)
-  Still owed: ₦70,000 · 25 days overdue
-PDF: available — reply *send* to get it
-```
-
-The facts and their sources:
-
-| Section | Source | Note |
+| Metric (merchant wording) | Definition | Source |
 | --- | --- | --- |
-| "As issued" | `snapshot_json` | Includes `paidK` at issue. |
-| "Today" | Projection `paid_k` and `balance_due_k`, payments through `payment_allocations` (net of reversals), credit applications | Two sources, never blended. |
-| Status words | `status` | `credited` and `voided` are worded explicitly. Rules: never a negative balance; an overpayment shows as "₦X is held as credit for this customer" from `customer_credits`, never as a negative. |
-| Business name | `businesses.name` (live) | Labelled as the current business name. The snapshot does not store it. |
-| Customer name | Rehydrated token | After erasure it is shown as "a customer whose details were erased". |
-| VAT and discount lines | Snapshot | Shown only when non-zero. |
-| Due date | Snapshot `dueDateIso` | When absent, "no due date was set". Never estimated. |
+| **Sales (invoiced)** | Revenue plus VAT posted in the window; voids netted; credit notes reported alongside, not netted | `summaryFor.salesK` (G-118) |
+| **Net sales** | Sales minus credit notes | `salesK − creditedK` |
+| **Number of sales** | Sale-shaped postings minus reversals | `summaryFor.invoices` |
+| **Average sale** | Net sales ÷ number of sales | core |
+| **Cash collected** | Cash that arrived from customers, net of reversals and chargebacks; refunds alongside | `summaryFor.moneyInK`, `refundedK` |
+| **Collection rate (period)** | Collected ÷ net sales for the same window. It can exceed 100% (collections on older invoices) and is labelled as such. | OD-34 |
+| **Paid share of this period's invoices** | Σ `paid_k` ÷ Σ (`total_k − credited_k`) for invoices issued in the window and not voided, as of now | `invoices` projection (OD-34) |
+| **Unpaid invoices (%)** | By count and by value, open statuses, over the same set | `invoices` |
+| **Outstanding receivables** | Σ `balance_due_k`, open statuses, as of now | `overviewFor.owedToYouK`, `debtorsFor` |
+| **Overdue and ageing** | Buckets as `ageingFor` | `ageingFor` (OD-9) |
+| **Days to get paid** | For invoices fully paid in the window: median of (last allocation date − issue date) | N, `payment_allocations` (OD-34) |
+| **Expenses (recorded spend)** | Operating expenses plus fees, plus stock bought at full value | `summaryFor.moneyOutK`. Labelled "spending, including stock bought". |
+| **Expenses excluding stock** | Expense-account movement only | `expenseScheduleFor` generalised to windows |
+| **By expense category** | Fixed ten categories. **NULL is shown as "not categorised"**, a fix to `reports.ts:564`. | Same |
+| **Expense-to-sales ratio** | Expenses excluding stock ÷ net sales. Only when net sales > 0. | core |
+| **Cost of goods sold** | COGS-role movement in the window | `accountSumsFor` generalised to windows |
+| **Gross profit / margin** | Net sales excluding VAT, minus COGS. **Always shown with cost coverage:** "₦X of sales (N sales) had no recorded cost, so gross profit is overstated by up to that amount". Withheld when coverage is below the OD-21 threshold. | `buildProfitAndLoss` (`statements.ts:141-176`). Coverage = revenue of sales with no COGS posting whose `source_id` is the invoice number. |
+| **Profit (books)** | Income − expenses from the P&L builder. Labelled "profit in your books, from recorded costs and expenses". Only with the same coverage rule. | `buildProfitAndLoss` (OD-21) |
+| **Cash in / cash out / net cash movement** | Cash-account movement **excluding transfers between the merchant's own cash accounts and opening balances** | OD-17. `cashflowFor` and `summaryFor.cashIn/Out` today include both. |
+| **Opening and closing cash** | Cash-account cumulative balance at the window's ends | `accountSumsFor` cumulative (statements' direct cash flow, `statements.ts:269-280`) |
+| **Sales by channel** | `revenueScheduleFor` generalised to windows; NULL shown as "channel not stated" | `reports.ts:621-688` |
+| **Sales by customer** | Σ (`total_k − credited_k`) for non-void invoices issued in the window, by customer token (`customer_id` token, or snapshot token) | `invoices`. Names come from `ReplyService` and the report renderer (OD-24). |
+| **Repeat customers** | Customers with 2 or more non-void invoices in the window | `invoices` |
+| **Sales by product** | Per OD-20: verified product totals from sale stock movements joined to products, plus optional folded free-text names, labelled "as typed" | `stock_movements`, `invoice_items` |
 
-`detail: 'itemised'` adds every line. `detail: 'payments'` lists each payment with its date and amount.
+**Reconciliation rule.** Ledger windows (`summaryFor`) and invoice-row aggregates (customer and product breakdowns) can differ: for example, when a credit note was posted in a later window, or for hand-posted revenue (`handPostedK`). A breakdown's total is therefore printed with "breakdown total ₦X of ₦Y sales", and an "other or unattributed" line closes the gap. That line is never hidden. A test pins equality when no credit, hand posting or backdating is involved.
 
-### 9.3 Multi-invoice summaries
+**`overviewFor` inconsistency (OD-16).** `overviewFor.salesK` is not net of voids (§2.2). The `records` reply and the dashboard use it, so a merchant can see two different "sales this month" numbers. Recommendation: point `overviewFor.salesK` at the `summaryFor` definition. That is a pre-existing defect fix with a RED test; it changes a figure merchants see.
 
-A new `invoiceAggregate(tx, businessId, filter)` runs one SQL statement over the §6.1 predicate. It returns:
-- `count`, `SUM(total_k)`, `SUM(paid_k)`, `SUM(balance_due_k)`;
-- counts by status;
-- `SUM(balance_due_k) FILTER (WHERE due_date < lagosToday)` for overdue;
-- the top 3 by balance;
-- `max(created_at)`.
+---
 
-`groupBy: customer` groups on the token expression; `groupBy: month` groups on the Lagos month.
+## 8. Advanced invoice search design
 
-**Reconciliation note.** The `sales_summary` total (`summaryFor`) is **ledger-based**: posting time, net of credit notes. An invoice aggregate is **invoice-based**: issue time, totals as issued. The two can differ, for example after a credit note. Each reply names its basis ("invoiced on invoices issued in October" versus "sales in your books"), and a test pins the equality when no credit, void or backdating applies. **OD-12:** which basis answers "how much did I invoice versus collect".
+Revision 1's design is kept, with migrations re-assessed.
 
-### 9.4 Follow-ups and selection
+### 8.1 Query strategy
 
-The new continuation kind is `invoice_results`. Migration: extend the kind CHECK in `0154` and add an `invoice_results` jsonb column, or a child table. It stores:
-- `business_id` and `user_id`, from the existing columns;
-- up to 10 `{ordinal, invoiceId, invoiceNumber}`;
-- the criteria (as a validated `InvoiceCriteria`);
-- a sort and a keyset cursor;
-- `expires_at`: 600 s, the existing `CONTINUATION_TTL_SECONDS`.
+A new `packages/db/src/repos/invoice-search.ts` (§18) holds three functions:
 
-At most one is open per member (the existing unique index). A new search replaces it; any write intent closes it.
+- `invoiceSearch(tx, businessId, filter, page)` builds **one parameterised SQL statement** from a typed filter. Every user pattern is bound, with `%` and `_` escaped. The predicate covers:
+  - the customer token: `c.token = ANY($t) OR snapshot_json->>'customerToken' = ANY($t)`, which covers historical NULL-`customer_id` invoices;
+  - issue or due date range;
+  - status set;
+  - amount bound on `total_k`, `balance_due_k` or `paid_k`;
+  - item name: `EXISTS` on `invoice_items` with `lower(name) LIKE $p` and an optional quantity;
+  - keyset on `(sortKey, id)`, `LIMIT page + 1`.
+- `invoiceAggregate(tx, businessId, filter)` runs over the same predicate: `COUNT`, the sums, `COUNT FILTER` by status, overdue sum, top 3 by balance, latest activity, and an optional `GROUP BY` token or Lagos month. **Counts come from SQL** (CLAUDE.md §5).
+- `invoiceByReference(tx, businessId, ref)` does an exact match on canonical upper case, which uses the existing unique index.
 
-Resolution:
+### 8.2 Ranking tiers (core `analytics.ts`)
 
-| Merchant says | Resolution |
+| Tier | Rule | Auto-select |
+| --- | --- | --- |
+| T1 | Exact reference | Yes |
+| T2 | One resolved customer plus filters | Only if the count is 1, or the request says "last" or "latest" |
+| T3 | Exact structured filters (amount `eq`, quantity, date, status) | Only if the count is 1 |
+| T4 | All item words match line-name words or word prefixes | Never |
+| T5 | Some item words match ("closest matches") | Never |
+| T6 | Fuzzy customer-name candidates (OD-1) | Never; the customer is chosen first |
+
+**No embeddings, vector store, search engine or `pg_trgm` in the plan.** Every searchable fact is structured, or is a short merchant-typed item name. A semantic layer would duplicate tenant data, add a processor (spec Appendix C) and still need SQL verification. Revisit only with measured misses from staging.
+
+### 8.3 Indexes (re-assessed for minimal migrations)
+
+Revision 1 proposed four indexes. Per the follow-up's migration rule, **none is proposed up front**:
+
+- every predicate is business-scoped;
+- `(business_id, status)` and `(business_id, customer_id)` already exist;
+- a business with thousands of invoices is a small, sequential range.
+
+**Stage H gate:** an integration test seeds 20,000 invoices and 60,000 ledger lines for one business, with a second business of the same size, and asserts p95 query time against budget (§15) with `EXPLAIN`. Only a failing budget justifies an index migration (candidates M1–M3, §19).
+
+### 8.4 Customer identity
+
+Unchanged from revision 1:
+
+- **Exact name and phone through the vault HMAC.** Partial or fuzzy matching per OD-1.
+- **Lookup-only resolution for reads** (OD-3). Implemented as a new method on the existing `PrivacyGateway` (`gateway.service.ts`) rather than a new service file.
+- **Business names treated as names** (OD-2).
+- **The sender's own number is never the customer filter.**
+- Display names are rehydrated only in the output layers (§16).
+
+### 8.5 Document outcomes
+
+Kept from revision 1. Each outcome has its own template:
+
+- not found, which is also the reply for another tenant's number;
+- paid at recording, so a receipt exists instead and is offered (OD-4);
+- no PDF ever made;
+- object missing, checked **before** replying "Sending…", which fixes today's silent 5 retries;
+- storage down;
+- unauthorised;
+- removed by retention.
+
+**Never re-render or renumber** (OD-5). Delivery goes to the requesting member (OD-7).
+
+### 8.6 Summaries
+
+Kept from revision 1. "As issued" comes from the snapshot, including `paidK` at issue. "Today" comes from the projection plus allocations and credits. The two sections are never blended, a negative balance is never shown, and overpayment appears as credit held.
+
+**The same summary feeds the report PDF's invoice tables**, so there is no second balance calculation (follow-up §11).
+
+---
+
+## 9. Conversational context design
+
+### 9.1 Reusing `conversation_continuations`
+
+The existing table already provides:
+- member and business scoping;
+- one open row per member;
+- the 600 s TTL;
+- supersession when a new row opens;
+- the `options` invoice choice list, validated by the database, with up to 9 entries.
+
+That covers ordinal selection ("the second one") with **no schema change**: `kind='clarification', expects='choice'`.
+
+What it cannot hold is the **analysis context** needed to apply "what about expenses?", "now the previous three months" or "generate the PDF" to the prior answer. Its columns are closed CHECK lists (§2.6).
+
+**OD-33 recommendation:** one migration adds a nullable jsonb `context` to `conversation_continuations`, together with:
+- a database validation function in the style of `conversation_continuation_options_valid`;
+- a new `kind='books'`;
+- a CHECK widening.
+
+The context holds **only resolved, typed values**:
+- intent;
+- metric and breakdown enums;
+- the resolved windows as ISO timestamps;
+- comparison mode;
+- customer token;
+- invoice filter enums and kobo bounds;
+- the keyset cursor;
+- the `BooksResult` reference (the job or document ID of a generated report).
+
+Following 0154's rule, **no typed words are stored**. The one casualty is free-text item words, so "only the unpaid ones" after an item search needs the item words repeated. Option (c) in OD-33 changes that rule.
+
+The rejected alternative reads the context from the last read-only `command_drafts` row (zero migration). It couples the write-confirmation table (CG3 authority) to analytics.
+
+### 9.2 Follow-up resolution
+
+| Merchant says (books continuation open) | Resolution |
 | --- | --- |
-| `2`, "the second one", "number 2", "2nd" | Deterministic router or continuation phrase, then the ordinal. |
-| "send it", "send the PDF" | Valid only when the result set has exactly 1 item, or after an ordinal was chosen. Otherwise "Which one? Reply with its number." |
-| "only the unpaid ones", "sort by amount", "what about last month" | The model returns an `InvoiceQuery`, and the handler **merges** it over the stored criteria. Only when a continuation is open, and only for the same member. |
+| "2", "the second one", "number 2" | Router ordinal → `options` → re-read by invoice number under `withBusiness` |
+| "send it", "send the PDF" | Invoice context: deliver the selected or only invoice's stored PDF. Analysis context: generate the report PDF from the **stored context**, re-run deterministically (OD-22, OD-23). |
+| "what about expenses?", "and collections?" | Router phrase table (topic words plus lead words) → swap the metric, keep the windows. Otherwise the model returns a partial `Analyse`, which is **merged over** the context. |
+| "now the previous three months", "what about last week?" | Extended `periodAnswer` → swap the windows and keep the metrics. |
+| "show the top products", "which customers?" | Add a breakdown and keep the windows. |
+| "only the unpaid ones", "sort by amount" | Invoice context: merge the filter or sort. |
+| "send it again" | Re-deliver the last document **delivered to this member**, invoice or report (OD-26). Free. |
+| "show the previous report" | List this member's recent `report_pdf` documents (newest 5) as choices (OD-32). |
 
-On every resolution, the handler re-runs the lookup by `invoiceId` **and** `business_id` under `withBusiness`:
-- a missing row gives "that list has expired, ask again";
-- a voided row is shown as voided.
+**Merge rules** (core, pure):
+- the model's partial intent may only **change** fields it set;
+- unset fields inherit from the context;
+- a merge that changes intent type (invoice ↔ analysis) starts fresh;
+- every merged plan is re-validated as if it were new.
 
-Selections are never trusted from text: an ordinal maps only through the stored row. A forged invoice ID cannot be supplied, because the merchant only ever sends ordinals or references.
-
-### 9.5 AI narrative
-
-**None in the first release.** Every financial sentence is a template.
-
-The requirement allows AI wording "only where there is a measurable benefit". Templates in English, plus the existing Pidgin-aware phrasing, meet the examples. It also avoids putting invoice data (item names, which are merchant-typed text) back into a model, which removes the prompt-injection surface for summaries completely. Revisit only with evidence.
+**Expiry:** after 600 s, or when the context is superseded, "what about expenses?" is answered as a new question with no carried period, so the existing "which period?" question is asked. It never silently reuses stale context. When a member's authorisation has changed since the context was written (role or plan), the context is discarded.
 
 ---
 
-## 10. Voice support
+## 10. Insights engine
 
-### 10.1 Integration
+The engine is deterministic: rules over `BooksResult`, in core `analytics.ts`. Each rule has a precondition, a threshold and a fixed template. No model is involved in the MVP (OD-27).
 
-No new pipeline. The existing path (`inbound-message.handler.ts:1287-1565`) produces transcript text, which enters the **same** `routeMessage`, continuation and interpreter steps (:447-454). Metering:
+| ID | Finding | Precondition and threshold (proposed, OD-31) |
+| --- | --- | --- |
+| I1 | Sales up or down X% vs the comparison | Comparison valid (§6.2); \|% \| ≥ 5 or \|Δ\| ≥ ₦10,000 |
+| I2 | Collections did not keep pace with sales | Sales up, and collection rate down ≥ 10 points |
+| I3 | Receivable concentration: "3 customers hold 65% of what you are owed" | ≥ 5 debtors; top-3 share ≥ 50% |
+| I4 | Strongest day, week or month in the range | ≥ 3 buckets with activity |
+| I5 | Expenses grew faster than sales | Both periods have sales > 0 and expenses > 0 |
+| I6 | Overdue amount rose | Ageing at both ends of the window |
+| I7 | Largest expense category share | ≥ 3 categorised expenses; "not categorised" is reported, never ranked as a category |
+| I8 | Sustained trend: "sales rose for 4 months in a row" | ≥ 4 consecutive buckets in one direction |
+| I9 | Product or customer concentration in sales | OD-20 and OD-24 apply |
+
+**Data-confidence labels**, attached to the result and printed in the PDF methodology section:
+
+| Label | Example |
+| --- | --- |
+| verified | A ledger figure |
+| derived | A ratio |
+| partial | An incomplete period |
+| coverage-limited | Uncosted sales, uncategorised expenses, free-text products |
+| unavailable | A metric the data cannot support, with the missing input named |
+| insufficient history | Fewer buckets than a rule needs |
+
+**Recommendations** are a fixed, whitelisted set. Each is tied to a finding and to an existing Rekoda action, for example:
+
+- I2 or I6: "Consider reviewing unpaid invoices: send *who owes me*."
+- I7: "Your largest spending was rent."
+
+There are no causal claims, no forecasts and no intent inference. The engine has no rule type that could express those, which makes it safe by construction.
+
+---
+
+## 11. PDF rendering architecture
+
+### 11.1 What exists and what is missing
+
+`renderBlocksPdf` (`pdf.ts:163-329`) already provides:
+- embedded Unicode fonts;
+- A4 pages;
+- pagination with keep-together logic;
+- a "Page N of M" footer.
+
+It lacks colour, tables, KPI cards and charts. pdfkit itself provides every primitive needed for those: `rect` and `roundedRect` with `fill` and `stroke`, `moveTo`, `lineTo` and `bezierCurveTo`, `fillColor` and `strokeColor`, `opacity`, measured text width (`widthOfString`) and `heightOfString`, and clipping. The gap is in Rekoda's renderer, not in the library.
+
+### 11.2 Options compared
+
+| Option | Charts and layout | Image and runtime impact | Security and ops | Verdict |
+| --- | --- | --- | --- | --- |
+| **A. Extend pdfkit renderer (recommended)** | Vector bars and lines, KPI cards, tables drawn natively; exact, deterministic | **None** (already installed, pure JS) | No new attack surface; same fonts | Chosen |
+| B. HTML → PDF via headless Chromium (puppeteer or playwright-core) | Rich CSS, reuse of web components | **+~300–400 MB image, 150–400 MB RAM per render**, on a 4 GB host already under memory pressure (`deploy.md:179`) | Browser sandbox, Chromium CVE cadence | Rejected |
+| C. Chart library server-side (Chart.js or Vega + node-canvas) | Ready charts, embedded as raster PNG | Native cairo and pango → `apt-get` in the Dockerfile | Native-module CVEs; raster blur on print | Rejected |
+| D. `svg-to-pdfkit` (MIT, pure JS) + SVG charts | Reuse of the `CashflowChart.tsx` approach | Small dependency | Low | Fallback only, if A's chart code proves costly |
+
+### 11.3 Design within option A
+
+**Core: new `packages/core/src/report-layout.ts`.** It holds pure layout functions, `layoutReport(result: BooksResult, opts) → ReportPage[]`, which make every content decision:
+- which sections appear, given the data;
+- section order and adaptive depth (§12);
+- KPI selection;
+- chart type per question (§12.4);
+- **chart geometry**: scales with zero baselines, nice tick values, bar positions, label strings via `formatKobo`;
+- table rows, column alignment, and header repetition on page breaks.
+
+Because geometry is computed in core, it is unit-testable without a PDF. Tests can assert that the zero baseline exists, bars are proportional, no labels overlap and no text box exceeds its column.
+
+**API: `apps/api/src/documents/pdf.ts`.** Add `renderReportPdf(pages)` beside the existing renderers. It reuses:
+- font registration;
+- `FontsMissing`;
+- A4 constants;
+- the footer and pagination code.
+
+It adds ink only: filled rectangles, polylines, table cells and colour tokens. `LayoutBlock` stays for invoices, receipts and statements; reports get their own typed element union in `report-layout.ts`. This avoids widening `LayoutBlock`'s string-only shape for every existing document.
+
+**No HTML, CSS or chart configuration ever comes from a model** (follow-up §15). The renderer accepts only `report-layout`'s typed elements.
+
+**Fonts.** Noto Sans Regular and SemiBold are reused; they carry ₦. **Brand display type, Calistoga, needs a TTF asset** (OFL, roughly 100 KB, fetched by the existing `scripts/fetch-pdf-fonts.mjs`). That is a binary asset, not a dependency (OD-28).
+
+---
+
+## 12. Report design specification
+
+### 12.1 Report design tokens
+
+These are derived from `design-system/rekoda/MASTER.md` and recorded in `docs/REKODA_DESIGN_SYSTEM.md` as a new "Printed reports" section (Stage I).
+
+| Token | Value |
+| --- | --- |
+| Page | A4 portrait (OD-30). Margins 40 pt, plus a 28 pt header band and a 24 pt footer. |
+| Type | Display: Calistoga 22/18 pt (OD-28; fallback Noto Sans SemiBold). Section: Noto SemiBold 13 pt. Body: Noto Regular 9.5 pt / 13 leading. Table: 8.5 pt. Note: 7.5 pt. **Tabular figures**: right-aligned money, fixed decimal positions via `formatKobo`. |
+| Colour | Text `#1c1b19`, muted `#6b6862`, rules and borders `#ddd9d0`, card fill `#f7f6f3`, accent `#0f766e`. Series "in" (sales, collections) `#0d9488`, "out" (expenses) `#9d3557`. Comparison period: the same hue at 45% tint. Status colours (`#b45309` attention) are used **only for caveat callouts**, never as series. |
+| Numbers | Full ₦ amounts in tables and KPIs. Axis labels abbreviated (₦45k, ₦1.2m) with exact values in the adjacent table. Percentages to one decimal place, from core. |
+| Direction | "▲ 25.0% (₦45,000)" / "▼ …" with words in the KPI caption. Colour is never the only signal. |
+| Header | Business name (left), report title and period (right), hairline rule. |
+| Footer | "Prepared by Rekoda from your records · <report ref> · generated <Lagos timestamp> · Page N of M" |
+| Empty section | One muted sentence: "No expenses were recorded in this period." Never an empty chart. |
+| Long tables | Header repeated on each page; zebra rows at `#fcfcfb`; at most 40 rows in the body, then "and 112 more in the appendix" (appendix capped by OD-31). |
+| Confidentiality | "Confidential: prepared for <business name>" on the cover. |
+
+### 12.2 Sections (adaptive)
+
+1. **Cover band:** Rekoda mark, business name, title, period and comparison period, generated date, confidentiality line.
+2. **Executive summary:** 3–5 sentences from the insight templates (verified findings first).
+3. **KPI overview:** 2–6 cards in a 3-column grid. Each card shows label, value, comparison value and direction. Only metrics the data supports appear (`unavailable` metrics appear in methodology, not as empty cards).
+4. **Comparative performance:** a table of metric, current, comparison, change ₦ and change %, with the like-for-like note.
+5. **Trends:** a chart per §12.4.
+6. **Sales breakdown:** channel, top customers and top products, per OD-20 and OD-24.
+7. **Collections and receivables:** collected vs invoiced, ageing bars, top balances.
+8. **Spending:** category bars and expense-to-sales ratio.
+9. **Profitability:** only per OD-21, always with coverage.
+10. **Findings and suggested actions:** grouped as "What the figures show" and "Things you could do".
+11. **Methodology and notes:** windows with exact Lagos timestamps, complete or partial status, definitions from the metric registry, exclusions (VAT inclusion, stock at full value, posting-date rule), confidence labels, as-of time.
+
+### 12.3 Example layouts
+
+- **Daily comparison** ("today vs yesterday, PDF"), 1–2 pages:
+  - Page 1: cover band, 3 KPI cards (sales so far, collected so far, number of sales; each against yesterday by this time), a grouped bar chart by hour block (morning, afternoon, evening) when there are 5 or more postings, otherwise none, the comparison table and 2 findings.
+  - Page 2, only if needed: methodology.
+- **Monthly** ("this month vs last month, detailed"), 3–5 pages:
+  - Page 1: summary and 4–6 KPIs.
+  - Page 2: the comparison table, plus a daily-sales line chart with last month as a tinted line on the same axis.
+  - Page 3: channel, customer and product breakdowns.
+  - Page 4: collections and ageing, then spending.
+  - Page 5: profitability (per OD-21), findings and methodology.
+- **Quarterly comprehensive**, 6–10 pages: everything in the monthly layout, plus a 3-month grouped bar chart (sales, collections, expenses), a quarter vs previous quarter table, top-10 tables, and an appendix with a paged invoice list for the quarter (capped).
+
+### 12.4 Chart selection (core, deterministic)
+
+| Question shape | Chart |
+| --- | --- |
+| Two windows, 1–3 metrics | KPI cards plus horizontal paired bars |
+| Series of ≥ 4 buckets | Line (one metric) or grouped bars (2–3 metrics) |
+| Series of < 4 buckets | Grouped bars only |
+| Ranking | Horizontal ranked bars, ≤ 10, with value labels |
+| Ageing | Five-bucket bars |
+| Share (categories, concentration) | Ranked bars with percentages. **No pie charts.** |
+
+Every chart rule:
+- axes start at zero;
+- currency labels on the axis;
+- exact values in an adjacent table;
+- no dual axes;
+- no 3D;
+- no chart when fewer than 2 non-zero values exist.
+
+### 12.5 Visual verification (OD-29)
+
+Three layers:
+
+1. **Core geometry tests.** Bars are proportional, there is a zero baseline, no element boxes overlap, no text exceeds its box (using fontkit metrics passed in), and pagination is correct for 0, 1, 40 and 400 rows.
+2. **PDF content tests.** pdfjs-dist is added as a **devDependency** only (Apache-2.0). It extracts text from the rendered PDF, and the tests assert that every figure printed equals the `BooksResult` figure, with no ₦ glyph missing. This also lifts the existing limitation that "text cannot be asserted because strings are glyph ids" (`pdf.integration.test.ts:194-202`).
+3. **Visual regression.** pdf.js renders each page to a canvas inside the existing Playwright (1.64.1) browser, and `toHaveScreenshot` compares it against committed baselines for daily, monthly and quarterly reports, plus empty and huge fixtures. No production dependency is added.
+
+---
+
+## 13. Generation and delivery lifecycle
+
+```
+inbound (Analyse with output:'pdf', or "PDF" in a books continuation)
+  1  authenticate, attribute, role, entitlement           (existing, handler)
+  2  plan = resolve(intent)                               (core)
+  3  result = BooksResult via withBusiness(tx) queries    (db, read-only)
+  4  reply = chat summary from result                     (replies.ts)
+  5  reserve REPORT_EXPORTS unit (OD-23)                  (existing reserveUnit; refund on terminal failure)
+  6  enqueue document.render {report: result, requestedBy}   singletonKey report:<inboundEventId>
+  7  send reply "Here's the summary. Your PDF report is being prepared."    (same transaction as 5, 6)
+worker:
+  8  layoutReport(result) → renderReportPdf → bytes      (deterministic)
+  9  storage.put(PDF) and storage.put(JSON of result)     key documents/<biz>/report_pdf/<rand>.{pdf,json}
+ 10  recordDocument(kind 'report_pdf', ref 'RPT-YYYYMMDD-<6 hex>')   (no doc_counters; not a financial number)
+ 11  enqueue document.deliver {documentId, recipientUserId}   singletonKey deliver:<docId>
+ 12  deliver: upload, send, caption "Your Rekoda report for <period>", outbound row, usage row (existing)
+```
+
+**Single source of truth.** The result computed in step 3 is the only data used in steps 4, 8 and 9. The job payload carries it: jsonb, a few KB to roughly 50 KB for quarterly reports with capped appendices _(inference; to be measured in Stage F)_. Nothing re-queries.
+
+**Idempotency.**
+- A redelivered webhook hits `messages_provider_ux` and returns early (handler :497-505).
+- A retried inbound job sees `holdsUnit` and the singleton key `report:<eventId>`.
+- A render retry overwrites nothing: a new random key, and the document row is written only after the put succeeds.
+- A crash between put and record leaves an orphan object. It is acceptable and recorded _(inference; the same as invoices today)_.
+- Deliver is singleton per document.
+- "Send it again" is an explicit new delivery (OD-26).
+
+**Failures.** Each has a distinct outcome, and none loses the computed result:
+
+| Failure | Outcome |
+| --- | --- |
+| Query failed | Error reply, nothing reserved |
+| Metric unavailable | The answer omits it and says why. A PDF section becomes a methodology note. |
+| Render failed (terminal after 5 attempts) | Unit refunded. The dead job raises an ops exception. The merchant gets "I couldn't make the PDF; your figures above are correct". The chat summary already reached them. |
+| Storage failed | Retried by the job; then as for a render failure |
+| Delivery failed | Existing deliver retries and dead-letter. Window closed → the existing document-notice template. |
+| Report expired (OD-25) | "That report has expired; ask again for a fresh one" |
+| Authorisation failed | Existing replies |
+
+**Retention (OD-25).**
+- With customer names in the PDF (OD-24 A), the stored report is PII and is derivable from the books. The recommendation is to expire report objects after 90 days through a sweep that feeds `pending_object_deletions`. That needs migration M5 (a new reason value, and either a `documents` row deletion grant or a tombstone).
+- With no names (OD-24 B), reports can be kept like other documents, with zero migrations.
+- Two-ask erasure must also purge report objects that hold names (OD-24).
+
+**Size.** The quarterly target is under 1.5 MB. Charts are vectors; there are no images except the mark. That is well under Meta's limit, but Stage F adds an outbound size check: there is none today (§2.3).
+
+---
+
+## 14. Voice integration
+
+There is no new pipeline. Transcripts enter the same router, continuation and interpreter path (handler :447-454). Metering:
+
 - `VOICE_MINUTES` for every note;
 - `AI_ACTIONS` only if the transcript reaches the model;
-- a router-matched spoken reference costs voice seconds only.
+- a router-matched spoken phrase ("sales today") costs voice seconds only.
 
-Lapsed plans are refused voice before fetch (:1314-1322). This interacts with OWN-60: see OD-13.
+Voice-specific rules:
 
-### 10.2 References in speech
-
-`whisper-1` gives **no confidence** (`stt.openai.ts:79`), so uncertainty must be structural:
-- `canonicaliseInvoiceRef` also accepts spoken forms: "I N V twenty twenty-six zero zero zero zero one", "invoice two thousand and twenty six, number one", "invoice 1".
-- **Rule for voice-origin messages.** A reference that canonicalises exactly and exists may be **summarised** immediately. **PDF delivery waits for a one-tap confirmation** that quotes the number, amount and date: "Did you mean INV-2026-000001, ₦17,000, issued 20 Nov? Reply *yes* to get the PDF." This needs a continuation flag `origin: 'voice'`.
-- **A year-less or partial reference** ("invoice one") gives a candidate list (current and previous Lagos year, up to 3) and always asks.
-- **No near-miss substitution.** An edit-distance guess is never offered as "did you mean". It is offered only as "I couldn't find INV-2026-000010; your latest invoices are …".
-
-### 10.3 Configuration
-
-`VOICE_TRANSCRIPTION_ENABLED` defaults off. **I cannot see staging's environment**, and no document records whether staging has it on. Voice acceptance requires the owner to confirm or enable it with `OPENAI_API_KEY` and `AI_TRANSCRIPTION_PRICES`. This proposal changes no configuration.
-
-Open voice gaps G-64 (units reserved before a disabled-voice refusal) and G-66 interact with acceptance and should be checked first.
+1. **Invoice references from speech.** Spoken-form canonicalisation. Summaries may be immediate; **PDF delivery of an invoice waits for a one-tap confirmation** that quotes the number, amount and date. Partial references become candidate lists. There is no near-miss substitution. This is needed because whisper gives no confidence signal (`stt.openai.ts:79`).
+2. **Analytics from speech.** The answer is given directly, because it is read-only and the windows are echoed in the reply ("1–20 November vs 1–20 October"), so a mishearing is visible. **A report PDF requested by voice is confirmed first:** "I'll prepare a PDF report for October to December 2026. Reply *yes*." This applies only when the PDF consumes a unit (OD-22, OD-23).
+3. **Configuration.** `VOICE_TRANSCRIPTION_ENABLED` is off by default, and staging's value is unknown to me. Voice acceptance needs the owner to confirm it is on (with `OPENAI_API_KEY` and `AI_TRANSCRIPTION_PRICES`). No configuration is changed by this work.
+4. **Lapsed plans** are refused voice before fetch (handler :1314-1322), consistent with OD-13.
 
 ---
 
-## 11. Security assessment
+## 15. Performance and cost assessment
 
-| Risk | Control |
+| Area | Assessment |
 | --- | --- |
-| Cross-tenant reference | Every query runs under `withBusiness()` with RLS forced (`0001_rls.sql`). The same reply is given for "not yours" and "does not exist". Test: business B's `INV-2026-000001` asked by business A returns A's own `000001` or "not found", never B's. |
-| Same phone or name in two businesses | Match keys are business-scoped HMACs (`vault.ts:132-145`; spec F.4). Test both. |
-| Stale or forged selection | The continuation is keyed by `user_id` and `business_id`. Ordinals map only to stored IDs; the row is re-read under `withBusiness`. Expiry is 600 s. Test: another member's "2" resolves to nothing. |
-| Model-supplied IDs | The schema has no ID or business fields. References are text, then canonicalised, then looked up by SQL. |
-| Role | View-only accountants: READ is allowed (OWN-25). Retrieval delivery is OD-7. Strangers and unattributed senders never reach the handler (`meta.service.ts:346-366`). Note: `roleOfPhone` does not filter `memberships.active` (`identity.ts:577-589`). **A deactivated member may still be resolved; verify before launch** (needs a test). |
-| Third-party delivery | Not built (OD-8). The retrieve path cannot address a customer: its recipient is a member ID resolved in the business. |
-| PII in prompts | Unchanged gateway behaviour. Invoice numbers already pass through, and they are not PII. Results never go to the model. |
-| PII in logs | `redactForLog` and the log-capture test (`apps/api/src/observability/logs.integration.test.ts`) are extended to the new path. Phones are never logged; only counts and invoice numbers. |
-| Storage keys | Never in replies. Filenames are the reference only. |
-| Enumeration and abuse | Router reads are free. Proposed: a per-member read rate limit (for example 60 lookups per hour) using the existing quota tables; OWN-60 permits "reasonable abuse limits". OD-14. |
-| Prompt injection | Customer and document data never enter a model in this feature. The merchant's own message is the only input, which is the existing posture. |
+| Window queries | `summaryFor` scans `ledger_entries` by `(business_id, created_at)`, which is indexed. A comparison is 2 calls. |
+| Series | Generalise the same SQL to `GROUP BY` bucket. One query per series, not one per bucket. |
+| Quarterly report | About 10–14 queries in total _(inference)_. Budget: p95 ≤ 1.5 s on the 20,000-invoice / 60,000-line fixture (to be measured). |
+| Invoice search | Budget p95 ≤ 50 ms. Measured in Stage H. Indexes only if the budget fails (§8.3). |
+| Rendering | pdfkit in the worker, roughly tens of MB per render _(inference; to be measured)_. Worker concurrency is unchanged. Reports are rare compared with messages. |
+| Caching | **None.** Figures change with every posting, and invalidation would add risk for little gain at SME volumes. Repeat requests within the continuation reuse the stored context. "Send it again" reuses the stored PDF for free. |
+| Storage | Roughly 50–300 KB per report _(inference)_. Negligible at R2 pricing. Retention per OD-25. |
+| AI cost | Unchanged per call class: one primary call and at most one escalation. **The schema growth adds input tokens to every model call; measure and report in Stage B (§5.4).** Router presets avoid the model for common questions. Results never go to the model. |
+| Voice | Existing per-second cost and ceilings. |
+| Report cost | Render CPU, storage, and one Meta service message, recorded as today. A `REPORT_EXPORTS` unit per PDF produced (OD-23). |
+| Latency fields | Add `latencyMs` to the `usage_events` meta for model calls, and timings for report jobs (none are recorded today, §2.5 of revision 1). |
 
 ---
 
-## 12. Financial integrity
+## 16. Security and financial integrity review
 
-- **No command bus. No financial-table writes.**
-- **Writes allowed in this feature:**
-  - `messages` (inbound and outbound);
-  - `conversation_continuations`;
-  - `usage_events` (AI, transcription, message cost);
-  - `jobs` (`document.deliver`);
-  - an optional `audit_events` row `document.retrieved`, with the reference only;
-  - usage counters for `AI_ACTIONS` and `VOICE_MINUTES`, under existing rules.
-- **Proof test** (Stage H). For each operation (find, retrieve, summarise, aggregate, a follow-up, a voice note, a duplicate webhook, a retried job, and 10 concurrent retrieves), snapshot before and after:
-  - `count(*)` and checksums over `invoices`, `invoice_items`, `payments`, `payment_allocations`, `receipts`, `credit_notes`, `customer_credits`, `ledger_entries`, `stock_movements`, `doc_counters`, `documents`, `customers` and `customer_identities`;
-  - `businesses.plan` and the cycle fields.
+**Tenancy.** Every query runs under `withBusiness()`, and RLS is forced on every table read (`0001_rls.sql:31-55`). Report jobs carry a `business_id` and run their writes under it. The R2 key is prefixed by business. The same reply is given for "not yours" and "does not exist".
 
-  Every one must be equal.
-- **Status truth** comes from the projection (`status`, `paid_k`, `balance_due_k`), which `rebuildInvoiceProjection` keeps consistent through refunds, reversals and chargebacks. A consistency test asserts summary figures equal `rebuildInvoiceProjection` output for invoices with partial, full, reversed, refunded, credited and over-paid histories.
-- **Billing.** No new rule.
-  - Router-served lookups: free.
-  - Model-served: 1 `AI_ACTIONS` unit, as for every Query.
-  - Retrieval delivery: no unit (OWN-45 and OWN-60); a cost row only.
-  - OD-13 covers lapsed plans.
+**Authorisation.**
+- Every member may read: search, analytics and summaries (OWN-25). That matches the web reports, which are `@AllMembers()`.
+- Delivery goes to the **requesting member's own phone** (OD-7).
+- Report PDFs follow the same rule.
+- Deactivated members: verify `roleOfPhone` (§2.5) with a test.
 
----
+**Forged or stale identifiers.**
+- Members only ever send ordinals or references. Ordinals resolve through their own continuation row.
+- Report and document IDs never come from the model or from text.
+- Contexts expire after 600 s and are discarded when the member's role or plan changes.
 
-## 13. Database changes
+**Privacy.**
+- Results and invoice data never enter a model, so item names and customer names cannot carry prompt injection.
+- Names are rehydrated in `ReplyService` and in the report renderer. The worker already holds the vault key, because the API and worker load the same environment (CLAUDE.md §3).
+- Logging follows `redactForLog`, and the log-capture test is extended to the new paths.
+- PII in stored report PDFs: OD-24 and OD-25.
 
-| # | Change | Kind | Reason | Compatibility |
-| --- | --- | --- | --- | --- |
-| M1 | `invoices (business_id, created_at DESC, id DESC)` | Index (`CREATE INDEX` in a migration; consider `CONCURRENTLY` per runbook) | Date range, sort, keyset | Additive |
-| M2 | `invoices (business_id, (snapshot_json->>'customerToken'))` | Expression index | Chat invoices have NULL `customer_id` | Additive |
-| M3 | `invoices (business_id, due_date)` partial on open | Index | Overdue | Additive |
-| M4 | `documents (business_id, ref_number, kind, created_at)` | Index | Document resolution | Additive |
-| M5 | `documents.invoice_id uuid NULL` + tenant FK + backfill by `ref_number` | Column (OD-11) | Integrity of the invoice-to-document link | Old code ignores the column. Backfill is deterministic. Rollback: the column is unused. |
-| M6 | `conversation_continuations` kind `invoice_results` + payload column + CHECK | Constraint change | Result set and criteria | Old rows are unaffected. The CHECK is widened only. |
-| M7 | _(OD-1 = B only)_ `customer_identities` facet `name_word` + backfill job | Data | Partial names | A worker backfill under `VAULT_KEY`/`MATCH_KEY`. Erasure must include it. |
-| M8 | _(only if measured)_ `pg_trgm` + GIN on `invoice_items(lower(name))` | Extension | Item search at scale | Needs approval. Not planned. |
-
-**Not touched:** financial tables (except additive indexes), `doc_counters`, numbering and the snapshot.
-
-**Grants:** the new repository functions run as `rekoda_app` under existing SELECT grants. No new role and no `SECURITY DEFINER`.
-
-**Migration numbering:** next after `0246`, coordinated with PR #435 (which has no migration).
+**Financial non-mutation.**
+- There is no command bus on these paths.
+- The only writes are: messages, continuations, usage events, usage counters (`AI_ACTIONS`, `VOICE_MINUTES`, `REPORT_EXPORTS`), jobs, `documents` rows and R2 objects for reports, and an optional `audit_events` "report generated" or "document retrieved" event with references only.
+- **Stage H proof test.** Run every operation, including repeats, duplicate webhooks, retried jobs and 10 concurrent requests. Before and after, compare counts and checksums of `invoices`, `invoice_items`, `payments`, `payment_allocations`, `receipts`, `credit_notes`, `customer_credits`, `ledger_entries`, `ledger_transactions`, `stock_movements`, `products.on_hand`, `doc_counters`, `customers`, `customer_identities` and `businesses` plan fields. All must be equal.
+- **Reconciliation tests:**
+  - every analytics figure equals the existing functions for the same window (`summaryFor`, `accountSumsFor` + `buildProfitAndLoss`, `ageingFor`);
+  - summaries equal `rebuildInvoiceProjection` across partial, full, reversed, refunded, credited, voided and overpaid histories.
 
 ---
 
-## 14. Development roadmap and PR boundaries
+## 17. Existing files to modify
 
-The owner approves the boundaries before any code. PRs are serial, matching the autopilot's single-flight rule; P0 and Stage B can overlap only if the owner wishes.
-
-| PR | Stage | Contents | Depends on | Size |
-| --- | --- | --- | --- | --- |
-| P0 | Prerequisite | Read paths never create customers: (1) the `Query` mention path becomes lookup-only; (2) provisional phone tokens (OD-3 (a)). RED tests first. | OD-3 | M |
-| 1 | A + B | Contract: `InvoiceQuery` zod, `parseBusinessCommand` branch, `command-persistence` entry, prompt section, view-only classifier, strict-schema measurement test, eval dataset cases. Core: `canonicaliseInvoiceRef`, `parsePeriodPhrase`, `parseAmountBound`, ranking rules, all pure and unit-tested. Router fast-path intents. **Gated off** by `INVOICE_DISCOVERY_ENABLED` (new config, fail-closed parse). | — | M |
-| 2 | C | Migration M1–M4. `invoiceSearch`, `invoiceAggregate` (count only here), `invoiceByReference`. Lookup-only `customer-lookup.service` (exact plus the OD-1 mechanism). Handler wiring for `find` and reference `summarise` (brief). DB tests: RLS, isolation, keyset, `EXPLAIN`. | 1, P0, OD-1 | L |
-| 3 | D | Compound filters, sorts, "more" paging, the M6 continuation `invoice_results`, ordinal phrases, criteria merge for refinements. | 2 | M |
-| 4 | E | M5 (if OD-11), `documentsForInvoice`, the outcome matrix in §8.2, HEAD check, `recipientUserId` on `document.deliver`, receipt fallback (OD-4), retention filter on document resolution (closes G-67 (1) for this path). | 2, OD-4, OD-7 | M |
-| 5 | F | `summariseInvoice` (itemised, payments), multi-invoice aggregates and grouping, reconciliation labelling (OD-12), consistency tests against `rebuildInvoiceProjection`. | 3 | M |
-| 6 | G | Spoken-reference canonicalisation, voice confirm-before-deliver, voice integration tests through the existing STT stub. | 4, 5 | S |
-| 7 | H | Cross-cutting: the financial non-mutation suite, concurrency and duplicate-webhook tests, log-capture extension, rate limit (OD-14), 20,000-invoice performance test. | 2–6 | M |
-| 8 | I | Docs: spec amendment or owner ruling, CURRENT_STATE and READINESS rows, user journey, acceptance checklist with evidence register. The owner runs the staging probe with the full schema (§5.4). Flag on in staging only. | 7 | S |
-
-- **Deferred only by owner decision:** customer-directed PDF delivery (OD-8) and missing-PDF recovery (OD-5), as separate gated stages E2 and E3.
-- **Not deferred:** advanced search, aggregates, follow-ups and voice. They are PRs 3, 5 and 6.
+| File | Change |
+| --- | --- |
+| `packages/contracts/src/business-command.ts` | `InvoiceQuery`, `Analyse`; union branch; tool schema |
+| `packages/core/src/router.ts` | `invoice_ref`, `invoice_list`, `analyse_preset`, ordinal phrases, topic-switch and "PDF" follow-ups, extended `periodAnswer` |
+| `packages/core/src/periods.ts` | `parsePeriodPhrase`; yesterday, weekday, calendar week, quarter, year, rolling-N, named month, ranges; like-for-like windows; first-record bounding |
+| `packages/core/src/period-compare.ts` | Comparison planner (default comparisons, elapsed matching, different-length rule); more `WindowFigures` measures; series compare. `changeOf` unchanged. |
+| `packages/core/src/money.ts` | `parseAmountBound` |
+| `packages/core/src/numbering.ts` | `canonicaliseInvoiceRef` (typed and spoken) |
+| `packages/core/src/continuation.ts` | `books` context type, merge rules, resume |
+| `packages/core/src/replies.ts` | Templates: lists, summaries, comparisons, zero and partial wording, insights, report status, failure outcomes; `help()` and `notYet()` updated |
+| `packages/core/src/request-kind.ts` | New READ phrasings, with tests (part of G-100) |
+| `packages/core/src/command-persistence.ts` | Persisted-field entries for the new intents |
+| `packages/db/src/repos/reports.ts` | `summaryFor` generalised to buckets (series) with the **same** definitions; `accountSumsFor`, `expenseScheduleFor` and `revenueScheduleFor` taking windows; customer, product and transaction rankings; cash measures per OD-17; `overviewFor.salesK` per OD-16; NULL-category label fix |
+| `packages/db/src/repos/continuations.ts` | `books` kind and `context` read and write (OD-33) |
+| `packages/db/src/repos/issue.ts` | `documentsForInvoice`; `latestDocumentFor` → last delivered to the member (OD-26) |
+| `apps/api/src/privacy/gateway.service.ts` | Lookup-only resolution (OD-3); bounded name matching (OD-1) |
+| `apps/api/src/jobs/inbound-message.handler.ts` | Wiring only: route new intents and router intents to `books-answer.ts`; skip `resolveMention` for reads |
+| `apps/api/src/ai/prompt.ts` | Books-question section; remove "cannot send" for retrieval |
+| `apps/api/src/ai/eval/dataset.ts` | Cases for every example in both specifications |
+| `apps/api/src/jobs/render-document.handler.ts` | `report` payload branch |
+| `apps/api/src/jobs/deliver-document.handler.ts` | `recipientUserId`; report caption and label; pre-send size check |
+| `apps/api/src/documents/pdf.ts` | `renderReportPdf` (cards, tables, charts, colour) reusing fonts and pagination |
+| `apps/api/src/config.ts`, `.env.example` | `BOOKS_ASSISTANT_ENABLED` (fail-closed parse, default off) |
+| `apps/api/src/reports/reports.controller.ts` | `compare` uses the new planner (behaviour pinned) |
+| Docs | Design system "Printed reports", CURRENT_STATE, READINESS (G-118 and new rows), user journeys, metering-v1, pricing-model correction, spec or OWN ruling (OD-15) |
 
 ---
 
-## 15. Testing strategy
+## 18. Justified new files
 
-**Unit tests** (`packages/core`):
-- reference canonicalisation: every typed and spoken form, year-less forms, garbage;
-- period phrases: each phrase, boundaries at Lagos midnight, dd/mm ambiguity, month names across a year boundary;
-- amount bounds: every form and comparator, the cap;
-- ranking tiers: an exact reference always beats fuzzy;
-- summary assembly: an original-versus-current matrix covering paid at issue, partial later, full, reversed, refunded, credited, voided and overpaid;
-- reply templates: no negative figures, and no amount the input did not contain;
-- router: new phrases, plus pinned cases that must still go to the model.
+Production files: **four**.
 
-**Database integration** (`packages/db/src/invoices/invoice-search.integration.test.ts`, new):
-- exact reference, chat-token versus `customer_id` linkage, item match, quantity;
-- every filter and combination, keyset stability under inserts;
-- counts versus rows; aggregates against hand-computed kobo;
-- RLS: a forged `app.business_id` and a second tenant with identical numbers, names and phones;
-- `EXPLAIN` index use at 20,000 rows.
+| File | Responsibility | Why not an existing file |
+| --- | --- | --- |
+| `packages/core/src/analytics.ts` | Metric registry, analysis plan validation, invoice ranking tiers, insight rules, confidence labels, PDF policy | A distinct pure domain. `period-compare.ts` is arithmetic only, and `replies.ts` is wording. |
+| `packages/core/src/report-layout.ts` | Report sections, KPI selection, chart choice and geometry, table pagination | Parallels `statement-layout.ts`, `invoice-layout.ts` and `receipt-layout.ts`; the same convention |
+| `packages/db/src/repos/invoice-search.ts` | `invoiceSearch`, `invoiceAggregate`, `invoiceByReference`, `documentsForInvoice` (or kept in `issue.ts`) | `issue.ts` is the write-side issuance repo, and `reports.ts` is ledger windows. A read model over invoice rows is its own responsibility. |
+| `apps/api/src/jobs/books-answer.ts` | One orchestration entry for router, interpreter and continuation paths: plan → query → result → reply → optional report job | The inbound handler is about 5,800 lines. Putting this there would repeat the orchestration across three call sites. |
 
-**API and WhatsApp integration** (`apps/api/src/channels/meta-invoice-discovery-*.integration.test.ts`, new):
-- typed retrieve; voice retrieve (STT stub); router path costs no unit; model path costs 1 unit;
-- ambiguous list, then ordinal, then deliver; expired selection; repeated selection; another member's ordinal;
-- unknown reference; another tenant's reference; paid-at-sale → receipt offer; no PDF; object missing (null `get`); storage down (`get` throws);
-- Meta 131047 → template; Meta permanent refusal; duplicate webhook (one job); worker retry (one send);
-- opted-out owner (override as resend); unauthorised and stranger senders; accountant and delegate (per OD-7);
-- lapsed and Integrate-only plans (per OD-13).
+Test files, required by `check-test-layout`:
+- `analytics.test.ts`, `report-layout.test.ts` and additions to the existing core tests;
+- `packages/db/src/invoices/invoice-search.integration.test.ts`;
+- `packages/db/src/ledger/analytics-series.integration.test.ts`;
+- `apps/api/src/channels/meta-books-*.integration.test.ts`, split by concern per the layout rules;
+- `apps/api/src/documents/report-pdf.integration.test.ts`;
+- `apps/web/e2e/report-visual.spec.ts` (OD-29).
 
-**Financial regression:** the §12 suite.
+**Assets:** `apps/api/assets/fonts/Calistoga-Regular.ttf`, if OD-28 = A.
+
+**Explicitly not created:**
+- no analytics service class hierarchy, factories or per-metric files;
+- no separate continuation store;
+- no separate PDF module;
+- no customer-lookup service: it becomes a gateway method.
+
+---
+
+## 19. Database migration assessment
+
+**Can the feature ship with zero migrations? Yes**, if OD-33 = B (context from drafts), OD-24 = B (no names in stored PDFs) and the Stage H performance budget passes without indexes. **That is not my recommendation**, because the cost is the coupling and privacy trade-offs in those decisions.
+
+| # | Migration | Needed when | Why existing schema cannot serve |
+| --- | --- | --- | --- |
+| M4 (recommended) | `conversation_continuations`: kind `books`, nullable `context jsonb` with a validation function, CHECK widening | OD-33 = A | The CHECK lists are closed (§2.6). The `options` validator admits only invoice lists. |
+| M5 (conditional) | `pending_object_deletions` reason `report_expired`, plus a `documents` deletion path or tombstone column | OD-25 = expiry (follows OD-24 = A) | The reason CHECK is fixed (`0129:27-28`), and no per-document deletion exists. |
+| M1–M3 (conditional) | `invoices (business_id, created_at, id)`; `(business_id, (snapshot_json->>'customerToken'))`; partial `(business_id, due_date)` | Only if the Stage H budget fails | Revision 1 proposed them up front; withdrawn under the follow-up's migration rule. |
+| M6 (conditional) | `customer_identities` facet `name_word` plus a backfill job | OD-1 = B only | Exact HMAC only |
+| M7 (conditional) | Product link on chat sale lines | OD-20 = C only | `invoice_items` has no `product_id` |
+| — withdrawn | `documents.invoice_id` (revision 1, M5) | — | The `(business_id, ref_number, kind)` join is sufficient at SME volumes. Revision 1's OD-11 changes accordingly. |
+
+**Not needed:**
+- **`report_pdf` kind:** `documents.kind` has no CHECK.
+- **Report job kind:** `jobs.kind` has no CHECK.
+- **Report metadata:** it goes in the R2 JSON beside the PDF.
+- **Report reference:** text in `ref_number`; no counter.
+- **Metering:** `REPORT_EXPORTS` exists.
+
+---
+
+## 20. Dependency assessment
+
+**Production dependencies: none added.**
+- pdfkit (installed) covers vector charts, cards, tables and colour (§11.2).
+- Option B (Chromium), option C (canvas) and option D (`svg-to-pdfkit`) are rejected or held in reserve, with reasons.
+
+**Development dependency: one** (OD-29). `pdfjs-dist` (Apache-2.0, Mozilla, pure JavaScript, actively maintained):
+
+| Aspect | Detail |
+| --- | --- |
+| Purpose | Text extraction in the API integration tests, and page rasterisation inside the existing Playwright browser for visual baselines |
+| Runtime impact | None: not in the production image, which installs production dependencies only (`Dockerfile`) |
+| CI impact | One devDependency install; screenshot baselines committed under `apps/web/e2e/` |
+| Alternative | Geometry tests only, with no PDF-level verification. Weaker: it cannot catch missing glyphs or renderer bugs. |
+
+**Font asset:** Calistoga TTF (SIL OFL 1.1) if OD-28 = A. It is fetched by the existing script and is not a package.
+
+---
+
+## 21. Development stages and PR boundaries
+
+The PRs are serial (single-flight). Each ships behind `BOOKS_ASSISTANT_ENABLED` (default off) and has its own RED tests first. The owner approves these boundaries before any code.
+
+| PR | Stage | Contents | Depends on |
+| --- | --- | --- | --- |
+| P0 | Prerequisite fixes | Each with a RED test: (1) reads never create customers (OD-3); (2) `overviewFor.salesK` definition (OD-16); (3) NULL expense category is shown as "not categorised"; (4) cash measures exclude own-account transfers and opening balances (OD-17). Pre-existing defects, fixed first so analytics builds on correct figures. | OD-3, OD-16, OD-17 |
+| 1 | A + B: contract and core | `InvoiceQuery` and `Analyse`, prompt, persistence, view-only phrasings, strict-schema measurement, eval cases. Core: period phrases, comparison planner, amount bounds, reference canonicalisation, metric registry, ranking tiers. All pure. Router intents and presets. Flag added. | — |
+| 2 | C: invoice discovery | `invoice-search.ts`, gateway lookup (OD-1), `books-answer.ts` (find, summarise brief, aggregate count), invoice choice lists via the existing `options` | 1, P0 |
+| 3 | D: analytics core | `reports.ts`: series, windowed schedules and P&L, rankings (OD-20, OD-21, OD-24 for chat), comparisons in chat, insights I1–I9 with templates | 1, P0 |
+| 4 | D: conversation | M4 continuation context (OD-33); follow-up merge rules for invoices and analytics; "more" paging; topic and period switches | 2, 3 |
+| 5 | E: retrieval and delivery | `documentsForInvoice`, the outcome matrix, missing-object check, `recipientUserId` (OD-7), receipt offer (OD-4), "send it again" semantics (OD-26) | 2 |
+| 6 | F: report PDF | `report-layout.ts`, `renderReportPdf`, render branch, R2 JSON snapshot, `REPORT_EXPORTS` reserve and refund (OD-23), PDF policy (OD-22), report history (OD-32), retention (OD-25, M5 if chosen), design-system section, pdf.js tests (OD-29) | 3, 4, 5 |
+| 7 | G: voice | Spoken references, voice confirmations, voice integration tests through the STT stub | 5, 6 |
+| 8 | H: hardening | Non-mutation suite, concurrency and duplicates, log capture, rate limit (OD-14), 20,000-invoice performance budget (M1–M3 only if it fails) | 2–7 |
+| 9 | I: docs and acceptance | Spec amendment or OWN ruling (OD-15), CURRENT_STATE and READINESS (including the G-118 correction), pricing-model correction, user journeys, owner acceptance checklist and evidence register, owner-run full-schema probe | 8 |
+
+**Deferred only by owner decision:** customer-directed delivery (OD-8) and certified-copy recovery (OD-5).
+
+**Not deferred:** advanced search, aggregates, comparisons, trends, insights, report PDFs and voice.
+
+---
+
+## 22. Testing and staging acceptance matrix
+
+### 22.1 Automated tests
+
+**Core (unit):**
+- **Periods:** every phrase, Lagos midnight, Monday weeks, quarters, named months across a year boundary, dd/mm ambiguity, 31 Mar vs Feb clamp, leap years, first-record bounding.
+- **Comparisons:**
+  - like-for-like at 00:00, 14:05 and 23:59;
+  - MTD vs the same days;
+  - different lengths;
+  - zero rules (previous zero, current zero, both zero);
+  - very large values near the ₦10bn cap, with no overflow because the values are integer kobo below 2^53;
+  - percentage rounding;
+  - direction.
+- **Metric registry:** unsupported pairs are refused honestly.
+- **Insights:** every rule, at the threshold and below it, plus "insufficient history".
+- **Ranking tiers:** exact beats fuzzy.
+- **Reference and amount parsing**, including spoken forms.
+- **Summary assembly:** the full history matrix from revision 1.
+- **Report layout:** geometry, adaptive sections, empty data, 400-row pagination, no overlap, zero baselines.
+- **Templates:** no negative amounts, and no figure absent from the result.
+
+**Database (integration):**
+- **Search:** every filter and combination, NULL-`customer_id` historical invoices, keyset stability.
+- **Isolation:** RLS with a second tenant holding identical numbers, names and phones.
+- **Aggregates:** equal hand-computed kobo.
+- **Series:** equal the sum of the per-bucket `summaryFor` results.
+- **Windowed P&L:** equals `accountSumsFor` monthly where windows coincide.
+- **Rankings:** totals reconcile with an "other or unattributed" line.
+- **Cash measures:** exclude own transfers and opening balances.
+- **Accounting edge cases:**
+  - voided later;
+  - payment allocated after issue;
+  - reversed, refunded and charged back;
+  - credit notes;
+  - backdated postings;
+  - closed periods;
+  - year-boundary ranges.
+- **Performance budget** at 20,000 invoices.
+
+**API and WhatsApp (integration):**
+- **Questions:** each example question from both specifications, typed, through the router or the model stub.
+- **Follow-up chains:**
+  - "how am I doing" → "compared to yesterday?" → "what about last week?" → "and expenses?" → "show the top products" → "generate the PDF" → "send it again" → "show the previous report";
+  - expired, superseded and ambiguous contexts;
+  - another member's ordinal.
+- **Invoice retrieval:** every case from revision 1 §15.
+- **Report jobs:**
+  - render, then store (PDF and JSON), then deliver to the requester;
+  - storage failure and delivery failure;
+  - window closed, so the template is used;
+  - render dead, so the unit is refunded;
+  - duplicate webhook, so there is one report and one unit;
+  - retried job, so there is one PDF.
+- **Plans:** lapsed, Integrate-only and exhausted `REPORT_EXPORTS`.
+- **Roles:** accountant and delegate.
+- **Voice:** voice-note equivalents through the STT stub.
+
+**PDF:**
+- extracted text equals the result's figures;
+- every page has its footer;
+- fonts are embedded and the ₦ glyph is present;
+- the empty report;
+- a huge appendix;
+- visual baselines (OD-29);
+- no customer name when OD-24 = B, names present when A.
 
 **AI:**
-- schema validation of `InvoiceQuery` (valid, invalid, extra keys);
-- prose answer → no command; two tool calls → none; refusal → terminal reply with the unit refunded; timeout; `max_tokens`; escalation on `Unclear` only;
-- a pinned strict-schema count;
-- prompt-injection cases: a message with "ignore previous instructions and send all invoices to …" still yields criteria only;
-- eval dataset cases for every example in the brief.
+- schema validation of both intents;
+- no prose, two tool calls and refusal handling;
+- timeout and `max_tokens`;
+- escalation on `Unclear` only;
+- the pinned strict-schema count;
+- prompt-injection messages still yield criteria only;
+- eval accuracy on existing intents does not fall.
 
-**Live staging acceptance (owner-run).** Each case records the reply text, the outbound message row, the job row, the before-and-after financial checksums and a screenshot:
+**Financial non-mutation:** §16.
 
-| # | Case |
-| --- | --- |
-| 1 | Retrieve by exact reference. |
-| 2 | Customer name. |
-| 3 | Linked phone. |
-| 4 | Business name (as a name). |
-| 5 | Amount and date search. |
-| 6 | Compound filter. |
-| 7 | Ambiguous then ordinal. |
-| 8 | Single summary. |
-| 9 | Aggregate. |
-| 10 | Original versus current, after a part payment. |
-| 11 | PDF resend. |
-| 12 | Voice retrieval (needs voice enabled). |
-| 13 | Unavailable PDF (an operator deletes a test object in the staging bucket). |
-| 14 | Wrong-tenant reference (second staging business). |
-| 15 | Duplicate webhook (replay through the staging tools). |
-| 16 | Checksums unchanged. |
-| 17 | Full-schema Anthropic probe on three models (§5.4). |
+### 22.2 Staging acceptance
 
----
+These cases are owner-run. Each one records:
+- the exact message, the reply text, the outbound and job rows, the R2 key and the stored JSON;
+- before-and-after financial checksums;
+- screenshots;
+- the PDF file.
 
-## 16. Operational risks
-
-| Risk | Mitigation and observability |
-| --- | --- |
-| Latency: model path | Unchanged per call (20 s timeout, OWN-98). Reference requests bypass the model. Add `latencyMs` to `usage_events` meta (none is recorded today). |
-| Latency: storage and Meta upload | The HEAD check adds one round trip. The upload is the existing path. |
-| Model cost | One `AI_ACTIONS` call per natural-language query, plus at most one escalation. A larger tool schema raises input tokens on **every** model call, not only invoice queries. Measure in Stage B and report the cost per call by model. |
-| Accuracy regression on existing intents | The schema grows. Run the full eval harness before and after; any drop blocks the PR. |
-| Missing objects | Surfaced immediately to the merchant and as an ops exception, instead of 5 silent retries. |
-| Flag and rollback | `INVOICE_DISCOVERY_ENABLED`, default off. Turning it off restores today's replies. Migrations are additive, and the column and indexes are harmless to older code. |
-| Abuse | A per-member read limit (OD-14). The daily AI ceilings already bound the model path. |
-| Name matching cost (OD-1 C) | Capped decryptions, timed in tests, with a fallback beyond the cap. |
+| # | Case | Mode |
+| --- | --- | --- |
+| 1–16 | Revision 1 invoice cases (reference, name, phone, business name, amount and date, compound, ambiguity, summaries, aggregates, original vs current, resend, voice, unavailable PDF, wrong tenant, duplicate webhook, checksums) | Staging |
+| 17 | "How much did I sell yesterday?" equals the dashboard compare for the same window | Staging |
+| 18 | "Am I doing better today than yesterday?" at a recorded time: like-for-like windows are stated | Staging |
+| 19 | Week vs week, month vs month (MTD), quarter vs quarter, custom vs custom, YoY with no prior data | Staging |
+| 20 | Six-month trend plus strongest month | Staging |
+| 21 | Top products: label per OD-20 | Staging |
+| 22 | Top customers: names per OD-24 | Staging |
+| 23 | Invoiced vs collected; unpaid % (definitions per OD-34) | Staging |
+| 24 | Expenses vs sales; categories, including uncategorised | Staging |
+| 25 | Gross profit with coverage statement; withheld below threshold (OD-21) | Staging |
+| 26 | Cash flow September vs October, excluding own transfers | Staging |
+| 27 | Follow-up chain §22.1 | Staging |
+| 28 | Daily, monthly and quarterly PDF: owner visual review against §12, on phone and print | Staging |
+| 29 | PDF figures equal the chat summary | Staging |
+| 30 | Voice: "compare this month with last month and send me the PDF" | Staging (voice enabled) |
+| 31 | Report idempotency on a replayed webhook | Staging tools |
+| 32 | Full-schema Anthropic probe on 3 models | **Live provider (owner-run, spends)** |
 
 ---
 
-## 17. Owner decisions
+## 23. Owner decision register (consolidated)
 
-Each decision gives the options, a recommendation, and the ruling needed.
+The original decisions OD-1 to OD-15 keep their numbers and are reassessed against the expanded scope. New decisions start at OD-16. Each entry gives:
 
-| ID | Question | Option A | Option B / C | Recommendation |
-| --- | --- | --- | --- | --- |
-| **OD-1** | How may customer names be matched partially or fuzzily, given vault-only storage? | Exact only. Safest, but fails "Ada" for "Ada Obi". | B: word-level blind index (migration, backfill, leaks word equality). C: bounded in-process decryption and matching (new vault use, no new storage). | **C with a 5,000-name cap**, never auto-select. Needs a privacy ruling. |
-| **OD-2** | Customer "business name" | Treat as a name facet (no change). | Add a `business_name` facet and its input paths. | **A** for this feature, with the limitation recorded. |
-| **OD-3** | Reads currently create customers (mention and phone paths) | Fix both: lookup-only reads, provisional phone tokens. Prerequisite PR P0. | Accept and document. | **A**. Also assign a gap ID to the pre-existing `Query` behaviour. |
-| **OD-4** | "Send me INV-…" for a sale paid at recording (no invoice PDF exists) | Explain and offer the receipt (one tap). | Send the receipt directly. C: render an invoice PDF (forbidden by the brief). | **A**. |
-| **OD-5** | Recovery when no PDF exists or the object is lost | No recovery. Report and raise an exception. | A separately authorised "certified copy" re-render from the snapshot, marked COPY, with an audit row and no new number. | **A now**, and B as gated stage E3 if approved. |
-| **OD-6** | Date semantics | "This week" means the calendar week, Monday start; "past 7 days" is rolling. Dates are read dd/mm. | Keep the existing chat meaning: `week` = the last 7 days (`periods.ts:55`). | **A** for invoice search, with the reply naming the exact dates. Note the difference from the existing sales "week". |
-| **OD-7** | Who may retrieve and where it goes | Any member may search and summarise (OWN-25). The PDF goes to the **requesting member's own** phone. | Owner and delegate only. Delivery stays to the owner (today's resend). | **A**. It closes the G-67 residual (2). |
-| **OD-8** | Sending an invoice to the customer | Out of scope. Reply "I'll send it to you to forward". | Build it on Integrate WABA with explicit recipient confirmation, customer window and STOP, and a `SERVICE_MESSAGE` unit. | **A** for this feature. B as a separately approved stage. |
-| **OD-9** | Definition of overdue | `due_date < today (Lagos)` and status open. No due date means never overdue. | Use the ageing buckets' rules from `ageingFor`. | **A**, which is consistent with `ageingFor`'s null handling. To be verified in Stage C. |
-| **OD-10** | "Bring up the ₦45,000 invoice" | Exact match on the total. | Tolerance (±1%). | **A**. "Around 45k" asks for a range. |
-| **OD-11** | The invoice-to-document link | Add `documents.invoice_id` with a backfill. | Join on `ref_number` only. | **A**. |
-| **OD-12** | Basis of "invoiced versus collected" | Invoice-based (issue date; total, paid, balance). | Ledger-based (`summaryFor`, the existing sales answer). | **A** for invoice questions, with the label stated. Sales questions keep using B. |
-| **OD-13** | Lapsed and Integrate-only merchants | Reference retrieval through the router is free on any plan (OWN-60). Natural-language and voice search are refused on lapse, like every model-path question today. | Allow model-path search on lapse with no unit. | **A**. This is consistent with OWN-60 ("no new chargeable usage"), because model calls cost money. |
-| **OD-14** | Read abuse limit | 60 lookups per member per hour. | None. | **A**. |
-| **OD-15** | Spec authority | A spec amendment adding a "Document retrieval and search" section. | An owner ruling (OWN-99) that the spec absorbs later. | **B** now, then amend. |
+- options and trade-offs;
+- a **recommendation**;
+- the implementation implication: what changes in the plan.
 
-**Conflicts found** (§2 and §7.4):
-- reads create customers (OD-3);
-- paid-at-sale invoices have no invoice PDF (OD-4);
-- delivery goes to the owner, not the requester (OD-7);
-- the existing chat "week" means 7 rolling days (OD-6);
-- lapsed model-path refusal versus OWN-60 (OD-13);
-- partial names versus the vault design (OD-1).
+### Reassessed (original 15)
+
+**OD-1 Partial and fuzzy customer-name matching.**
+- **Options:**
+  - **A. Exact HMAC only.** Safe, but "Ada" misses "Ada Obi".
+  - **B. Word-level blind index.** Needs migration M6 and a backfill; leaks word equality to anyone with database access; supports neither prefixes nor typos.
+  - **C. Bounded in-process match.** Decrypt up to 5,000 trusted names in the API and match on prefix and similarity. This is a new vault use and stores nothing new.
+- **Expanded scope:** customer *analytics* ("Ada's sales this month", top customers) needs only token grouping plus rehydration, not matching. So OD-1 affects search input only. Unchanged.
+- **Recommendation: C**, with the cap and no auto-select.
+- **Implication:** gateway method, privacy ruling, no migration.
+
+**OD-2 Customer business name.**
+- **Options:** A, a name facet with no change; B, a new `business_name` facet with input paths.
+- **Expanded scope:** unchanged. "Sales by customer business" groups by customer, which is the same thing.
+- **Recommendation: A**, limitation recorded.
+- **Implication:** none.
+
+**OD-3 Reads currently create customers.**
+- **Options:** A, lookup-only reads plus provisional phone tokens (prerequisite); B, accept and document.
+- **Expanded scope:** applies equally to "Ada's sales" analytics. More important now.
+- **Recommendation: A** (PR P0), plus a gap ID for the pre-existing `Query` behaviour.
+- **Implication:** P0 touches write paths for phones (customers are materialised at confirmation).
+
+**OD-4 Invoice request for a sale paid at recording (no invoice PDF exists).**
+- **Options:** A, explain and offer the receipt; B, send the receipt directly; C, render an invoice (forbidden).
+- **Recommendation: A.**
+- **Implication:** template plus choice list.
+
+**OD-5 Missing PDF recovery.**
+- **Options:** A, report it and raise an exception; B, a gated "certified copy" re-render from the snapshot, marked COPY and audited, with no number.
+- **Expanded scope:** report PDFs can always be regenerated from the books, so they need no recovery. Unchanged for invoices.
+- **Recommendation: A now; B as a separately approved stage.**
+
+**OD-6 Date semantics.**
+- **Superseded by OD-19**, which now also covers quarters, years and like-for-like windows. OD-6's question (calendar week vs rolling 7 days; dd/mm) is carried in full into OD-19.
+
+**OD-7 Who may retrieve and where it goes.**
+- **Options:** A, any member may read, and delivery goes to the **requester's own phone**; B, owner and delegate only, delivery to the owner.
+- **Expanded scope:** the same rule for report PDFs. It matches web reports (`@AllMembers()`), so accountants can request their own reports.
+- **Recommendation: A** (closes G-67 residual 2).
+- **Implication:** `recipientUserId` on deliver; `resend` role check relaxed to any member for its own deliveries.
+
+**OD-8 Sending an invoice or report to the customer or a third party.**
+- **Options:** A, out of scope (the merchant forwards it); B, build it on Integrate WABA with recipient confirmation, customer window, STOP and units.
+- **Expanded scope:** "share with accountants or partners" is covered by forwarding or by the accountant requesting their own copy (OD-7). There is no third-party send.
+- **Recommendation: A.**
+
+**OD-9 Overdue definition.**
+- **Options:** A, due date earlier than today (Lagos) and status open, with no due date meaning never overdue; B, `ageingFor`'s buckets.
+- **Expanded scope:** reports show ageing too, so one definition must serve both.
+- **Recommendation: A, which equals `ageingFor`'s rule** ("current" includes no due date, `reports.ts:306-326`). One definition, reused.
+
+**OD-10 "The ₦45,000 invoice".**
+- **Options:** A, exact total; B, ±1% tolerance.
+- **Recommendation: A**; "around 45k" asks for a range.
+
+**OD-11 Invoice to document link.**
+- **Options:** A, a `documents.invoice_id` column plus backfill (migration); B, join on `(business_id, ref_number, kind)`.
+- **Expanded scope:** the migration-minimisation rule.
+- **Recommendation changes to B.**
+- **Implication:** migration withdrawn; tests pin the join; add the column only if integrity issues appear.
+
+**OD-12 Basis of "invoiced vs collected".**
+- **Options:** A, invoice-based (issue date); B, ledger-based (`summaryFor`).
+- **Expanded scope:** spec §5.1 says "read the ledger", and every period figure in analytics is ledger-based (§7). Invoice-row aggregates remain for invoice *lists* ("these 12 invoices: ₦X invoiced, ₦Y paid").
+- **Recommendation changes:** **B for every period question**; A only for summaries of an invoice list, labelled.
+- **Implication:** consistency with the dashboard compare.
+
+**OD-13 Lapsed and Integrate-only merchants.**
+- **Options:** A, router retrieval and presets free on any plan, while model-path search, analytics and voice are refused on lapse (as today); B, allow model-path on lapse with no unit.
+- **Expanded scope:** report PDFs need a `REPORT_EXPORTS` unit, and expired plans have 0. Integrate has 100 `REPORT_EXPORTS` units but no Chat.
+- **Recommendation: A**, plus: lapsed merchants can still "send it again" for an existing report (OWN-60), but cannot produce new ones. **Integrate-only merchants keep the existing `chat_kept_on_lapse` reads** and the web reports.
+- **Implication:** entitlement rows in `chat-access.ts`.
+
+**OD-14 Read abuse limit.**
+- **Options:** A, 60 lookups per member per hour; B, none.
+- **Expanded scope:** add 10 report PDFs per member per day, beyond plan units.
+- **Recommendation: A.**
+
+**OD-15 Spec authority.**
+- **Options:** A, a spec amendment adding "Books questions, document retrieval and reports"; B, an OWN-99 ruling now, absorbed later.
+- **Expanded scope:** OWN-44 already rules analytics into scope. OD-15 now covers retrieval, the report PDF policy and the `Query`/`Analyse` overlap.
+- **Recommendation: B, then A.**
+
+### New decisions
+
+**OD-16 One definition of "sales this month" everywhere.**
+- **Options:** A, point `overviewFor.salesK` (the `records` reply, dashboard) at `summaryFor`'s definition; B, leave it and label both.
+- **Trade-off:** A changes a figure merchants already see; B leaves two numbers.
+- **Recommendation: A** (P0, RED test).
+
+**OD-17 Cash-flow figures.**
+- **Options:** A, exclude transfers between the merchant's own cash accounts and opening balances from cash in and out (analytics, `cashflowFor`, `summaryFor.cashIn/Out`); B, keep them and label.
+- **Trade-off:** A changes the dashboard cash chart for affected merchants; B misstates movement.
+- **Recommendation: A** (P0).
+
+**OD-18 Like-for-like comparisons for partial periods.**
+- **Options:** A, compare against the same elapsed portion and also show the full previous period, labelled; B, compare partial against full, labelled.
+- **Implication:** A changes `/v1/reports/compare` for partial windows, which has no web caller today.
+- **Recommendation: A.** Different-length custom ranges compare daily averages; a percentage on totals is shown only for equal lengths.
+
+**OD-19 Calendar rules (absorbs OD-6).**
+- **Recommendation:** Monday-start calendar weeks for "this/last week"; "past 7 days" rolling; calendar quarters; calendar years; dd/mm dates, asking only when ambiguous.
+- **Trade-off:** the existing chat "week" (rolling 7 days, `periods.ts:51-56`) would change meaning. **Option B** keeps "week" rolling everywhere and adds "this calendar week".
+- **Recommendation: A**, applied to both new and existing chat phrases, with the reply naming the exact dates.
+
+**OD-20 Product rankings (the open N2 decision).**
+- **Options:**
+  - **A.** Catalogue products only: verified through sale stock movements joined to products. Free-text sales are excluded and the reply says so.
+  - **B.** A, plus free-text names folded for case, whitespace and simple plural, labelled "as typed, approximate".
+  - **C.** Add a product link to chat sale lines first (migration M7 plus a Chat flow change).
+- **Trade-off:** A is accurate but may omit most chat sales; B is useful but approximate; C is correct but is a write-path change.
+- **Recommendation: B for this feature** (verified and approximate sections kept separate, never merged). **C as the real fix later.**
+
+**OD-21 Gross profit and profit reporting.**
+- **Options:**
+  - **A.** Show gross profit and books profit with a coverage statement; withhold when uncosted sales exceed 20% of net sales, showing COGS coverage instead.
+  - **B.** Never show profit in chat or reports; statements only.
+  - **C.** Show without threshold, always labelled.
+- **Trade-off:** profit is the question merchants most want answered, and the most misleadable.
+- **Recommendation: A** (20% threshold, owner may adjust).
+
+**OD-22 When a PDF is produced.**
+- **Options:**
+  - **A.** Only on explicit request ("PDF", "report", "document", "send me the full…"). For multi-section answers, offer "Reply *PDF* for a full report".
+  - **B.** Automatically for multi-section or "detailed" answers.
+  - **C.** Automatically for every analytics answer.
+- **Trade-off:** B and C spend `REPORT_EXPORTS` units and messages without consent.
+- **Recommendation: A**, with a voice confirmation (§14).
+
+**OD-23 Metering report PDFs.**
+- **Options:**
+  - **A.** One `REPORT_EXPORTS` unit per PDF *produced* (consistent with `metering-v1.md:33` and OWN-4), reserved at enqueue and refunded if rendering fails; re-delivery of an existing report is free (OWN-60 analogue).
+  - **B.** Free.
+  - **C.** Use `DOCUMENT_GENERATION`.
+- **Recommendation: A.** Chat answers stay on `AI_ACTIONS` (model path) or free (router).
+- **Implication:** no new billing rule; existing units.
+
+**OD-24 Customer names in stored report PDFs.**
+- **Options:**
+  - **A.** Names rehydrated into the PDF (useful; the PDF becomes PII at rest and on the merchant's phone).
+  - **B.** No customer identities in PDFs: aggregate customer sections show counts and shares only, and names appear only in the chat reply.
+  - **C.** Initials ("A. O.").
+- **Trade-off:** A requires expiry and erasure handling (OD-25, M5); B is zero-migration but the top-customers section is far less useful.
+- **Precedent:** invoice PDFs print the token today (`render-document.handler.ts:68`). That should be confirmed as intentional or as a gap (G-new).
+- **Recommendation: A**, with OD-25 expiry and erasure.
+
+**OD-25 Report retention.**
+- **Options:** A, report objects expire after 90 days (sweep plus M5), and two-ask erasure purges them; B, keep indefinitely like other documents.
+- **Recommendation: A if OD-24 = A; B if OD-24 = B.**
+
+**OD-26 "Resend" and "send it again" semantics.**
+- **Options:** A, the last document *delivered to this member* (invoice, receipt, quote or report); B, keep "newest document of any kind in the business"; C, financial documents only.
+- **Trade-off:** B means a report would become what "resend" sends, and a delegate could get the owner's latest. C breaks "send it again" after a report.
+- **Recommendation: A** (also fixes the G-67 residual for this path).
+
+**OD-27 AI wording for insights.**
+- **Options:**
+  - **A.** Templates only for the MVP.
+  - **B.** The model rewrites template output for readability, under a figure lock: every number and name in the output must appear verbatim in the input set, otherwise the template is used. This adds about one model call per insight-bearing answer.
+  - **C.** The model writes the narrative from the structured result.
+- **Context:** OWN-44 permits the model to "explain and summarise" but not to invent values. The prompt today forbids prose (`prompt.ts:23`).
+- **Recommendation: A**, revisiting B with evidence. C is not recommended.
+
+**OD-28 Report typography.**
+- **Options:** A, add the Calistoga TTF for display headings only (brand match; one OFL asset); B, Noto Sans only.
+- **Recommendation: A.**
+
+**OD-29 PDF verification tooling.**
+- **Options:** A, `pdfjs-dist` devDependency for text extraction and Playwright-rendered visual baselines; B, geometry tests only.
+- **Recommendation: A** (development only).
+
+**OD-30 Page format.**
+- **Options:** A, A4 portrait (print, accountants; matches statements); B, a phone-first narrow page.
+- **Trade-off:** A4 reads acceptably on phones when the type is at least 9.5 pt with a single main column.
+- **Recommendation: A.**
+
+**OD-31 Insight thresholds and report bounds.**
+- **Recommendation:** approve the §10 thresholds (5% or ₦10,000; ≥ 3 buckets; ≥ 4-bucket trends; ≥ 5 debtors), plus:
+  - series of at most 24 months or 8 quarters or 92 days;
+  - tables of at most 40 rows in the body;
+  - appendix capped at 500 rows, with "export the full list on your dashboard" beyond that.
+
+**OD-32 Report history.**
+- **Options:** A, "show my previous reports" lists this member's last 5 report PDFs (free re-delivery); B, no history, regenerate instead.
+- **Recommendation: A.**
+
+**OD-33 Analytical context storage.**
+- **Options:**
+  - **A.** Migration M4: a `books` continuation kind with a validated `context` jsonb holding typed values only.
+  - **B.** Zero migration: read the last read-only `command_drafts` row as context (couples analytics to the write-confirmation authority).
+  - **C.** As A, and also store the scrubbed item words, which changes 0154's "no typed words" rule.
+- **Recommendation: A.**
+
+**OD-34 Collection metrics.**
+- **Options:** A, "collection rate" = collected ÷ net sales for the window (cash lens, may exceed 100%, labelled), plus "paid share of this period's invoices" as a second metric, plus median days to full payment; B, only the invoice-based paid share.
+- **Recommendation: A**, both labelled with their denominators.
+
+**OD-35 Contract fallback if the schema grows too costly.**
+- **Options:** A, main schema with two new intents (§5.1); B, a classifier-routed narrow strict tool for books questions (one extra call per books question; main schema unchanged).
+- **Recommendation: A, switching to B only if the Stage B measurements show an accuracy drop or a cost per call increase above an owner-set limit.**
+- **Owner input needed:** that limit, for example +15% input tokens.
+
+**OD-36 Feature flag.**
+- **Options:** A, one `BOOKS_ASSISTANT_ENABLED` flag (default off) for staged rollout and instant rollback; B, no flag.
+- **Recommendation: A.**
+
+### Decisions that most shape the build
+
+Resolve these first: OD-1, OD-3, OD-20, OD-21, OD-22, OD-23, OD-24 / OD-25, OD-33.
 
 ---
 
-## 18. Acceptance criteria
+## 24. Final architecture recommendation
 
-Each criterion is pass or fail, and evidenced by a named test or a staging record.
+**The smallest safe design that delivers the complete approved scope:**
 
-1. "send INV-2026-000001" delivers the **originally stored** PDF to the requester:
-   - the bytes equal the R2 object;
-   - no model call and no AI unit;
-   - financial checksums unchanged.
-2. A reference that is unknown or belongs to another tenant gives the not-found reply, and no other tenant's data appears in any field.
-3. A customer resolved by token, by phone and by name (per OD-1) returns only that customer's invoices: both `customer_id` and snapshot-token linkage. A read never creates a customer or identity row (per OD-3).
-4. Every filter in §5.1 works alone and combined, against seeded expectations in kobo. Ordering is stable and pagination has no duplicates or gaps.
-5. An ambiguous result is never auto-selected. An ordinal resolves only for the same member within 600 s. Expired, foreign or forged selections are refused.
-6. Each outcome in §8.2 produces its own reply. No silent retry follows a "Sending…" reply when the object is missing.
-7. A summary shows the as-issued facts from the snapshot, and the current position from the projection and allocations, in separate sections. Figures equal `rebuildInvoiceProjection` across the history matrix. No negative balance is shown.
-8. Aggregates equal hand-computed SQL totals over the same filter. Counts come from SQL.
-9. A voice note with the same words gives the same result as text, and PDF delivery waits for confirmation (§10.2).
-10. Duplicate webhooks and job retries cause at most one send per request. Concurrent retrievals leave the financial state unchanged.
-11. The full existing suite is green, and eval-harness accuracy on existing intents does not fall.
-12. The production-shaped request with the expanded schema succeeds on Sonnet 5.5, Opus 5.5 and Haiku 5.5. The owner-run probe is recorded.
-13. Exact-head CI is green, and the db then api integration suites have been run serially.
-14. Staging acceptance cases 1–17 (§15) are recorded with evidence. Every remaining limitation is listed and approved.
+1. **Two validated intents** (`InvoiceQuery`, `Analyse`), plus router presets and follow-up phrases. The model returns criteria only; core resolves every period, amount, reference and comparison.
+2. **One orchestration path** (`books-answer.ts`) shared by typed text, voice and follow-ups. It produces **one immutable `BooksResult`** that feeds the chat reply, the follow-up context and the PDF.
+3. **Figures from the ledger** through the existing `summaryFor` definitions, generalised to buckets and windows inside `reports.ts`. Arithmetic comes from the existing `changeOf` and `comparePeriods`, extended with like-for-like windows, quarters, years and a metric registry. Invoice facts come from the existing projection and snapshot, through one new read repo.
+4. **Deterministic insights and templates.** No model narrative in the MVP, no causal or forecast claims, and explicit confidence labels.
+5. **Professional PDFs on the existing pdfkit stack.** A new pure `report-layout.ts` makes content and geometry decisions, and an extended `pdf.ts` draws them in Rekoda's tokens. Reports are rendered by the existing `document.render` job, stored privately in R2 with their JSON snapshot, and delivered by the existing `document.deliver` to the requesting member. They are metered with the existing `REPORT_EXPORTS` unit.
+6. **Reuse of the existing continuation table**, with one justified migration for typed analysis context. Zero up-front indexes; a performance gate decides.
+7. **No new production dependency, service, database or search engine.** One dev-only dependency (`pdfjs-dist`) for real PDF verification. One font asset.
+8. **Prerequisite correctness fixes first (P0).** Reads stop creating customers; one "sales" definition; honest expense categories; honest cash flow. The new analytics would otherwise inherit those defects.
+
+**Footprint:**
+- 4 new production files;
+- 1 recommended migration (plus 1 conditional on OD-24 and OD-25);
+- 0 new production dependencies;
+- 10 PRs (P0 and 1–9) behind one flag.
+
+**Every requirement in both specifications maps to a stage in §21.** None is dropped, and none is deferred without an owner decision.
