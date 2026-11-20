@@ -1736,7 +1736,7 @@ export function customerBalanceAnswer(
   const unlisted = count - rows.length;
   const more =
     unlisted > 0
-      ? `\n…and ${unlisted} more unpaid invoice${unlisted === 1 ? '' : 's'}, included in the total.`
+      ? `\n…and ${unlisted} additional outstanding invoice${unlisted === 1 ? '' : 's'}, included in the total.`
       : '';
   return reply(`They owe you ${formatKobo(totalK)} in total.\n\n${lines.join('\n')}${more}`);
 }

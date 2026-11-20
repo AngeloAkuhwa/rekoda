@@ -1220,3 +1220,15 @@ describe('allowanceExhausted names the period the allowance covers', () => {
     }
   });
 });
+
+describe('a customer balance names what it did not list honestly (owner directive on #437)', () => {
+  /* A partly paid invoice is outstanding, not "unpaid": the line counts what is
+   * still due on every open invoice, whatever has been paid on it. */
+  it('calls the invoices beyond the listed ones outstanding, never unpaid', () => {
+    const one = replies.customerBalanceAnswer(debtors, NAIRA_MILLIONS, debtors.length + 1).text;
+    expect(one).toContain('…and 1 additional outstanding invoice, included in the total.');
+    const three = replies.customerBalanceAnswer(debtors, NAIRA_MILLIONS, debtors.length + 3).text;
+    expect(three).toContain('…and 3 additional outstanding invoices, included in the total.');
+    expect(three).not.toContain('unpaid');
+  });
+});

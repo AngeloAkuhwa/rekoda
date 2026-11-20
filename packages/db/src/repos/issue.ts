@@ -21,6 +21,7 @@
 import { and, eq, sql, desc, inArray } from 'drizzle-orm';
 import {
   ACCOUNTS,
+  assertKobo,
   formatDocumentNumber,
   KEY_BY_CODE,
   lagosYear,
@@ -1270,7 +1271,8 @@ export async function invoiceByNumber(
  * alone finds nothing for exactly the invoices this product creates.
  *
  * Oldest first. A balance question is usually the prelude to a chase, and the
- * oldest debt is the one that matters.
+ * oldest debt is the one that matters. Two invoices issued in the same instant
+ * list by number, so the same question always lists the same 20.
  *
  * At most 20 invoices are listed, but `totalK` and `count` cover every open
  * invoice of theirs: window aggregates are evaluated before LIMIT, so the
@@ -1292,15 +1294,17 @@ export async function openInvoicesForCustomer(
       AND i.status IN ('issued', 'partially_paid')
       AND (c.token = ${customerToken}
            OR i.snapshot_json ->> 'customerToken' = ${customerToken})
-    ORDER BY i.created_at ASC
+    ORDER BY i.created_at ASC, i.invoice_number ASC
     LIMIT 20
   `);
   const all = [...rows];
-  return {
-    rows: all.map(readOpenInvoice),
-    totalK: all[0] ? Number(all[0].open_total_k) : 0,
-    count: all[0] ? Number(all[0].open_count) : 0,
-  };
+  const listed = all.map(readOpenInvoice);
+  const totalK = all[0] ? Number(all[0].open_total_k) : 0;
+  /* A bigint past 2^53 would read back rounded, and a balance stated to the
+   * merchant must be the exact kobo or nothing (invariant 1). */
+  for (const r of listed) assertKobo(r.balanceDueK, 'open invoice balance');
+  assertKobo(totalK, 'open invoices total');
+  return { rows: listed, totalK, count: all[0] ? Number(all[0].open_count) : 0 };
 }
 
 /* ── credit notes ────────────────────────────────────────────────────────── */

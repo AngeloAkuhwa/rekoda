@@ -287,7 +287,9 @@ describe('a question that names a customer', () => {
     );
 
     expect(stubSender.lastText).toContain('₦21,000 in total');
-    expect(stubSender.lastText).toContain('1 more unpaid invoice');
+    expect(stubSender.lastText).toContain(
+      '1 additional outstanding invoice, included in the total',
+    );
     expect(stubSender.lastText).not.toContain('Ada');
   });
 
