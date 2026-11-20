@@ -25,6 +25,22 @@
  * is not exact, the check is conservative: an unrecognised keyword means "not
  * strict", because the cost of being wrong that way is the old behaviour, and
  * the cost of being wrong the other way is a 400.
+ *
+ * Scope (owner review N2, 20 Nov 2026). This decides strict eligibility for a
+ * schema that is already valid JSON Schema; it is not a JSON Schema validator.
+ * It checks which keywords appear, the structure strict mode requires
+ * (`additionalProperties: false` on every object, no object in a type array,
+ * `anyOf` alone) and the documented limits, and it checks the values of
+ * `format`, `enum`, `const`, `minItems` and `properties`. It does not check
+ * that the value of `type`, `required`, `items` (beyond being a schema),
+ * `anyOf` (beyond being a list), `description`, `title` or `default` is
+ * well formed: `type: 'objekt'`, `required: 'a'`, `enum: []` or `anyOf: []`
+ * pass through unchanged. Such a schema is invalid JSON Schema, which the API
+ * refuses with or without `strict`, so this check neither causes nor hides
+ * that 400. The schemas sent today are the business command (refused here,
+ * over the union limit) and the document classifier (sent strict), each
+ * pinned by `strict-schema.test.ts`. A new tool schema gets its own case
+ * there before it ships.
  */
 
 /** Documented ceilings, totalled across every strict schema in one request. */

@@ -20,8 +20,10 @@
  *   node dist/ai/eval/probe-tool-choice.js --plan   print the request bodies
  *   node dist/ai/eval/probe-tool-choice.js --send   three billed calls (cents)
  *
- * Prints one JSON line per request: status, stop reason, block types, tool
- * calls, the model that answered, whether the transport accepted tool input, whether the answer
+ * Prints one JSON line per request. With `--send` it starts with an outcome
+ * (`valid`, `malformed_tool_input`, `no_tool_input` or `provider_error`;
+ * `--plan` has none, its answer being the relay's own), then status, stop
+ * reason, block types, tool calls, the model that answered, whether the transport accepted tool input, whether the answer
  * passed the schema, token usage and elapsed time against the 20 s timeout.
  * Never prints the key. A provider error message is printed: it can only
  * quote this synthetic request. Never wire this into CI: `--send` spends.
@@ -38,7 +40,7 @@ import {
   CLASSIFIER_TOOL_DESCRIPTION,
   CLASSIFIER_TOOL_NAME,
   CLASSIFIER_TOOL_SCHEMA,
-  parseDocumentClass,
+  DOCUMENT_CLASSES,
 } from '../classifier.js';
 import { CLASSIFIER_MAX_TOKENS, COMMAND_MAX_TOKENS } from '../interpreter.service.js';
 import { SYSTEM_PROMPT, TOOL_DESCRIPTION, TOOL_NAME } from '../prompt.js';
@@ -52,6 +54,27 @@ export interface ProbeCase {
   readonly name: 'interpreter' | 'escalation' | 'classifier';
   readonly request: ModelRequest;
   readonly accepts: (toolInput: unknown) => boolean;
+  /** Extra fields printed for an accepted answer (the classifier prints its class). */
+  readonly summarise?: (toolInput: unknown) => Record<string, unknown>;
+}
+
+/**
+ * The probe's own reading of a classifier answer: exactly the shape the strict
+ * schema allows, one `type` key holding one of the six classes. `unsure` is
+ * one of them, so `{ type: 'unsure' }` is a valid answer (finding N1).
+ * Production keeps `parseDocumentClass`, which reads anything malformed as
+ * `unsure` (fail-open, unchanged); that is why the probe cannot use it to
+ * tell a valid answer from a malformed one.
+ */
+function isDocumentClassAnswer(input: unknown): boolean {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) return false;
+  const keys = Object.keys(input);
+  const type = (input as { type?: unknown }).type;
+  return (
+    keys.length === 1 &&
+    typeof type === 'string' &&
+    (DOCUMENT_CLASSES as readonly string[]).includes(type)
+  );
 }
 
 export function probeCases(models: {
@@ -84,7 +107,8 @@ export function probeCases(models: {
         toolSchema: CLASSIFIER_TOOL_SCHEMA,
         maxTokens: CLASSIFIER_MAX_TOKENS,
       },
-      accepts: (input) => parseDocumentClass(input) !== 'unsure',
+      accepts: isDocumentClassAnswer,
+      summarise: (input) => ({ documentClass: (input as { type: string }).type }),
     },
   ];
 }
@@ -212,9 +236,20 @@ export async function runProbe(
       let verdict: Record<string, unknown>;
       try {
         const reply = await transport.send(probe.request);
+        const schemaValid = reply.toolInput !== null && probe.accepts(reply.toolInput);
         verdict = {
+          /* valid: one finished call of the offered tool, inside its schema;
+           * malformed_tool_input: that call, outside its schema;
+           * no_tool_input: no usable call (prose, refusal, truncation, two
+           * calls; stopReason says which); provider_error: below. */
+          outcome: schemaValid
+            ? 'valid'
+            : reply.toolInput === null
+              ? 'no_tool_input'
+              : 'malformed_tool_input',
           transportToolInput: reply.toolInput !== null,
-          schemaValid: reply.toolInput !== null && probe.accepts(reply.toolInput),
+          schemaValid,
+          ...(schemaValid && probe.summarise ? probe.summarise(reply.toolInput) : {}),
           stopReason: reply.stopReason,
           ...(reply.refusalCategory === undefined
             ? {}
@@ -223,9 +258,13 @@ export async function runProbe(
         };
       } catch (error) {
         verdict = {
+          outcome: 'provider_error',
           transportError: error instanceof ProviderUnreachable ? error.message : String(error),
         };
       }
+      /* In --plan the answer is the relay's own canned call (input {}), so an
+       * outcome would only describe that stand-in, never the provider. */
+      if (!upstream) delete verdict['outcome'];
       const elapsedMs = Date.now() - started;
       const exchange = exchanges.get(caseToken) ?? null;
       const response = exchange?.response;

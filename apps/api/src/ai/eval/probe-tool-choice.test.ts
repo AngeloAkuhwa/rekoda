@@ -8,7 +8,7 @@ import type { AddressInfo } from 'node:net';
 import { describe, expect, it } from 'vitest';
 import { PROBE_MESSAGE, probeCases, runProbe } from './probe-tool-choice.js';
 import { SYSTEM_PROMPT, TOOL_NAME } from '../prompt.js';
-import { CLASSIFIER_TOOL_NAME } from '../classifier.js';
+import { CLASSIFIER_TOOL_NAME, DOCUMENT_CLASSES, parseDocumentClass } from '../classifier.js';
 import { CLASSIFIER_MAX_TOKENS, COMMAND_MAX_TOKENS } from '../interpreter.service.js';
 
 const MODELS = {
@@ -59,6 +59,12 @@ describe('the G-134 probe, in plan mode', () => {
     expect(body.max_tokens).toBe(CLASSIFIER_MAX_TOKENS);
   });
 
+  it("claims no outcome in plan mode, where the answer is the relay's own stand-in", async () => {
+    for (const result of await runProbe(probeCases(MODELS), null)) {
+      expect(result).not.toHaveProperty('outcome');
+    }
+  });
+
   it('a synthetic message only: no phone number, no name, no amount beyond the sentence', () => {
     expect(PROBE_MESSAGE).not.toMatch(/\+?\d{10,}/);
     expect(PROBE_MESSAGE).toContain('CUSTOMER_7K2');
@@ -67,7 +73,11 @@ describe('the G-134 probe, in plan mode', () => {
 
 describe('the G-134 probe, sending through the relay', () => {
   /** A stand-in provider that holds its answer to the models named in `hold`. */
-  async function fakeUpstream(hold: Record<string, number>) {
+  async function fakeUpstream(
+    hold: Record<string, number>,
+    /** Replaces the default answer (one call of the offered tool, input `{}`) for a model. */
+    answer: Record<string, (tool: string) => { status: number; body: unknown }> = {},
+  ) {
     const seen: Array<{ url: string; key: string; model: string }> = [];
     const server = createServer((req, res) => {
       const chunks: Buffer[] = [];
@@ -79,6 +89,15 @@ describe('the G-134 probe, sending through the relay', () => {
         };
         seen.push({ url: req.url ?? '', key: String(req.headers['x-api-key']), model: body.model });
         setTimeout(() => {
+          const custom = answer[body.model]?.(body.tools[0]?.name ?? '');
+          if (custom) {
+            res.writeHead(custom.status, {
+              'content-type': 'application/json',
+              connection: 'close',
+            });
+            res.end(JSON.stringify(custom.body));
+            return;
+          }
           res.writeHead(200, { 'content-type': 'application/json', connection: 'close' });
           res.end(
             JSON.stringify({
@@ -165,4 +184,107 @@ describe('the G-134 probe, sending through the relay', () => {
       }
     },
   );
+
+  /** A finished answer holding one call of `tool` with `input`. */
+  const toolAnswer = (model: string, input: unknown) => (tool: string) => ({
+    status: 200,
+    body: {
+      id: 'msg_y',
+      type: 'message',
+      role: 'assistant',
+      model,
+      content: [{ type: 'tool_use', id: 't', name: tool, input }],
+      stop_reason: 'tool_use',
+      stop_sequence: null,
+      stop_details: null,
+      usage: { input_tokens: 1, output_tokens: 1 },
+    },
+  });
+
+  /* Finding N1 (owner review of 7602bb2): `unsure` is one of the classifier's
+   * six classes, so a strict answer of { type: 'unsure' } is a valid tool
+   * call. The probe judged it with parseDocumentClass(input) !== 'unsure',
+   * which reported it as schemaValid false, the same as malformed input. */
+  it('reports a valid "unsure" classification as valid, apart from malformed input, no tool call and a provider error', async () => {
+    const run = async (classifier: (tool: string) => { status: number; body: unknown }) => {
+      const upstream = await fakeUpstream({}, { [MODELS.classifier]: classifier });
+      try {
+        const results = await runProbe(probeCases(MODELS), {
+          baseUrl: upstream.baseUrl,
+          apiKey: 'upstream-key',
+        });
+        return results.find((r) => r['case'] === 'classifier')!;
+      } finally {
+        await upstream.close();
+      }
+    };
+
+    expect(await run(toolAnswer(MODELS.classifier, { type: 'unsure' }))).toMatchObject({
+      status: 200,
+      transportToolInput: true,
+      schemaValid: true,
+      outcome: 'valid',
+      documentClass: 'unsure',
+    });
+    expect(await run(toolAnswer(MODELS.classifier, { type: 'banana' }))).toMatchObject({
+      transportToolInput: true,
+      schemaValid: false,
+      outcome: 'malformed_tool_input',
+    });
+    const prose = await run(() => ({
+      status: 200,
+      body: {
+        id: 'msg_z',
+        type: 'message',
+        role: 'assistant',
+        model: MODELS.classifier,
+        content: [{ type: 'text', text: 'This looks like a receipt.' }],
+        stop_reason: 'end_turn',
+        stop_sequence: null,
+        stop_details: null,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      },
+    }));
+    expect(prose).toMatchObject({
+      transportToolInput: false,
+      schemaValid: false,
+      outcome: 'no_tool_input',
+      toolCalls: [],
+    });
+    expect(prose).not.toHaveProperty('documentClass');
+    const refused = await run(() => ({
+      status: 400,
+      body: { type: 'error', error: { type: 'invalid_request_error', message: 'synthetic' } },
+    }));
+    expect(refused).toMatchObject({ status: 400, outcome: 'provider_error' });
+    expect(String(refused['transportError'])).toBe('anthropic 400: invalid_request_error');
+  });
+});
+
+describe("the G-134 probe's own reading of a classifier answer", () => {
+  const accepts = probeCases(MODELS).find((c) => c.name === 'classifier')!.accepts;
+
+  it('accepts every one of the six classes, "unsure" included (finding N1)', () => {
+    for (const type of DOCUMENT_CLASSES) expect(accepts({ type })).toBe(true);
+  });
+
+  it('refuses what the strict schema refuses: an unknown class, a missing or extra key, a non-object', () => {
+    for (const input of [
+      { type: 'banana' },
+      { type: 'UNSURE' },
+      {},
+      { type: 'receipt', confidence: 1 },
+      { type: ['unsure'] },
+      null,
+      'unsure',
+      ['unsure'],
+    ]) {
+      expect(accepts(input)).toBe(false);
+    }
+  });
+
+  it('leaves production fail-open as it was: malformed input still reads as "unsure"', () => {
+    expect(parseDocumentClass({ type: 'banana' })).toBe('unsure');
+    expect(parseDocumentClass(null)).toBe('unsure');
+  });
 });
