@@ -78,7 +78,13 @@ const GARBAGE: ModelReply = {
 };
 const TRUNCATED: ModelReply = { toolInput: null, usage: USAGE, stopReason: 'max_tokens' };
 
-/** Row counts of every public table, read as the owner so RLS hides nothing. */
+/**
+ * Row counts of every public table, read as the owner. The owner must bypass
+ * RLS for a count to mean anything (asserted below). Every table in the
+ * database is counted, so this needs the database to itself: CI runs
+ * integration files one at a time; a second suite against the same database
+ * at the same moment makes it fail, never pass.
+ */
 async function tableCounts(): Promise<Map<string, number>> {
   const owner = createDb(urls.owner, { max: 1 });
   try {
@@ -228,6 +234,20 @@ describe('an incomplete answer, under tool_choice auto', () => {
   });
 });
 
+describe('room to answer after thinking (review of bd9c5b3)', () => {
+  /* Claude Sonnet 5.5 thinks by default and Opus 5.5 cannot stop thinking;
+   * the thinking shares max_tokens with the tool call, and a cut-off answer
+   * is unusable without escalation. The ceiling is billed only for what is
+   * produced, so it is set with room to spare, the same for every model. */
+  it('asks every command reading with a ceiling well above the command itself', async () => {
+    const businessId = await seedBusiness();
+    const transport = new StubTransport([GARBAGE, GOOD]);
+    await new Interpreter(db, config, transport).interpret(businessId, 'CUSTOMER_7K2 bought wigs');
+
+    expect(transport.requests.map((r) => r.maxTokens)).toEqual([4_096, 4_096]);
+  });
+});
+
 describe('the provider refusing the request itself (the staging 400)', () => {
   it('is unavailable, escalates nothing, hands the slot back and records the error type', async () => {
     const businessId = await seedBusiness();
@@ -272,6 +292,18 @@ describe('what an interpretation writes, whatever the model answered', () => {
     ['a provider 400', [new ProviderUnreachable('anthropic 400: invalid_request_error')]],
   ];
 
+  it('counts as a role that RLS cannot hide rows from, so a count of 0 means 0', async () => {
+    const owner = createDb(urls.owner, { max: 1 });
+    try {
+      const rows = await owner.db.execute<{ sees_all: boolean }>(sql`
+        SELECT (rolsuper OR rolbypassrls) AS sees_all FROM pg_roles WHERE rolname = current_user
+      `);
+      expect([...rows][0]?.sees_all).toBe(true);
+    } finally {
+      await owner.close();
+    }
+  });
+
   it.each(cases)(
     '%s: only its cost rows and quota counters, never a financial record',
     async (_name, replies) => {
@@ -286,7 +318,8 @@ describe('what an interpretation writes, whatever the model answered', () => {
       /* The interpreter proposes; nothing is a draft, a sale, an invoice or a
        * ledger line until the command bus is handed a confirmed command. */
       const changed = changedTables(before, await tableCounts());
-      expect(changed.every((name) => AI_ACCOUNTING_TABLES.includes(name))).toBe(true);
+      // Named on failure: the table that moved is the finding.
+      expect(changed.filter((name) => !AI_ACCOUNTING_TABLES.includes(name))).toEqual([]);
       expect(changed).toContain('usage_events');
     },
   );

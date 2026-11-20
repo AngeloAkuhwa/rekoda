@@ -11,8 +11,9 @@
  * one. A prompt is advice to a model; the guarantees are structural and live
  * elsewhere:
  *
- *   - the ₦10bn `maximum` in the tool schema, which constrained decoding
- *     cannot exceed and `parseBusinessCommand` rejects if it somehow does
+ *   - the ₦10bn `maximum`, which `parseBusinessCommand` enforces on every
+ *     answer (the tool schema carries it as guidance; the business-command
+ *     tool is not strict, so decoding is not constrained to it: G-134)
  *   - the money engine, which recomputes every figure rather than trusting one
  *   - the confirmation gate, which means nothing is issued unread
  *

@@ -604,7 +604,7 @@ describe('bounded escalation', () => {
     );
 
     /* The GOOD reply was never asked for: a truncated answer is a transport
-     * configuration fault, and Opus hits the same 1,024-token ceiling. */
+     * configuration fault, and Opus hits the same output ceiling. */
     expect(transport.requests).toHaveLength(1);
     expect(result).toMatchObject({ outcome: 'unusable' });
   });

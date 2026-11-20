@@ -72,6 +72,17 @@ describe('the strict wire form', () => {
     });
   });
 
+  it('shares no array with the schema it was given', () => {
+    const schema = object({ kind: { type: 'string', enum: ['a', 'b'] } });
+    const result = strictToolSchema(schema);
+    if (!result.ok) throw new Error('expected strict');
+    const kept = result.schema as { required: string[]; properties: { kind: { enum: string[] } } };
+    expect(kept.required).not.toBe(schema.required);
+    expect(kept.properties.kind.enum).not.toBe(
+      (schema.properties as { kind: { enum: string[] } }).kind.enum,
+    );
+  });
+
   it('never changes the schema it was given', () => {
     const schema = object({ name: { type: 'string', maxLength: 5 } });
     const before = structuredClone(schema);
@@ -124,6 +135,24 @@ describe('what keeps a schema non-strict', () => {
     expect(
       refused(object({ a: { type: 'array', items: { type: 'string' }, minItems: 2 } })),
     ).toMatch(/minItems 2/);
+  });
+
+  it('an object spelled without "type: object", or as a type array (review of bd9c5b3)', () => {
+    expect(
+      refused(object({ a: { properties: { b: { type: 'string' } }, required: ['b'] } })),
+    ).toMatch(/additional properties/);
+    expect(
+      refused(
+        object({
+          a: {
+            type: ['object', 'null'],
+            properties: { b: { type: 'string' } },
+            required: ['b'],
+            additionalProperties: false,
+          },
+        }),
+      ),
+    ).toMatch(/type array with object/);
   });
 
   it('a root that is not an object', () => {

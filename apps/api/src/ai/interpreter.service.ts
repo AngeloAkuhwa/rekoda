@@ -87,6 +87,18 @@ type ModelCall =
 type EscalationReason = 'schema_failure' | 'no_tool_call' | 'refusal' | 'unclear';
 
 /**
+ * The output ceiling for a command reading (interpreter, escalation, verifier).
+ *
+ * A command is a few hundred tokens, but the ceiling also holds whatever the
+ * model thinks first: Claude Sonnet 5.5 thinks by default and Claude Opus 5.5
+ * cannot stop, and an answer cut off at the ceiling is unusable and, by
+ * design, not escalated (G-134 review). Only the tokens produced are billed,
+ * so a high ceiling costs nothing on an ordinary answer; it is the same for
+ * every model, so no model ID selects a different request.
+ */
+export const COMMAND_MAX_TOKENS = 4_096;
+
+/**
  * Asking a model what a merchant meant (MASTER-PLAN §5.3.3, ADR 0007).
  *
  * The order is: reserve → call → record → parse. Each step earns its place.
@@ -142,7 +154,7 @@ export class Interpreter {
       toolName: TOOL_NAME,
       toolDescription: TOOL_DESCRIPTION,
       toolSchema: this.toolSchema,
-      maxTokens: 1_024,
+      maxTokens: COMMAND_MAX_TOKENS,
       purpose: 'interpret_message',
     });
     if (primary.kind === 'refused') return { outcome: 'refused', refusedBy: primary.refusedBy };
@@ -172,7 +184,7 @@ export class Interpreter {
       toolName: TOOL_NAME,
       toolDescription: TOOL_DESCRIPTION,
       toolSchema: this.toolSchema,
-      maxTokens: 1_024,
+      maxTokens: COMMAND_MAX_TOKENS,
       purpose: 'interpret_message',
       extraMeta: { escalationReason: reason, escalatedFrom: this.config.aiModelDefault },
     });
@@ -226,7 +238,7 @@ export class Interpreter {
       toolName: TOOL_NAME,
       toolDescription: TOOL_DESCRIPTION,
       toolSchema: this.toolSchema,
-      maxTokens: 1_024,
+      maxTokens: COMMAND_MAX_TOKENS,
       purpose: 'verify_document_extraction',
       transport: this.verifier,
       provider: 'openai',

@@ -44,10 +44,10 @@ export { ANTHROPIC_DEFAULT_BASE_URL } from './anthropic.client.js';
  * Either way the caller parses the answer with its own schema, which stays
  * the only authority on whether a command exists.
  *
- * **Tool input only from a finished tool call.** Input is read only when the
- * model stopped BECAUSE it called the tool (`stop_reason: tool_use`), once,
- * under the offered name. A refusal, a cut-off answer, a second call or a
- * block naming any other tool yields no input at all.
+ * **Tool input only from a finished tool call.** Input is read only from an
+ * answer that finished (`FINISHED_STOPS`) with exactly one call, under the
+ * offered name. A refusal, a cut-off answer, a second call or a block naming
+ * any other tool yields no input at all.
  */
 export class AnthropicTransport implements ModelTransport {
   private readonly client: Anthropic;
@@ -87,7 +87,7 @@ export class AnthropicTransport implements ModelTransport {
     );
     const [only] = toolUses;
     const toolInput =
-      response.stop_reason === 'tool_use' &&
+      FINISHED_STOPS.has(response.stop_reason ?? '') &&
       toolUses.length === 1 &&
       only?.name === request.toolName
         ? only.input
@@ -108,6 +108,33 @@ export class AnthropicTransport implements ModelTransport {
     };
   }
 }
+
+/**
+ * The stops after which a tool call is complete. The Anthropic API reports a
+ * tool call as `tool_use`; a compatible gateway behind AI_BASE_URL may say
+ * `end_turn` or `stop_sequence` for the same finished answer. Everything else
+ * (`refusal`, `max_tokens`, `model_context_window_exceeded`, `pause_turn`,
+ * an unknown value) is refused or incomplete, and yields no input.
+ */
+const FINISHED_STOPS = new Set(['tool_use', 'end_turn', 'stop_sequence']);
+
+/**
+ * The API's own error types. Anything else in that field came from somewhere
+ * that is not the Anthropic API (a gateway can put any text there) and is not
+ * repeated into logs or `jobs.last_error`.
+ */
+const KNOWN_ERROR_TYPES = new Set([
+  'invalid_request_error',
+  'authentication_error',
+  'billing_error',
+  'permission_error',
+  'not_found_error',
+  'request_too_large',
+  'rate_limit_error',
+  'timeout_error',
+  'api_error',
+  'overloaded_error',
+]);
 
 /**
  * Strictness is decided once per schema object: the interpreter and the
@@ -149,7 +176,8 @@ function describe(error: unknown): string {
     /* `type` is the API's fixed error vocabulary (`invalid_request_error`,
      * `overloaded_error`); the message is not, and can quote the request.
      * Staging logged "anthropic 400: Error" for a 400 whose type said why. */
-    return `anthropic ${error.status ?? 'error'}: ${error.type ?? error.name}`;
+    const type = error.type && KNOWN_ERROR_TYPES.has(error.type) ? error.type : error.name;
+    return `anthropic ${error.status ?? 'error'}: ${type}`;
   }
   return error instanceof Error ? error.name : 'unknown provider error';
 }

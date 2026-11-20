@@ -162,13 +162,20 @@ function convert(node: unknown, counts: { unions: number; optional: number }): u
         out[key] = value;
         break;
       default:
-        out[key] = value;
+        /* A copy, so the strict form shares no array or object with the
+         * caller's schema (or with the cached form of it). */
+        out[key] = structuredClone(value);
     }
   }
 
+  if (Array.isArray(source['type']) && source['type'].includes('object')) {
+    throw new NotStrict('a type array with object');
+  }
   if ('anyOf' in source || Array.isArray(source['type'])) counts.unions += 1;
 
-  if (source['type'] === 'object') {
+  /* An object is anything that declares properties, with or without
+   * `type: object`: strict mode wants additionalProperties false on each. */
+  if (source['type'] === 'object' || 'properties' in source) {
     if (source['additionalProperties'] !== false) {
       throw new NotStrict('an object allows additional properties');
     }
