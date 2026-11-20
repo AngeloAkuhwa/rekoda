@@ -9,7 +9,7 @@
  * to obtain one; storing a raw message through it is not an oversight that
  * could happen, it is a value the caller would have to construct by hand.
  */
-import { and, desc, eq, isNull, sql } from 'drizzle-orm';
+import { type SQL, and, desc, eq, isNull, sql } from 'drizzle-orm';
 import {
   CONFIRMATION_TTL_SECONDS,
   PURCHASE_QUESTION_SECONDS,
@@ -2186,29 +2186,34 @@ const META_TYPES = [
   'unsupported',
   'video',
 ];
-const STRUCTURAL_BODY =
-  '^\\[(?:' +
-  [
-    ...DETERMINISTIC_KINDS,
-    'number:[0-9]+',
-    ...META_TYPES.map((t) => `${t} message`),
-    'text message',
-    'voice note',
-    'receipt photo',
-    'customer message',
-    'reply',
-    'erased',
-    'template [a-z0-9_]+',
-    'message too long to read',
-    'message withheld: it held a protected detail',
-  ].join('|') +
-  ')\\]$';
+/**
+ * Exempt only in the direction the product writes it (owner review of #437 at
+ * 3a60b0f): what a merchant or a customer SENT is inbound, so an inbound body is
+ * exempt only as one of the inbound labels; "[reply]" and "[template name]" are
+ * only ever Rekoda's own outbound messages. Before this a merchant's pre-G-136
+ * message typed as "[template chiamaka]" matched a label and kept its text.
+ */
+const anchored = (labels: readonly string[]) => '^\\[(?:' + labels.join('|') + ')\\]$';
+const INBOUND_STRUCTURAL_BODY = anchored([
+  ...DETERMINISTIC_KINDS,
+  'number:[0-9]+',
+  ...META_TYPES.map((t) => `${t} message`),
+  'text message',
+  'voice note',
+  'receipt photo',
+  'customer message',
+  'erased',
+  'message too long to read',
+  'message withheld: it held a protected detail',
+]);
+const OUTBOUND_STRUCTURAL_BODY = anchored(['reply', 'erased', 'template [a-z0-9_]+']);
 
 /**
  * Replace the stored text of this business's conversation history with a
  * placeholder (G-136 R1 and R4, owner directive on #437, 20 Nov 2026).
  *
- * Only rows whose body is not one of the structural bodies (`STRUCTURAL_BODY`):
+ * Only rows whose body is not one of the structural bodies of its direction
+ * (`INBOUND_STRUCTURAL_BODY`, `OUTBOUND_STRUCTURAL_BODY`):
  * since G-136 every new model-routed message is stored as one, so what is left
  * is text written before it, which can hold a name nobody recorded. The rows
  * themselves stay (ids, direction, timing, provider ids, the drafts and
@@ -2221,29 +2226,89 @@ const STRUCTURAL_BODY =
 export async function eraseStoredText(
   tx: TenantDb,
   businessId: string,
-  options: { dryRun?: boolean; before?: Date; limit?: number } = {},
-): Promise<number> {
+  options: EraseBatchOptions = {},
+): Promise<ErasedBatch> {
+  return eraseInBatches(tx, businessId, options, {
+    name: 'eraseStoredText',
+    table: sql`conversation_messages`,
+    eligible: sql`NOT (
+        (t.direction = 'inbound' AND t.body ~ ${INBOUND_STRUCTURAL_BODY}) OR
+        (t.direction = 'outbound' AND t.body ~ ${OUTBOUND_STRUCTURAL_BODY}))`,
+    set: sql`body = ${ERASED_BODY}`,
+  });
+}
+
+/** Options of a bounded erasure pass (`eraseStoredText`, `eraseFinishedMessagePayloads`). */
+export interface EraseBatchOptions {
+  /** Count every eligible row, ignoring `limit` and `after`, and write nothing. */
+  dryRun?: boolean;
+  /** Only rows created before this instant. */
+  before?: Date;
+  /** At most this many rows (default 5,000). */
+  limit?: number;
+  /** Only rows whose id sorts after this one: the `last` of the previous pass. */
+  after?: string | null;
+}
+
+/** What one pass erased (or, dry, would erase), and where the next pass starts. */
+export interface ErasedBatch {
+  count: number;
+  /** The greatest id this pass touched, or null when it touched none. */
+  last: string | null;
+}
+
+/**
+ * One bounded pass of an erasure over a business's rows, in id order (owner review of
+ * #437 at 3a60b0f).
+ *
+ * Keyset-paged by id, and the update finds its batch by primary key. On
+ * `conversation_messages` the `(business_id, id)` index makes a pass read about
+ * `limit` rows; `external_events` has only a `business_id` index, so its pass reads
+ * the business's events once (0.26 s at 200,000 rows, measured). The earlier form (`id IN (SELECT ...
+ * ORDER BY created_at, id LIMIT n)`) was planned as a nested loop over the whole
+ * business: one 5,000-row batch of a 12,345-row business took 17.7 s, so a larger
+ * business would pass the 30 s statement timeout and its DELETE MY DATA could never
+ * complete. A dry run counts every eligible row (the exact figure an operator is
+ * shown), not the first `limit`.
+ */
+export async function eraseInBatches(
+  tx: TenantDb,
+  businessId: string,
+  options: EraseBatchOptions,
+  target: { name: string; table: SQL; eligible: SQL; set: SQL },
+): Promise<ErasedBatch> {
   const limit = options.limit ?? 5_000;
   if (!Number.isSafeInteger(limit) || limit <= 0) {
-    throw new Error(`eraseStoredText: limit must be a positive integer, got ${limit}`);
+    throw new Error(`${target.name}: limit must be a positive integer, got ${limit}`);
   }
   const before = options.before?.toISOString() ?? null;
-  const eligible = sql`
-    SELECT id FROM conversation_messages
-    WHERE business_id = ${businessId}::uuid
-      AND body !~ ${STRUCTURAL_BODY}
-      AND (${before}::timestamptz IS NULL OR created_at < ${before}::timestamptz)
-    ORDER BY created_at, id
-    LIMIT ${limit}`;
+  const scope = sql`t.business_id = ${businessId}::uuid
+      AND ${target.eligible}
+      AND (${before}::timestamptz IS NULL OR t.created_at < ${before}::timestamptz)`;
   if (options.dryRun) {
     const rows = await tx.execute<{ n: number }>(
-      sql`SELECT count(*)::int AS n FROM (${eligible}) e`,
+      sql`SELECT count(*)::int AS n FROM ${target.table} t WHERE ${scope}`,
     );
-    return [...rows][0]?.n ?? 0;
+    return { count: [...rows][0]?.n ?? 0, last: null };
   }
-  const rows = await tx.execute<{ id: string }>(sql`
-    UPDATE conversation_messages SET body = ${ERASED_BODY}
-    WHERE business_id = ${businessId}::uuid AND id IN (${eligible})
-    RETURNING id`);
-  return [...rows].length;
+  const after = options.after ?? null;
+  /* The batch is chosen in this business by code (`scope`) and resolved once (an
+   * InitPlan), and the update finds its rows by primary key; RLS pins the update to the
+   * business as it does every statement here. Repeating `business_id = ...` on the
+   * update side is deliberately left out: with it the planner walks the business's whole
+   * history and tests each row against the 5,000 ids (4 s a pass at 200,000 rows,
+   * measured), instead of 5,000 primary-key lookups (0.2 s). */
+  const rows = await tx.execute<{ n: number; last: string | null }>(sql`
+    WITH erased AS (
+      UPDATE ${target.table} u SET ${target.set}
+       WHERE u.id = ANY (ARRAY (
+         SELECT t.id FROM ${target.table} t
+          WHERE ${scope}
+            AND (${after}::uuid IS NULL OR t.id > ${after}::uuid)
+          ORDER BY t.id
+          LIMIT ${limit}))
+      RETURNING u.id)
+    SELECT count(*)::int AS n, max(id::text) AS last FROM erased`);
+  const row = [...rows][0];
+  return { count: row?.n ?? 0, last: row?.last ?? null };
 }

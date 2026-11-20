@@ -501,18 +501,23 @@ export async function eraseTextOutsideTheVault(
   businessId: string,
   sourceType: string,
 ): Promise<{ messageText: number; messagePayloads: number }> {
-  const BATCH = 5_000;
-  const all = async (batch: (limit: number) => Promise<number>) => {
+  /* Keyset passes of 5,000 rows each (`eraseInBatches`): each pass reads about the rows
+   * it erases, so the whole erasure grows linearly with the business's history. */
+  const all = async (
+    pass: (after: string | null) => Promise<{ count: number; last: string | null }>,
+  ) => {
     let total = 0;
+    let after: string | null = null;
     for (;;) {
-      const n = await batch(BATCH);
-      total += n;
-      if (n < BATCH) return total;
+      const { count, last } = await pass(after);
+      total += count;
+      if (last === null) return total;
+      after = last;
     }
   };
-  const messageText = await all((limit) => eraseStoredText(tx, businessId, { limit }));
-  const messagePayloads = await all((limit) =>
-    eraseFinishedMessagePayloads(tx, businessId, { limit }),
+  const messageText = await all((after) => eraseStoredText(tx, businessId, { after }));
+  const messagePayloads = await all((after) =>
+    eraseFinishedMessagePayloads(tx, businessId, { after }),
   );
   await tx.insert(auditEvents).values({
     businessId,
