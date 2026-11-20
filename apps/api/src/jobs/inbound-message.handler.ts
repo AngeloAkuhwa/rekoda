@@ -5229,6 +5229,7 @@ async function interpretedReply(
    * made mechanical.
    */
   let command = interpreted.command;
+  let nameNotKnown = false;
   /**
    * A question resolves a name by LOOKUP only (OD-3, owner ruling 20 Nov 2026).
    *
@@ -5249,7 +5250,10 @@ async function interpretedReply(
     if (scrubbed !== safeText) {
       await conversationsRepo.setInboundBody(tx, businessId, conversationMessageId, scrubbed);
     }
-    if (!known && command.topic === 'customer_balance') return replies.customerNotKnown();
+    /* Answered through the ordinary path, not by returning here: a question
+     * leaves its read-only Query draft, which is what stops a later "yes"
+     * reaching past it to an older preview (`hasReadsAfter`, Codex on #437). */
+    nameNotKnown = !known && command.topic === 'customer_balance';
     command = {
       ...command,
       customer: known ? { kind: 'token', token: known.token } : { kind: 'none' },
@@ -5317,7 +5321,13 @@ async function interpretedReply(
    * question, and storing the proposal anyway would mean a later `yes` joining
    * two customer records nobody was ever asked about.
    */
-  const answered = await acknowledge(tx, businessId, command, correcting, link, receivedAt);
+  const acknowledged = await acknowledge(tx, businessId, command, correcting, link, receivedAt);
+  /* A balance question about a name the books do not hold: honest about
+   * that, never "they owe nothing" (G-135). The draft and continuation are
+   * the ordinary ones of a question with no customer. */
+  const answered = nameNotKnown
+    ? { ...acknowledged, reply: replies.customerNotKnown() }
+    : acknowledged;
 
   /* Supplier names are never persisted (ADR 0005): the preview above
    * already said "From: ...". What the stored draft keeps instead is the

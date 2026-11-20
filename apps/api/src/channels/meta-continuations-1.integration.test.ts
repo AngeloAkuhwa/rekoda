@@ -375,6 +375,29 @@ describe('a short reply continues what Rekoda just asked (Build 6)', () => {
     expect((await draftStates(business.id))[0]).toBe('RecordSale:confirmed');
   });
 
+  /* G-135 (Codex on #437): a balance question about a name nobody recorded is
+   * still a question, and leaves the same read-only footprint, so the yes
+   * after it is not taken as agreement to the preview before it. */
+  it('a yes after a question about an unknown customer does not save the preview before it', async () => {
+    const business = await seedMerchant();
+    await say('wamid.G135-sale', A_SALE, 'sold Ada 3 wigs for 300k');
+    await say(
+      'wamid.G135-ask',
+      {
+        ...THIS_MONTH,
+        topic: 'customer_balance',
+        period: null,
+        customer: { kind: 'mention', mention: 'Bola Ige' },
+      },
+      'how much does Bola Ige owe me',
+    );
+    expect(stubSender.lastText).toBe(replies.customerNotKnown().text);
+
+    await reply('wamid.G135-yes', 'yes');
+    expect(stubSender.lastText).toBe(BEHIND);
+    expect(await footprint(business.id)).toMatchObject({ invoices: 0, postings: 0 });
+  });
+
   it('two model-answered questions after a preview take a yes each before the yes that saves', async () => {
     const business = await seedMerchant();
     await say('wamid.B6-two-sale', A_SALE, 'sold Ada 3 wigs for 300k');
