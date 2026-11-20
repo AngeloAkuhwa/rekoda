@@ -63,8 +63,10 @@ vaulted, and each later question repeating it reaches the model again.
 2. **An unknown name in a read-only question** (`Query`).
    - The question never creates a customer or a vault identity for the name (BA-OD-3).
    - The name reaches the interpretation model as typed in every question that contains it, repeats
-     included. A question makes at most two such calls, the primary and one escalation, both to
-     Anthropic. The document verifier (OpenAI) never runs for a `Query`. This is the only exception to
+     included. Each interpretation attempt makes at most two such calls, the primary and one
+     escalation, both to Anthropic. A job that rolls back and is retried makes its attempt again. Text
+     read from a photographed document also goes to the Anthropic document classifier before
+     interpretation. The document verifier (OpenAI) never runs for a `Query`. This is the only exception to
      "reaches the LLM once", and it is no wider:
      - it covers no other intent, no other processor, and no stored copy;
      - it does not cover a phone or email, which stay under layer 2 (G-135 part 2 makes their
@@ -75,8 +77,9 @@ vaulted, and each later question repeating it reaches the model again.
    - The words the model returned are removed from the stored copy of the message (`[name]`). The
      draft and continuation carry no name. G-136 records that other words of the typed name can remain.
 3. **A name first met in a financial write** (sale, invoice, payment, order and the other write intents).
-   Unchanged. The name is vaulted when the preview is built, before the merchant confirms. Customer
-   creation stays in the authorised write workflow.
+   Unchanged. The name is vaulted as soon as the write command is interpreted (`resolveMention` runs
+   before the reply is built), before the merchant confirms, and even when the reply is a question
+   rather than a preview. Customer creation stays in the authorised write workflow.
 
 **Bounds that do not change:** the no-training API terms, the approved interpretation processor
 (Anthropic), the observability contract (no prompt, completion or name in logs or
