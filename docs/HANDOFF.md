@@ -20,7 +20,8 @@
 **PR #437, 20 Nov 2026, owner review of `3a60b0f` (no merge, no deploy; PR OPEN; ADR 0005 Amendment 1 PROPOSED; `/ai-privacy` unchanged).** Each fixed RED first:
 
 - **Customer creation follows the record (G-135):** only a sale's, payment's or order's `customer` (and the PR #77 second facet asked about in the preview) becomes a customer; other phones and emails in a record's words read `[phone]`/`[email]`; an unissued customer token in its words reads `[customer]`.
-- **A yes after a refusal (G-137, older for model failures):** refusals and failed readings stand as retired drafts, so a "yes" never posts the older preview.
+- **A yes after a refusal (G-137; older for model, voice and photo failures):** every refusal or failed reading stands as the sender's pending refusal draft, so their "yes" saves nothing and says the older preview is still waiting; the next "yes" confirms it. Another member's refusal is passed over.
+- **Suppliers:** a supplier given only as a phone is no supplier, never one shared supplier called "[phone]" (found by the independent review of these fixes).
 - **R4 erasure (G-136):** keyset passes (the old batch was 17.7 s at 12,345 rows and could never finish on a large business); finished customer messages erased whatever note their handler wrote; labels exempt only in their own direction.
 - **Combined journey** with the whole database footprint after each message: `meta-identity-journey.integration.test.ts`.
 

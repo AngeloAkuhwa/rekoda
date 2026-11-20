@@ -855,6 +855,18 @@ export function previewBehindQuestion(): Reply {
   );
 }
 
+/**
+ * A "yes" straight after a refusal or a failed reading, with a preview still
+ * waiting from before it (owner review of #437). The yes was about the
+ * refusal, so nothing is saved; the preview is pointed at, never confirmed.
+ */
+export function previewBehindRefusal(): Reply {
+  return reply(
+    'Nothing was saved from your last message. There is still a preview waiting from ' +
+      'before it. Check it, then reply *yes* to save it.',
+  );
+}
+
 /** A "no" to a preview that had already expired: nothing to cancel (G-23). */
 export function expiredNothingToCancel(): Reply {
   return reply('That request had already expired, so nothing was saved.');

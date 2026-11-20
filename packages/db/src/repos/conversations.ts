@@ -666,6 +666,47 @@ async function newestPendingDraft(
   return rows[0] ?? null;
 }
 
+/**
+ * Close one pending refusal draft (owner review of #437 at 3a60b0f).
+ *
+ * A message Rekoda answered with a refusal or a failed reading instead of a
+ * record leaves a pending `Unclear` draft marked `refused` that holds only the
+ * sentence, so that a "yes" right after it is about it and never about an
+ * older preview. The answer that "yes" (or a "no") gets closes it here, once:
+ * `superseded`, never `abandoned`, which would read as a retired purchase
+ * question and leave the preview before it unconfirmable for good
+ * (`isBehindRetiredQuestion`). Only that draft, only while pending.
+ */
+export async function closeRefusalDraft(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+): Promise<boolean> {
+  const updated = await tx
+    .update(commandDrafts)
+    .set({ state: 'superseded', updatedAt: new Date() })
+    .where(
+      and(
+        eq(commandDrafts.businessId, businessId),
+        eq(commandDrafts.id, draftId),
+        eq(commandDrafts.state, 'pending'),
+        eq(commandDrafts.intent, 'Unclear'),
+      ),
+    )
+    .returning({ id: commandDrafts.id });
+  return updated.length === 1;
+}
+
+/** Whether a draft is a refusal's (`closeRefusalDraft`), never a request. */
+export function isRefusalDraft(draft: { intent: string; command: unknown }): boolean {
+  return (
+    draft.intent === 'Unclear' &&
+    typeof draft.command === 'object' &&
+    draft.command !== null &&
+    (draft.command as { refused?: unknown }).refused === true
+  );
+}
+
 /** What a claim found (CG3, G-23). */
 export type DraftClaim =
   /** This call, and only this call, now owns the draft: execute it. */
@@ -2293,8 +2334,9 @@ export async function eraseInBatches(
   }
   const after = options.after ?? null;
   /* The batch is chosen in this business by code (`scope`) and resolved once (an
-   * InitPlan), and the update finds its rows by primary key; RLS pins the update to the
-   * business as it does every statement here. Repeating `business_id = ...` on the
+   * InitPlan), and the update finds its rows by primary key, so it can only touch ids
+   * that selection returned: rows of this business, whatever role runs it. RLS is the
+   * second guard, as on every statement here. Repeating `business_id = ...` on the
    * update side is deliberately left out: with it the planner walks the business's whole
    * history and tests each row against the 5,000 ids (4 s a pass at 200,000 rows,
    * measured), instead of 5,000 primary-key lookups (0.2 s). */

@@ -528,7 +528,7 @@ export class PrivacyGateway {
       live.facets.set(customer.token, typed);
       live.displays.set(customer.token, displayOf(typed));
     }
-    live.provisional?.clear();
+    for (const token of only) live.provisional?.delete(token);
     return { replaced, resolved };
   }
 

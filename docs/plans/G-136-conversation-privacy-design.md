@@ -96,13 +96,22 @@ a token not in `tokens.displays` gets the following treatment.
   - The command is refused with `customerNotRecognised`, and nothing confirmable is drafted.
   - Its message unit is refunded, as for any refused request.
   - A warning is logged with the intent only.
-  - **The refusal stands as the newest draft, retired at once** (owner review of `3a60b0f`): an
-    `Unclear` draft holding only the reply sentence, state `abandoned`. A "yes" after it is answered
-    "There is nothing waiting for a yes" and never confirms the preview shown before the refusal.
+  - **The refusal stands as the newest draft** (owner review of `3a60b0f`): an `Unclear` draft holding
+    only the reply sentence, never the preview shown before the refusal.
     Reproduced first: before this, a "yes" after the refusal posted the older sale. The same held, and
-    is fixed the same way, for every other sentence the model path answers instead of a record: the
-    AI allowance exhausted, the daily ceiling, the provider down, an unusable answer and a document
-    reading disagreement (`refusedAs` in H). A later, explicit preview is confirmed as before.
+    is fixed the same way, for every other sentence Rekoda answers instead of a record: on the model
+    path the AI allowance exhausted, the daily ceiling, the provider down, an unusable answer and a
+    document reading disagreement (`refusedAs`); outside it a voice note or photo that could not be
+    fetched, read or allowed (every refusal of the two readers), a message the gateway would not hand
+    on, a page the classifier called junk or refused, and an unsupported message type (`recordRefusal`).
+    The refusal is a pending `Unclear` draft marked `refused`. A "yes" from the member it answered closes
+    it and saves nothing: "Nothing was saved from your last message. There is still a preview waiting
+    from before it…" when one is, otherwise "nothing waiting for a yes"; the next "yes" is about that
+    preview, as Build 6 treats a question asked since a preview. Another member's refusal is closed and
+    passed over, so it never stands between a member and their own preview. A "no" closes it too and
+    never reports it as cancelled. It is never `abandoned`, which would read as a retired purchase
+    question and leave the preview before it unconfirmable for good. A later, explicit preview is
+    confirmed as before.
 - **What counts as issued:**
   - the gateway's own tokens for this message: stored ones from the known-name pass, phones and
     emails, and provisional ones (`CUSTOMER_U…`), which the record then materialises;
@@ -133,10 +142,16 @@ a token not in `tokens.displays` gets the following treatment.
     its `customer` is a provisional token, that token is materialised: found or created, vaulted, and
     the record carries the stored token.
   - **A second facet typed beside that customer** (PR #77's owner rule: "Ada 0803… ada@…" is asked about
-    in the preview, "same customer?", and never joined without a yes). It is materialised only when that
-    question is really asked: exactly two people in the message, at least one new, and the facet placed
-    in none of the record's words. A name customer already recorded asks nothing, so the facet beside it
-    creates nobody.
+    in the preview, "same customer?", and never joined without a yes). It is created only when that
+    question is really asked: exactly two people in the message, at least one new, the facet placed in
+    none of the record's words, and only once the answer turns out to be the preview that carries the
+    question (`pendingBeside`, after `acknowledge`). An arithmetic question, "which invoice?" or any other
+    answer asks nothing, so the facet is never created (independent review of these fixes; RED: "a
+    second facet beside a sale customer creates nobody when no preview asks about it"). Beside a name the
+    model reports as a mention, only a phone can be asked about, and only when the name is new: the new
+    name is the orphan and the phone the survivor, as `linkAfterMention` proposes it. A recorded name the
+    merchant typed is already a stored token (the known-name pass), so a new phone beside it is asked
+    about, as before.
   - **Every other phone or email** (an expense's plumber, a supplier on a purchase, a contact in an
     order's note, forwarded text, a second phone on a payment) creates nobody. Wherever the model put
     its token in the record's words, the words keep `[phone]` or `[email]` (`neutraliseTokens` in

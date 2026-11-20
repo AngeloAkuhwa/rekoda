@@ -17,16 +17,18 @@ import {
   db,
   deps,
   messagePayload,
+  photoPayload,
   post,
   stubSender,
   stubTransport,
   useMetaWebhookHarness,
 } from './meta-webhook.fixtures.js';
-import { drain } from './meta-voice-note.fixtures.js';
+import { drain, voicePayload } from './meta-voice-note.fixtures.js';
 
 useMetaWebhookHarness();
 
 const OWNER = '2348031234567';
+const DELEGATE = '2348035550000';
 
 async function seedMerchant() {
   const user = await identity.upsertUserByPhone(db, `+${OWNER}`);
@@ -407,6 +409,59 @@ describe('customer creation follows the record, not the token (owner review of #
     expect(await plaintextIn(business.id, ['8039998888', 'CUSTOMER_U'])).toEqual([]);
   });
 
+  it('suppliers known only by phone are never merged into one supplier called [phone]', async () => {
+    const business = await seedMerchant();
+    const purchase = (supplierMention: string) => ({
+      intent: 'RecordPurchase',
+      supplierMention,
+      description: 'cement',
+      amount: 40_000,
+      reportedPayment: 40_000,
+      paymentMethod: 'cash',
+      productMention: null,
+      quantity: null,
+      supplierReference: null,
+    });
+
+    await say('wamid.S9a', purchase('CUSTOMER_U01'), 'bought cement from 08039998888 for 40k cash');
+    await plain('wamid.S9a-yes', 'yes');
+    await say('wamid.S9b', purchase('CUSTOMER_U01'), 'bought cement from 08037776666 for 40k cash');
+    await plain('wamid.S9b-yes', 'yes');
+    await say(
+      'wamid.S9c',
+      purchase('Musa CUSTOMER_U01'),
+      'bought cement from Musa 08035554444 for 40k cash',
+    );
+    await plain('wamid.S9c-yes', 'yes');
+
+    const suppliers = await withBusiness(
+      db,
+      business.id,
+      async (tx) =>
+        [
+          ...(await tx.execute<{ n: number }>(
+            sql`SELECT count(*)::int AS n FROM suppliers WHERE business_id = ${business.id}::uuid`,
+          )),
+        ][0]!.n,
+    );
+    /* Musa is one supplier; the two known only by number are none, never one shared. */
+    expect(suppliers).toBe(1);
+  });
+
+  it('a second facet beside a sale customer creates nobody when no preview asks about it', async () => {
+    const business = await seedMerchant();
+
+    /* The stated total disagrees with the items, so the answer is an arithmetic
+     * question, not a preview, and "same customer?" is never asked. */
+    await say(
+      'wamid.S10',
+      { ...sale({ kind: 'token', token: 'CUSTOMER_U01' }), statedTotal: 90_000 },
+      'Ada 08039998888 ada.obi@example.com bought 2 wigs, total 90k',
+    );
+    expect(stubSender.lastText).not.toContain('same customer');
+    expect(await identitiesOf(business.id)).toEqual(['phone']);
+  });
+
   it("a contact in an order's note is not the order's customer", async () => {
     const business = await seedMerchant();
     const bola = await deps.gateway.resolveMention(business.id, 'Bola Ige');
@@ -561,7 +616,68 @@ describe('a yes after a refused record', () => {
     expect(stubSender.lastText).toContain('could not tell which customer');
 
     await plain('wamid.R3', 'yes');
-    expect(stubSender.lastText).toContain('nothing waiting for a yes');
+    expect(stubSender.lastText).toContain('Nothing was saved from your last message');
+    expect(stubSender.lastText).toContain('still a preview waiting');
+    expect(await footprint(business.id)).toEqual(before);
+
+    /* Told the preview is waiting, the next yes is about it (Build 6's rule
+     * for a question asked since a preview, applied to a refusal). */
+    await plain('wamid.R3b', 'yes');
+    expect((await footprint(business.id)).invoices).toBe(before.invoices + 1);
+  });
+
+  it('a no after a refusal alone cancels nothing and says so', async () => {
+    await seedMerchant();
+    await say('wamid.R10', payment({ kind: 'token', token: 'CUSTOMER_7K2' }), 'Bisi paid 20k');
+    await plain('wamid.R11', 'no');
+    expect(stubSender.lastText).not.toBe('Cancelled.');
+    expect(stubSender.lastText).not.toContain('Cancelled');
+  });
+
+  it("another member's refusal does not stand between a member and their own preview", async () => {
+    const business = await seedMerchant();
+    const ada = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+    const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+    await identity.addMembership(db, business.id, delegate.id, 'delegate');
+
+    await say(
+      'wamid.R12',
+      sale({ kind: 'token', token: ada.token }),
+      'sold Ada Obi 2 wigs for 100k',
+    );
+    stubTransport.replyWith(payment({ kind: 'token', token: 'CUSTOMER_7K2' }));
+    await post(messagePayload(DELEGATE, 'wamid.R13', 'Bisi paid 20k'));
+    await drain();
+    expect(stubSender.lastText).toContain('could not tell which customer');
+
+    await plain('wamid.R14', 'yes');
+    expect((await footprint(business.id)).invoices).toBe(1);
+  });
+
+  /* The reviewer of the owner-review fixes: the same shape outside the model path. */
+  it.each([
+    [
+      'a photo cannot be fetched',
+      'wamid.R15',
+      () => photoPayload(OWNER, 'wamid.R15', { mediaId: 'gone' }),
+    ],
+    ['a voice note cannot be fetched', 'wamid.R16', () => voicePayload(OWNER, 'wamid.R16', 'gone')],
+  ])('does not confirm the older preview when %s', async (_why, _wamid, payload) => {
+    const business = await seedMerchant();
+    const ada = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+    await say(
+      'wamid.R17',
+      sale({ kind: 'token', token: ada.token }),
+      'sold Ada Obi 2 wigs for 100k',
+    );
+    const before = await footprint(business.id);
+
+    await post(payload());
+    await drain();
+    expect(stubSender.lastText).not.toContain('Reply *yes*');
+
+    await plain('wamid.R18', 'yes');
+    expect(stubSender.lastText).toContain('still a preview waiting');
     expect(await footprint(business.id)).toEqual(before);
   });
 
@@ -586,7 +702,7 @@ describe('a yes after a refused record', () => {
     expect(stubSender.lastText).not.toContain('Reply *yes*');
 
     await plain('wamid.R9', 'yes');
-    expect(stubSender.lastText).toContain('nothing waiting for a yes');
+    expect(stubSender.lastText).toContain('still a preview waiting');
     expect(await footprint(business.id)).toEqual(before);
   });
 
