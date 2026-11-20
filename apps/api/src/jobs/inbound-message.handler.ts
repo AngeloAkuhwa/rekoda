@@ -106,7 +106,7 @@ import type {
 import type { ReplySender } from '../replies/reply.service.js';
 import type { PaymentIntentsService } from '../payments/payment-intents.service.js';
 import { openPayload } from '../privacy/payload-vault.js';
-import { redactForLog, STORED_BODY } from '@rekoda/core/privacy';
+import { neutraliseTokens, redactForLog, STORED_BODY } from '@rekoda/core/privacy';
 import { describeFailure, JobDeferred, type JobContext, type JobHandler } from './runner.js';
 import { JobKind } from './queue.service.js';
 import { TranscriptionUnavailable, type SpeechToText, type Transcript } from '../ai/stt.js';
@@ -168,6 +168,53 @@ function withTokensReplaced<T>(value: T, replaced: ReadonlyMap<string, string>):
   if (value && typeof value === 'object') {
     return Object.fromEntries(
       Object.entries(value).map(([k, v]) => [k, withTokensReplaced(v, replaced)]),
+    ) as T;
+  }
+  return value;
+}
+
+/** The records that have a customer: the only ones a phone or email may become one for. */
+const CUSTOMER_BEARING: ReadonlySet<string> = new Set([
+  'RecordSale',
+  'RecordPayment',
+  'RecordOrder',
+]);
+
+/** Every string of a record except its `customer`, which is a reference, not words. */
+function wordsOf(value: unknown, top = true): string[] {
+  if (typeof value === 'string') return [value];
+  if (Array.isArray(value)) return value.flatMap((v) => wordsOf(v, false));
+  if (value && typeof value === 'object') {
+    return Object.entries(value).flatMap(([k, v]) =>
+      top && k === 'customer' ? [] : wordsOf(v, false),
+    );
+  }
+  return [];
+}
+
+/** Which of `candidates` appear in a record's words (owner review of #437). */
+function tokensInWords(command: StructuredBusinessCommand, candidates: string[]): Set<string> {
+  const words = wordsOf(command);
+  return new Set(candidates.filter((t) => words.some((w) => w.includes(t))));
+}
+
+/** A record with `neutraliseTokens` applied to every string except its `customer`. */
+function withWordsNeutralised<T>(
+  value: T,
+  keep: ReadonlySet<string>,
+  placeholders: ReadonlyMap<string, string>,
+  top = true,
+): T {
+  if (typeof value === 'string') return neutraliseTokens(value, keep, placeholders) as T;
+  if (Array.isArray(value)) {
+    return value.map((v) => withWordsNeutralised(v, keep, placeholders, false)) as T;
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [
+        k,
+        top && k === 'customer' ? v : withWordsNeutralised(v, keep, placeholders, false),
+      ]),
     ) as T;
   }
   return value;
@@ -5365,20 +5412,61 @@ async function interpretedReply(
     await refundMessage(tx, businessId, eventId, period);
     return replies.customerNotRecognised();
   }
-  if (
-    tokens.provisional?.size &&
-    command.intent !== 'Query' &&
-    command.intent !== 'Unclear' &&
-    (('customer' in command && command.customer && command.customer.kind !== 'none') ||
-      [...tokens.provisional.keys()].some((t) => JSON.stringify(command).includes(t)))
-  ) {
-    const made = await deps.gateway.materialise(businessId, tokens);
-    const fresh = made.resolved.filter(
-      (c) => !referenced.some((r) => r.customerId === c.customerId),
+  /**
+   * Which of this message's provisional phones and emails become customers
+   * follows what the record MEANS, never where the model put the token (owner
+   * review of #437 at 3a60b0f). Only a sale, a payment and an order have a
+   * customer, and only their `customer` is one:
+   *  - the record's own customer, typed as a phone or email, is created;
+   *  - a second facet typed beside that customer, and placed in none of the
+   *    record's words, is created only where PR #77's owner rule asks about it
+   *    in the preview ("same customer?"): a real split, exactly two people in
+   *    the message, at least one of them new. Anywhere else nobody would be
+   *    asked, so nobody is created;
+   *  - every other phone or email (an expense's plumber, a supplier, a
+   *    contact in an order's note, forwarded text) creates nobody, and the
+   *    record's words keep "[phone]" or "[email]" in its place: no number in
+   *    the books, no token that would mean nothing once this job ends.
+   * A customer token in a record's words that this message was not issued
+   * reads "[customer]" (`neutraliseTokens`): it may be another real
+   * customer's, and must never resolve to them later.
+   */
+  if (command.intent !== 'Query' && command.intent !== 'Unclear') {
+    const provisional = tokens.provisional ?? new Map();
+    const customer = 'customer' in command ? command.customer : null;
+    const bearing = CUSTOMER_BEARING.has(command.intent) && customer && customer.kind !== 'none';
+    const own =
+      bearing && customer.kind === 'token' && provisional.has(customer.token)
+        ? customer.token
+        : null;
+    const inWords = tokensInWords(command, [...provisional.keys()]);
+    const beside = bearing
+      ? [...provisional.keys()].filter((t) => t !== own && !inWords.has(t))
+      : [];
+    const people =
+      referenced.length + (own ? 1 : 0) + (customer?.kind === 'mention' ? 1 : 0) + beside.length;
+    const asked =
+      beside.length === 1 &&
+      people === 2 &&
+      (customer?.kind !== 'mention' ||
+        !(await deps.gateway.findMention(businessId, customer.mention)));
+    const needed = new Set<string>([...(own ? [own] : []), ...(asked ? beside : [])]);
+    const placeholders = new Map<string, string>(
+      [...provisional]
+        .filter(([t]) => !needed.has(t))
+        .map(([t, { facet }]) => [t, facet === 'email' ? '[email]' : '[phone]']),
     );
-    referenced = [...referenced, ...fresh];
-    link ??= deps.gateway.linkFor(referenced);
-    command = withTokensReplaced(command, made.replaced);
+    if (needed.size > 0) {
+      const made = await deps.gateway.materialise(businessId, tokens, needed);
+      const fresh = made.resolved.filter(
+        (c) => !referenced.some((r) => r.customerId === c.customerId),
+      );
+      referenced = [...referenced, ...fresh];
+      link ??= deps.gateway.linkFor(referenced);
+      command = withTokensReplaced(command, made.replaced);
+    }
+    tokens.provisional?.clear();
+    command = withWordsNeutralised(command, new Set(tokens.displays.keys()), placeholders);
   }
   /**
    * A question resolves a name by LOOKUP only (OD-3, owner ruling 20 Nov 2026).

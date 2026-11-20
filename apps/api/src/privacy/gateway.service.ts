@@ -501,19 +501,24 @@ export class PrivacyGateway {
   }
 
   /**
-   * Turn this message's provisional tokens into customers, for a record the
+   * Turn the provisional tokens `only` names into customers, for a record the
    * merchant is about to see a preview of (G-135). Exactly what `tokenise`
    * did for every phone and email before: found, or created and vaulted. The
-   * live table is rekeyed to the stored tokens, so the reply and the draft
-   * carry only those; `replaced` maps each provisional token to its customer's.
+   * caller decides which tokens a record needs (its customer, and the second
+   * facet PR #77 asks about); every other provisional token is left out and
+   * never becomes anyone (owner review of #437). The live table is rekeyed to
+   * the stored tokens, so the reply and the draft carry only those;
+   * `replaced` maps each provisional token to its customer's.
    */
   async materialise(
     businessId: string,
     live: LiveTokens,
+    only: ReadonlySet<string>,
   ): Promise<{ replaced: Map<string, string>; resolved: ResolvedCustomer[] }> {
     const replaced = new Map<string, string>();
     const resolved: ResolvedCustomer[] = [];
     for (const [token, { facet, value }] of live.provisional ?? []) {
+      if (!only.has(token)) continue;
       const customer = await this.customerTokenFor(businessId, facet, value);
       replaced.set(token, customer.token);
       if (!resolved.some((c) => c.customerId === customer.customerId)) resolved.push(customer);
