@@ -88,11 +88,26 @@ export class TextExtractionUnavailable extends Error {
    * is certain, and it comes with the token counts to price.
    */
   readonly usage?: ExtractionUsage;
+  /**
+   * Set when the engine REFUSED the image (OWN-98): terminal, like an
+   * unreadable page, but recorded as what it was. `category` is the
+   * provider's, from its own vocabulary only (else `unrecognised`), never
+   * its explanation.
+   */
+  readonly refusal?: { readonly category: string | null };
 
-  constructor(message: string, opts?: { maybeBilled?: boolean; usage?: ExtractionUsage }) {
+  constructor(
+    message: string,
+    opts?: {
+      maybeBilled?: boolean;
+      usage?: ExtractionUsage;
+      refusal?: { category: string | null };
+    },
+  ) {
     super(message);
     this.maybeBilled = opts?.maybeBilled ?? false;
     if (opts?.usage) this.usage = opts.usage;
+    if (opts?.refusal) this.refusal = opts.refusal;
   }
 }
 

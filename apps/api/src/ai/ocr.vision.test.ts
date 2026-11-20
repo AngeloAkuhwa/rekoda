@@ -165,7 +165,37 @@ describe('reading a photographed receipt through the vision model', () => {
     expect(unavailable.message).not.toContain('TOTAL');
     expect(unavailable.message).not.toContain('EXPLAINED_WHY');
     expect(unavailable.usage?.tokens).toEqual({ inputTokens: 100, outputTokens: 20 });
+    // Marked as a refusal, so its usage row says so (N1), category allow-listed.
+    expect(unavailable.refusal).toEqual({ category: 'general_harms' });
     expect(requests).toBe(1);
+  });
+
+  it('keeps a vision refusal category only from the API vocabulary', async () => {
+    respond = (res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          ...message(''),
+          stop_reason: 'refusal',
+          stop_details: { type: 'refusal', category: 'CUSTOMER_7K2 owes 50k', explanation: null },
+        }),
+      );
+    };
+    const failure = (await reader()
+      .extract(PHOTO, 'image/jpeg')
+      .catch((error: unknown) => error)) as TextExtractionUnavailable;
+    expect(failure.refusal).toEqual({ category: 'unrecognised' });
+  });
+
+  it('an unreadable page is not marked as a refusal', async () => {
+    respond = (res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(message('   ')));
+    };
+    const failure = (await reader()
+      .extract(PHOTO, 'image/png')
+      .catch((error: unknown) => error)) as TextExtractionUnavailable;
+    expect(failure.refusal).toBeUndefined();
   });
 
   it('collapses a provider 5xx to the refusal the receipt path already handles', async () => {

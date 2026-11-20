@@ -324,6 +324,49 @@ describe('a receipt photo', () => {
   });
 
   /**
+   * A vision refusal (OWN-98) ends as an unreadable photo does: its bill is
+   * recorded, the page unit goes back and no other model reads the page.
+   * Its usage row says it was a refusal, with the allow-listed category, so
+   * acceptance can tell it from an illegible page (G-134 review N1). The
+   * reply is the photo reply (N2, recorded): it claims no successful read.
+   */
+  it('records a vision refusal as a refusal, never as an illegible page', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.failWith(
+      new TextExtractionUnavailable('the vision engine declined the image', {
+        usage: {
+          provider: 'anthropic',
+          model: 'claude-sonnet-5',
+          tokens: { inputTokens: 1_500, outputTokens: 5 },
+        },
+        refusal: { category: 'general_harms' },
+      }),
+    );
+
+    await post(photoPayload('2348031234567', 'wamid.P23'));
+    await drainWithDailyLimit(1);
+
+    expect(stubTransport.requests).toHaveLength(0);
+    expect(stubSender.lastText).toBe(replies.photoUnavailable().text);
+    const rows = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ provider_cost_micros: number; meta: Record<string, unknown> }>(sql`
+        SELECT provider_cost_micros, meta FROM usage_events
+        WHERE business_id = ${business.id}::uuid AND usage_type = 'ocr_vision'
+      `),
+    );
+    expect([...rows]).toHaveLength(1);
+    const row = [...rows][0]!;
+    expect(Number(row.provider_cost_micros)).toBe(3_050);
+    expect(row.meta).toMatchObject({
+      role: 'vision',
+      priced: true,
+      reason: 'the vision engine declined the image',
+      refusalCategory: 'general_harms',
+    });
+  });
+
+  /**
    * A2, the probe the fix queue gated R5 on: does a retried media job buy a
    * second AI call and a second billed unit?
    *

@@ -947,7 +947,7 @@ async function recordVisionRead(
   usage: ExtractionUsage,
   messageId: string,
   log: Logger,
-  extra?: { reason?: string },
+  extra?: { reason?: string; refusalCategory?: string | null },
 ): Promise<void> {
   const cost = costOfCall(usage.model, usage.tokens, deps.config.planningFxNairaPerUsd);
   if (!cost.priced) {
@@ -969,6 +969,7 @@ async function recordVisionRead(
         priced: cost.priced,
         messageId,
         ...(extra?.reason ? { reason: extra.reason } : {}),
+        ...(extra?.refusalCategory === undefined ? {} : { refusalCategory: extra.refusalCategory }),
         ...usage.tokens,
       },
     }),
@@ -1167,14 +1168,26 @@ async function readReceiptPhoto(
     /* Our failure, not the merchant's, so THEIR unit goes back. The image
      * is dropped here and goes nowhere else: no vision model, no retry
      * against a hosted engine, no exception "just this once". */
-    log.warn('the OCR engine could not be reached');
     const failure = error instanceof TextExtractionUnavailable ? error : null;
+    /* Named for what happened (G-134 review N1): a refusal and an illegible
+     * page both billed us, and only the provider being unreachable did not. */
+    log.warn(
+      failure?.refusal
+        ? 'the vision engine declined the image'
+        : failure?.usage
+          ? 'the page had no legible text'
+          : 'the OCR engine could not be reached',
+    );
     if (failure?.usage) {
       /* The engine answered, billed us, and read nothing usable. Real
        * money: a priced row, and the daily slot stays counted — the
-       * ceiling bounds spend, not success. */
+       * ceiling bounds spend, not success. A refusal (OWN-98) is recorded
+       * as one, with its allow-listed category. */
       await recordVisionRead(deps, businessId, failure.usage, recorded.id, log, {
-        reason: 'the page had no legible text',
+        reason: failure.refusal
+          ? 'the vision engine declined the image'
+          : 'the page had no legible text',
+        ...(failure.refusal ? { refusalCategory: failure.refusal.category } : {}),
       });
     } else if (failure?.maybeBilled) {
       /* A hosted read that TIMED OUT may still be on the invoice. Zero

@@ -238,7 +238,7 @@ function stopReasonOf(reason: string | null | undefined): string | null {
   return STOP_REASONS.has(reason) ? reason : 'unrecognised';
 }
 
-function refusalCategoryOf(category: string | null | undefined): string | null {
+export function refusalCategoryOf(category: string | null | undefined): string | null {
   if (category === null || category === undefined) return null;
   return REFUSAL_CATEGORIES.has(category) ? category : 'unrecognised';
 }
