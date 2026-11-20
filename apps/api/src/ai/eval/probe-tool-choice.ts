@@ -145,9 +145,12 @@ export async function runProbe(
       );
       return;
     }
+    /* This request's own record: a late failure of an earlier case must
+     * mark that case, never the one running now. */
+    let exchange: Exchange | null = null;
     void (async () => {
       const raw = await readBody(req);
-      const exchange: Exchange = { body: JSON.parse(raw) as Record<string, unknown> };
+      exchange = { body: JSON.parse(raw) as Record<string, unknown> };
       current = exchange;
       if (!upstream) {
         res.writeHead(200, { 'content-type': 'application/json' });
@@ -178,7 +181,7 @@ export async function runProbe(
     })().catch(() => {
       /* The relay's own failure (upstream unreachable, or no answer in 30 s),
        * marked as such so it is never read as Anthropic's. */
-      if (current) current.relayFailed = true;
+      if (exchange) exchange.relayFailed = true;
       res.writeHead(502, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ type: 'error', error: { type: 'relay_failed', message: 'relay' } }));
     });
