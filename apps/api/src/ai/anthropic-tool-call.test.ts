@@ -237,7 +237,21 @@ describe('the Anthropic transport', () => {
       .send(REQUEST)
       .catch((e: unknown) => e);
     expect((error as Error).message).not.toContain('CUSTOMER_7K2');
-    expect((error as Error).message).toMatch(/^anthropic 400: /);
+    expect((error as Error).message).toBe('anthropic 400: BadRequestError');
+  });
+
+  /* The SDK's errors all carry name "Error"; a timeout must still be told
+   * apart from a dropped connection, because acceptance counts timeouts to
+   * decide the latency question in G-134 (third review of G-134). */
+  it('names a timeout as a timeout, apart from a dropped connection', async () => {
+    respond = () => undefined; // never answers
+    const slow = new AnthropicTransport('sk-test', 150, baseUrl);
+    const timeout = await slow.send(REQUEST).catch((e: unknown) => e);
+    expect((timeout as Error).message).toBe('anthropic timeout: APIConnectionTimeoutError');
+
+    const unreachable = new AnthropicTransport('sk-test', 2_000, 'http://127.0.0.1:1');
+    const dropped = await unreachable.send(REQUEST).catch((e: unknown) => e);
+    expect((dropped as Error).message).toBe('anthropic error: APIConnectionError');
   });
 
   it('names the provider error type on a 400, never its message', async () => {

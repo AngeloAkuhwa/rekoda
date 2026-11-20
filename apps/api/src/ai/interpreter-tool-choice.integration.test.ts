@@ -256,6 +256,17 @@ describe('room to answer after thinking (review of bd9c5b3)', () => {
 
     expect(transport.requests.map((r) => r.maxTokens)).toEqual([1_024]);
   });
+
+  it('a classification cut off at the ceiling fails open to unsure: what the ceiling prevents', async () => {
+    const businessId = await seedBusiness();
+    const transport = new StubTransport([
+      { toolInput: null, usage: USAGE, stopReason: 'max_tokens' },
+    ]);
+
+    expect(
+      await new Interpreter(db, config, transport).classifyDocument(businessId, 'TOTAL 5,000'),
+    ).toBe('unsure');
+  });
 });
 
 describe('the provider refusing the request itself (the staging 400)', () => {

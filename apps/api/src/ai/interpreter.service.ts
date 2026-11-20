@@ -96,7 +96,7 @@ type EscalationReason = 'schema_failure' | 'no_tool_call' | 'refusal' | 'unclear
  * so a high ceiling costs nothing on an ordinary answer; it is the same for
  * every model, so no model ID selects a different request.
  *
- * The transport's 20 s timeout (transport-factory.ts) is the other limit:
+ * The transport's 20 s timeout (the AnthropicTransport default) is the other limit:
  * an answer still thinking at 20 s ends as ProviderUnreachable (busy reply,
  * slot handed back, an unpriced `llm_failed` row) rather than at this
  * ceiling. Whether to wait longer is an owner decision recorded in G-134.

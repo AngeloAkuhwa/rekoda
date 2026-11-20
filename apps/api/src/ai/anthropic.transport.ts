@@ -176,8 +176,31 @@ function describe(error: unknown): string {
     /* `type` is the API's fixed error vocabulary (`invalid_request_error`,
      * `overloaded_error`); the message is not, and can quote the request.
      * Staging logged "anthropic 400: Error" for a 400 whose type said why. */
-    const type = error.type && KNOWN_ERROR_TYPES.has(error.type) ? error.type : error.name;
+    /* Every SDK error is named "Error", so the class is what tells a timeout
+     * (acceptance counts these for the G-134 latency decision) from a
+     * dropped connection. Order matters: a timeout IS a connection error. */
+    if (error instanceof Anthropic.APIConnectionTimeoutError) {
+      return 'anthropic timeout: APIConnectionTimeoutError';
+    }
+    if (error instanceof Anthropic.APIConnectionError) return 'anthropic error: APIConnectionError';
+    const type = error.type && KNOWN_ERROR_TYPES.has(error.type) ? error.type : className(error);
     return `anthropic ${error.status ?? 'error'}: ${type}`;
   }
   return error instanceof Error ? error.name : 'unknown provider error';
+}
+
+/** The SDK's own error classes, by name: code, never text from a response. */
+const ERROR_CLASSES: Array<[new (...args: never[]) => Error, string]> = [
+  [Anthropic.BadRequestError, 'BadRequestError'],
+  [Anthropic.AuthenticationError, 'AuthenticationError'],
+  [Anthropic.PermissionDeniedError, 'PermissionDeniedError'],
+  [Anthropic.NotFoundError, 'NotFoundError'],
+  [Anthropic.ConflictError, 'ConflictError'],
+  [Anthropic.UnprocessableEntityError, 'UnprocessableEntityError'],
+  [Anthropic.RateLimitError, 'RateLimitError'],
+  [Anthropic.InternalServerError, 'InternalServerError'],
+];
+
+function className(error: Error): string {
+  return ERROR_CLASSES.find(([cls]) => error instanceof cls)?.[1] ?? 'APIError';
 }
