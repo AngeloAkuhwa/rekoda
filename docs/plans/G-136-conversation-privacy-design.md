@@ -1,429 +1,254 @@
-# G-136 and ADR 0005 Amendment 1: conversation privacy decision package
-
-**Status: PROPOSAL, NOT APPROVED (20 Nov 2026).** Prepared for the owner directive "PR #437:
-consolidated owner directive, privacy corrections and final merge readiness" (20 Nov 2026). Nothing here
-is accepted, published or executed:
-
-- ADR 0005 Amendment 1 stays PROPOSED.
-- The public `/ai-privacy` wording below is not applied.
-- No historical cleanup runs.
-
-Every fact below was read in code at PR #437 head `8c073b3` plus `a821999`. File references are
-repository paths. Abbreviations: **H** is `apps/api/src/jobs/inbound-message.handler.ts`, **C** is
-`packages/db/src/repos/conversations.ts`.
-
-## 1. What is true today (verified)
+# G-135, G-136 and G-137 in PR #437: conversation privacy, implementation and decision package
+
+**Status (20 Nov 2026):** CODE COMPLETE in PR #437. Not merged, not deployed, STAGING ACCEPTANCE PENDING.
+
+**Owner directive:** "consolidate all necessary fixes into the existing PR" (20 Nov 2026). This document
+replaces the proposal of the same name written earlier that day.
+
+**Not done.** Approval is still pending for each of these:
+
+- The ADR 0005 Amendment 1 status. The amendment stays PROPOSED.
+- The public wording in §6, which is not applied to any page.
+- Any historical clean-up run.
+- Every item in §5.
+
+**Abbreviations.**
+
+- **H**: `apps/api/src/jobs/inbound-message.handler.ts`
+- **G**: `apps/api/src/privacy/gateway.service.ts`
+
+## 1. Storage decision: placeholder-only (Option A)
+
+The owner asked us to compare two options before building a name-span resolver:
+
+- **Option A:** placeholder-only storage.
+- **Option B:** sanitised text, kept only when deterministic checks prove it is safe.
+
+**Option A is implemented, and no resolver was built.** The reasons:
+
+- **Nothing reads the stored text.** `conversation_messages.body` has no production reader. `messagesFor`
+  and `messagesForThread` are called only from tests. The model receives only the current message, from
+  memory. No web page, ops route or portability export reads the body. Delivery receipts, drafts and
+  continuations use row ids and provider ids, never the body.
+- **Option B keeps a failure mode Option A removes.** A resolver can be wrong in both directions. It can
+  under-redact a surname, or over-redact a product name ("Sold Chiamaka Samsung Galaxy S25"). A
+  placeholder has neither risk.
+- **The audit trail does not depend on the text.** The record of what a message became lives in
+  `command_drafts`: the command, its supersession and confirmation, and `conversation_message_id`. It
+  also lives in the ledger and in `audit_events`. None of these change.
+
+### 1.1 What is stored now
+
+| Path                                                                       | Stored `body`                                                                                                                    |
+| -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Typed text, model route (H)                                                | `[text message]`                                                                                                                 |
+| Voice note (H)                                                             | `[voice note]`. The transcript is never stored.                                                                                  |
+| Photo or document (H)                                                      | `[receipt photo]`. The extracted text is never stored.                                                                           |
+| Deterministic route (H, unchanged)                                         | `[affirm]`, `[who_owes_me]` and similar                                                                                          |
+| Message the gateway refused (unchanged)                                    | `[message too long to read]` / `[message withheld: …]`                                                                           |
+| Integrate customer thread (`customer-message.handler.ts`)                  | `[customer message]`. The text is no longer tokenised either, so a phone the customer typed creates nobody.                      |
+| Every Rekoda reply (`reply.service.ts`)                                    | `[reply]`. A reply can repeat a name nobody recorded, such as a supplier on a purchase preview or a model-written clarification. |
+| Message to a customer (`waba-templates.service.ts`, `reserveCustomerText`) | `[reply]`. It is no longer tokenised.                                                                                            |
+| Template sends and document deliveries (unchanged)                         | `[template <name>]` and the document caption, which already held no name                                                         |
+
+The placeholder is written in the job's own transaction (`runner.ts`, one `withBusiness` for the whole
+handler). The raw or tokenised text therefore never commits to this table, on any path:
+
+- **Interpreter outcomes:** `refused`, `unavailable`, `unusable`, `disagreement`, a timeout, or
+  `Unclear`.
+- **Refusals before interpretation:** a quota or entitlement refusal, a view-only refusal, or a
+  classifier stop.
+- **Answers that need no model:** a continuation answer.
+- **Retries and duplicates:** a throw and retry (the row rolls back, and the retry writes the
+  placeholder again), a dead job (no row at all), or a duplicate webhook (deduplicated at ingress;
+  `!isNew` returns).
+
+The after-model scrub (`replaceOutsideTokens` and `setInboundBody` in the Query and write branches) is
+removed, because the body never held the text.
+
+### 1.2 What still holds the text: `external_events.payload`
+
+The webhook body is sealed with AES-256-GCM under `VAULT_KEY` (`payload-vault.ts`). It is needed while the
+message is processed: by the handler, by stranger handling, and by dead-job recovery.
+
+- **R4, built (§3):** the merchant's DELETE MY DATA now erases the payloads of finished WhatsApp
+  message events.
+- **R3, a proposal awaiting approval (§5):** a bounded time-based purge.
+
+## 2. G-137 and G-135 part 2 (implemented)
+
+### 2.1 G-137: writes name a customer only by a token issued to this message
 
-### 1.1 Where message text is stored
+H, after mention resolution: a non-Query command whose `customer` is a token not in `tokens.displays`
+gets the following treatment.
 
-| Store                                   | What it holds                                                                                                                                                                                                                           | Lifecycle                                                                                                                                                               |
-| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `external_events.payload`               | The whole Meta webhook body, the typed text included, sealed with AES-256-GCM under `VAULT_KEY` (`apps/api/src/channels/meta.service.ts`, `payload-vault.ts`)                                                                           | **Never purged** for a live business. Deleted only with the whole business, by the retention sweep's abandoned-trial deletion (`retention_delete_business`, 0161)       |
-| `conversation_messages.body` (inbound)  | `tokenise(text).text`, written before the model call (H, typed text: `recordInbound`; voice note or photo: `setInboundBody` over the claim placeholder). Known names, phones, emails and accounts are tokens; **unknown names are raw** | Rewritten only by the mention scrub after a successful interpretation (H, Query and write branches of `interpretedReply`). Never deleted or expired for a live business |
-| `conversation_messages.body` (outbound) | The tokenised reply text (`apps/api/src/replies/reply.service.ts`). A model-written clarification question passes through verbatim (`replies.clarification`), so it can echo an unknown name                                            | Same as inbound                                                                                                                                                         |
-| `command_drafts.command`                | The command after mention resolution: customer as a token, `supplierMention` nulled                                                                                                                                                     | Draft lifecycle                                                                                                                                                         |
-| `jobs.payload`                          | `{ eventId }` only                                                                                                                                                                                                                      | n/a                                                                                                                                                                     |
-| Logs, `usage_events.meta`               | No text, prompt or name (observability contract)                                                                                                                                                                                        | n/a                                                                                                                                                                     |
+- **What happens:**
+  - The command is refused with `customerNotRecognised`, and nothing is drafted.
+  - Its message unit is refunded, as for any refused request.
+  - A warning is logged with the intent only.
+- **What counts as issued:**
+  - the gateway's own tokens for this message, from the known-name pass and from phones and emails;
+  - a mention resolved in the same message;
+  - a provisional phone or email materialised by the record.
+- **Corrections (CG5).** A correction is re-interpreted from its own message, and the model never sees
+  an earlier turn. So a correction carries the customer only if the correction itself names them. That
+  was already true, and nothing changes here.
 
-**`conversation_messages.body` has no production reader.**
+### 2.2 G-135 part 2: a phone or email nobody recorded creates no customer until a record needs one
+
+- **In G: tokenisation.**
+  - `tokenise(…, { provisional: true })` looks a phone or email up and never creates a customer.
+  - An unknown one stands as `CUSTOMER_U01`, `CUSTOMER_U02` and so on. `U` is outside the Crockford
+    alphabet that stored tokens are drawn from, so a provisional token can never name a recorded
+    customer.
+  - The token has a stored token's length, so the structural-PII probe reads it the same way.
+- **In G: `materialise`.** For a record, it finds or creates each provisional customer exactly as
+  `tokenise` used to, then rekeys the live token table.
+- **In H: questions.**
+  - A `Query` that names a provisional token is answered `customerNotKnown`, and nobody is created.
+  - An `Unclear` message creates nobody.
+- **In H: records.**
+  - Any other intent materialises the provisional tokens.
+  - The command then carries the stored token.
+  - The two-record link proposal is recomputed (`linkFor`).
+- **Other callers.** Every other `tokenise` caller keeps the old behaviour.
 
-- `messagesFor` and `messagesForThread` (C) are called only from integration tests.
-- The model receives only the current message (H, `interpret(businessId, safeText, { tokens })`).
-- No web page, ops route or portability export reads the body.
+### 2.3 Financial corrections
 
-So the stored body is retained text with no runtime purpose. Replacing it with a placeholder breaks nothing
-the product does.
-
-### 1.2 Transaction boundary
-
-The whole handler, the inbound insert, the model call and the scrub included, runs in the job's one
-`withBusiness` transaction (`apps/api/src/jobs/runner.ts`). A throw rolls back the inbound row and its body
-together. A retry inserts it again. A dead job leaves **no** inbound row, so its text survives only in the
-sealed `external_events.payload`.
+| Correction           | Detail                                                                                                                                                                                                                                               |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Exact balance totals | `openInvoicesForCustomer`: window totals cover every open invoice; ties are ordered by number; amounts are checked as safe integers (`a821999`).                                                                                                     |
+| Debtors list         | `debtorsFor` gets the same safe-integer check and a unique tie-breaker.                                                                                                                                                                              |
+| Overflow reply       | A balance too large to state exactly is answered with `balanceNotStated`. The job finishes, and the merchant is never left without a reply while the job dies and is retried. This applies to the model path and to the deterministic "who owes me". |
+| Wording              | "additional outstanding invoices".                                                                                                                                                                                                                   |
 
-A duplicate webhook is deduplicated at ingress (`recordEvent`). A re-run with `!message.isNew` returns
-before anything is rewritten.
+## 3. R4: erasure reaches the text outside the vault (implemented)
 
-### 1.3 What stays in the body today, path by path
+DELETE MY DATA (`eraseDataWork`, `apps/api/src/commands/privacy-commands.ts`) runs
+`customersRepo.eraseTextOutsideTheVault`. This is in the same transaction as `eraseAllIdentities`, and in
+bounded batches of 5,000.
 
-The mention scrub runs only when interpretation returns a command whose customer is a `mention`. Every
-other path keeps `tokenise(text).text` as stored, unknown names in full:
+- **Conversation text.** `conversationsRepo.eraseStoredText` sets `[erased]` on every body of the
+  business that is not already a structural placeholder. That is text written before this PR.
+- **Webhook payloads.** `events.eraseFinishedMessagePayloads` sets `{"erased": true}` on the business's
+  `meta` `message.*` events that were processed without error, or whose error an operator resolved.
 
-- **The account cannot use Chat:** expired plan, not entitled to Chat, or quota exhausted.
-- **A view-only member is refused**, before the model or after it (a message read as a write).
-- **The model gives no usable answer:** outcome `refused`, `unavailable`, `unusable` or `disagreement`.
-- **The command carries no customer mention:** intent `Unclear`, or any command without a customer field.
-- **The photo classifier stops the page** (junk or refused).
-- **A continuation answer:** the model is not called.
-- **A supplier name** in a purchase: it is vaulted and nulled in the draft, but never scrubbed from the body.
-  This contradicts H's own comment "Supplier names are never persisted (ADR 0005)".
-- **The Integrate customer thread** (`customer-message.handler.ts`): its body is tokenised and never scrubbed.
-- **A partial or reworded mention** ("Chiamaka" returned for "Chiamaka Okafor"): the remaining words stay.
-  The test `scrubs only the words of the name the model returned (G-136)` pins `[name] Okafor`.
-- **A decomposed (NFD) typed name with a composed mention:** `replaceOutsideTokens` does no Unicode
-  normalisation, so nothing matches and the whole name stays (_inferred from the code_; covered by the
-  tests in §3.7).
+**Left untouched:** events still in flight, failed and unresolved events, and every payment provider's
+event (those are payment evidence).
 
-### 1.4 Erasure and retention against public claims
+**Audit.** One `audit_events` row with counts only.
 
-- **Two-ask erasure.** `eraseAllIdentities` and `eraseFacet` delete vault identities only. Neither touches
-  `conversation_messages` or `external_events`.
-- **Retention.** `RETENTION.conversationDays = 90` (`packages/core/src/retention.ts`) is read only by the
-  `/privacy` page ("Chat history and drafts: while your account is open, then 90 days"). No code enforces
-  it.
-- **`/data-deletion`** lists "Your conversations with Rekoda." among what DELETE MY DATA removes. The code
-  does not delete them. **This is a material contradiction, recorded in the G-136 row.**
-- **`docs/compliance/record-of-processing.md`** says "payload vault for message bodies". That is true of
-  `external_events`, not of `conversation_messages.body`.
+**No migration.** `rekoda_app` already holds UPDATE on both columns under RLS.
+
+**Behaviour change, flagged for the owner.** DELETE MY DATA used to delete vault identities only. It now
+also blanks message text that could name a customer. The reply is unchanged and the rows stay.
 
-## 2. PR sequencing and the #437 delta (directive §6)
+## 4. Actual retention and erasure behaviour after this PR
 
-### 2.1 Pre-existing, unchanged by #437
-
-All of the following predate #437. #437 changes none of them:
-
-- partial and reworded scrubs;
-- every failure path in §1.3;
-- supplier names;
-- the Integrate thread;
-- `external_events.payload` retention;
-- the erasure gap.
-
-### 2.2 What #437 changes
-
-Before #437, the first successful question about an unrecorded name **created a customer**. That is the
-defect BA-OD-3 forbids. It also had a side effect: later messages naming that person were tokenised
-before storage.
-
-After #437 the name is never vaulted. So, until a write records the person:
-
-- **Model exposure.** Each later message carries the name to the model. This is the exception Amendment 1
-  states (§4).
-- **Storage.** A later message whose processing returns before the scrub (§1.3) keeps the raw name in
-  `conversation_messages.body`. A successful later question scrubs the returned words, exactly as before
-  #437.
-
-**This is a widening, but a bounded one.** It covers only names a merchant asked about and never
-recorded, only on failure or no-mention paths, and only for text that no production code reads. It is
-the same exposure every first mention of every new name has today.
-
-### 2.3 Can a small fix inside #437 close it?
-
-**No.** The paths that keep the name never reach the Query branch #437 changed, so closing them is the
-G-136 change itself (§3.4).
-
-### 2.4 Would splitting leave the public copy materially wrong?
-
-**Yes, for one sentence.** Today's `/ai-privacy` paragraph ("the model reads that one message … every
-later message that names them is protected before it leaves") stops being true for questions the moment
-#437 merges. So:
-
-- **The model-exposure wording (§4.2) must land in #437**, once approved, together with Amendment 1.
-- **The storage sentence ("nothing keeps a readable copy") is already untrue before #437** (§1.3). The
-  directive says not to weaken it to excuse a correctable defect. It is corrected at source by the G-136
-  PR. Until that PR merges, the contradiction is recorded in the G-136 row, and Rekoda has no real users
-  (pre-launch, staging only).
-
-### 2.5 Recommended sequence
-
-1. **#437 (this PR).** G-135 part 1, the financial checks of directive §8 (`a821999`), Amendment 1 and the
-   §4.2 copy, applied **only after owner approval** of their exact text.
-2. **G-136 PR.** Store-side sanitisation (§3.1 to §3.5) and the fixes that need no owner decision (§3.6).
-   P1. It must merge before launch.
-3. **G-136 data-lifecycle PR,** after the owner approves §3.6. It covers conversation retention,
-   `external_events.payload` purge, and erasure reach.
-4. **G-137 PR.** The write-path token check (§5).
-5. **G-135 part 2 PR.** A phone or email in a question resolved provisionally. Unchanged plan.
-
-## 3. G-136 engineering design (proposal)
-
-### 3.1 Principle: fail closed at the store, precise only when certain
-
-**The body written before the model is never the raw tokenised text again.**
-
-The inbound row is written as today, but its body is a structural placeholder: `[text message]`,
-`[voice note]` or `[receipt photo]`, as the claim paths already use. The handler keeps the tokenised text
-in memory (`safeText`) for the model call.
-
-At the end of processing, **one** function decides the stored body:
-
-1. **Deterministic route.** `describeIntent(intent)`, as today.
-2. **Gateway refusal (`unread`).** The existing `UNREAD_MESSAGE` placeholder, as today.
-3. **Interpreted command whose every name span is resolved with high confidence (§3.2).** The sanitised
-   text, with names replaced by their token or `[name]` and structural PII redacted, as today.
-4. **Every other path** (all of §1.3, low confidence, no mention returned, a model failure, refusal or
-   timeout, a view-only or quota refusal, a classifier stop, a continuation answer): the placeholder
-   stays. Nothing else is written.
-
-Because the insert and the final write share the job transaction (§1.2), the placeholder-then-final
-order never commits the raw text. A throw, a worker crash or a timeout rolls the row back. A dead job
-leaves no row. The sealed webhook payload is the only copy, and §3.6 bounds it.
-
-**Why this is the smallest change:**
-
-- The body has no reader (§1.1), so the placeholder loses no function.
-- It needs no migration, table or dependency.
-- It reuses `recordInbound`, `setInboundBody`, `replaceOutsideTokens`, `openSegments` and
-  `redactStructuralPiiAroundTokens`.
-- It never touches drafts, figures, invoices or audit rows.
-
-**Alternative, rejected as weaker:** keep writing the text before the model, and add a placeholder write
-on each failure return. Every future early return becomes a new leak, so this fails open.
-
-### 3.2 Name-span resolver (bounded, deterministic, no model call)
-
-The resolver lives in `packages/core/src/privacy.ts`, next to `replaceOutsideTokens`. It is pure and
-unit-testable.
-
-```ts
-resolveNameSpans(
-  text,
-  anchors: string[],              // every customer/supplier mention the command returned
-  tokens: Iterable<string>,
-  nonName: string[],              // words of the command's other fields
-): { spans: Array<{ start: number; end: number }>; confident: boolean }
-```
-
-**Locate.** Find each anchor's whole-word occurrences inside `openSegments`, with the existing
-`replaceOutsideTokens` pattern applied to the text and to the anchor **both NFC-normalised**. That
-closes the composition miss. Every occurrence is a span, so repeats of one name are all covered.
-
-**Extend.** Grow each span one word at a time, at most **3 words** each side. A name is then at most
-the anchor plus 3 words; that bounds "Adaeze Obiageli Okonkwo" and stops a run-on. A neighbouring word
-joins the span only if it is name-shaped:
-
-- an initial (`O.` or `O`), or
-- a word starting `\p{Lu}`, made of `\p{L}\p{M}`, with internal `'` or `-` allowed ("O'Neil",
-  "Okafor-Bello").
-
-It also must not be any of these:
-
-- a token or a structural-PII placeholder;
-- a number, an amount or a currency sign or word (`₦`, `k`, `naira`);
-- a word in `nonName`: the words of the command's item names, product, description or supplier fields,
-  so "Sold Chiamaka Samsung Galaxy S25" stops at "Samsung";
-- a small closed stop list: the sentence-initial verb, `I`, weekday and month names, `Naira`,
-  `WhatsApp`, `Rekoda`.
-
-Growth stops at punctuation other than an initial's full stop, and at the segment edge.
-
-**Confidence.** A span is **confident** when its anchor was found and it stopped at a hard boundary:
-
-- a lowercase word,
-- punctuation,
-- the segment edge,
-- a `nonName` word, or
-- a figure or currency.
-
-It is **not confident** when:
-
-- no anchor occurrence was found (a reworded mention), or
-- growth hit the 3-word cap with another name-shaped word still adjacent.
-
-One unconfident span makes the whole message unconfident. The body then stays the placeholder (§3.1
-rule 4). **The resolver never guesses wider and never deletes words it cannot classify:**
-
-- when confident, it replaces exactly the spans;
-- otherwise nothing of the text is stored.
-
-**Multiple names.** Each anchor is resolved independently. A known customer's name was already a token
-before the model (layer 1), so it is never an anchor. An unknown name and a known customer together
-therefore work without special handling.
-
-**Over-redaction is accepted, under-redaction is not.** A capitalised place word straight after a name
-("Chiamaka Lagos") may be scrubbed. The stored body is not a financial record, so nothing is lost.
-
-### 3.3 Read path and write path
-
-There is one decision function for both paths.
-
-- **Writes.** Customer creation (`resolveMention`), `linkAfterMention`, draft recording and confirmation
-  are unchanged. Only the body decision moves to the end. The draft never held text, so previews,
-  confirmations, corrections (CG5) and payments are untouched.
-- **Questions.** The `[name]` and token replacement from #437 is kept. The span comes from the
-  resolver.
-- **Suppliers.** `supplierMention` becomes an anchor too (fixing §1.3).
-- **Integrate customer thread.** Same placeholder rule. Its text is never interpreted for a name, so it
-  stores the placeholder unless the gateway reported nothing to protect.
-  - _Open sub-question for review:_ the Integrate thread may need the text for the merchant's reply
-    view. No production reader exists today, so the proposal is the placeholder.
-- **Outbound clarification.** A model-written question is stored as `[clarification]`. The text sent to
-  the merchant is unchanged.
-
-### 3.4 Failure, retry and terminal states
-
-| Case                                                                             | Stored body after the change                                  | Mechanism              |
-| -------------------------------------------------------------------------------- | ------------------------------------------------------------- | ---------------------- |
-| Provider timeout, `unavailable`, `refused`, `unusable` or `disagreement` outcome | placeholder                                                   | §3.1 rule 4            |
-| Invalid structured command (`unusable`)                                          | placeholder                                                   | rule 4                 |
-| No mention, or `Unclear`                                                         | placeholder                                                   | rule 4                 |
-| Partial mention                                                                  | sanitised text if the resolver is confident, else placeholder | §3.2                   |
-| Worker crash or a throw                                                          | no row (rolled back), then the retry decides afresh           | §1.2                   |
-| Job retry                                                                        | decided afresh, the same result                               | deterministic resolver |
-| Dead letter                                                                      | no row. Sealed payload only, bounded by §3.6                  | §1.2, §3.6             |
-| Duplicate webhook                                                                | unchanged (dedup at ingress; `!isNew` returns)                | as today               |
-
-AI timeouts, the refusal boundary (OWN-98) and provider routing do not change.
-
-### 3.5 Tests (RED first)
-
-**Unit tests** of `resolveNameSpans` (`packages/core`) cover directive §5 items 1 to 12:
-
-- first name and surname; first, middle and last names; a partial anchor; initials;
-- hyphen and apostrophe; NFC and NFD; accented names; repeats; two names;
-- an unknown name beside a token; a name next to a phone or email;
-- "Sold Chiamaka Samsung Galaxy S25 for ₦900,000", which keeps "Samsung Galaxy S25" and "for ₦900,000";
-- amounts and quantities kept;
-- the cap reached, which is unconfident.
-
-**Integration tests** (`apps/api/src/channels`, a new file split by concern) cover:
-
-- §5 items 13 to 15 and every row of the §3.4 table, each asserting the exact stored `body`;
-- a supplier name;
-- the Integrate thread;
-- the clarification echo;
-- a correction (CG5) naming the customer differently.
-
-The test `scrubs only the words of the name the model returned (G-136)` **flips**: it must store no part
-of "Okafor".
-
-**Non-regression** reruns the existing suites unchanged:
-
-- tokenisation, new-customer creation and confirmation;
-- balances, invoices, payments and allocations;
-- corrections, continuations and replies;
-- the privacy-safe failure suites (`meta-*`, `privacy/*`).
-
-**Migration:** none. No column changes. The placeholder is text in the existing column.
-
-**File inventory:**
-
-- `packages/core/src/privacy.ts` and `privacy.test.ts`;
-- H (one body-decision function, the placeholder at insert, anchors from the command);
-- `customer-message.handler.ts`;
-- `reply.service.ts` (the clarification body);
-- one new integration test file;
-- docs: G-136 row, `CURRENT_STATE`, `HANDOFF`, `record-of-processing.md`.
-
-### 3.6 Historical data, retention and erasure (needs owner approval; not built until approved)
-
-**What can and cannot be found later.** An old body whose name was never vaulted cannot be linked to a
-person:
-
-- the Query branch stores `{ kind: 'none' }`;
-- there is no draft link.
-
-Matching old bodies against today's vault would mean decrypting and matching names across every message.
-That is the decrypt-and-match search BA-OD-1 gates, so it is not proposed. **Targeted historical
-sanitisation is therefore not a defensible completeness claim.** The defensible control is retention.
-
-**Proposed rules,** each an owner decision:
-
-- **R1. Bodies.** Old bodies of **model-routed inbound messages** (and of outbound clarifications)
-  committed before the G-136 PR are replaced with the placeholder. The scope is identified by
-  `kind = 'text'`, `direction = 'inbound'`, a business-scoped id range and `created_at` before the
-  deploy. Deterministic-route bodies are already `describeIntent` text and are left alone.
-  - **Procedure:**
-    - a dry run that returns **counts only** per business;
-    - an owner go/no-go;
-    - a tenant-scoped batched UPDATE through a worker-only function, with an audit event carrying counts
-      only.
-  - **Rollback:** none possible by design (the text is gone). The backup taken before the run is the
-    recovery point, and it ages out under the backup retention.
-  - It touches no financial, draft or audit row.
-- **R2. Conversation retention.** Enforce the `/privacy` page's existing 90 days for every business: a
-  sweep placeholders bodies older than `RETENTION.conversationDays`. Today the table states a rule the
-  code does not keep.
-- **R3. `external_events.payload`.** Null or replace the sealed payload of a **processed** event after
-  a bound, proposed at 30 days. Dedup needs only the provider message id, which stays. A dead or
-  unprocessed event keeps its payload until it is resolved, then the same bound applies.
-  - _A migration may be needed_ if `payload` is `NOT NULL` or the sweep needs a new grant. That is
-    assessed and shown to the owner before it is written.
-- **R4. Erasure reach.** Two-ask DELETE MY DATA:
-  - **(a)** applies R1's placeholder to every body of the business, not only old ones;
-  - **(b)** purges the business's processed `external_events.payload`.
-  - This makes `/data-deletion`'s "Your conversations with Rekoda." true.
-  - Per-customer erasure (`eraseFacet`) also placeholders the bodies whose drafts or continuations carry
-    that customer's token: the one reliable link (`command_drafts.conversation_message_id`,
-    `conversation_continuations.source_message_id`). It does not claim more than that link reaches.
-
-**Safeguards for all four rules:**
-
-- no decrypt-and-match;
-- no new copy of any name;
-- tenant-scoped functions only;
-- logs and audit events carry counts only;
-- no financial row is touched;
-- a dry run before any production run;
-- **no production execution without the owner's approval of the exact procedure.**
-
-## 4. ADR 0005 Amendment 1 and `/ai-privacy`: exact proposed text
-
-### 4.1 Amendment 1 (replaces the PROPOSED text now in the ADR; stays PROPOSED until approved)
-
-The exact text is in `docs/adr/0005-pii-gateway-scope.md` § "Amendment 1" on this branch. In summary, it
-states:
-
-- **The architecture.** Narrowed Option A: a read never creates a customer, and no store of unknown names
-  exists (Options B and C are rejected).
-- **The three cases.** Recognised customer, unknown name in a question, and name in a write.
-- **The exception's exact bounds.** Per interpretation attempt, at most two Anthropic interpretation
-  calls, plus the Anthropic document classifier for photographed text. Retries repeat the attempt. There
-  is no other processor, intent or stored copy, and no logging.
-- **Storage as a separate obligation.** It names G-136 and states that the exception never permits a
-  stored readable copy.
-
-### 4.2 Proposed replacement for the `/ai-privacy` paragraph (not applied)
-
-> Customers you have recorded are protected before anything leaves Rekoda: their names, phone numbers
-> and email addresses are replaced with meaningless tokens. The first time you record a sale, invoice or
-> payment for someone new, the model reads that message to understand it, and the name is then stored
-> encrypted with its own token. When you only ask about someone you have not recorded, Rekoda does not
-> create a customer for them, so the model reads the name each time you ask, to understand the question.
-> In every case the model is Anthropic's, under terms that do not allow training on your data. Rekoda
-> does not log these names.
-
-**What it deliberately does not say yet.** It does not repeat "nothing keeps a readable copy". That
-sentence is restored, worded as "Rekoda does not keep a readable copy of the message in your chat
-history", **only in the G-136 PR, once it is provably true**. Weakening it now would hide a correctable
-defect.
-
-### 4.3 Each claim, mapped to code and tests
-
-| Claim                                                            | Implementation                                                                              | Test                                                                                                                                                   |
-| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Recorded names, phones and emails become tokens before the model | gateway layers 1 and 2 (`PrivacyGateway.tokenise`)                                          | `meta-question-customer` "a known name never reaches the model: the question carries its token"; `privacy/*`                                           |
-| A first write vaults the name                                    | H, the write branch (`resolveMention`)                                                      | `meta-customer-identity`                                                                                                                               |
-| A question creates no customer                                   | H, the Query branch (`findMention`)                                                         | `creates no customer for a balance question about a name it does not know`; `gateway-find-mention`                                                     |
-| The model reads an unknown name each time                        | `findMention` does not vault                                                                | `meta-question-customer` (a repeated unknown name)                                                                                                     |
-| Anthropic only, no training                                      | `apps/api/src/ai` routing; OWN-98                                                           | `interpreter.integration.test.ts`                                                                                                                      |
-| No logging of names                                              | the observability contract (`usage_events.meta` holds role, model, purpose and policy only) | `apps/api/src/ai/interpreter.integration.test.ts` (usage-event shape); no #437 test asserts it for a question naming someone, so the G-136 PR adds one |
-
-### 4.4 Remaining limitations (honest list)
-
-1. Free text may hold personal details the gateway cannot recognise, such as an unrecorded name inside
-   a write before interpretation. The existing `/ai-privacy` caveat ("not a claim that every possible
-   piece of personal information … is always detected") stays.
-2. Until the G-136 PR merges, the stored chat history can hold unknown names (§1.3).
-3. Until R3 or R4 are approved and built, the sealed webhook payload keeps the text, encrypted, for the
-   life of the business.
-4. Per-customer erasure cannot reach a body that no draft or continuation links to that customer (§3.6).
-
-## 5. G-137 (new, pre-existing, IMPORTANT): write commands accept any well-formed token
-
-The issued-token check #437 added applies to questions only (H: the one `tokens.displays.has`). A write
-command (sale, payment, invoice) resolves **any** `CUSTOMER_…` token in the business:
-
-- `customerIdFor` and `confirmSale`;
-- `openInvoiceForPayment`.
-
-**Scenario.** The model invents an example-shaped token that happens to be another real customer's. A
-payment preview then targets that customer's open invoice. The preview shows the raw token, because
-`rehydrate` leaves an unknown token as it is. A "yes" posts it against the wrong customer.
-
-- **Mitigations today:** the merchant must confirm the preview; there is no cross-tenant reach; the model
-  sees only this message's tokens.
-- **Proposed fix:** a separate small PR. A write whose customer token was not issued to this message is
-  answered with a clarification and never drafted, with RED tests for a sale, a payment and an invoice.
-
-The G-137 row is recorded in `REKODA_LAUNCH_READINESS.md`.
+| Data                                           | Kept                                                    | Erased by                                                                                              |
+| ---------------------------------------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Conversation body, new rows                    | A placeholder only, never text                          | n/a                                                                                                    |
+| Conversation body, rows written before this PR | Text until erased                                       | DELETE MY DATA (R4). Business deletion by the retention sweep (abandoned trials). R1 if approved (§5). |
+| `external_events.payload` (WhatsApp messages)  | Sealed, for the life of the business                    | DELETE MY DATA, for finished events. Business deletion. R3 if approved.                                |
+| Vault identities                               | Until erased                                            | DELETE MY DATA (all), per-facet erasure, business deletion                                             |
+| Drafts (`command_drafts.command`)              | Tokens, figures and item words. The supplier is nulled. | Business deletion only. Unchanged.                                                                     |
+| Books                                          | 6 years (`RETENTION.financialYears`)                    | Never by erasure (`/data-deletion`)                                                                    |
+
+**Per-customer erasure.** `eraseFacet` does not reach a pre-PR body, because no reliable link from an
+old body to one customer exists. A Query about an unknown name stores `{kind: 'none'}`. New bodies hold
+no text, so this limitation does not grow.
+
+## 5. Owner approval gates (not built, or built but not run)
+
+### R1: historical conversation text across all businesses
+
+**Mechanism built:** `conversationsRepo.eraseStoredText(tx, businessId, { dryRun, before, limit })`. It
+is tenant-scoped, bounded, and returns a count only.
+
+**Proposed procedure:**
+
+1. Take a backup.
+2. For each business, run `dryRun: true` with `before` set to the deploy time. Report counts only.
+3. Get an owner go/no-go.
+4. Run in batches of 5,000.
+5. Write one counts-only audit row per business.
+
+**Recovery:** the pre-run backup only, since erased text cannot be restored. The runner (a script or
+ops route) is **not built**. Choosing it is the approval.
+
+### R2: the conversation retention commitment
+
+`/privacy` says "Chat history and drafts: While your account is open, then 90 days"
+(`RETENTION.conversationDays`).
+
+- **What triggers it.** The trigger is the account **closing**, not a rolling 90 days.
+- **The gap.** No account-closure state exists in the schema. The only deletion is the retention
+  sweep's abandoned-trial deletion.
+- **Decision needed:** define "closed". The options are a business deleted by request, a lapsed paid
+  plan, or a separate closure state. Then the sweep can be built: it would remove bodies, drafts and
+  payloads 90 days after closure. New bodies already hold no text.
+
+### R3: a bounded lifecycle for `external_events.payload`
+
+**Dependencies** on the payload while a message is processed:
+
+- the handler;
+- stranger handling (only for unattributed events);
+- dead-job recovery (it requeues a dead job, which reopens the payload).
+
+**Proposal:** a daily sweep sets `{"erased": true}` on `meta` `message.*` events of every business that
+were finished more than 30 days ago (`processed_at`), are not open as an exception, and are not dead.
+The selection is the same as R4, with a time cutoff.
+
+- **Needs a migration.** The worker holds UPDATE on `(processed_at, error)` only (0204, 0210). Writing
+  `payload` from the worker needs `GRANT UPDATE (payload) ON external_events TO rekoda_worker`, or a
+  worker-only `SECURITY DEFINER` function that reaches each business through its own tenant pin.
+- **ADR 0035.** That is a new cross-tenant write, so it needs its own line in ADR 0035.
+- **Status.** The exact SQL is to be shown at approval. It is not written here.
+
+### Public copy
+
+`/ai-privacy` (§6). `/data-deletion` and `/privacy` are unchanged.
+
+The `/data-deletion` line "Your conversations with Rekoda." describes the manual account-deletion
+request, which a person handles. Its text part is now also true for DELETE MY DATA.
+
+## 6. ADR 0005 Amendment 1 and the `/ai-privacy` wording (for approval)
+
+The amendment text in `docs/adr/0005-pii-gateway-scope.md` is revised to match this implementation. It
+stays PROPOSED.
+
+**Proposed replacement** for the `/ai-privacy` paragraph "The first time you mention a new customer by
+name…":
+
+> When you record a sale, invoice, payment or order for someone new, the model reads that message to
+> understand it, and their name is then stored encrypted with its own token, so later messages that name
+> them are protected before they leave. When you only ask about someone you have not recorded, Rekoda
+> does not create a customer for them, so the model reads their name each time you ask. A phone number or
+> email address is always replaced with a token, whether or not you have recorded that person. Rekoda's
+> chat history records that a message arrived, not what it said. The original WhatsApp message is kept
+> encrypted, separately, and is erased when you send DELETE MY DATA, apart from any message Rekoda is
+> still processing.
+
+### 6.1 Each claim, mapped to code and tests
+
+| Claim                                                                             | Code                                                                              | Test                                                                                                                              |
+| --------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| A record vaults a new name                                                        | H, `resolveMention`                                                               | `meta-customer-identity`; `meta-stored-body` "a sale keeps its product…"                                                          |
+| A question creates nobody; the model reads the name each time                     | H Query branch, `findMention`                                                     | `meta-question-customer` "a repeated question about an unknown name…"                                                             |
+| A phone or email is always a token, recorded or not                               | G `tokenise` (`provisional`)                                                      | `meta-customer-token` "a balance question about an unknown phone number…" (the model text holds `CUSTOMER_U01`, never the digits) |
+| The history records arrival, not content                                          | H, `customer-message.handler.ts`, `reply.service.ts`, `waba-templates.service.ts` | `meta-stored-body` (every case); `meta-webhook-ingress` "records everything else as what it was"                                  |
+| The original is encrypted and erased by DELETE MY DATA, except in-flight messages | `payload-vault.ts`; `eraseFinishedMessagePayloads`                                | `erase-text-outside-vault.integration.test.ts`                                                                                    |
+
+### 6.2 Remaining limitations
+
+1. **Free text the gateway cannot recognise.** An unrecorded name still reaches the model, which is the
+   stated exception. The existing caveat ("not a claim that every possible piece of personal information
+   … is always detected") stays.
+2. **R1 not run.** Text stored before this PR stays until DELETE MY DATA, business deletion, or R1.
+3. **R3 not approved.** WhatsApp payloads stay sealed for the life of the business unless the merchant
+   erases them.
+4. **R2: no closure state.** The 90-day "after the account closes" commitment has no closure state to
+   run from.
+5. **Draft item words.** These are merchant-authored financial descriptions, such as an expense "fuel
+   for Emeka's car". They are kept as part of the record and are outside G-136.

@@ -44,68 +44,66 @@ grows. The vault is the single highest-sensitivity store in the system:
 encrypted at rest, access-audited, and excluded from ordinary backups'
 retention rules only via the documented erasure procedure.
 
-## Amendment 1 (PROPOSED, 20 Nov 2026; NOT ACCEPTED until the owner ratifies it): names in questions
+## Amendment 1 (PROPOSED, 20 Nov 2026; NOT ACCEPTED until the owner ratifies it): names in questions, and what the history keeps
 
 **Status: PROPOSED.** Raised by CodeRabbit on PR #437 (G-135). The owner's direction is the narrowed
-Option A (owner directive on #437, 20 Nov 2026). Option C (questions create customers) is rejected.
+Option A (owner directives on #437, 20 Nov 2026). Option C (questions create customers) is rejected, and
 Option B (a permanent store of unknown names) is not approved. This text takes effect only when the owner
 approves it exactly. Until then layer 3 above stands as written, and the conflict is an OPEN OWNER
-DECISION (`REKODA_LAUNCH_READINESS.md`, G-135). The rest of this ADR is unchanged. The decision package
-is `docs/plans/G-136-conversation-privacy-design.md`.
+DECISION (`REKODA_LAUNCH_READINESS.md`, G-135). The rest of this ADR is unchanged. The implementation and
+evidence are in `docs/plans/G-136-conversation-privacy-design.md`.
 
-**Why.** BA-OD-3 (OWN-99) rules that a read never creates a customer. Layer 3 assumed that every name
-the model reports is vaulted at once, so that later mentions resolve through layer 1. Since #437 a
-question resolves a name by lookup only (`PrivacyGateway.findMention`). A name nobody recorded is
-therefore never vaulted, and each later message that repeats it reaches the model again.
+**Why.** BA-OD-3 (OWN-99) rules that a read never creates a customer. Layer 3 assumed that every name the
+model reports is vaulted at once, so that later mentions resolve through layer 1. Since #437, a question
+resolves a name by lookup only, and a phone or email nobody recorded stands as a provisional token. So
+for a person nobody recorded, nothing is vaulted until a record needs them.
 
-**Rule: three cases.**
+**Rule: four cases.**
 
 1. **A recognised customer** (a name, phone or email already in the business's vault). Unchanged.
-   Layer 1 or layer 2 replaces it with its token before any model call, in questions and in writes alike.
-2. **An unknown name in a read-only question** (`Query`).
-   - The question never creates a customer or a vault identity (BA-OD-3).
-   - The name is never treated as a customer. The reply says the books hold no customer by that name
-     (`customerNotKnown`). It never says that person owes nothing, and it never answers with the
-     business's totals.
-   - **The exception.** The name reaches the interpretation model as typed, each time a message
-     contains it, until the merchant records the person in a write. It is bounded as follows:
-     - **Calls.** Per interpretation attempt, at most two calls, the primary and one escalation, both
-       to Anthropic. Text read from a photographed document also passes the Anthropic document
-       classifier first.
-     - **Retries.** A job that rolls back and is retried makes its attempt again.
-     - **Scope.** No other processor (the OpenAI document verifier never runs for a `Query`), no other
-       intent, no log line, no `usage_events.meta` field. Phones and emails stay under layer 2.
-     - **No stored copy.** This exception is about what the model reads. It never permits Rekoda to
-       keep a readable copy of the name.
-3. **A name first met in a financial write** (sale, invoice, payment, order and the other write
-   intents). Unchanged. The name is vaulted as soon as the write command is interpreted
-   (`resolveMention` runs before the reply is built), which is before the merchant confirms, and even
-   when the reply is a question rather than a preview. Customer creation stays in the authorised write
-   workflow.
+   Layer 1 or layer 2 replaces it with its token before any model call, in questions and in records
+   alike.
+2. **An unknown phone or email.** Layer 2 still replaces it before any model call, but with a provisional
+   per-message token (`CUSTOMER_U…`) and no customer. A question names nobody by it. A record finds or
+   creates the customer, as layer 2 always did, and carries the stored token.
+3. **An unknown name in a read-only question** (`Query`).
+   - Nothing is created (BA-OD-3).
+   - The reply says the books hold no customer by that name.
+   - **The exception:** the name reaches the interpretation model as typed each time a message contains
+     it, until the merchant records the person. It is bounded as follows:
+     - at most two calls per interpretation attempt (the primary and one escalation), both to
+       Anthropic;
+     - text read from a photographed document also passes the Anthropic document classifier first;
+     - a job that rolls back and is retried makes its attempt again;
+     - no other processor, no other intent, and no log line or `usage_events.meta` field.
+4. **A name first met in a record** (sale, invoice, payment, order and the other record intents).
+   Unchanged. It is vaulted as soon as the command is interpreted (`resolveMention`), before the merchant
+   confirms.
 
-**Storage is a separate obligation.** It is not covered by this exception, and is corrected at source
-by G-136:
+**What the history keeps (G-136).** The exception covers what the model reads. It never covers what
+Rekoda stores.
 
-- what `conversation_messages.body` and the sealed webhook payload keep;
-- for how long;
-- what erasure reaches.
+- **Conversation history.** `conversation_messages.body` holds only a structural placeholder for every
+  model-routed message and every reply (`[text message]`, `[voice note]`, `[receipt photo]`,
+  `[customer message]`, `[reply]`). The text lives only in the job's memory while it runs.
+- **The webhook body** stays sealed under the vault key in `external_events.payload`. When the merchant
+  sends DELETE MY DATA, it is erased for every finished message, along with the identities and any
+  conversation text stored before G-136.
 
-The stored body is also not the only text a person's name can reach: see G-136 for the paths that keep
-it today.
+**A record's token** must be one this message was issued (G-137). Token syntax is not authority.
 
 **Bounds that do not change:**
 
 - the no-training API terms;
 - the approved interpretation processor (Anthropic);
 - the observability contract;
-- the vault's encryption and audit;
-- two-ask erasure of vault identities.
+- the vault's encryption and audit.
 
 No table, migration or store of unknown names is added.
 
 **Public copy.** `/ai-privacy` currently says: "The first time you mention a new customer by name, the
 model reads that one message to understand it. The name is then stored encrypted with its own token,
 nothing keeps a readable copy, and every later message that names them is protected before it leaves."
-Case 2 contradicts it for questions. This amendment is accepted only together with the owner-approved
-replacement in `docs/plans/G-136-conversation-privacy-design.md` §4.2, applied in the same PR. That
-replacement does not restore "nothing keeps a readable copy" until G-136 makes it true.
+
+Case 3 contradicts it for questions. This amendment is accepted only together with the owner-approved
+replacement in `docs/plans/G-136-conversation-privacy-design.md` §6, applied in the same PR.
