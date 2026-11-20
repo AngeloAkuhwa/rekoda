@@ -23,11 +23,15 @@
 
 export const CLASSIFIER_TOOL_NAME = 'classify_document';
 
+/* The request asks for the tool with tool_choice `auto` (G-134), so the call
+ * is optional: the prompt asks for it, as the interpreter's does (prompt.ts).
+ * A prose answer still fails open to `unsure`. */
 export const CLASSIFIER_SYSTEM =
   'You classify one page of extracted document text for a bookkeeping ' +
   'assistant. Decide what kind of page it is. You do not extract amounts, ' +
   'interpret transactions, or answer questions. When the page could ' +
-  'plausibly be a business document of any kind, never say junk.';
+  'plausibly be a business document of any kind, never say junk. ' +
+  'Exactly one call to the classify_document tool. No text alongside it.';
 
 export const CLASSIFIER_TOOL_DESCRIPTION =
   'Report what kind of page this text came from. Use "junk" ONLY when the ' +

@@ -257,6 +257,35 @@ describe('room to answer after thinking (review of bd9c5b3)', () => {
     expect(transport.requests.map((r) => r.maxTokens)).toEqual([1_024]);
   });
 
+  /* Under `auto` the classifier's tool is optional too, so its system prompt
+   * must ask for the call, as the interpreter's does (prompt.ts). Without that
+   * instruction a prose answer is likelier, and a prose answer is `unsure`:
+   * a clearly irrelevant photo would then go on to the interpreter call the
+   * classifier exists to save (Qodo, PR #436). */
+  it('asks the classifier for exactly one call to its tool and no text', async () => {
+    const businessId = await seedBusiness();
+    const transport = new StubTransport([
+      { toolInput: { type: 'junk' }, usage: USAGE, stopReason: 'tool_use' },
+    ]);
+    await new Interpreter(db, config, transport).classifyDocument(businessId, 'lyrics');
+
+    expect(transport.requests[0]?.system).toContain(
+      'Exactly one call to the classify_document tool. No text alongside it.',
+    );
+  });
+
+  it('a prose classification (no tool call) fails open to unsure, never junk', async () => {
+    const businessId = await seedBusiness();
+    const transport = new StubTransport([
+      { toolInput: null, usage: USAGE, stopReason: 'end_turn' },
+    ]);
+
+    expect(
+      await new Interpreter(db, config, transport).classifyDocument(businessId, 'lyrics'),
+    ).toBe('unsure');
+    expect(transport.requests).toHaveLength(1);
+  });
+
   it('a classification cut off at the ceiling fails open to unsure: what the ceiling prevents', async () => {
     const businessId = await seedBusiness();
     const transport = new StubTransport([

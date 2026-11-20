@@ -1571,7 +1571,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
      * 60 per merchant is about ₦480 a day against a subscription, and 5,000
      * platform-wide bounds the worst day this product can have to roughly
      * ₦40,000 — a number that can be absorbed while someone investigates,
-     * rather than discovered on an invoice.
+     * rather than discovered on an invoice. ₦8 is a planning average, not a
+     * per-call bound: these ceilings count calls, and since G-134 a command
+     * reading may produce up to 4,096 output tokens (COMMAND_MAX_TOKENS), so
+     * the worst day is higher than this arithmetic. Measure output tokens in
+     * acceptance before relying on it; changing a quota is a commercial call.
      */
     aiCallsPerBusinessPerDay: nonNegativeInteger(env, 'AI_DAILY_CALLS_PER_BUSINESS', 60),
     aiCallsGlobalPerDay: nonNegativeInteger(env, 'AI_DAILY_CALLS_GLOBAL', 5_000),
