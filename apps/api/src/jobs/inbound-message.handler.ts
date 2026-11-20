@@ -3379,6 +3379,14 @@ async function answerQuery(
     documentRef: null,
   });
 
+  /* A customer named on a topic that has no figures per customer (G-135, owner
+   * review of #437): "how much did Ada buy this month" must not be answered with
+   * the whole business's sales as if they were hers. Only a balance is kept per
+   * customer; anything else is asked again, never widened to the business. */
+  if (command.topic !== 'customer_balance' && command.customer?.kind === 'token') {
+    return { reply: replies.customerFiguresNotKept(), continuation: subject(null) };
+  }
+
   switch (command.topic) {
     case 'sales_summary':
     case 'expenses_summary': {
@@ -5253,7 +5261,9 @@ async function interpretedReply(
     /* Answered through the ordinary path, not by returning here: a question
      * leaves its read-only Query draft, which is what stops a later "yes"
      * reaching past it to an older preview (`hasReadsAfter`, Codex on #437). */
-    nameNotKnown = !known && command.topic === 'customer_balance';
+    /* Whatever the topic: an unknown name is said to be unknown, never
+     * answered with the whole business's figures as if they were theirs. */
+    nameNotKnown = !known;
     command = {
       ...command,
       customer: known ? { kind: 'token', token: known.token } : { kind: 'none' },
@@ -5325,9 +5335,23 @@ async function interpretedReply(
   /* A balance question about a name the books do not hold: honest about
    * that, never "they owe nothing" (G-135). The draft and continuation are
    * the ordinary ones of a question with no customer. */
-  const answered = nameNotKnown
-    ? { ...acknowledged, reply: replies.customerNotKnown() }
-    : acknowledged;
+  const answered =
+    nameNotKnown && command.intent === 'Query'
+      ? {
+          ...acknowledged,
+          reply: replies.customerNotKnown(),
+          /* The plain subject of a question with nobody in it, never a
+           * clarification a later "last month" could resume into the
+           * business's totals. */
+          continuation: {
+            kind: 'query' as const,
+            topic: command.topic,
+            period: null,
+            customerToken: null,
+            documentRef: null,
+          },
+        }
+      : acknowledged;
 
   /* Supplier names are never persisted (ADR 0005): the preview above
    * already said "From: ...". What the stored draft keeps instead is the

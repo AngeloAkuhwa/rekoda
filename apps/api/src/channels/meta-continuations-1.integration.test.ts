@@ -34,6 +34,17 @@ import {
 
 useMetaWebhookHarness();
 
+const customerCount = async (businessId: string) => {
+  const [row] = [
+    ...(await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ n: number }>(
+        sql`SELECT count(*)::int AS n FROM customers WHERE business_id = ${businessId}::uuid`,
+      ),
+    )),
+  ];
+  return row!.n;
+};
+
 /**
  * Conversational continuation (Build 6): a short reply attaches to the
  * question Rekoda just asked THAT person, or continues the read it just
@@ -392,10 +403,18 @@ describe('a short reply continues what Rekoda just asked (Build 6)', () => {
       'how much does Bola Ige owe me',
     );
     expect(stubSender.lastText).toBe(replies.customerNotKnown().text);
+    /* The question left its read-only draft behind the preview, and nobody new. */
+    expect(await draftStates(business.id)).toEqual(['RecordSale:pending', 'Query:pending']);
+    const customers = await customerCount(business.id);
 
     await reply('wamid.G135-yes', 'yes');
     expect(stubSender.lastText).toBe(BEHIND);
     expect(await footprint(business.id)).toMatchObject({ invoices: 0, postings: 0 });
+
+    /* The legitimate write still goes through the ordinary confirmation. */
+    await reply('wamid.G135-yes2', 'yes');
+    expect(await footprint(business.id)).toMatchObject({ invoices: 1 });
+    expect(await customerCount(business.id)).toBe(customers);
   });
 
   it('two model-answered questions after a preview take a yes each before the yes that saves', async () => {

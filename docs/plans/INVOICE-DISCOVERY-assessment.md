@@ -55,11 +55,11 @@ Every other decision is approved as recommended.
 
 ### Progress
 
-| Item                                                 | Status                                                                                                                           |
-| ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| P0 item 1 (BA-OD-3)                                  | **Part 1 in its first PR**: a question resolves a customer _name_ by lookup only. Gap **G-135** in `REKODA_LAUNCH_READINESS.md`. |
-| P0 item 1, part 2                                    | Phones and emails typed in any message are still resolved find-or-create before the model. That is the next PR.                  |
-| P0 items 2–4 (BA-OD-16, BA-OD-17, the expense label) | Follow, one PR each.                                                                                                             |
+| Item                                                 | Status                                                                                                                                                                                                                                                                                                                                                        |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| P0 item 1 (BA-OD-3)                                  | **Part 1 in its first PR (#437, not merged)**: a question resolves a customer _name_ by lookup only, and a customer named on a topic with no per-customer figures is not answered with the business's totals. Gap **G-135**; the ADR 0005 conflict it raises is an OPEN OWNER DECISION (ADR 0005 Amendment 1, PROPOSED). Partial-name scrubbing is **G-136**. |
+| P0 item 1, part 2                                    | Phones and emails typed in any message are still resolved find-or-create before the model. That is the next PR.                                                                                                                                                                                                                                               |
+| P0 items 2–4 (BA-OD-16, BA-OD-17, the expense label) | Follow, one PR each.                                                                                                                                                                                                                                                                                                                                          |
 
 ## Contents
 

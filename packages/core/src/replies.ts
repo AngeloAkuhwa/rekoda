@@ -1745,6 +1745,20 @@ export function customerNotKnown(): Reply {
   );
 }
 
+/**
+ * A customer named on a question whose figures are kept only for the whole
+ * business (G-135): sales, spending, suppliers, exceptions, reports. Answering
+ * with the business's totals would read as that customer's; only what a
+ * customer owes is kept per customer, so that is the question offered.
+ */
+export function customerFiguresNotKept(): Reply {
+  return reply(
+    'I can tell you what one customer owes you, but I do not keep sales, spending or ' +
+      'other figures per customer yet. For a balance, ask like *how much does Ada owe me*. ' +
+      'For your whole business, ask again without a name.',
+  );
+}
+
 /** Money owed OUT, to suppliers. The other side of the debtors question. */
 export function suppliersAnswer(owedK: number): Reply {
   if (owedK === 0) return reply('You do not owe any supplier anything right now.');
