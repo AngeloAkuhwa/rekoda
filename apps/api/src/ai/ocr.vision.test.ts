@@ -135,6 +135,39 @@ describe('reading a photographed receipt through the vision model', () => {
     );
   });
 
+  /* OWN-98 (G-134 review): a provider refusal is terminal. Whatever text
+   * came back with it is never handed on as the page, so it can never reach
+   * the classifier or the interpreter; the bill still travels with the
+   * failure, as an unreadable page's does. */
+  it('treats a refused image as unreadable, never passing on what came back with it', async () => {
+    respond = (res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          ...message('TOTAL 4,500 transcribed before the refusal'),
+          stop_reason: 'refusal',
+          stop_details: {
+            type: 'refusal',
+            category: 'general_harms',
+            explanation: 'EXPLAINED_WHY',
+          },
+        }),
+      );
+    };
+    const failure = await reader()
+      .extract(PHOTO, 'image/jpeg')
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+    expect(failure).toBeInstanceOf(TextExtractionUnavailable);
+    const unavailable = failure as TextExtractionUnavailable;
+    expect(unavailable.message).not.toContain('TOTAL');
+    expect(unavailable.message).not.toContain('EXPLAINED_WHY');
+    expect(unavailable.usage?.tokens).toEqual({ inputTokens: 100, outputTokens: 20 });
+    expect(requests).toBe(1);
+  });
+
   it('collapses a provider 5xx to the refusal the receipt path already handles', async () => {
     respond = (res) => {
       res.writeHead(529, { 'content-type': 'application/json' });
