@@ -21,7 +21,7 @@
  *   node dist/ai/eval/probe-tool-choice.js --send   three billed calls (cents)
  *
  * Prints one JSON line per request: status, stop reason, block types, tool
- * calls, whether the transport accepted tool input, whether the answer
+ * calls, the model that answered, whether the transport accepted tool input, whether the answer
  * passed the schema, token usage and elapsed time against the 20 s timeout.
  * Never prints the key. A provider error message is printed: it can only
  * quote this synthetic request. Never wire this into CI: `--send` spends.
@@ -126,9 +126,18 @@ async function readBody(req: IncomingMessage): Promise<string> {
 export async function runProbe(
   cases: readonly ProbeCase[],
   upstream: { baseUrl: string; apiKey: string } | null,
-  /** The transport's timeout; the production default. Tests shorten it. */
-  timeoutMs = 20_000,
+  opts: {
+    /** The transport's timeout; the production default. Tests shorten it. */
+    timeoutMs?: number;
+    /**
+     * Tests only: awaited after a request's body is read and before it is
+     * recorded, so a test can make a request land late, after its case has
+     * timed out and while the next case is in flight.
+     */
+    beforeRecord?: (model: string) => Promise<void>;
+  } = {},
 ): Promise<Array<Record<string, unknown>>> {
+  const timeoutMs = opts.timeoutMs ?? 20_000;
   /* One secret per case, which the transport presents to the relay as its
    * key. It does two jobs:
    *   - the relay serves only POST /v1/messages carrying a token it issued,
@@ -150,7 +159,9 @@ export async function runProbe(
     let exchange: Exchange | null = null;
     void (async () => {
       const raw = await readBody(req);
-      exchange = { body: JSON.parse(raw) as Record<string, unknown> };
+      const body = JSON.parse(raw) as Record<string, unknown>;
+      await opts.beforeRecord?.(String(body['model']));
+      exchange = { body };
       exchanges.set(token, exchange);
       if (!upstream) {
         res.writeHead(200, { 'content-type': 'application/json' });
@@ -226,6 +237,8 @@ export async function runProbe(
         ...(upstream
           ? {
               status: exchange?.status ?? null,
+              // The model the provider says answered: also what ties an answer to its request.
+              servedModel: typeof response?.['model'] === 'string' ? response['model'] : null,
               ...(exchange?.relayFailed ? { relayFailed: true } : {}),
               blocks: content.map((block) => block.type),
               toolCalls: content.filter((b) => b.type === 'tool_use').map((b) => b.name),

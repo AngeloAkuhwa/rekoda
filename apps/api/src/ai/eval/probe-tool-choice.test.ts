@@ -66,10 +66,8 @@ describe('the G-134 probe, in plan mode', () => {
 });
 
 describe('the G-134 probe, sending through the relay', () => {
-  /* A stand-in for the provider: it answers the FIRST request only after
-   * the transport has given up on it, and every later one at once, so a
-   * late answer for case 1 arrives while later cases are running. */
-  async function slowFirstUpstream(holdMs: number) {
+  /** A stand-in provider that holds its answer to the models named in `hold`. */
+  async function fakeUpstream(hold: Record<string, number>) {
     const seen: Array<{ url: string; key: string; model: string }> = [];
     const server = createServer((req, res) => {
       const chunks: Buffer[] = [];
@@ -80,8 +78,8 @@ describe('the G-134 probe, sending through the relay', () => {
           tools: Array<{ name: string }>;
         };
         seen.push({ url: req.url ?? '', key: String(req.headers['x-api-key']), model: body.model });
-        const answer = () => {
-          res.writeHead(200, { 'content-type': 'application/json' });
+        setTimeout(() => {
+          res.writeHead(200, { 'content-type': 'application/json', connection: 'close' });
           res.end(
             JSON.stringify({
               id: 'msg_x',
@@ -95,9 +93,7 @@ describe('the G-134 probe, sending through the relay', () => {
               usage: { input_tokens: 1, output_tokens: 1 },
             }),
           );
-        };
-        if (seen.length === 1) setTimeout(answer, holdMs);
-        else answer();
+        }, hold[body.model] ?? 0);
       });
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -105,47 +101,67 @@ describe('the G-134 probe, sending through the relay', () => {
     return {
       baseUrl: `http://127.0.0.1:${port}/gateway`,
       seen,
-      close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+      close: () =>
+        new Promise<void>((resolve) => {
+          server.closeAllConnections();
+          server.close(() => resolve());
+        }),
     };
   }
 
-  it('attributes every result to its own case, even when an earlier case answers late', async () => {
-    const upstream = await slowFirstUpstream(600);
-    try {
-      const results = await runProbe(
-        probeCases(MODELS),
-        { baseUrl: upstream.baseUrl, apiKey: 'upstream-key' },
-        150,
-      );
+  /* The hazard: case 1's request reaches the relay's record AFTER case 1
+   * has timed out, while case 2 is still waiting for its answer. With one
+   * shared "current" slot that late record overwrote case 2's, and case 2
+   * was reported with case 1's request. Timeline (ms): case 1 starts at 0
+   * and times out at 600; its record is released at 900; case 2 starts at
+   * about 600 and its answer is held until about 1,100. */
+  it(
+    'attributes every result to its own case when a timed-out request lands during the next case',
+    { timeout: 15_000 },
+    async () => {
+      const upstream = await fakeUpstream({ [MODELS.escalation]: 500 });
+      try {
+        const results = await runProbe(
+          probeCases(MODELS),
+          { baseUrl: upstream.baseUrl, apiKey: 'upstream-key' },
+          {
+            timeoutMs: 600,
+            beforeRecord: (model) =>
+              model === MODELS.interpreter
+                ? new Promise((resolve) => setTimeout(resolve, 900))
+                : Promise.resolve(),
+          },
+        );
 
-      expect(results.map((r) => r['case'])).toEqual(['interpreter', 'escalation', 'classifier']);
-      // Case 1 timed out: no status of its own yet, and never another case's.
-      expect(results[0]).toMatchObject({ model: MODELS.interpreter, status: null });
-      expect(String(results[0]!['transportError'])).toMatch(/timeout/);
-      // Cases 2 and 3 carry their own answers.
-      expect(results[1]).toMatchObject({
-        model: MODELS.escalation,
-        status: 200,
-        toolCalls: [TOOL_NAME],
-      });
-      expect(results[2]).toMatchObject({
-        model: MODELS.classifier,
-        status: 200,
-        toolCalls: [CLASSIFIER_TOOL_NAME],
-      });
-      // The real key goes upstream, under the gateway's own path prefix.
-      expect(upstream.seen.map((s) => s.model)).toEqual([
-        MODELS.interpreter,
-        MODELS.escalation,
-        MODELS.classifier,
-      ]);
-      expect(new Set(upstream.seen.map((s) => `${s.url} ${s.key}`))).toEqual(
-        new Set(['/gateway/v1/messages upstream-key']),
-      );
-      // Nothing printed carries the key.
-      expect(JSON.stringify(results)).not.toContain('upstream-key');
-    } finally {
-      await upstream.close();
-    }
-  });
+        expect(results.map((r) => r['case'])).toEqual(['interpreter', 'escalation', 'classifier']);
+        // Case 1 timed out before its request was recorded: nothing of its own, nobody else's.
+        expect(results[0]).toMatchObject({
+          model: MODELS.interpreter,
+          status: null,
+          servedModel: null,
+        });
+        expect(String(results[0]!['transportError'])).toMatch(/timeout/);
+        // Case 2 carries its own answer, though case 1's record landed while it ran.
+        expect(results[1]).toMatchObject({
+          model: MODELS.escalation,
+          servedModel: MODELS.escalation,
+          status: 200,
+          toolCalls: [TOOL_NAME],
+        });
+        expect(results[2]).toMatchObject({
+          model: MODELS.classifier,
+          servedModel: MODELS.classifier,
+          status: 200,
+          toolCalls: [CLASSIFIER_TOOL_NAME],
+        });
+        // The real key goes upstream, under the gateway's own path prefix, and is never printed.
+        expect(new Set(upstream.seen.map((s) => `${s.url} ${s.key}`))).toEqual(
+          new Set(['/gateway/v1/messages upstream-key']),
+        );
+        expect(JSON.stringify(results)).not.toContain('upstream-key');
+      } finally {
+        await upstream.close();
+      }
+    },
+  );
 });
