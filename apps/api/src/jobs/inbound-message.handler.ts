@@ -547,22 +547,24 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
         ...tokenised!.tokens.keys(),
       ]);
       /* A refusal ends here too (OWN-98): the page one model declined is
-       * never handed to another. Before the meter, as junk is, so no message
-       * unit is taken. A refused page was not understood, so its page unit
-       * goes back, as for any unreadable input (OWN-98; CodeRabbit and Codex
-       * on 0412af4): taken off this message once, so a retry or redelivery
-       * never refunds it twice. The read's bill and daily slot stay. A junk
-       * page WAS understood (as not a business document) and keeps its unit
-       * (J7, docs/REKODA_LAUNCH_READINESS.md). */
+       * never handed to another. Before the meter, as junk is, so this
+       * attempt takes no message unit. But an earlier attempt may have
+       * passed this gate, taken the message unit (committed on its own) and
+       * rolled back (CodeRabbit and Codex on 1404dfb), so:
+       *   - refused: nothing was understood or delivered, so everything the
+       *     message holds goes back, the page unit included, as for any
+       *     unreadable input (OWN-98; CodeRabbit and Codex on 0412af4);
+       *   - junk: the page WAS understood (as not a business document) and
+       *     keeps its unit (J7, docs/REKODA_LAUNCH_READINESS.md), but being
+       *     told so never costs a message, so a held message unit goes back.
+       * Each unit is taken off this message once, so a retry or redelivery
+       * never refunds it twice. The read's bill and daily slot stay. */
       if (kind === 'junk' || kind === 'refused') {
+        const period = usagePeriod(event.receivedAt);
         if (kind === 'refused') {
-          await giveBackUnit(
-            deps,
-            businessId,
-            eventId,
-            usagePeriod(event.receivedAt),
-            'DOCUMENTS_UNDERSTOOD',
-          );
+          await releaseHeldUnits(deps, businessId, eventId, period);
+        } else {
+          await giveBackUnit(deps, businessId, eventId, period, 'AI_ACTIONS');
         }
         await retireSenderContinuation(tx, businessId, inbound.from, event.receivedAt);
         await deps.replySender.send(tx, {

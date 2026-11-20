@@ -342,23 +342,23 @@ describe('a receipt photo', () => {
                (SELECT coalesce(sum(extractions), 0)::int FROM doc_extraction_counters
                  WHERE business_id = ${business.id}::uuid) AS slots`);
       expect([kept?.reads, kept?.slots]).toEqual([stubOcr.calls.length, stubOcr.calls.length]);
+      const asked = new Set(stubTransport.requests.map((r) => r.toolName));
+      expect(asked).toEqual(new Set(['classify_document'])); // never the interpreter
     } finally {
       await ownerDb.execute(sql`DROP TRIGGER IF EXISTS refusal_retry_fail_once ON usage_events`);
       await ownerDb.execute(sql`DROP FUNCTION IF EXISTS refusal_retry_fail_once()`);
       await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS refusal_retry_once`);
       await close();
+      // The stub's last reply outlives reset(): leave it answering, as before this test.
+      stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
     }
 
-    const asked = new Set(stubTransport.requests.map((r) => r.toolName));
-    expect(asked).toEqual(new Set(['classify_document'])); // never the interpreter
     expect(stubSender.lastText).toBe(replies.couldNotRead().text);
     expect(await readsUsed(business.id)).toBe(5);
     const rows = await withBusiness(db, business.id, (tx) =>
       usageRepo.usageFor(tx, business.id, usagePeriod(new Date())),
     );
     expect(rows.find((r) => r.unit === 'AI_ACTIONS')?.used ?? 0).toBe(0); // no message unit
-    // The stub's last reply outlives reset(): leave it answering, as before this test.
-    stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
   });
 
   /**
