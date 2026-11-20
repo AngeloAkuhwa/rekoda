@@ -84,7 +84,7 @@ type ModelCall =
  * Why the escalation model was asked. On the cost row, because "what does
  * escalation cost" is only actionable when it can be split by what causes it.
  */
-type EscalationReason = 'schema_failure' | 'no_tool_call' | 'unclear';
+type EscalationReason = 'schema_failure' | 'no_tool_call' | 'refusal' | 'unclear';
 
 /**
  * Asking a model what a merchant meant (MASTER-PLAN §5.3.3, ADR 0007).
@@ -98,7 +98,8 @@ type EscalationReason = 'schema_failure' | 'no_tool_call' | 'unclear';
  *
  * ESCALATION (AI hardening item 3) is one bounded retry on the escalation
  * model when the primary's answer cannot safely proceed: it failed the
- * schema, never called the tool, or said Unclear. At most one per message,
+ * schema, never called the tool, declined (a provider refusal), or said
+ * Unclear. At most one per message,
  * structurally — the escalation's own answer is never re-escalated. It
  * consumes the same shared quota, its cost is recorded under its own role
  * with the reason on the row, and when it is also uncertain the merchant
@@ -404,8 +405,10 @@ export class Interpreter {
   /** The tool answer through the strict schema, or the reason it failed. */
   private parseCommandReply(reply: ModelReply): Interpretation {
     if (reply.toolInput === null) {
-      // Forced tool use should make this impossible. "Should" is why it is
-      // handled rather than asserted.
+      /* Reachable on any model: the tool is asked for with tool_choice `auto`
+       * (Claude Sonnet 5.5 and Opus 5.5 refuse a forced choice), and the
+       * transport also yields no input for a refusal, a cut-off answer or a
+       * second call. Nothing the model wrote instead is ever read. */
       return { outcome: 'unusable', reason: 'the model answered without calling the tool' };
     }
     const raw = (reply.toolInput as { command?: unknown }).command;
@@ -467,6 +470,11 @@ export class Interpreter {
           policyVersion: PRIVACY_POLICY_VERSION,
           priced: cost.priced,
           stopReason: reply.stopReason,
+          /* A fixed vocabulary (`cyber`, `general_harms`, ...), never the
+           * provider's free-text explanation. */
+          ...(reply.refusalCategory === undefined
+            ? {}
+            : { refusalCategory: reply.refusalCategory }),
           ...(schemaValid === null ? {} : { schemaValid }),
           ...reply.usage,
           ...(request.extraMeta ?? {}),
@@ -524,18 +532,23 @@ export class Interpreter {
 /**
  * Whether the primary's answer can safely proceed, and if not, why not.
  *
- * `max_tokens` is the one schema failure that must NOT escalate: the output
- * was cut off mid-JSON by the transport's own limit, so the same message on
- * a pricier model hits the same ceiling — that is a configuration fault to
- * fix, not an ambiguity a better reader resolves, and escalating it would
- * pay Opus prices to reproduce it.
+ * `max_tokens` and `model_context_window_exceeded` must NOT escalate: the
+ * answer was cut off by a limit the escalation model shares, so the same
+ * message on a pricier model hits the same ceiling. That is a configuration
+ * fault to fix, not an ambiguity a better reader resolves, and escalating it
+ * would pay Opus prices to reproduce it.
+ *
+ * A refusal escalates once, under its own reason: the escalation model runs
+ * its own safety classifiers, and a bookkeeping sentence declined by one is
+ * most likely a false positive. The bound is the same single retry.
  */
 function escalationReasonFor(
   first: Interpretation,
   stopReason: string | null,
 ): EscalationReason | null {
   if (first.outcome === 'unusable') {
-    if (stopReason === 'max_tokens') return null;
+    if (stopReason === 'max_tokens' || stopReason === 'model_context_window_exceeded') return null;
+    if (stopReason === 'refusal') return 'refusal';
     return first.reason.includes('without calling the tool') ? 'no_tool_call' : 'schema_failure';
   }
   if (first.outcome === 'command' && first.command.intent === 'Unclear') return 'unclear';

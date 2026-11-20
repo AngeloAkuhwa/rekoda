@@ -26,6 +26,12 @@ export interface ModelReply {
   toolInput: unknown | null;
   usage: TokenUsage;
   stopReason: string | null;
+  /**
+   * The provider's refusal category when `stopReason` is `refusal` (a fixed
+   * vocabulary such as `cyber` or `general_harms`), otherwise absent. Never
+   * the provider's free-text explanation.
+   */
+  refusalCategory?: string | null;
 }
 
 export interface ModelTransport {

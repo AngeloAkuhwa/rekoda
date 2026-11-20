@@ -507,8 +507,10 @@ const DEFAULT_MODEL: Record<'anthropic' | 'openai', string | null> = {
    * Sonnet reads the merchant's sentence (ADR 0031, accuracy-first).
    *
    * ADR 0023 put Haiku here on cost grounds, and its reasoning about the
-   * SHAPE of the job still holds: one extraction, forced tool use, strict
+   * SHAPE of the job still holds: one extraction, one tool call, strict
    * schema, arithmetic recomputed by code that does not trust the answer.
+   * (The call is asked for with tool_choice `auto` since G-134: Claude
+   * Sonnet 5.5 and Opus 5.5 refuse a forced choice.)
    * What changed is the launch priority and the price. The product optimises
    * for avoiding harmful financial mistakes rather than for answering
    * cheaply, a misread amount that survives the schema is the one error no

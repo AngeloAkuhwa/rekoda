@@ -241,14 +241,150 @@ describe('the Anthropic transport', () => {
     expect(bodies).toHaveLength(1);
   });
 
-  it('FORCES the tool, so the model cannot answer with prose', async () => {
+  /* Staging, 20 Nov 2026: claude-sonnet-5-5 answered every interpretation with
+   * 400 invalid_request_error "tool_choice: type "tool" and "any" are not
+   * supported for this model." Claude Sonnet 5.5, Opus 5.5 and Fable 5.1/5.2
+   * refuse forced tool choice; `auto` is accepted by every Claude model. */
+  it('never forces the tool: auto with at most one call, which every Claude model accepts', async () => {
     respond = json(ANSWER);
     await transport().send(REQUEST);
 
-    expect(bodies[0]?.tool_choice).toEqual({ type: 'tool', name: 'record_business_command' });
+    expect(bodies[0]?.tool_choice).toEqual({ type: 'auto', disable_parallel_tool_use: true });
+    expect(bodies[0]?.tool_choice).not.toMatchObject({ type: 'tool' });
+    expect(bodies[0]?.tool_choice).not.toMatchObject({ type: 'any' });
     // Parsing free text is the thing the whole schema exists to avoid.
     expect(bodies[0]?.messages).toEqual([{ role: 'user', content: REQUEST.userText }]);
     expect(bodies[0]?.max_tokens).toBe(700);
+  });
+
+  it('builds the same request for every model: the Sonnet 5.5 primary and the Opus 5.5 escalation', async () => {
+    respond = json(ANSWER);
+    for (const model of [
+      'claude-sonnet-5-5',
+      'claude-opus-5-5',
+      'claude-sonnet-5',
+      'claude-haiku-4-5',
+    ]) {
+      await transport().send({ ...REQUEST, model });
+    }
+    const withoutModel = bodies.map(({ model: _model, ...rest }) => rest);
+    expect(bodies.map((b) => b.model)).toEqual([
+      'claude-sonnet-5-5',
+      'claude-opus-5-5',
+      'claude-sonnet-5',
+      'claude-haiku-4-5',
+    ]);
+    /* No model-specific branch: one request shape, so a model ID can never
+     * pick a different contract (the G-59 lesson about matching model names). */
+    for (const body of withoutModel) expect(body).toEqual(withoutModel[0]);
+  });
+
+  it('marks a tool STRICT when its schema is within the strict-mode limits', async () => {
+    respond = json(ANSWER);
+    const schema = {
+      type: 'object',
+      properties: { type: { type: 'string', enum: ['receipt', 'invoice', 'unsure'] } },
+      required: ['type'],
+      additionalProperties: false,
+    };
+    await transport().send({ ...REQUEST, toolSchema: schema });
+
+    expect(bodies[0]?.tools).toEqual([
+      {
+        name: 'record_business_command',
+        description: 'Record what happened',
+        input_schema: schema,
+        strict: true,
+      },
+    ]);
+  });
+
+  it('sends a schema strict mode would reject WITHOUT strict, unchanged, rather than earn a 400', async () => {
+    respond = json(ANSWER);
+    /* Seventeen nullable fields: one more union-typed parameter than the
+     * documented strict limit of 16, which the API refuses with a 400. */
+    const properties = Object.fromEntries(
+      Array.from({ length: 17 }, (_, i) => [
+        `f${i}`,
+        { anyOf: [{ type: 'number' }, { type: 'null' }] },
+      ]),
+    );
+    const schema = {
+      type: 'object',
+      properties,
+      required: Object.keys(properties),
+      additionalProperties: false,
+    };
+    await transport().send({ ...REQUEST, toolSchema: schema });
+
+    const [tool] = bodies[0]?.tools as Array<Record<string, unknown>>;
+    expect(tool).not.toHaveProperty('strict');
+    expect(tool?.input_schema).toEqual(schema);
+  });
+
+  it('reads no tool input from a refusal, even when a tool block came back with it', async () => {
+    respond = json({
+      ...ANSWER,
+      stop_reason: 'refusal',
+      stop_details: { type: 'refusal', category: 'general_harms', explanation: 'declined' },
+    });
+    const reply = await transport().send(REQUEST);
+
+    /* A refused answer may not match the schema and is not the model's
+     * reading of the message; nothing in it may become a command. */
+    expect(reply.toolInput).toBeNull();
+    expect(reply.stopReason).toBe('refusal');
+    // The category is a fixed vocabulary; the free-text explanation is never kept.
+    expect(reply.refusalCategory).toBe('general_harms');
+    expect(JSON.stringify(reply)).not.toContain('declined');
+  });
+
+  it('reads no tool input from an answer cut off at max_tokens', async () => {
+    respond = json({ ...ANSWER, stop_reason: 'max_tokens' });
+    const reply = await transport().send(REQUEST);
+
+    expect(reply.toolInput).toBeNull();
+    expect(reply.stopReason).toBe('max_tokens');
+  });
+
+  it('reads no tool input when the model called the tool more than once', async () => {
+    const block = ANSWER.content[0]!;
+    respond = json({ ...ANSWER, content: [block, { ...block, id: 'tu_2' }] });
+    const reply = await transport().send(REQUEST);
+
+    // Two answers to one message is not one command; neither is chosen.
+    expect(reply.toolInput).toBeNull();
+  });
+
+  it('reads no tool input from a block naming a tool that was never offered', async () => {
+    respond = json({
+      ...ANSWER,
+      content: [{ ...ANSWER.content[0]!, name: 'delete_everything' }],
+    });
+    const reply = await transport().send(REQUEST);
+
+    expect(reply.toolInput).toBeNull();
+  });
+
+  it('names the provider error type on a 400, never its message', async () => {
+    respond = json(
+      {
+        type: 'error',
+        error: {
+          type: 'invalid_request_error',
+          message: 'tool_choice: type "tool" and "any" are not supported for this model.',
+        },
+      },
+      400,
+    );
+    const error = await transport()
+      .send(REQUEST)
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ProviderUnreachable);
+    /* Staging recorded "anthropic 400: Error", which named nothing. The type
+     * is a fixed vocabulary from the API; the message can quote the request. */
+    expect((error as Error).message).toBe('anthropic 400: invalid_request_error');
   });
 
   it('reads the tool input and every usage counter, cache included', async () => {
