@@ -415,6 +415,48 @@ describe('a payment the merchant reports (RecordPayment)', () => {
     expect(stubSender.lastText).toContain('could not find an unpaid invoice');
   });
 
+  /* The legacy shape (independent review of e15b63a): an invoice whose snapshot carries
+   * a customer token with no customer row behind it. Paid past its balance by number,
+   * the excess is unapplied, never owed to a customer nobody holds. */
+  it('an overpayment on an invoice whose token has no customer row is unapplied (G-49)', async () => {
+    const business = await seedMerchant('+2348031234567');
+    const sale = await withBusiness(db, business.id, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId: business.id,
+        customerId: null,
+        customerToken: 'CUSTOMER_ZZ9',
+        items: [{ name: 'wig', quantity: 3, unitPriceK: 5_000_000 }],
+        subtotalK: 15_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 15_000_000,
+        paidK: 0,
+        balanceDueK: 15_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'draft-legacy',
+        actor: 'system',
+      }),
+    );
+
+    stubTransport.replyWith(
+      paymentOf({ amount: 180_000, documentRef: sale.invoiceNumber, customer: { kind: 'none' } }),
+    );
+    await post(messagePayload('2348031234567', 'wamid.PL-pay', `${sale.invoiceNumber} paid 180k`));
+    await drain();
+    expect(stubSender.lastText).toContain(
+      'Unapplied: ₦30,000. It is not linked to a customer yet.',
+    );
+    await post(messagePayload('2348031234567', 'wamid.PL-confirm', 'yes'));
+    await drain();
+
+    const credits = await withBusiness(db, business.id, (tx) =>
+      tx.execute(sql`SELECT 1 FROM customer_credits WHERE business_id = ${business.id}::uuid`),
+    );
+    expect([...credits]).toHaveLength(0);
+  });
+
   /**
    * The one that matters most on this whole path.
    *
@@ -529,6 +571,7 @@ describe('a payment the merchant reports (RecordPayment)', () => {
     await issueUnpaidInvoice('wamid.P9');
 
     stubTransport.replyWith(paymentOf({ amount: 20_000, documentRef: 'INV-2026-999999' }));
+    // not issued: a number that names no invoice, so the payment must refuse it
     await post(messagePayload('2348031234567', 'wamid.P9-pay', 'Ada paid 20k on INV-2026-999999'));
     await drain();
 

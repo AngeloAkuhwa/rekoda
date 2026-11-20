@@ -704,13 +704,6 @@ export class PrivacyGateway {
     ];
   }
 
-  /**
-   * The token for a person, creating them if this business has not seen them.
-   *
-   * The match key is a keyed HMAC that mixes in `businessId`, so the same
-   * phone number produces a different key for every merchant — a dump reveals
-   * nothing about which merchants share a customer.
-   */
   /** The customer a phone, email or name already belongs to, or null. Creates nothing. */
   private async findCustomerFor(
     businessId: string,
@@ -736,6 +729,13 @@ export class PrivacyGateway {
     return null;
   }
 
+  /**
+   * The token for a person, creating them if this business has not seen them.
+   *
+   * The match key is a keyed HMAC that mixes in `businessId`, so the same
+   * phone number produces a different key for every merchant — a dump reveals
+   * nothing about which merchants share a customer.
+   */
   private async customerTokenFor(
     businessId: string,
     facet: 'phone' | 'email' | 'name',

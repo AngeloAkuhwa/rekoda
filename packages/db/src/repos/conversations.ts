@@ -2142,10 +2142,22 @@ export async function identityQuestionState(
 export const ERASED_BODY = '[erased]';
 
 /**
+ * The structural bodies the product writes, and nothing else (independent review of
+ * #437): a deterministic intent (`[affirm]`, `[number:2]`), a placeholder (`[text
+ * message]`, `[voice note]`, `[receipt photo]`, `[customer message]`, `[reply]`, a
+ * media type), a template name, the gateway's refusals and `[erased]`. Anything
+ * else, a merchant's own bracketed sentence included, is text and is erased.
+ */
+const STRUCTURAL_BODY =
+  '^\\[(?:[a-z_]+(?::[0-9]+)?|[a-z]+ message|voice note|receipt photo|reply|erased|' +
+  'template [A-Za-z0-9_.-]+|message too long to read|' +
+  'message withheld: it held a protected detail)\\]$';
+
+/**
  * Replace the stored text of this business's conversation history with a
  * placeholder (G-136 R1 and R4, owner directive on #437, 20 Nov 2026).
  *
- * Only rows whose body is not already a structural placeholder (`[...]`):
+ * Only rows whose body is not one of the structural bodies (`STRUCTURAL_BODY`):
  * since G-136 every new model-routed message is stored as one, so what is left
  * is text written before it, which can hold a name nobody recorded. The rows
  * themselves stay (ids, direction, timing, provider ids, the drafts and
@@ -2168,7 +2180,7 @@ export async function eraseStoredText(
   const eligible = sql`
     SELECT id FROM conversation_messages
     WHERE business_id = ${businessId}::uuid
-      AND body !~ '^\\[[^]]*\\]$'
+      AND body !~ ${STRUCTURAL_BODY}
       AND (${before}::timestamptz IS NULL OR created_at < ${before}::timestamptz)
     ORDER BY created_at, id
     LIMIT ${limit}`;

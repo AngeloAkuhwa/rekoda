@@ -253,4 +253,68 @@ describe('a phone or email nobody recorded creates no customer until a record ne
     );
     expect((await footprint(business.id)).customers).toBe(1);
   });
+
+  /* Independent review of e15b63a: a record that names no customer needs none, so a
+   * phone that is only part of its words creates nobody. */
+  it('an expense that only mentions an unknown phone creates no customer', async () => {
+    const business = await seedMerchant();
+    const before = await footprint(business.id);
+
+    await say(
+      'wamid.P6',
+      {
+        intent: 'RecordExpense',
+        description: 'plumber',
+        amount: 5_000,
+        category: 'repairs',
+        paymentMethod: 'cash',
+      },
+      'paid plumber 08039998888 5k cash',
+    );
+
+    expect((await footprint(business.id)).customers).toBe(before.customers);
+  });
+
+  /* Independent review of e15b63a: a refused record leaves no customer behind. */
+  it('a sale refused for an invented token creates no customer from the unknown phone in it', async () => {
+    const business = await seedMerchant();
+    const before = await footprint(business.id);
+
+    await say(
+      'wamid.P7',
+      sale({ kind: 'token', token: 'CUSTOMER_7K2' }),
+      'sold 2 wigs to 08039998888 for 100k',
+    );
+
+    expect(stubSender.lastText).toContain('could not tell which customer');
+    expect(await footprint(business.id)).toEqual(before);
+  });
+
+  /* Independent review of e15b63a: a provisional token the model copied into a free-text
+   * field is swapped too, so the preview reads the number and the record holds a stored
+   * token, never a provisional one that would mean nothing later. */
+  it('a provisional token copied into a description becomes the stored token', async () => {
+    const business = await seedMerchant();
+
+    await say(
+      'wamid.P8',
+      {
+        intent: 'RecordExpense',
+        description: 'repairs for CUSTOMER_U01',
+        amount: 5_000,
+        category: 'repairs',
+        paymentMethod: 'cash',
+      },
+      'paid 5k cash for repairs for 08039998888',
+    );
+
+    expect(stubSender.lastText).not.toContain('CUSTOMER_');
+    expect(stubSender.lastText).toContain('08039998888');
+    const draft = await withBusiness(db, business.id, (tx) =>
+      conversationsRepo.pendingDraftToAnswer(tx, business.id, { asOf: new Date() }),
+    );
+    const description = (draft?.command as { description?: string }).description ?? '';
+    expect(description).toMatch(/^repairs for CUSTOMER_[0-9A-Z]{3}$/);
+    expect(description).not.toContain('CUSTOMER_U');
+  });
 });

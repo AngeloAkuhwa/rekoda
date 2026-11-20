@@ -114,6 +114,8 @@ describe('erasure reaches the text outside the vault (G-136)', () => {
     await message(businessId, 'sold Chiamaka Okafor 2 wigs');
     await message(businessId, '[text message]');
     await message(businessId, '[who_owes_me]');
+    /* A merchant's own bracketed sentence is text, not a placeholder. */
+    await message(businessId, '[Ada owes 5k]');
     await message(other, 'sold Bola Ige 2 wigs');
     await event(businessId, {});
     await event(businessId, { processed: false });
@@ -127,15 +129,20 @@ describe('erasure reaches the text outside the vault (G-136)', () => {
         events.eraseFinishedMessagePayloads(tx, businessId, { dryRun: true }),
       ]),
     );
-    expect(dry).toEqual([1, 1]);
+    expect(dry).toEqual([2, 1]);
     expect(await bodies(businessId)).toContain('sold Chiamaka Okafor 2 wigs');
 
     const erased = await withBusiness(db, businessId, (tx) =>
       customersRepo.eraseTextOutsideTheVault(tx, businessId, 'chat'),
     );
 
-    expect(erased).toEqual({ messageText: 1, messagePayloads: 1 });
-    expect(await bodies(businessId)).toEqual(['[erased]', '[text message]', '[who_owes_me]']);
+    expect(erased).toEqual({ messageText: 2, messagePayloads: 1 });
+    expect(await bodies(businessId)).toEqual([
+      '[erased]',
+      '[text message]',
+      '[who_owes_me]',
+      '[erased]',
+    ]);
     const after = await payloads(businessId);
     expect(after[0]).toEqual({ erased: true });
     /* In flight, failed and unresolved, and a payment provider's: untouched. */
@@ -151,7 +158,7 @@ describe('erasure reaches the text outside the vault (G-136)', () => {
         WHERE business_id = ${businessId}::uuid AND entity = 'conversation_messages'`),
     );
     expect([...audit].map((r) => r.value)).toEqual([
-      { messageTextErased: 1, messagePayloadsErased: 1 },
+      { messageTextErased: 2, messagePayloadsErased: 1 },
     ]);
 
     /* Running it again changes nothing. */

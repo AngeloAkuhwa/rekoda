@@ -1760,7 +1760,7 @@ export function customerBalanceAnswer(
 export function balanceNotStated(): Reply {
   return reply(
     'I could not total that balance exactly, so I have not sent a figure. ' +
-      'Your records are unchanged. Open your dashboard to see each invoice.',
+      'Your records are unchanged. Open the invoices list on your dashboard to see each one.',
   );
 }
 

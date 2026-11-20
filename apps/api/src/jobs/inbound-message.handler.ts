@@ -152,6 +152,28 @@ const authorisationLog = new Logger('InboundMessageJob');
 const ALREADY_ANSWERED = Symbol('already answered');
 
 /**
+ * Every string in a command with each provisional token swapped for the stored
+ * one it became (G-135). The model may copy a token into any free-text field (a
+ * description, a note), and a record must never keep a provisional token that
+ * names nobody once this job ends.
+ */
+function withTokensReplaced<T>(value: T, replaced: ReadonlyMap<string, string>): T {
+  if (replaced.size === 0) return value;
+  if (typeof value === 'string') {
+    let out: string = value;
+    for (const [from, to] of replaced) out = out.split(from).join(to);
+    return out as T;
+  }
+  if (Array.isArray(value)) return value.map((v) => withTokensReplaced(v, replaced)) as T;
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [k, withTokensReplaced(v, replaced)]),
+    ) as T;
+  }
+  return value;
+}
+
+/**
  * A balance read whose figures would not survive as exact kobo (a bigint past
  * 2^53: `MoneyError` from the repository) is answered, never rounded and
  * never left to kill the job: a retried job would buy the interpretation again
@@ -5305,33 +5327,56 @@ async function interpretedReply(
    * A phone or email nobody recorded stood as a provisional token (G-135).
    *
    * A question names nobody by it: it is answered as unknown and creates
-   * nothing (BA-OD-3). A record the merchant will see a preview of needs the
-   * customer, so it is found or created now, exactly as the gateway used to
-   * do for every message, and the command carries the stored token. Anything
-   * else (an unclear message) leaves it as it was: nobody is created.
+   * nothing (BA-OD-3). A record is checked first (G-137: a provisional token is
+   * one this message issued, an invented one is refused below and creates
+   * nobody). Only a record that names a customer, or carries a provisional
+   * token in any of its fields, needs them: those are found or created now,
+   * exactly as the gateway used to do for every message, and every field of
+   * the command carries the stored token instead. An expense that merely
+   * mentions a phone, or an unclear message, creates nobody.
    */
   if (tokens.provisional?.size) {
     const asked = command.intent === 'Query' ? command.customer : null;
     if (asked?.kind === 'token' && tokens.provisional.has(asked.token)) {
       nameNotKnown = true;
       command = { ...command, customer: { kind: 'none' } } as StructuredBusinessCommand;
-    } else if (command.intent !== 'Query' && command.intent !== 'Unclear') {
-      const made = await deps.gateway.materialise(businessId, tokens);
-      const fresh = made.resolved.filter(
-        (c) => !referenced.some((r) => r.customerId === c.customerId),
-      );
-      referenced = [...referenced, ...fresh];
-      link ??= deps.gateway.linkFor(referenced);
-      if ('customer' in command && command.customer?.kind === 'token') {
-        const stored = made.replaced.get(command.customer.token);
-        if (stored) {
-          command = {
-            ...command,
-            customer: { kind: 'token', token: stored },
-          } as StructuredBusinessCommand;
-        }
-      }
     }
+  }
+  /**
+   * A record names a customer only by a token this message was issued (G-137).
+   *
+   * The model sees tokens as opaque and only ever this message's: the
+   * gateway's output (stored or provisional), or a name resolved below. Any
+   * other well-formed token is one the model made up or copied, and it may
+   * belong to another real customer of this business, so a payment preview
+   * would point at their invoice and a "yes" would post it there. Token syntax
+   * is not authority: nothing is drafted or created, the unit goes back as for
+   * any refused request, and the merchant is asked to say who.
+   */
+  if (
+    command.intent !== 'Query' &&
+    'customer' in command &&
+    command.customer?.kind === 'token' &&
+    !tokens.displays.has(command.customer.token)
+  ) {
+    authorisationLog.warn(`${command.intent} carried a customer token this message was not issued`);
+    await refundMessage(tx, businessId, eventId, period);
+    return replies.customerNotRecognised();
+  }
+  if (
+    tokens.provisional?.size &&
+    command.intent !== 'Query' &&
+    command.intent !== 'Unclear' &&
+    (('customer' in command && command.customer && command.customer.kind !== 'none') ||
+      [...tokens.provisional.keys()].some((t) => JSON.stringify(command).includes(t)))
+  ) {
+    const made = await deps.gateway.materialise(businessId, tokens);
+    const fresh = made.resolved.filter(
+      (c) => !referenced.some((r) => r.customerId === c.customerId),
+    );
+    referenced = [...referenced, ...fresh];
+    link ??= deps.gateway.linkFor(referenced);
+    command = withTokensReplaced(command, made.replaced);
   }
   /**
    * A question resolves a name by LOOKUP only (OD-3, owner ruling 20 Nov 2026).
@@ -5384,28 +5429,6 @@ async function interpretedReply(
 
     /* Nothing to scrub from the stored message: it holds a placeholder, never
      * the text (G-136), so the name the model just resolved was never kept. */
-  }
-
-  /**
-   * A write names a customer only by a token this message was issued (G-137).
-   *
-   * The model sees tokens as opaque and only ever this message's: the
-   * gateway's output, a name resolved just above, or a phone it materialised.
-   * Any other well-formed token is one the model made up or copied, and it
-   * may belong to another real customer of this business, so a payment
-   * preview would point at their invoice and a "yes" would post it there.
-   * Token syntax is not authority: nothing is drafted, the unit goes back as
-   * for any refused request, and the merchant is asked to say who.
-   */
-  if (
-    command.intent !== 'Query' &&
-    'customer' in command &&
-    command.customer?.kind === 'token' &&
-    !tokens.displays.has(command.customer.token)
-  ) {
-    authorisationLog.warn(`${command.intent} carried a customer token this message was not issued`);
-    await refundMessage(tx, businessId, eventId, period);
-    return replies.customerNotRecognised();
   }
 
   /**

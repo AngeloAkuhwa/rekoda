@@ -165,6 +165,16 @@ describe('consent (STOP/START) and erasure, as facts not sentences', () => {
         { facet: 'phone', ciphertext: 'sealed-phone', matchKey: 'mk-phone' },
       ],
     );
+    /* A body stored as text before G-136: the erasure reaches it too (R4). */
+    await withBusiness(db, business.id, (tx) =>
+      conversationsRepo.recordInbound(tx, {
+        businessId: business.id,
+        channel: 'meta',
+        kind: 'text',
+        body: 'sold Chiamaka Okafor 2 wigs',
+        providerMessageId: 'wamid.LEGACY',
+      }),
+    );
 
     await post(messagePayload('2348031234567', 'wamid.DEL1', 'delete my data'));
     expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
@@ -189,6 +199,23 @@ describe('consent (STOP/START) and erasure, as facts not sentences', () => {
       customersRepo.identityFacetsFor(tx, business.id, customer.id),
     );
     expect(left).toEqual([]);
+    /* Through the chat path, not only the repository: the old text and the sealed
+     * bodies of the finished messages are erased with the identities (G-136 R4). */
+    const leftovers = await withBusiness(db, business.id, async (tx) => ({
+      text: [
+        ...(await tx.execute<{ n: number }>(sql`
+          SELECT count(*)::int AS n FROM conversation_messages
+          WHERE business_id = ${business.id}::uuid AND body LIKE '%Chiamaka%'`)),
+      ][0]!.n,
+      erasedPayloads: [
+        ...(await tx.execute<{ n: number }>(sql`
+          SELECT count(*)::int AS n FROM external_events
+          WHERE business_id = ${business.id}::uuid AND payload = '{"erased": true}'::jsonb`)),
+      ][0]!.n,
+    }));
+    expect(leftovers.text).toBe(0);
+    /* DEL1 was finished before DEL2 ran; DEL2 itself is still being processed. */
+    expect(leftovers.erasedPayloads).toBe(1);
   });
 
   it('erasure with no web URL still deletes, and names no link at all', async () => {
