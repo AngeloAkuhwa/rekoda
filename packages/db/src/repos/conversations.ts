@@ -669,6 +669,30 @@ async function newestPendingDraft(
 }
 
 /**
+ * How many drafts a "yes", a "no" or a correction could be about, seen by `asOf`: pending,
+ * not a read-only Query (Build 6) and not a refusal (`isRefusalDraft`). Counted in SQL. A
+ * correction keeps the customer of the draft it corrects only when this is exactly one (CG5,
+ * owner ruling 21 Nov 2026): with two waiting, which one it corrects is a question.
+ */
+export async function answerableDraftCount(
+  tx: TenantDb,
+  businessId: string,
+  options: { asOf?: Date } = {},
+): Promise<number> {
+  const seen = options.asOf
+    ? sql`AND created_at <= ${options.asOf.toISOString()}::timestamptz`
+    : sql``;
+  const rows = await tx.execute<{ n: number }>(sql`
+    SELECT count(*)::int AS n FROM command_drafts
+     WHERE business_id = ${businessId}::uuid
+       AND state = 'pending'
+       AND intent <> 'Query'
+       AND NOT (intent = 'Unclear' AND command->>'refused' = 'true')
+       ${seen}`);
+  return [...rows][0]?.n ?? 0;
+}
+
+/**
  * Close one pending refusal draft (owner review of #437 at 3a60b0f).
  *
  * A message Rekoda answered with a refusal or a failed reading instead of a

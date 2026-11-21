@@ -13,6 +13,7 @@ import {
   purchaseArrival,
   isSaleSource,
   looksLikeCorrection,
+  clearlyCorrects,
   orderPreview,
   orderQuestion,
   postCostOfSale,
@@ -106,7 +107,15 @@ import type {
 import type { ReplySender } from '../replies/reply.service.js';
 import type { PaymentIntentsService } from '../payments/payment-intents.service.js';
 import { openPayload } from '../privacy/payload-vault.js';
-import { neutraliseTokens, protectedSpans, redactForLog, STORED_BODY } from '@rekoda/core/privacy';
+import {
+  displayOf,
+  neutraliseTokens,
+  protectedSpans,
+  redactForLog,
+  STORED_BODY,
+  type TypedFacet,
+} from '@rekoda/core/privacy';
+import { decryptFacet, normaliseFacet } from '@rekoda/core/vault';
 import { describeFailure, JobDeferred, type JobContext, type JobHandler } from './runner.js';
 import { JobKind } from './queue.service.js';
 import { TranscriptionUnavailable, type SpeechToText, type Transcript } from '../ai/stt.js';
@@ -5310,6 +5319,135 @@ function customerTokenOf(command: Record<string, unknown>): string | null {
   return customer?.kind === 'token' ? (customer.token ?? null) : null;
 }
 
+/**
+ * What a correction carries over from the draft it corrects (CG5, owner ruling 21 Nov 2026).
+ *
+ * The model reads a correction from its own words and never sees an earlier turn, so "No, 4
+ * not 3" names nobody. The customer comes from the TRUSTED pending draft, never from a token
+ * the model wrote: a token this message was not issued is still refused by the G-137 guard
+ * after this, so no earlier token is ever whitelisted. Only a sale, a payment or an order
+ * the model read with no customer at all looks here, and the draft must be:
+ *  - clearly corrected (`clearlyCorrects`), not merely containing a "not";
+ *  - the newest thing a correction can be about, with no refusal in front of it;
+ *  - the only one waiting in the business (`answerableDraftCount`);
+ *  - live at this message, previewed to the merchant, and of the same kind;
+ *  - this member's own (`requestedBy`), never another member's or an unattributed one;
+ *  - with no question asked since (`hasReadsAfter`: "correct" may be about the answer);
+ *  - naming a customer this business holds (or, for a payment, an invoice).
+ * Then the customer (and a payment's invoice reference, when the correction gives none) is
+ * kept, the draft is superseded by the ordinary CG5 path, and the new preview needs its own
+ * "yes". When a draft with a customer is waiting but any of that fails, the correction is
+ * `unclear`: asked about, changing nothing. With nothing live waiting it is a new request
+ * and inherits nobody. Read-only.
+ */
+type Inherited =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'unclear' }
+  | {
+      readonly kind: 'inherit';
+      readonly customer: { readonly token: string; readonly customerId: string } | null;
+      readonly documentRef: string | null;
+    };
+
+async function correctionInheritance(
+  tx: TenantDb,
+  businessId: string,
+  input: {
+    rawText: string;
+    command: StructuredBusinessCommand;
+    actorId: string | null;
+    receivedAt: Date;
+    fromDocument: boolean;
+  },
+): Promise<Inherited> {
+  const none = { kind: 'none' } as const;
+  const { command, receivedAt } = input;
+  if (input.fromDocument || !CUSTOMER_BEARING.has(command.intent)) return none;
+  const named = 'customer' in command ? command.customer : null;
+  /* A customer the correction names, by a name or by any token, is its own: a different one
+   * is never overridden, and an unissued token is the G-137 guard's to refuse. */
+  if (named && named.kind !== 'none') return none;
+
+  const except: string[] = [];
+  let refusalInFront = false;
+  let target: conversationsRepo.DraftRow | null = null;
+  for (;;) {
+    const draft = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
+      asOf: receivedAt,
+      except,
+    });
+    if (!draft || !conversationsRepo.isRefusalDraft(draft)) {
+      target = draft;
+      break;
+    }
+    refusalInFront = true;
+    except.push(draft.id);
+  }
+  /* Nothing waiting, or its window closed (G-23): a new request, with nobody inherited. */
+  if (!target || !target.expiresAt || target.expiresAt.getTime() <= receivedAt.getTime()) {
+    return none;
+  }
+  if (!looksLikeCorrection(input.rawText, true)) return none;
+  /* Read as a correction, but not clearly one of this draft ("Sold 2 bags, not paid yet"): never
+   * given the draft's customer; asked about below when the draft has one. */
+  const clear = clearlyCorrects(input.rawText);
+
+  const stored = (target.command ?? {}) as Record<string, unknown>;
+  const token = customerTokenOf(stored);
+  const customerId = token ? await customerIdFor(tx, businessId, token) : null;
+  const ref = stored['documentRef'];
+  const documentRef =
+    command.intent === 'RecordPayment' && typeof ref === 'string' && ref.length > 0 ? ref : null;
+  /* The draft named nobody this business holds: nothing to carry, nothing to ask. */
+  if (!customerId && !documentRef) return none;
+
+  const eligible =
+    clear &&
+    !refusalInFront &&
+    target.intent === command.intent &&
+    target.previewed === true &&
+    input.actorId !== null &&
+    target.requestedBy === input.actorId &&
+    (await conversationsRepo.answerableDraftCount(tx, businessId, { asOf: receivedAt })) === 1 &&
+    !(await conversationsRepo.hasReadsAfter(tx, businessId, target.id, { asOf: receivedAt }));
+  if (!eligible) return customerId ? { kind: 'unclear' } : none;
+  return {
+    kind: 'inherit',
+    customer: token && customerId ? { token, customerId } : null,
+    documentRef,
+  };
+}
+
+/**
+ * What a customer the trusted draft named reads as in this reply, for the merchant only:
+ * their stored name, decrypted for the send boundary's token table (`tokens.displays`), the
+ * same table a name typed in this message fills. Never handed to a model (the reading is
+ * done by now) and never stored: the reply is kept as a placeholder (G-136). A customer
+ * with no stored name reads as their other facets.
+ */
+async function noteInheritedCustomer(
+  deps: InboundMessageDeps,
+  tx: TenantDb,
+  businessId: string,
+  tokens: LiveTokens,
+  customer: { token: string; customerId: string },
+): Promise<void> {
+  const stored = await customersRepo.identityFacetsFor(tx, businessId, customer.customerId);
+  const names = stored.filter((f) => f.facet === 'name');
+  const shown = (names.length > 0 ? names : stored).filter(
+    (f): f is { facet: 'name' | 'phone' | 'email'; ciphertext: string } =>
+      f.facet === 'name' || f.facet === 'phone' || f.facet === 'email',
+  );
+  const typed: TypedFacet[] = shown.map((f) => {
+    const value = decryptFacet(f.ciphertext, deps.config.vaultKey, `${businessId}:${f.facet}`);
+    return { facet: f.facet, value, key: normaliseFacet(f.facet, value) };
+  });
+  tokens.facets.set(customer.token, typed);
+  /* Never a blank line where the customer's name goes. */
+  const display = displayOf(typed);
+  tokens.displays.set(customer.token, display.length > 0 ? display : 'this customer');
+}
+
 /** The model path: a draft when it worked, an honest sentence when it did not. */
 async function interpretedReply(
   deps: InboundMessageDeps,
@@ -5583,6 +5721,38 @@ async function interpretedReply(
     if (asked?.kind === 'token' && tokens.provisional.has(asked.token)) {
       nameNotKnown = true;
       command = { ...command, customer: { kind: 'none' } } as StructuredBusinessCommand;
+    }
+  }
+  /**
+   * CG5: a correction that names nobody keeps the customer of the draft it corrects, taken
+   * from that trusted draft and never from the model (owner ruling 21 Nov 2026,
+   * `correctionInheritance`). Decided before the G-137 guard below, which still refuses any
+   * token this message was not issued. An unclear correction is asked about: nothing is
+   * superseded or drafted, and the unit goes back as for any refused request.
+   */
+  {
+    const carried = await correctionInheritance(tx, businessId, {
+      rawText,
+      command,
+      actorId,
+      receivedAt,
+      fromDocument,
+    });
+    if (carried.kind === 'unclear') {
+      await refundMessage(tx, businessId, eventId, period);
+      return refusedAs(replies.customerNotRecognised());
+    }
+    if (carried.kind === 'inherit') {
+      if (carried.customer) {
+        await noteInheritedCustomer(deps, tx, businessId, tokens, carried.customer);
+        command = {
+          ...command,
+          customer: { kind: 'token', token: carried.customer.token },
+        } as StructuredBusinessCommand;
+      }
+      if (carried.documentRef && command.intent === 'RecordPayment' && !command.documentRef) {
+        command = { ...command, documentRef: carried.documentRef };
+      }
     }
   }
   /**

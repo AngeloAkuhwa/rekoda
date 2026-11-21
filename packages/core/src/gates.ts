@@ -392,6 +392,25 @@ export function looksLikeCorrection(text: string, hasPendingDraft: boolean): boo
   return CORRECTION_OPENERS.test(trimmed) || CORRECTION_PHRASES.test(trimmed);
 }
 
+/**
+ * Whether a message CLEARLY corrects the draft before it (CG5, owner ruling OWN-100), the bar a
+ * correction must meet to keep that draft's customer. Stricter than `looksLikeCorrection`, whose
+ * bare "not" anywhere also matches a new request ("Sold 2 bags for 20k, not paid yet"): it opens
+ * like a correction ("No, 4 not 3", "sorry, 60k each"), says what replaces what ("instead of",
+ * "make it", "should be"), or sets one figure against another ("4 not 3", "60k not 50k").
+ */
+const FIGURE_NOT_FIGURE = /\d[\d,.]*\s*k?\b[^.!?\n]{0,12}?\bnot\s+(?:₦\s*)?\d/i;
+
+export function clearlyCorrects(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  return (
+    CORRECTION_OPENERS.test(trimmed) ||
+    /\b(?:instead of|rather than|change (?:it |the )?to|make it|should be)\b/i.test(trimmed) ||
+    FIGURE_NOT_FIGURE.test(trimmed)
+  );
+}
+
 /* ── money coming IN against an invoice already issued ───────────────────── */
 
 export interface PaymentLike {
