@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { replies } from '@rekoda/core';
-import { conversationsRepo, identity, sql, withBusiness } from '@rekoda/db';
+import { conversationsRepo, createDb, identity, sql, withBusiness } from '@rekoda/db';
 import { setPlanForTest } from '@rekoda/db/testing';
 import {
   db,
@@ -15,8 +15,10 @@ import {
   stubSender,
   statusPayload,
   stubTransport,
+  urls,
   useMetaWebhookHarness,
 } from './meta-webhook.fixtures.js';
+import { mediaMessage } from './meta-continuations.fixtures.js';
 import { drain, voicePayload } from './meta-voice-note.fixtures.js';
 import {
   DELEGATE,
@@ -413,5 +415,64 @@ describe('a yes after a refused record', () => {
       'RecordExpense:pending',
     ]);
     expect((await footprint(business.id)).invoices).toBe(0);
+  });
+});
+
+/**
+ * The unsupported-media refusal is recorded BEFORE its reply is sent (CodeRabbit on #437 at
+ * ebeeadb). The send is an HTTP call inside the job's transaction and cannot be rolled back:
+ * a write after it that fails rolls the inbound row back, and the retry sends the same
+ * refusal again.
+ */
+describe('an unsupported media message whose refusal fails to record', () => {
+  it('is answered once across the retry', async () => {
+    const business = await seedMerchant();
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS media_refusal_once`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION media_refusal_fail_once() RETURNS trigger
+          SECURITY DEFINER AS $$
+        BEGIN
+          IF NEW.command->>'refused' = 'true' AND nextval('media_refusal_once') = 1 THEN
+            RAISE EXCEPTION 'media refusal: first record fails';
+          END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER media_refusal_fail_once BEFORE INSERT ON command_drafts
+          FOR EACH ROW EXECUTE FUNCTION media_refusal_fail_once()`);
+
+      await post(
+        mediaMessage(
+          'wamid.MEDIA-ONCE',
+          { type: 'sticker', sticker: { id: 'sticker-1', mime_type: 'image/webp' } },
+          OWNER,
+        ),
+      );
+      await drain();
+      await ownerDb.execute(sql`UPDATE jobs SET run_at = now() - interval '1 minute'
+             WHERE business_id = ${business.id}::uuid AND state <> 'done'`);
+      await drain();
+
+      const [job] = await ownerDb.execute<{ attempts: number; state: string }>(sql`
+        SELECT attempts, state FROM jobs
+         WHERE business_id = ${business.id}::uuid AND kind = 'inbound.message'`);
+      expect([Number(job?.attempts), job?.state]).toEqual([2, 'done']);
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS media_refusal_fail_once ON command_drafts`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS media_refusal_fail_once()`);
+      await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS media_refusal_once`);
+      await close();
+    }
+    const sent = stubSender.sent.filter((m) => m.text === replies.onlyText().text);
+    expect(sent).toHaveLength(1);
+    const refusals = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ n: number }>(
+        sql`SELECT count(*)::int AS n FROM command_drafts
+             WHERE business_id = ${business.id}::uuid AND command->>'refused' = 'true'`,
+      ),
+    );
+    expect(refusals[0]?.n).toBe(1);
   });
 });

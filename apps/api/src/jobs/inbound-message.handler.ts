@@ -537,11 +537,9 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
       );
       if (recorded.isNew) {
         await retireSenderContinuation(tx, businessId, inbound.from, event.receivedAt);
-        await deps.replySender.send(tx, {
-          businessId,
-          to: inbound.from,
-          reply: replies.onlyText(),
-        });
+        /* Recorded before the send, never after it: the send cannot be rolled back, and a write
+         * after it that fails would roll this message back and answer it again on the retry
+         * (CodeRabbit on #437 at ebeeadb). */
         await recordRefusal(
           deps,
           tx,
@@ -551,6 +549,11 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
           replies.onlyText().text,
           inbound.from,
         );
+        await deps.replySender.send(tx, {
+          businessId,
+          to: inbound.from,
+          reply: replies.onlyText(),
+        });
       }
       await events.markProcessed(tx, eventId, null, businessId);
       return;
