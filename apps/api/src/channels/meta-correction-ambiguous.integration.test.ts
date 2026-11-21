@@ -235,6 +235,20 @@ describe('CG5: a correction that names somebody, read by the model as naming nob
   });
 });
 
+/* The draft's own words that may explain a correction's free word are its items' names only:
+ * the model's free text ("when Tunde comes") never does (independent review of #437 at 4480bc2). */
+describe("CG5: a name in the waiting draft's free text never explains a correction", () => {
+  it('"make it 5 Tunde" after a sale due "when Tunde comes" is asked about', async () => {
+    const { business, ada } = await seedOwner();
+    stubTransport.replyWith({ ...SALE, dueDescription: 'when Tunde comes' });
+    await send('Ada bought 3 wigs for 150k, paid 100k, balance when Tunde comes', 'wamid.V-SALE');
+    stubTransport.replyWith(FOUR);
+    await send('make it 5 Tunde', 'wamid.V-FIX');
+    expect(stubSender.lastText).toContain('I could not tell which customer');
+    await expectAdaUntouched(business.id, ada.token);
+  });
+});
+
 /**
  * A payment correction that inherits Ada keeps the invoice its preview showed: an invoice number
  * the model wrote that the draft did not carry cannot have come from "no, 60k not 50k", and it may

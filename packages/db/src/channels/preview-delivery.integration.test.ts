@@ -514,7 +514,11 @@ describe("latestDraftToAnswer looks past another member's refusal only", () => {
     await identity.addMembership(app, businessId, delegate.id, 'delegate');
     return { businessId, ownerId: [...owner][0]!.user_id, delegateId: delegate.id };
   }
-  const draftBy = (businessId: string, requestedBy: string, command: Record<string, unknown>) =>
+  const draftBy = (
+    businessId: string,
+    requestedBy: string | null,
+    command: Record<string, unknown>,
+  ) =>
     withBusiness(app, businessId, async (tx) => {
       seq += 1;
       const message = await conversationsRepo.recordInbound(tx, {
@@ -546,6 +550,16 @@ describe("latestDraftToAnswer looks past another member's refusal only", () => {
       clarification: '[clarification]',
     });
     expect((await latest(businessId, ownerId))?.id).toBe(asked.id);
+  });
+
+  it('an unattributed refusal is looked past, as `pastRefusals` looks past it', async () => {
+    const { businessId, ownerId } = await twoMembers();
+    await draftBy(businessId, null, {
+      intent: 'Unclear',
+      clarification: 'Please send text.',
+      refused: true,
+    });
+    expect(await latest(businessId, ownerId)).toBeNull();
   });
 
   it("another member's refusal is looked past; the member's own is not", async () => {

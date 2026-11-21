@@ -279,6 +279,10 @@ describe('a junk page whose refusal fails to record', () => {
       await ownerDb.execute(sql`UPDATE jobs SET run_at = now() - interval '1 minute'
              WHERE business_id = ${business.id}::uuid AND state <> 'done'`);
       await drain();
+      const [job] = await ownerDb.execute<{ attempts: number; state: string }>(sql`
+        SELECT attempts, state FROM jobs
+         WHERE business_id = ${business.id}::uuid AND kind = 'inbound.message'`);
+      expect([Number(job?.attempts), job?.state]).toEqual([2, 'done']);
     } finally {
       await ownerDb.execute(sql`DROP TRIGGER IF EXISTS junk_refusal_fail_once ON command_drafts`);
       await ownerDb.execute(sql`DROP FUNCTION IF EXISTS junk_refusal_fail_once()`);
@@ -288,5 +292,11 @@ describe('a junk page whose refusal fails to record', () => {
     }
     const sent = stubSender.sent.filter((m) => m.text === replies.notABusinessDocument().text);
     expect(sent).toHaveLength(1);
+    const drafts = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ intent: string; command: unknown }>(
+        sql`SELECT intent, command FROM command_drafts WHERE business_id = ${business.id}::uuid`,
+      ),
+    );
+    expect([...drafts].map((d) => conversationsRepo.isRefusalDraft(d))).toEqual([true]);
   });
 });
