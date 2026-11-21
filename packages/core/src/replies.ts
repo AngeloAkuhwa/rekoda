@@ -1008,14 +1008,17 @@ export function optionChosen(invoiceNumber: string): Reply {
 /**
  * CG5 (OD-60): a message read as a correction that may not be about the request waiting for a
  * yes (another kind of record, another member's request, two waiting, or something said since).
- * Nothing was changed, and the reply says how to do either thing the merchant may have meant.
+ * Nothing was changed, and the reply gives the steps that work for either thing they meant.
  */
 export function correctionNotClear(): Reply {
+  /* The steps that work after it: this reply stands as the sender's refusal, so a yes is answered
+   * with what is still waiting, and "cancel" drops what waits; sending the change again would only
+   * be asked about once more (independent review of #437 at ce3e5b0). */
   return reply(
     'I could not tell if that changes the request waiting for your yes or is a new record, ' +
-      'so I have not changed anything. To change the waiting request, send only the change, ' +
-      'for example *No, 4 not 3*. To record this as something new, first reply *yes* or *no* ' +
-      'to the waiting request, then send the new record.',
+      'so I have not changed anything. To keep the waiting request, reply *yes* and I will ' +
+      'tell you what is still waiting. To change it or record something new instead, reply ' +
+      '*cancel*, then send the whole corrected or new record.',
   );
 }
 

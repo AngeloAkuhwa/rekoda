@@ -10,7 +10,6 @@
  * (owner review of #437 at 49f2586).
  */
 import { describe, expect, it } from 'vitest';
-import { replies } from '@rekoda/core';
 import { identity, settleRepo, sql, withBusiness } from '@rekoda/db';
 import { buildRunner } from '../jobs/jobs.module.js';
 import {
@@ -99,7 +98,7 @@ describe('CG5: a correction sent while an earlier message is still live', () => 
 
     stubTransport.replyWith(FOUR);
     await send('No, 4 not 3', 'wamid.R1-FIX');
-    expect(stubSender.lastText).toBe(replies.correctionNotClear().text);
+    expect(stubSender.lastText).toContain('I could not tell which customer');
     await expectAdaUntouched(business.id, ada.token);
   });
 
@@ -120,7 +119,7 @@ describe('CG5: a correction sent while an earlier message is still live', () => 
 
     stubTransport.replyWith(FOUR);
     await send('No, 4 not 3', 'wamid.R2-FIX');
-    expect(stubSender.lastText).toBe(replies.correctionNotClear().text);
+    expect(stubSender.lastText).toContain('I could not tell which customer');
     await expectAdaUntouched(business.id, ada.token);
   });
 

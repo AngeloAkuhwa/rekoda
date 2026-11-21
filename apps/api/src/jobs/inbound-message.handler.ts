@@ -5485,7 +5485,7 @@ function customerTokenOf(command: Record<string, unknown>): string | null {
  *
  * Every record read as a correction of a live waiting draft first passes `correctionMayChange`
  * (OD-60): one draft waiting, of the same kind, the member's own, nothing in front of it or since
- * its preview, no earlier message retrying. Failing it, the correction is `unclear`: asked about,
+ * its preview. Failing it, the correction is `unclear`: asked about,
  * superseding nothing. Passing it, the correction supersedes the draft. Only a sale, a payment or
  * an order the model read with no customer at all also keeps the draft's customer, and then the
  * draft must also be:
@@ -5493,6 +5493,7 @@ function customerTokenOf(command: Record<string, unknown>): string | null {
  *  - previewed to the merchant;
  *  - with every word of the correction explained (`correctionWordsExplained`) and no customer
  *    token issued to the message;
+ *  - with no earlier message of the business still retrying (`hasEarlierLiveJobByArrival`);
  *  - naming a customer this business holds (or, for a payment, an invoice).
  * Then the customer (and a payment's invoice reference, when the correction gives none) is
  * kept, the draft is superseded by the ordinary CG5 path, and the new preview needs its own
@@ -5522,9 +5523,10 @@ type Inherited =
  *    replaces a waiting sale);
  *  - this member's own (`requestedBy`), never another member's or an unattributed one;
  *  - with no refusal in front of it, and no question, refusal or other message since its preview
- *    (`hasReadsAfter`, `hasRefusalOrQuestionSince`, `hasInboundBetween`);
- *  - with no earlier message of the business still retrying (`hasEarlierLiveJobByArrival`).
- * Read-only.
+ *    (`hasReadsAfter`, `hasRefusalOrQuestionSince`, `hasInboundBetween`).
+ * An earlier message still retrying does not stop a supersession: a "yes" retried after the
+ * merchant corrected its preview then finds it superseded and books nothing (G-23). It does stop
+ * a correction keeping the draft's customer (`correctionInheritance`). Read-only.
  */
 async function correctionMayChange(
   tx: TenantDb,
@@ -5536,7 +5538,6 @@ async function correctionMayChange(
     receivedAt: Date;
     refusalInFront: boolean;
     messageId: string;
-    jobId: string | null;
   },
 ): Promise<boolean> {
   const { receivedAt } = input;
@@ -5555,12 +5556,7 @@ async function correctionMayChange(
     })) &&
     /* Any message since the preview, a free question ("who owes me") included, which writes no
      * draft: the merchant thread shows it, whichever member sent it (CodeRabbit on #437). */
-    !(await conversationsRepo.hasInboundBetween(tx, businessId, target.id, input.messageId)) &&
-    /* An earlier message still retrying has no row for the checks above to see, so while one is
-     * live the correction is asked about; with no job to ask, it changes nothing (owner review of
-     * #437 at 49f2586). */
-    input.jobId !== null &&
-    !(await jobsRepo.hasEarlierLiveJobByArrival(tx, input.jobId))
+    !(await conversationsRepo.hasInboundBetween(tx, businessId, target.id, input.messageId))
   );
 }
 
@@ -5633,7 +5629,6 @@ async function correctionInheritance(
       receivedAt,
       refusalInFront,
       messageId: input.messageId,
-      jobId: input.jobId,
     }))
   ) {
     /* Which request it changes, or whether it is a new one, is the question (OD-60). */
@@ -5668,7 +5663,12 @@ async function correctionInheritance(
     !input.namesSomeone &&
     correctionWordsExplained(input.rawText, draftVocabulary(stored)) &&
     (modelRef === null || modelRef.length === 0 || modelRef === draftRef) &&
-    target.previewed === true;
+    target.previewed === true &&
+    /* An earlier message still retrying has no row for the checks in `correctionMayChange` to see,
+     * so while one is live the correction is asked about; with no job to ask, it never inherits
+     * (owner review of #437 at 49f2586). */
+    input.jobId !== null &&
+    !(await jobsRepo.hasEarlierLiveJobByArrival(tx, input.jobId));
   /* Any draft that reaches here names a customer or an invoice: an ineligible correction is asked
    * about and never supersedes it (CodeRabbit on #437). */
   if (!eligible) return { kind: 'unclear', ask: 'customer' };

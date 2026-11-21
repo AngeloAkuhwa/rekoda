@@ -77,21 +77,25 @@ async function saleAndRefusal(tag: string) {
 }
 
 describe('a late failed receipt for the answer to a refusal (OD-62(o))', () => {
-  it('puts the refusal back: the repeated yes saves nothing, the next yes saves the preview', async () => {
-    const business = await saleAndRefusal('LR');
-    const before = await footprint(business.id);
+  /* A "no" to the refusal points at the same preview (the deny path), so it is put back the same way. */
+  it.each(['yes', 'no'])(
+    'after "%s": the refusal is back, the repeated yes saves nothing, the next yes saves the preview',
+    async (answer) => {
+      const business = await saleAndRefusal(`LR${answer}`);
+      const before = await footprint(business.id);
 
-    await plain('wamid.LR3', 'yes');
-    expect(stubSender.lastText).toBe(replies.previewBehindRefusal().text);
-    await lateFailure();
+      await plain(`wamid.LR3-${answer}`, answer);
+      expect(stubSender.lastText).toBe(replies.previewBehindRefusal().text);
+      await lateFailure();
 
-    await plain('wamid.LR4', 'yes');
-    expect(stubSender.lastText).toBe(replies.previewBehindRefusal().text);
-    expect(await footprint(business.id)).toEqual(before);
-    /* Read and answered this time: the yes the reply promised saves the preview, once. */
-    await plain('wamid.LR5', 'yes');
-    expect((await footprint(business.id)).invoices).toBe(before.invoices + 1);
-  });
+      await plain(`wamid.LR4-${answer}`, 'yes');
+      expect(stubSender.lastText).toBe(replies.previewBehindRefusal().text);
+      expect(await footprint(business.id)).toEqual(before);
+      /* Read and answered this time: the yes the reply promised saves the preview, once. */
+      await plain(`wamid.LR5-${answer}`, 'yes');
+      expect((await footprint(business.id)).invoices).toBe(before.invoices + 1);
+    },
+  );
 
   it('puts back the question the answer retired with it', async () => {
     const business = await seedMerchant();

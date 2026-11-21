@@ -24,7 +24,7 @@ import {
   useMetaWebhookHarness,
   workerDb,
 } from './meta-webhook.fixtures.js';
-import { failOnceAndBackOff, queueOnly } from './meta-lost-message.fixtures.js';
+import { bringDue, failOnceAndBackOff, queueOnly } from './meta-lost-message.fixtures.js';
 
 useMetaWebhookHarness();
 
@@ -132,6 +132,28 @@ describe('CG5: a correction read as another kind of record (OD-60)', () => {
   });
 });
 
+describe('CG5: the steps the clarification gives work (OD-60)', () => {
+  it('"cancel", then the whole corrected sale, books only the corrected sale', async () => {
+    const { business, ada } = await seedOwner();
+    await send('Ada bought 3 wigs for 150k', 'wamid.K12-SALE', SALE);
+    await send('No, 4 not 3', 'wamid.K12-FIX', expense(5_000));
+    expect(stubSender.lastText).toBe(replies.correctionNotClear().text);
+
+    await send('cancel', 'wamid.K12-CANCEL');
+    expect(stubSender.lastText).toBe(replies.cancelled().text);
+    await send('Ada bought 4 wigs for 200k', 'wamid.K12-NEW', {
+      ...SALE,
+      items: [{ name: 'wig', quantity: 4, unitPrice: 50_000 }],
+      statedTotal: 200_000,
+    });
+    await send('yes', 'wamid.K12-YES');
+    expect(await books(business.id)).toEqual({
+      invoices: [{ customer_id: ada.id, total_k: 20_000_000 }],
+      expenses: [],
+    });
+  });
+});
+
 describe('CG5: a clear correction of the same kind still replaces the waiting draft', () => {
   it('an expense: the corrected amount is the one booked, once', async () => {
     const { business } = await seedOwner();
@@ -205,29 +227,46 @@ describe('CG5: a correction that may be about something else is asked about (OD-
     expect(stubSender.lastText).toBe(replies.correctionNotClear().text);
     expect(await drafts(business.id)).toEqual(['RecordExpense:pending', 'RecordExpense:pending']);
   });
+});
 
-  it('while an earlier message of the business is retrying, it is asked about', async () => {
+/**
+ * A message still retrying when the correction arrives (G-23, OD-60). The merchant's correction is
+ * their newest word, so it supersedes the draft: a "yes" retried after it books nothing, and only
+ * the corrected preview's own yes books anything. Keeping a customer still waits for that message
+ * (`meta-correction-ambiguous`).
+ */
+describe('CG5: a correction while an earlier message is retrying', () => {
+  it('an earlier question still retrying does not stop the correction', async () => {
     const { business } = await seedOwner();
     await send('fuel 5k cash', 'wamid.K7-EXP', expense(5_000));
     await queueOnly('wamid.K7-Q', 'how much did I sell this month?');
     await failOnceAndBackOff(business.id);
 
     await send('no, 6k not 5k', 'wamid.K7-FIX', expense(6_000));
-    expect(stubSender.lastText).toBe(replies.correctionNotClear().text);
-    expect(await drafts(business.id)).toEqual(['RecordExpense:pending']);
+    expect(stubSender.lastText).toContain(replies.correctionTaken().text);
+    expect(await drafts(business.id)).toEqual([
+      'RecordExpense:superseded',
+      'RecordExpense:pending',
+    ]);
   });
 
-  it('a yes still retrying when the correction arrives never books the correction', async () => {
+  it('a yes retried after the correction books nothing; the corrected expense is booked once', async () => {
     const { business } = await seedOwner();
     await send('fuel 5k cash', 'wamid.K8-EXP', expense(5_000));
     await queueOnly('wamid.K8-YES', 'yes');
     await failOnceAndBackOff(business.id);
 
     await send('no, 6k not 5k', 'wamid.K8-FIX', expense(6_000));
-    expect(stubSender.lastText).toBe(replies.correctionNotClear().text);
-    expect(await drafts(business.id)).toEqual(['RecordExpense:pending']);
-    /* No ₦6,000 expense exists in any state, so no later yes can book one. */
-    expect((await books(business.id)).expenses).not.toContain(600_000);
+    expect(await drafts(business.id)).toEqual([
+      'RecordExpense:superseded',
+      'RecordExpense:pending',
+    ]);
+    await bringDue(business.id);
+    await run();
+    expect((await books(business.id)).expenses).toEqual([]);
+
+    await send('yes', 'wamid.K8-YES2');
+    expect((await books(business.id)).expenses).toEqual([600_000]);
   });
 });
 

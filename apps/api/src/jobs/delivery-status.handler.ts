@@ -69,7 +69,7 @@ export function deliveryStatusHandler(): JobHandler {
     if (moved.drafts > 0 || moved.continuations > 0 || moved.reopened > 0) {
       log.log(
         `a preview failed after acceptance: ${moved.drafts} draft(s) retired, ` +
-          `${moved.continuations} question(s) closed, ${moved.reopened} refusal guard(s) restored`,
+          `${moved.continuations} question(s) closed, ${moved.reopened} refusal(s) and question(s) put back`,
       );
     }
     const reminders = await subscriptionsRepo.markTrialNoticeUndelivered(
