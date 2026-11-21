@@ -31,6 +31,10 @@ import {
   states,
   footprint,
   used,
+  receipt,
+  lastWamid,
+  draftStates,
+  previewFlags,
 } from './meta-preview-expiry.fixtures.js';
 
 useMetaWebhookHarness();
@@ -229,5 +233,60 @@ describe('a preview has a time limit (G-23)', () => {
     /* One more than the test seeds: seedMerchant records Ada (G-137), and erasure takes her name too. */
     expect(stubSender.lastText).toContain('deleted (2 records)');
     expect(await facets()).toEqual([]);
+  });
+});
+
+/**
+ * OD-58 (owner ruling, 21 Nov 2026): a correction whose preview never reached the merchant
+ * fails closed. The replacement is unconfirmable, the draft it superseded stays superseded
+ * (only purchase drafts are recorded for restoring), so a "yes" posts nothing, costs nothing,
+ * and is told nothing waits for it; the merchant sends the request again.
+ */
+describe('a correction whose preview was not delivered fails closed (OD-58)', () => {
+  const FOUR = {
+    ...A_SALE,
+    customer: { kind: 'none' },
+    items: [{ name: 'wig', quantity: 4, unitPrice: 100_000 }],
+    statedTotal: 400_000,
+  };
+
+  it('a late failure: neither the original nor the correction can be confirmed', async () => {
+    const business = await seedMerchant();
+    await say('wamid.OD58-late-sale', A_SALE, 'sold Ada 3 wigs for 300k');
+    await say('wamid.OD58-late-fix', FOUR, 'No, 4 not 3');
+    expect(stubSender.lastText).toContain('replaced the earlier version');
+    const fix = lastWamid();
+    expect(await states(business.id)).toEqual(['superseded', 'pending']);
+
+    await receipt('2348031234567', fix, 'failed');
+    await drain();
+    const retired = await draftStates(business.id);
+    expect(retired[0]?.state).toBe('superseded');
+    expect(retired[0]?.reason).not.toBe('preview_not_delivered');
+    expect(retired[1]).toEqual({ state: 'superseded', reason: 'preview_not_delivered' });
+    /* Meta retries the receipt: nothing more changes. */
+    await receipt('2348031234567', fix, 'failed');
+    await drain();
+    expect(await draftStates(business.id)).toEqual(retired);
+
+    await plain('wamid.OD58-late-yes', 'yes');
+    expect(stubSender.lastText).toBe(replies.nothingToConfirm().text);
+    expect(await footprint(business.id)).toMatchObject({ invoices: 0, payments: 0, postings: 0 });
+    expect((await used(business.id)).documents).toBe(0);
+  });
+
+  it('a send that failed outright: the yes posts neither the correction nor the original', async () => {
+    const business = await seedMerchant();
+    await say('wamid.OD58-send-sale', A_SALE, 'sold Ada 3 wigs for 300k');
+    stubSender.failWith();
+    await say('wamid.OD58-send-fix', FOUR, 'No, 4 not 3');
+    /* The original is not brought back: only purchase drafts are recorded for restoring. */
+    expect(await states(business.id)).toEqual(['superseded', 'pending']);
+    expect((await previewFlags(business.id)).map((f) => f.previewed)).toEqual([true, false]);
+
+    await plain('wamid.OD58-send-yes', 'yes');
+    expect(stubSender.lastText).toBe(replies.nothingToConfirm().text);
+    expect(await footprint(business.id)).toMatchObject({ invoices: 0, payments: 0, postings: 0 });
+    expect((await used(business.id)).documents).toBe(0);
   });
 });

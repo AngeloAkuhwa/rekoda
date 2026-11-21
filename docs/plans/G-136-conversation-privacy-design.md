@@ -154,7 +154,7 @@ a token not in `tokens.displays` gets the following treatment.
     a refusal or question since, a different intent, an unshown draft), the correction is answered with
     `customerNotRecognised`: nothing is superseded or drafted and the unit goes back. With nothing live
     waiting (expired, cancelled, confirmed) it is a new request and inherits nobody. Tests:
-    `meta-correction-customer.integration.test.ts` (17 cases) and the restored name-free case in
+    `meta-correction-customer.integration.test.ts` (21 cases) and the restored name-free case in
     `meta-plan-example` ("lets a correction replace the draft…").
     **Limitation, unchanged by this:** every other field of a correction is still what the model reads
     in the correction's own words. A real model given only "No, 4 not 3" may not reproduce the item and
@@ -638,3 +638,13 @@ webhook (§1.2), or any time limit on the encrypted originals (R3 is not approve
 9. **Correction fields other than the customer.** A correction's items, prices and amounts are what
    the model reads in the correction's own words (§2.1). Only the customer and a payment's invoice are
    carried from the trusted draft.
+10. **A payment preview is not bound to the invoice it showed (OD-57, OWN-101; NOT FIXED, before paid
+    launch).** A payment naming a customer and no invoice number finds that customer's newest open
+    invoice again at the "yes", so a newer invoice issued in between can take the payment. This predates
+    #437. `confirmPayment` and `openInvoiceForPayment` are unchanged here. A CG5 nameless payment
+    correction inherits the same customer-scoped lookup as a directly named payment, and gains no new
+    path. The fix and its regression tests are planned in the OD-57 row of `REKODA_LAUNCH_READINESS.md`.
+11. **An undelivered correction preview restores nothing (OD-58, OWN-101; ACCEPTED for MVP).** The draft
+    it replaced stays superseded on both failure paths, and the replacement is never confirmable. A "yes"
+    is told nothing is waiting, and the merchant sends the request again. Tests:
+    `meta-preview-expiry-3.integration.test.ts` (OD-58 cases).
