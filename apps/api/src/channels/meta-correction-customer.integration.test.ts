@@ -6,9 +6,8 @@
  * draft the correction is about: the newest preview this member was shown, still live, the
  * only one waiting, of the same kind, with no question or refusal since. Never from a
  * token the model wrote: the issued-token guard (G-137) stays the authority, so a token
- * this message was not issued is still refused. Anything less clear is asked about and
- * changes nothing; a correction that comes when nothing is waiting is a new request and
- * inherits nobody.
+ * this message was not issued is still refused. Anything less clear is asked about and changes
+ * nothing (OD-60); a correction when nothing is waiting is a new request, inheriting nobody.
  */
 import { describe, expect, it } from 'vitest';
 import { replies } from '@rekoda/core';
