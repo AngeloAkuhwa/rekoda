@@ -6,6 +6,7 @@
  * webhook.fixtures.ts.
  */
 import { describe, expect, it } from 'vitest';
+import { STORED_BODY } from '@rekoda/core/privacy';
 import {
   conversationsRepo,
   events,
@@ -392,12 +393,15 @@ describe('asking the books a question', () => {
     expect(stubSender.lastText).toContain('do not have a customer by that name');
     expect(stubSender.lastText).not.toContain('nothing outstanding');
     /* The name is still not kept in the conversation history. */
+    /* Exactly this business's one row, holding the placeholder: a missing row or the name both
+     * fail (CodeRabbit on #437 at ce75a9e). */
     const stored = await withBusiness(db, business.id, (tx) =>
       tx.execute<{ body: string }>(
-        sql`SELECT body FROM conversation_messages WHERE provider_message_id = 'wamid.Q5U'`,
+        sql`SELECT body FROM conversation_messages
+             WHERE business_id = ${business.id}::uuid AND provider_message_id = 'wamid.Q5U'`,
       ),
     );
-    expect([...stored].map((r) => r.body).join(' ')).not.toContain('Bola');
+    expect([...stored].map((r) => r.body)).toEqual([STORED_BODY.text]);
   });
 
   it('answers a balance question about a known name by lookup, creating nothing', async () => {
