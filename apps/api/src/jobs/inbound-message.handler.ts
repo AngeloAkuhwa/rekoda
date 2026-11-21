@@ -5710,7 +5710,13 @@ async function correctionInheritance(
    * #437 at 49f2586). It still supersedes the draft it corrects, so a "yes" retried after it books
    * nothing the merchant corrected, and the merchant is asked for the record with its customer
    * (CodeRabbit on #437 at 1db1a0a). */
-  if (input.jobId === null || (await jobsRepo.hasEarlierLiveJobByArrival(tx, input.jobId))) {
+  /* Only a correction that is otherwise eligible: one that is not clearly a correction of this
+   * draft ("Wait, I also sold 2 bags") is asked about below and leaves the preview alone, so a yes
+   * the merchant sent before it still books what they confirmed (independent review of e40b95d). */
+  if (
+    eligible &&
+    (input.jobId === null || (await jobsRepo.hasEarlierLiveJobByArrival(tx, input.jobId)))
+  ) {
     return { kind: 'withdraw' };
   }
   /* Any draft that reaches here names a customer or an invoice: an ineligible correction is asked

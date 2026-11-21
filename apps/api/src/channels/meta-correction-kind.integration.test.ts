@@ -298,6 +298,29 @@ describe("CG5: a nameless correction of a customer's sale while a yes retries", 
   });
 });
 
+describe('CG5: an ineligible correction while a yes retries', () => {
+  it('leaves the preview, so the yes the merchant sent first books it once', async () => {
+    const { business, ada } = await seedOwner();
+    await send('Ada bought 3 wigs for 150k', 'wamid.K14-SALE', SALE);
+    await queueOnly('wamid.K14-YES', 'yes');
+    await failOnceAndBackOff(business.id);
+
+    await send('Wait, I also sold 2 bags', 'wamid.K14-MORE', {
+      ...SALE,
+      customer: { kind: 'none' },
+      items: [{ name: 'bag', quantity: 2, unitPrice: 10_000 }],
+      statedTotal: 20_000,
+    });
+    expect(stubSender.lastText).toBe(replies.customerNotRecognised().text);
+    expect(await drafts(business.id)).toEqual(['RecordSale:pending']);
+    await bringDue(business.id);
+    await run();
+    expect((await books(business.id)).invoices).toEqual([
+      { customer_id: ada.id, total_k: 15_000_000 },
+    ]);
+  });
+});
+
 describe('CG5: a correction with no live draft to change is a new request', () => {
   it('after the preview expired, it supersedes nothing and is previewed on its own', async () => {
     const { business } = await seedOwner();
