@@ -188,23 +188,38 @@ describe('CG5: a correction mixed with another instruction, or about no field of
 });
 
 describe("CG5: the owner's correction forms keep the customer end to end", () => {
+  /* A price correction changes the price and keeps the quantity, so it tests inheritance on a
+   * price change, not the quantity case again (CodeRabbit on #437 at 96b1b52). */
+  const PRICE = {
+    ...SALE,
+    customer: { kind: 'none' },
+    items: [{ name: 'wig', quantity: 3, unitPrice: 60_000 }],
+    statedTotal: 180_000,
+  };
   it.each([
-    'make it 4',
-    'the price should be 50k',
-    '4 wigs instead of 3',
-    'No, 4 not 3.',
+    { text: 'make it 4', reading: FOUR, item: { quantity: 4, unitPrice: 50_000 } },
+    { text: 'the price should be 60k', reading: PRICE, item: { quantity: 3, unitPrice: 60_000 } },
+    { text: '4 wigs instead of 3', reading: FOUR, item: { quantity: 4, unitPrice: 50_000 } },
+    { text: 'No, 4 not 3.', reading: FOUR, item: { quantity: 4, unitPrice: 50_000 } },
     /* A named field, which the outer gate missed (Codex and CodeRabbit at fa62d87). */
-    'change the price to 50k',
-  ])('%j corrects the waiting sale and keeps Ada', async (text) => {
+    { text: 'change the price to 60k', reading: PRICE, item: { quantity: 3, unitPrice: 60_000 } },
+  ])('$text corrects the waiting sale and keeps Ada', async ({ text, reading, item }) => {
     const { business, ada } = await seedOwner();
     stubTransport.replyWith(SALE);
     await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.K-SALE');
-    stubTransport.replyWith(FOUR);
+    stubTransport.replyWith(reading);
     await send(text, 'wamid.K-FIX');
     expect(stubSender.lastText).toContain('The same customer as before');
     const rows = await sales(business.id);
     expect(rows.map((r) => r.state)).toEqual(['superseded', 'pending']);
     expect(rows[1]?.customer).toEqual({ kind: 'token', token: ada.token });
+    const [draft] = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ items: Array<{ quantity: number; unitPrice: number }> }>(
+        sql`SELECT command->'items' AS items FROM command_drafts
+             WHERE business_id = ${business.id}::uuid AND intent = 'RecordSale' AND state = 'pending'`,
+      ),
+    );
+    expect(draft?.items[0]).toMatchObject(item);
   });
 });
 
@@ -297,11 +312,23 @@ describe('CG5: a payment correction whose reading names another invoice', () => 
     });
     await send('no, 60k not 50k', 'wamid.P-FIX');
     expect(stubSender.lastText).toContain('I could not tell which customer');
+    /* The yes is about the refusal: nothing is booked, and Ada's ₦50,000 preview still waits
+     * (CodeRabbit on #437 at 96b1b52). */
     await send('yes', 'wamid.P-YES');
-    const { rows: payments } = await withBusiness(db, business.id, (tx) =>
-      settleRepo.paymentsFor(tx),
+    const paid = () =>
+      withBusiness(db, business.id, (tx) => settleRepo.paymentsFor(tx)).then((r) => r.rows);
+    expect(await paid()).toHaveLength(0);
+    /* The control: the next yes books exactly the preview she was shown, ₦50,000 on her invoice. */
+    await send('yes', 'wamid.P-YES2');
+    const payments = await paid();
+    expect(payments.map((p) => p.amountK)).toEqual([5_000_000]);
+    const [adaOwes] = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ balance_due_k: string }>(
+        sql`SELECT balance_due_k::text FROM invoices
+             WHERE business_id = ${business.id}::uuid AND invoice_number = ${adaInvoice}`,
+      ),
     );
-    expect(payments.every((p) => p.amountK !== 6_000_000)).toBe(true);
+    expect(adaOwes?.balance_due_k).toBe('10000000');
     const owed = await withBusiness(db, business.id, (tx) =>
       tx.execute<{ balance_due_k: string }>(
         sql`SELECT balance_due_k::text FROM invoices
