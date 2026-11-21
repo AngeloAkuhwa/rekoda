@@ -663,6 +663,6 @@ webhook (§1.2), or any time limit on the encrypted originals (R3 is not approve
     job failed once and is backing off has no conversation row yet, so `hasInboundBetween` cannot see
     it. The correction therefore also checks the queue (`hasEarlierLiveJobByArrival`). While an
     earlier inbound message of the business is pending or running, the correction is asked about and
-    changes nothing (`meta-correction-retrying.integration.test.ts`, RED first). A message sharing the
+    changes nothing (`meta-correction-ambiguous.integration.test.ts`, RED first; a correction behind a sibling running in another lane is put back by the queue before it is read). Another business's queue never counts, a message that died in between retires the preview (OWN-74), and a correction mixed with a new sale ("No, 4 not 3, and I also sold 2 bags for 20k") is asked about. A message sharing the
     preview's or the correction's `created_at` counts as between them (`hasInboundBetween` is inclusive,
     and excludes the two ends by id; `preview-delivery.integration.test.ts`).

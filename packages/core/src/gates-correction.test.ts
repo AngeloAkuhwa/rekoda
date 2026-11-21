@@ -24,6 +24,11 @@ describe('a correction clear enough to keep the draft customer (clearlyCorrects,
     'no, it should be 4 wigs',
     '5 wigs instead of 3',
     'no, 60k instead of 50k',
+    /* Currency as merchants type it. */
+    'no, make it 60,000',
+    'should be ₦ 60,000',
+    'make it 60.5k',
+    'no, 60k not 50k!',
     'make it 5 wigs',
   ])('%j clearly corrects', (text) => {
     expect(clearlyCorrects(text)).toBe(true);
@@ -60,6 +65,10 @@ describe('a correction clear enough to keep the draft customer (clearlyCorrects,
     'Wait, also sold 3 wigs for 90k, make it 4',
     'I sold 2 bags for N20k rather than 3',
     'sold 2 bags at 10k, make it 3',
+    /* A correction mixed with a new sale, and a currency the gate does not read: asked about. */
+    'No, 4 not 3, and I also sold 2 bags for 20k',
+    'No, 4 not 3. Sold 2 bags at 10k to someone else',
+    'make it NGN 60000',
     'Bola bought 2 shoes for 30k, should be 2',
     '   ',
   ])('%j does not', (text) => {
