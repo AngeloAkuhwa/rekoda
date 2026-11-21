@@ -774,17 +774,23 @@ export async function reopenClosedDrafts(
 
 /**
  * Retire every pending question to the books asked since `draftId` (seen as of `asOf`) and return
- * their ids, so a reply that was never delivered can put them back.
+ * their ids, so a reply that was never delivered can put them back. With `askedBy`, only the
+ * questions that member asked (NULL-safe): another member's question is theirs, and stays the
+ * barrier it is to their own next yes (CodeRabbit on #437 at 0e12742).
  */
 export async function retireReadsAfter(
   tx: TenantDb,
   businessId: string,
   draftId: string,
-  options: { asOf?: Date } = {},
+  options: { asOf?: Date; askedBy?: string | null } = {},
 ): Promise<string[]> {
   const seen = options.asOf
     ? sql`AND created_at <= ${options.asOf.toISOString()}::timestamptz`
     : sql``;
+  const asker =
+    options.askedBy === undefined
+      ? sql``
+      : sql`AND requested_by IS NOT DISTINCT FROM ${options.askedBy}::uuid`;
   const rows = await tx.execute<{ id: string }>(sql`
     UPDATE command_drafts SET state = 'superseded', updated_at = clock_timestamp()
      WHERE business_id = ${businessId}::uuid
@@ -794,6 +800,7 @@ export async function retireReadsAfter(
          SELECT d.insertion_seq FROM command_drafts d
           WHERE d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid)
        ${seen}
+       ${asker}
     RETURNING id`);
   return [...rows].map((r) => r.id);
 }

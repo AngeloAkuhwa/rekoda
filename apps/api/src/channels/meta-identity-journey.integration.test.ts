@@ -247,15 +247,18 @@ describe('one merchant, every identity case, footprint checked after each messag
       textStored: 0,
     });
     /* The second invoice is the corrected three-wig sale (CodeRabbit on #437). */
-    const totals = await withBusiness(db, business.id, async (tx) =>
-      [
-        ...(await tx.execute<{ total: string }>(
-          sql`SELECT total_k::text AS total FROM invoices
-               WHERE business_id = ${business.id}::uuid ORDER BY created_at`,
-        )),
-      ].map((r) => r.total),
-    );
-    expect(totals).toEqual(['10000000', '15000000']);
+    /* And it is the email customer's, by the customer row it points at, not only by total
+     * (CodeRabbit on #437 at 0e12742). */
+    const invoiced = await withBusiness(db, business.id, async (tx) => [
+      ...(await tx.execute<{ total: string; token: string }>(
+        sql`SELECT i.total_k::text AS total, c.token
+              FROM invoices i JOIN customers c ON c.id = i.customer_id
+             WHERE i.business_id = ${business.id}::uuid ORDER BY i.created_at`,
+      )),
+    ]);
+    expect(invoiced.map((r) => r.total)).toEqual(['10000000', '15000000']);
+    expect(invoiced[1]?.token).toBe(tola);
+    expect(invoiced[0]?.token).not.toBe(tola);
     was = afterCorrection;
 
     /* 8. The provider fails, then the model answers nonsense: nothing changes but a

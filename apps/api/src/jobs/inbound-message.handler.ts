@@ -2011,7 +2011,8 @@ async function deterministicReply(
         const behind = await pastRefusals(tx, businessId, ctx.from, ctx.receivedAt);
         /* Pointing at a preview only a "yes" could save, and only while Chat stands (G-65). */
         if (behind.draft?.previewed === true && !(await withoutChat(tx, businessId))) {
-          if (behind.draft.requestedBy !== (await actorOf(tx, businessId, ctx.from))) {
+          const member = await actorOf(tx, businessId, ctx.from);
+          if (behind.draft.requestedBy !== member) {
             return replies.previewWaitingForAnotherMember();
           }
           /* As for a yes: the next yes is the one the reply promises saves it. */
@@ -2019,10 +2020,14 @@ async function deterministicReply(
             tx,
             businessId,
             behind.draft.id,
-            { asOf: ctx.receivedAt },
+            { asOf: ctx.receivedAt, askedBy: member },
           );
           if (ctx.outcome) (ctx.outcome.closedByAnswer ??= []).push(...retired);
-          return replies.previewBehindRefusal();
+          return (await conversationsRepo.hasReadsAfter(tx, businessId, behind.draft.id, {
+            asOf: ctx.receivedAt,
+          }))
+            ? replies.previewBehindQuestion()
+            : replies.previewBehindRefusal();
         }
         return (await withoutChat(tx, businessId))
           ? replies.nothingToDeclineWithoutChat()
@@ -2888,16 +2893,24 @@ async function confirmPendingDraft(
       if (access !== 'allow') return chatRefusal(tx, businessId, access, 'draft');
       /* Another member's preview is theirs, never described as one this sender saw before their
        * refusal (CodeRabbit on #437). */
-      if (behind.draft.requestedBy !== (await actorOf(tx, businessId, sender.from))) {
+      const member = await actorOf(tx, businessId, sender.from);
+      if (behind.draft.requestedBy !== member) {
         return replies.previewWaitingForAnotherMember();
       }
       /* The reply points at the preview and says a yes saves it, so it must: a question asked
-       * before the refusal would otherwise take that next yes (CodeRabbit on #437 at 96b1b52). */
+       * before the refusal would otherwise take that next yes (CodeRabbit on #437 at 96b1b52).
+       * Only this member's questions: another member's stays the barrier it is to their own next
+       * yes, and the reply then says a question stands in the way (CodeRabbit at 0e12742). */
       const retired = await conversationsRepo.retireReadsAfter(tx, businessId, behind.draft.id, {
         asOf: receivedAt,
+        askedBy: member,
       });
       if (sender.outcome) (sender.outcome.closedByAnswer ??= []).push(...retired);
-      return replies.previewBehindRefusal();
+      return (await conversationsRepo.hasReadsAfter(tx, businessId, behind.draft.id, {
+        asOf: receivedAt,
+      }))
+        ? replies.previewBehindQuestion()
+        : replies.previewBehindRefusal();
     }
     draft = past.draft;
   }
@@ -4666,22 +4679,40 @@ async function unsureReply(
   if (latest?.state === 'expired') {
     return expiredAnswer(latest.command, latest.previewed, 'yes') ?? replies.nothingToConfirm();
   }
+  /* The scan a plain yes makes (`pastRefusals`), read-only: another member's refusal is looked
+   * past, and so is another member's newer request while the sender's own refusal may stand behind
+   * it. Found and still the last thing the sender recorded, that refusal is what a plain yes would
+   * be about, so this answer is the one that yes gets, never an invitation to send it (CodeRabbit
+   * on #437 at 0e12742). */
   const lookedPast: string[] = [];
+  let first: conversationsRepo.DraftRow | null = null;
   let pending = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
     asOf: receivedAt,
   });
-  while (
-    pending &&
-    conversationsRepo.isRefusalDraft(pending) &&
-    pending.requestedBy !== doubting &&
-    lookedPast.length < 50
-  ) {
+  while (pending && lookedPast.length < 50) {
+    if (conversationsRepo.isRefusalDraft(pending)) {
+      if (
+        doubting !== null &&
+        pending.requestedBy === doubting &&
+        !(await conversationsRepo.hasDraftsAfterBy(tx, businessId, pending.id, doubting, {
+          asOf: receivedAt,
+        }))
+      ) {
+        if (first?.previewed === true) return replies.previewWaitingForAnotherMember();
+        break;
+      }
+      if (pending.requestedBy === doubting && first === null) break;
+    } else {
+      first ??= pending;
+      if (doubting === null || pending.requestedBy === doubting) break;
+    }
     lookedPast.push(pending.id);
     pending = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
       asOf: receivedAt,
       except: lookedPast,
     });
   }
+  pending = first ?? pending;
   if (!pending?.previewed) return replies.nothingToConfirm();
   /* A question to the books asked since the preview: point back at the
    * preview, as a yes would, without retiring anything. */
@@ -6171,7 +6202,13 @@ async function interpretedReply(
     command.intent !== 'Query' &&
     looksLikeCorrection(rawText, existing !== null);
   if (correcting) {
-    await conversationsRepo.supersedePendingDrafts(tx, businessId, { asOf: receivedAt });
+    /* Another member's refusal stays theirs to answer, as a bare "no" leaves it (CodeRabbit on
+     * #437 at 0e12742): superseded here, their next yes would confirm this replacement preview,
+     * which was never sent to them. */
+    await conversationsRepo.supersedePendingDrafts(tx, businessId, {
+      asOf: receivedAt,
+      skipRefusalsNotBy: actorId,
+    });
   }
 
   /**
@@ -6190,7 +6227,21 @@ async function interpretedReply(
   const acknowledged =
     nameNotKnown && command.intent === 'Query'
       ? { reply: replies.customerNotKnown(), linkAsked: false, continuation: NO_PERIOD_TO_RESUME }
-      : await acknowledge(tx, businessId, command, correcting, link, receivedAt);
+      : await acknowledge(
+          tx,
+          businessId,
+          /* The preview names the supplier the stored draft will carry, never a token or placeholder
+           * the stored draft drops (CodeRabbit on #437 at 0e12742). */
+          command.intent === 'RecordPurchase'
+            ? ({
+                ...command,
+                supplierMention: supplierNameOf(command, tokens.displays.keys()) || null,
+              } as StructuredBusinessCommand)
+            : command,
+          correcting,
+          link,
+          receivedAt,
+        );
   /* A balance question about a name the books do not hold is answered honestly above, never
    * "they owe nothing" (G-135), and never with a subject a later "last month" could resume into
    * the business's totals (independent review of #437). */
@@ -6247,19 +6298,7 @@ async function interpretedReply(
     /* Nor is a customer token: a supplier named after a pseudonym would take
      * that customer's token into the supplier vault (CodeRabbit on #437). Every
      * token span is found the way the gateway finds them (`protectedSpans`). */
-    const raw = (command as { supplierMention?: unknown }).supplierMention;
-    const words = typeof raw === 'string' ? raw : '';
-    let untokened = '';
-    let cursor = 0;
-    for (const span of protectedSpans(words, tokens.displays.keys())) {
-      untokened += `${words.slice(cursor, span.start)} `;
-      cursor = Math.max(cursor, span.end);
-    }
-    untokened += words.slice(cursor);
-    const mention = untokened
-      .replace(/\[(?:phone|email|customer)\]/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
+    const mention = supplierNameOf(command, tokens.displays.keys());
     const supplier =
       mention.length > 0 ? await deps.gateway.resolveSupplierMention(businessId, mention) : null;
     stored = { ...command, supplierMention: null, supplierId: supplier?.supplierId ?? null };
@@ -6454,6 +6493,28 @@ async function interpretedReply(
  * prevent: claiming something happened before it has. The preview belongs to
  * CG2 and the document to the transaction engine.
  */
+/**
+ * The supplier name a purchase's `supplierMention` leaves once every token span (found the way the
+ * gateway finds them, `protectedSpans`) and every placeholder for a phone, an email or a customer
+ * is taken out: what is vaulted as the supplier, and what its preview shows. Empty when nothing
+ * names a supplier.
+ */
+function supplierNameOf(command: StructuredBusinessCommand, displays: Iterable<string>): string {
+  const raw = (command as { supplierMention?: unknown }).supplierMention;
+  const words = typeof raw === 'string' ? raw : '';
+  let untokened = '';
+  let cursor = 0;
+  for (const span of protectedSpans(words, displays)) {
+    untokened += `${words.slice(cursor, span.start)} `;
+    cursor = Math.max(cursor, span.end);
+  }
+  untokened += words.slice(cursor);
+  return untokened
+    .replace(/\[(?:phone|email|customer)\]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 async function acknowledge(
   tx: TenantDb,
   businessId: string,

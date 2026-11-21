@@ -136,22 +136,19 @@ describe('a correction clear enough to keep the draft customer (clearlyCorrects,
     expect(clearlyCorrects(text)).toBe(false);
   });
 
-  it('answers an 80-character message built to backtrack at once', () => {
-    const started = Date.now();
-    for (const text of [
-      `no, ${'1,'.repeat(36)}1 not 2`,
-      `${'no '.repeat(26)}x`,
-      `make it ${'1'.repeat(70)}k`,
-    ]) {
-      clearlyCorrects(text);
-    }
-    expect(Date.now() - started).toBeLessThan(50);
-  });
-
-  it('answers a 4,000-character message at once, and not as a correction', () => {
-    const started = Date.now();
-    expect(clearlyCorrects(`no, ${'1,'.repeat(2_000)}1 not 2`)).toBe(false);
-    expect(Date.now() - started).toBeLessThan(50);
+  /* Functional bounds only: a wall-clock budget belongs in no unit test (CodeRabbit on #437 at
+   * 0e12742). A correction is a line of at most 80 characters, and anything longer is refused by
+   * its length before the expression runs. */
+  it.each([
+    { text: `make it ${'1'.repeat(71)}k`, length: 80, corrects: true },
+    { text: `${'no, '.repeat(18)}4 not 3.`, length: 80, corrects: true },
+    { text: `${'no '.repeat(26)}xy`, length: 80, corrects: false },
+    { text: `make it ${'1'.repeat(72)}k`, length: 81, corrects: false },
+    { text: `${'no, '.repeat(18)}4 not 3.!`, length: 81, corrects: false },
+    { text: `no, ${'1,'.repeat(2_000)}1 not 2`, length: 4_011, corrects: false },
+  ])('a $length-character message is a correction: $corrects', ({ text, length, corrects }) => {
+    expect(text).toHaveLength(length);
+    expect(clearlyCorrects(text)).toBe(corrects);
   });
 
   it.each(['change the price to 60k', 'price should be 60k each', 'the delivery fee should be 2k'])(

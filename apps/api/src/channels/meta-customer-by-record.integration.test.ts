@@ -163,6 +163,10 @@ describe('customer creation follows the record, not the token (owner review of #
       },
       'bought cement from Bola Ige for 40k cash',
     );
+    /* The preview names no supplier, as the saved purchase has none (CodeRabbit on #437 at
+     * 0e12742): it never shows "From: Bola Ige" over a purchase that keeps no supplier. */
+    expect(stubSender.lastText).not.toContain('From:');
+    expect(stubSender.lastText).not.toContain('Bola');
     await plain('wamid.S11-yes', 'yes');
 
     const suppliers = await withBusiness(

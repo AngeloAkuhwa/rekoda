@@ -11,6 +11,7 @@ import {
   messagePayload,
   post,
   stubSender,
+  stubTransport,
   useMetaWebhookHarness,
 } from './meta-webhook.fixtures.js';
 import { drain } from './meta-voice-note.fixtures.js';
@@ -141,6 +142,113 @@ describe("a bare no keeps another member's refusal", () => {
 
     await post(messagePayload(DELEGATE, 'wamid.RN4', 'yes'));
     await drain();
+    expect(stubSender.lastText).toBe(replies.previewWaitingForAnotherMember().text);
+    expect(await footprint(business.id)).toEqual(before);
+  });
+});
+
+/**
+ * A correction that replaces the sender's own draft supersedes every pending draft but another
+ * member's refusal, which stays theirs: the delegate's first yes is still about it and never
+ * confirms the owner's replacement preview (CodeRabbit on #437 at 0e12742).
+ */
+describe("a correction keeps another member's refusal", () => {
+  it("so the delegate's yes never confirms the owner's corrected preview", async () => {
+    const business = await seedMerchant();
+    const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+    await identity.addMembership(db, business.id, delegate.id, 'delegate');
+    await say('wamid.RC1', sale({ kind: 'none' }), 'sold 2 wigs for 100k');
+    await post(mediaMessage('wamid.RC2', STICKER, DELEGATE));
+    await drain();
+    await say(
+      'wamid.RC3',
+      {
+        ...sale({ kind: 'none' }),
+        items: [{ name: 'wig', quantity: 2, unitPrice: 60_000 }],
+        statedTotal: 120_000,
+      },
+      'change the price to 60k',
+    );
+    const before = await footprint(business.id);
+
+    await post(messagePayload(DELEGATE, 'wamid.RC4', 'yes'));
+    await drain();
+    expect(await footprint(business.id)).toEqual(before);
+    const refusals = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ state: string }>(
+        sql`SELECT state FROM command_drafts
+             WHERE business_id = ${business.id}::uuid AND command->>'refused' = 'true'`,
+      ),
+    );
+    expect([...refusals].map((r) => r.state)).toEqual(['superseded']);
+
+    await plain('wamid.RC5', 'yes');
+    expect((await footprint(business.id)).invoices).toBe(before.invoices + 1);
+  });
+});
+
+/**
+ * Answering one's own refusal retires only one's own questions: another member's question since
+ * the preview stays the barrier it is, so that member's next yes, about their answer, never saves
+ * a preview they did not ask for (CodeRabbit on #437 at 0e12742).
+ */
+describe("answering a refusal keeps another member's question", () => {
+  it.each(['yes', 'no'])(
+    'after the owner\'s "%s", the delegate\'s yes saves nothing',
+    async (answer) => {
+      const business = await seedMerchant();
+      const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+      await identity.addMembership(db, business.id, delegate.id, 'delegate');
+      const ada = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+      await say(
+        `wamid.RD1-${answer}`,
+        sale({ kind: 'token', token: ada.token }),
+        'sold Ada Obi 2 wigs for 100k',
+      );
+      stubTransport.replyWith(QUESTION);
+      await post(messagePayload(DELEGATE, `wamid.RD2-${answer}`, 'how much did I sell today'));
+      await drain();
+      await post(mediaMessage(`wamid.RD3-${answer}`, STICKER, OWNER));
+      await drain();
+      const before = await footprint(business.id);
+
+      await plain(`wamid.RD4-${answer}`, answer);
+      /* Another member's question still stands between the owner and the preview. */
+      expect(stubSender.lastText).toBe(replies.previewBehindQuestion().text);
+      await post(messagePayload(DELEGATE, `wamid.RD5-${answer}`, 'yes'));
+      await drain();
+      expect(await footprint(business.id)).toEqual(before);
+    },
+  );
+});
+
+/**
+ * A questioned yes chooses what it is about the way a plain yes does: the owner's own refusal,
+ * behind a delegate's newer preview, is what both are about, so "na so?" never invites a plain yes
+ * that would save nothing (CodeRabbit on #437 at 0e12742).
+ */
+describe("a questioned yes finds the sender's refusal behind another member's preview", () => {
+  it('is answered as the plain yes would be, and changes nothing', async () => {
+    const business = await seedMerchant();
+    const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+    await identity.addMembership(db, business.id, delegate.id, 'delegate');
+    await post(mediaMessage('wamid.RY1', STICKER, OWNER));
+    await drain();
+    stubTransport.replyWith(sale({ kind: 'none' }));
+    await post(messagePayload(DELEGATE, 'wamid.RY2', 'sold 2 wigs for 100k'));
+    await drain();
+    const before = await footprint(business.id);
+
+    await plain('wamid.RY3', 'na so?');
+    expect(stubSender.lastText).toBe(replies.previewWaitingForAnotherMember().text);
+    const refusals = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ state: string }>(
+        sql`SELECT state FROM command_drafts
+             WHERE business_id = ${business.id}::uuid AND command->>'refused' = 'true'`,
+      ),
+    );
+    expect([...refusals].map((r) => r.state)).toEqual(['pending']);
+    await plain('wamid.RY4', 'yes');
     expect(stubSender.lastText).toBe(replies.previewWaitingForAnotherMember().text);
     expect(await footprint(business.id)).toEqual(before);
   });
