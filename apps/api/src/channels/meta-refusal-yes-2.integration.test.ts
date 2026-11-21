@@ -148,12 +148,14 @@ describe("a bare no keeps another member's refusal", () => {
 });
 
 /**
- * A correction that replaces the sender's own draft supersedes every pending draft but another
- * member's refusal, which stays theirs: the delegate's first yes is still about it and never
- * confirms the owner's replacement preview (CodeRabbit on #437 at 0e12742).
+ * A correction never takes away another member's refusal: with the delegate's refusal since the
+ * owner's preview, the owner's correction is asked about and supersedes nothing (OD-60), and the
+ * supersession it would make leaves another member's refusal pending (`skipRefusalsNotBy`). Either
+ * way the delegate's first yes is about their own refusal and never confirms the owner's preview
+ * (CodeRabbit on #437 at 0e12742).
  */
 describe("a correction keeps another member's refusal", () => {
-  it("so the delegate's yes never confirms the owner's corrected preview", async () => {
+  it("so the delegate's yes never confirms the owner's preview", async () => {
     const business = await seedMerchant();
     const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
     await identity.addMembership(db, business.id, delegate.id, 'delegate');
@@ -174,16 +176,15 @@ describe("a correction keeps another member's refusal", () => {
     await post(messagePayload(DELEGATE, 'wamid.RC4', 'yes'));
     await drain();
     expect(await footprint(business.id)).toEqual(before);
-    const refusals = await withBusiness(db, business.id, (tx) =>
+    /* The delegate's own refusal is what their yes answered, and closed. */
+    const theirs = await withBusiness(db, business.id, (tx) =>
       tx.execute<{ state: string }>(
         sql`SELECT state FROM command_drafts
-             WHERE business_id = ${business.id}::uuid AND command->>'refused' = 'true'`,
+             WHERE business_id = ${business.id}::uuid AND command->>'refused' = 'true'
+               AND requested_by = ${delegate.id}::uuid`,
       ),
     );
-    expect([...refusals].map((r) => r.state)).toEqual(['superseded']);
-
-    await plain('wamid.RC5', 'yes');
-    expect((await footprint(business.id)).invoices).toBe(before.invoices + 1);
+    expect([...theirs].map((r) => r.state)).toEqual(['superseded']);
   });
 });
 
