@@ -107,15 +107,7 @@ import type {
 import type { ReplySender } from '../replies/reply.service.js';
 import type { PaymentIntentsService } from '../payments/payment-intents.service.js';
 import { openPayload } from '../privacy/payload-vault.js';
-import {
-  displayOf,
-  neutraliseTokens,
-  protectedSpans,
-  redactForLog,
-  STORED_BODY,
-  type TypedFacet,
-} from '@rekoda/core/privacy';
-import { decryptFacet, normaliseFacet } from '@rekoda/core/vault';
+import { neutraliseTokens, protectedSpans, redactForLog, STORED_BODY } from '@rekoda/core/privacy';
 import { describeFailure, JobDeferred, type JobContext, type JobHandler } from './runner.js';
 import { JobKind } from './queue.service.js';
 import { TranscriptionUnavailable, type SpeechToText, type Transcript } from '../ai/stt.js';
@@ -1228,17 +1220,28 @@ async function pastRefusals(
 }> {
   const actor = await actorOf(tx, businessId, from);
   const except: string[] = [];
+  /* The newest request a "yes" or "no" would reach, kept while the scan looks further back for the
+   * sender's own refusal: another member's newer preview never stands in front of the refusal this
+   * sender was last shown (CodeRabbit on #437). The scan stops at the sender's own request, which
+   * is newer than any refusal of theirs behind it. */
+  let first: conversationsRepo.DraftRow | null = null;
   for (;;) {
     const draft = await conversationsRepo.pendingDraftToAnswer(tx, businessId, { asOf, except });
-    if (!draft || !conversationsRepo.isRefusalDraft(draft)) {
-      return { draft, ownRefusal: null, except };
+    if (!draft) return { draft: first, ownRefusal: null, except };
+    if (!conversationsRepo.isRefusalDraft(draft)) {
+      first ??= draft;
+      if (actor === null || draft.requestedBy === actor) {
+        return { draft: first, ownRefusal: null, except };
+      }
+      except.push(draft.id);
+      continue;
     }
     const mine = actor !== null && draft.requestedBy === actor;
     if (
       mine &&
       !(await conversationsRepo.hasDraftsAfterBy(tx, businessId, draft.id, actor, { asOf }))
     ) {
-      return { draft, ownRefusal: draft, except };
+      return { draft: first ?? draft, ownRefusal: draft, except };
     }
     if (mine) await conversationsRepo.closeRefusalDraft(tx, businessId, draft.id);
     else except.push(draft.id);
@@ -1980,7 +1983,10 @@ async function deterministicReply(
       await conversationsRepo.closeRefusalDraft(tx, businessId, past.ownRefusal.id);
       if (intent.kind === 'deny') {
         const behind = await pastRefusals(tx, businessId, ctx.from, ctx.receivedAt);
-        if (behind.draft?.previewed === true) return replies.previewBehindRefusal();
+        /* Pointing at a preview only a "yes" could save, and only while Chat stands (G-65). */
+        if (behind.draft?.previewed === true && !(await withoutChat(tx, businessId))) {
+          return replies.previewBehindRefusal();
+        }
         return (await withoutChat(tx, businessId))
           ? replies.nothingToDeclineWithoutChat()
           : replies.nothingToDecline();
@@ -2794,9 +2800,7 @@ async function confirmPendingDraft(
     );
   }
 
-  let draft = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
-    asOf: receivedAt,
-  });
+  let draft: conversationsRepo.DraftRow | null;
   /* The newest thing waiting is a refusal (`refusedAs`): this yes is about it
    * when it is the sender's own and still the last thing they recorded, so it
    * saves nothing and says whether a preview is still waiting. Another member's
@@ -2809,9 +2813,12 @@ async function confirmPendingDraft(
         await refundRecordedReservations(tx, businessId, eventId, usagePeriod(receivedAt));
       }
       const behind = await pastRefusals(tx, businessId, sender.from, receivedAt);
-      return behind.draft?.previewed === true
+      if (behind.draft?.previewed !== true) return replies.nothingToConfirm();
+      /* A preview the next "yes" could not save while Chat is lapsed is never pointed at (G-65). */
+      const access = chatDraftAccess(await chatStandingOf(tx, businessId));
+      return access === 'allow'
         ? replies.previewBehindRefusal()
-        : replies.nothingToConfirm();
+        : chatRefusal(tx, businessId, access, 'draft');
     }
     draft = past.draft;
   }
@@ -5416,7 +5423,9 @@ async function correctionInheritance(
     input.actorId !== null &&
     target.requestedBy === input.actorId &&
     !(await conversationsRepo.hasReadsAfter(tx, businessId, target.id, { asOf: receivedAt }));
-  if (!eligible) return customerId ? { kind: 'unclear' } : none;
+  /* Any draft that reaches here names a customer or an invoice: an ineligible correction is asked
+   * about and never supersedes it (CodeRabbit on #437). */
+  if (!eligible) return { kind: 'unclear' };
   return {
     kind: 'inherit',
     customer: token && customerId ? { token, customerId } : null,
@@ -5425,39 +5434,16 @@ async function correctionInheritance(
 }
 
 /**
- * What a customer the trusted draft named reads as in this reply, for the merchant only:
- * their stored name, decrypted for the send boundary's token table (`tokens.displays`), the
- * same table a name typed in this message fills. Never handed to a model (the reading is
- * done by now) and never stored: the reply is kept as a placeholder (G-136). A customer
- * with no stored name reads as their other facets.
+ * What a customer the trusted draft named reads as in this reply: "The same customer as before",
+ * never their stored name. Rehydrating a vault identity outside the authorised output layer is
+ * forbidden (R12, `docs/safety-review.md`; CLAUDE.md invariant 4), and Rekoda's replies already
+ * name stored customers by what the merchant typed or not at all ("who owes me" lists invoice
+ * numbers). Nothing is decrypted, stored or sent to a model.
  */
-async function noteInheritedCustomer(
-  deps: InboundMessageDeps,
-  tx: TenantDb,
-  businessId: string,
-  tokens: LiveTokens,
-  customer: { token: string; customerId: string },
-): Promise<void> {
-  const stored = await customersRepo.identityFacetsFor(tx, businessId, customer.customerId);
-  const names = stored.filter((f) => f.facet === 'name');
-  const shown = (names.length > 0 ? names : stored).filter(
-    (f): f is { facet: 'name' | 'phone' | 'email'; ciphertext: string } =>
-      f.facet === 'name' || f.facet === 'phone' || f.facet === 'email',
-  );
-  /* A facet that will not open reads as "this customer", never as a failed job. */
-  const typed: TypedFacet[] = [];
-  for (const f of shown) {
-    try {
-      const value = decryptFacet(f.ciphertext, deps.config.vaultKey, `${businessId}:${f.facet}`);
-      typed.push({ facet: f.facet, value, key: normaliseFacet(f.facet, value) });
-    } catch {
-      /* Nothing logged: the ciphertext and its customer are not log material. */
-    }
-  }
-  tokens.facets.set(customer.token, typed);
-  /* Never a blank line where the customer's name goes. */
-  const display = displayOf(typed);
-  tokens.displays.set(customer.token, display.length > 0 ? display : 'this customer');
+export const INHERITED_CUSTOMER_DISPLAY = 'The same customer as before';
+
+function noteInheritedCustomer(tokens: LiveTokens, token: string): void {
+  tokens.displays.set(token, INHERITED_CUSTOMER_DISPLAY);
 }
 
 /** The model path: a draft when it worked, an honest sentence when it did not. */
@@ -5742,6 +5728,8 @@ async function interpretedReply(
    * token this message was not issued. An unclear correction is asked about: nothing is
    * superseded or drafted, and the unit goes back as for any refused request.
    */
+  /* Carried from the trusted draft for the record's `customer` only, never allowed in its words. */
+  let inheritedToken: string | null = null;
   {
     const carried = await correctionInheritance(tx, businessId, {
       rawText,
@@ -5756,7 +5744,8 @@ async function interpretedReply(
     }
     if (carried.kind === 'inherit') {
       if (carried.customer) {
-        await noteInheritedCustomer(deps, tx, businessId, tokens, carried.customer);
+        noteInheritedCustomer(tokens, carried.customer.token);
+        inheritedToken = carried.customer.token;
         command = {
           ...command,
           customer: { kind: 'token', token: carried.customer.token },
@@ -5879,7 +5868,11 @@ async function interpretedReply(
             };
       }
     }
-    command = withWordsNeutralised(command, new Set(tokens.displays.keys()), placeholders);
+    command = withWordsNeutralised(
+      command,
+      new Set([...tokens.displays.keys()].filter((t) => t !== inheritedToken)),
+      placeholders,
+    );
   }
   /**
    * A question resolves a name by LOOKUP only (OD-3, owner ruling 20 Nov 2026).

@@ -4,6 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { conversationsRepo, identity, withBusiness } from '@rekoda/db';
+import { setPlanForTest } from '@rekoda/db/testing';
 import {
   db,
   deps,
@@ -237,5 +238,47 @@ describe('a yes after a refused record', () => {
     await plain('wamid.R33', 'yes');
     expect(stubSender.lastText).toContain('Nothing was saved from your last message');
     expect((await footprint(business.id)).invoices).toBe(1);
+  });
+
+  it("another member's newer preview never lets the owner's yes past the owner's refusal", async () => {
+    const business = await seedMerchant();
+    const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+    await identity.addMembership(db, business.id, delegate.id, 'delegate');
+    const ada = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+
+    await say('wamid.R30', payment({ kind: 'token', token: 'CUSTOMER_7K2' }), 'Bisi paid 20k');
+    expect(stubSender.lastText).toContain('could not tell which customer');
+    stubTransport.replyWith(sale({ kind: 'token', token: ada.token }));
+    await post(messagePayload(DELEGATE, 'wamid.R31', 'sold Ada Obi 2 wigs for 100k'));
+    await drain();
+    expect(stubSender.lastText).toContain('Reply *yes*');
+
+    // The owner was last shown their refusal: this yes is about it, never the delegate's sale.
+    await plain('wamid.R32', 'yes');
+    expect(stubSender.lastText).toContain('Nothing was saved from your last message');
+    expect((await footprint(business.id)).invoices).toBe(0);
+  });
+
+  it('a yes after a refusal never points at a preview a lapsed plan cannot save', async () => {
+    const business = await seedMerchant();
+    const ada = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+    await say(
+      'wamid.R40',
+      sale({ kind: 'token', token: ada.token }),
+      'sold Ada Obi 2 wigs for 100k',
+    );
+    await say('wamid.R41', payment({ kind: 'token', token: 'CUSTOMER_7K2' }), 'Bisi paid 20k');
+    await setPlanForTest(db, {
+      businessId: business.id,
+      plan: 'trial',
+      expiresAt: new Date(Date.now() - 1_000),
+      actor: 'operator:test-clock',
+    });
+
+    await plain('wamid.R42', 'yes');
+    expect(stubSender.lastText).not.toContain('reply *yes* to save it');
+    await plain('wamid.R43', 'no');
+    expect(stubSender.lastText).not.toContain('reply *yes* to save it');
+    expect((await footprint(business.id)).invoices).toBe(0);
   });
 });

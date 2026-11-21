@@ -141,8 +141,10 @@ export default function PrivacyPage() {
                       <td>Chat history</td>
                       <td>Until your account is deleted</td>
                       <td>
-                        It records what kind each message was, not what it said. Text kept from
-                        before that change is erased when you send DELETE MY DATA.
+                        For ordinary messages it records what kind each one was, not what it said. A
+                        document Rekoda sends is recorded by its number and amount, and a template
+                        message by its name. Text kept from before that change is erased when you
+                        send DELETE MY DATA.
                       </td>
                     </tr>
                     <tr>

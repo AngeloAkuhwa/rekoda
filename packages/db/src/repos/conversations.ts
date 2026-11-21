@@ -679,16 +679,20 @@ export async function answerableDraftCount(
   businessId: string,
   options: { asOf?: Date } = {},
 ): Promise<number> {
-  const seen = options.asOf
-    ? sql`AND created_at <= ${options.asOf.toISOString()}::timestamptz`
-    : sql``;
+  /* Seen by `asOf` and still inside its window at `asOf` (G-23): an expired preview the sweep has
+   * not reached yet is not waiting. A refusal is excluded only when `refused` is exactly true: an
+   * `Unclear` clarification with no such key counts (null-safe, CodeRabbit on #437). */
+  const at = options.asOf
+    ? sql`${options.asOf.toISOString()}::timestamptz`
+    : sql`clock_timestamp()`;
   const rows = await tx.execute<{ n: number }>(sql`
     SELECT count(*)::int AS n FROM command_drafts
      WHERE business_id = ${businessId}::uuid
        AND state = 'pending'
        AND intent <> 'Query'
-       AND NOT (intent = 'Unclear' AND command->>'refused' = 'true')
-       ${seen}`);
+       AND NOT (intent = 'Unclear' AND COALESCE(command->>'refused', '') = 'true')
+       AND created_at <= ${at}
+       AND (expires_at IS NULL OR expires_at > ${at})`);
   return [...rows][0]?.n ?? 0;
 }
 

@@ -397,9 +397,11 @@ export function looksLikeCorrection(text: string, hasPendingDraft: boolean): boo
  * correction must meet to keep that draft's customer. Stricter than `looksLikeCorrection`, whose
  * bare "not" anywhere also matches a new request ("Sold 2 bags for 20k, not paid yet"): it says
  * what replaces what ("instead of", "make it", "should be") or sets one figure against another
- * ("4 not 3", "60k each not 50k"). Opening with "no" or "sorry" is not enough on its own.
+ * ("4 not 3", "60k each not 50k"), the second figure ending the clause, so "sold 5 bags, not 2 days
+ * late" is not one. Opening with "no" or "sorry" is not enough on its own.
  */
-const FIGURE_NOT_FIGURE = /\d[\d,.]*\s*k?\b[^.!?\n]{0,12}?\bnot\s+(?:₦\s*)?\d/i;
+const FIGURE_NOT_FIGURE =
+  /\d[\d,.]*\s*k?\b[^.!?\n]{0,12}?\bnot\s+(?:₦\s*)?\d[\d,.]*\s*k?(?:\s+each)?\s*(?:[.!?,;)]|$)/i;
 
 export function clearlyCorrects(text: string): boolean {
   const trimmed = text.trim();

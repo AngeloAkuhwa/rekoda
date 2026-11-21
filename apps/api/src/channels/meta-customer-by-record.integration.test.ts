@@ -3,7 +3,7 @@
  * 3a60b0f): split from meta-customer-token.integration.test.ts by concern.
  */
 import { describe, expect, it } from 'vitest';
-import { conversationsRepo, issueRepo, sql, withBusiness } from '@rekoda/db';
+import { catalogueRepo, conversationsRepo, issueRepo, sql, withBusiness } from '@rekoda/db';
 import { db, deps, stubSender, useMetaWebhookHarness } from './meta-webhook.fixtures.js';
 
 import {
@@ -167,6 +167,11 @@ describe('customer creation follows the record, not the token (owner review of #
   it("a contact in an order's note is not the order's customer", async () => {
     const business = await seedMerchant();
     const bola = await deps.gateway.resolveMention(business.id, 'Bola Ige');
+    /* Priced, so the order reaches its preview: an unpriced one stops at a question before any
+     * link could be asked about, and would pass this test for the wrong reason (CodeRabbit). */
+    await withBusiness(db, business.id, (tx) =>
+      catalogueRepo.createProduct(tx, business.id, { name: 'wig', unitPriceK: 5_000_000 }),
+    );
 
     await say(
       'wamid.S2',
@@ -179,6 +184,7 @@ describe('customer creation follows the record, not the token (owner review of #
       'Bola Ige wants 1 wig, deliver to her cousin 08039998888',
     );
 
+    expect(stubSender.lastText).toContain('raise the invoice');
     expect(stubSender.lastText).not.toContain('same customer');
     expect((await footprint(business.id)).customers).toBe(1);
     expect(await identitiesOf(business.id)).toEqual([]);
@@ -190,6 +196,10 @@ describe('customer creation follows the record, not the token (owner review of #
     const known = await deps.gateway.tokenise(business.id, 'call 08039998888');
     const token = [...known.tokens.keys()].find((t) => t.startsWith('CUSTOMER_'))!;
     await invoiceTo(business.id, token);
+    /* A second open invoice, another customer's: a handler that dropped the phone's token would
+     * not know which to pay, or would pay the wrong one (CodeRabbit). */
+    const bola = await deps.gateway.resolveMention(business.id, 'Bola Ige');
+    await invoiceTo(business.id, bola.token);
     const before = await footprint(business.id);
 
     await say('wamid.S3', payment({ kind: 'token', token }), '08039998888 paid 20k cash');
@@ -200,6 +210,13 @@ describe('customer creation follows the record, not the token (owner review of #
       customers: before.customers,
       payments: before.payments + 1,
     });
+    const paid = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ token: string }>(sql`
+        SELECT i.snapshot_json ->> 'customerToken' AS token
+          FROM payment_allocations a JOIN invoices i ON i.id = a.invoice_id
+         WHERE i.business_id = ${business.id}::uuid`),
+    );
+    expect([...paid].map((r) => r.token)).toEqual([token]);
   });
 
   it('a payment from an unknown phone becomes that one customer, never two', async () => {
@@ -233,15 +250,22 @@ describe('customer creation follows the record, not the token (owner review of #
     expect(await footprint(business.id)).toMatchObject({ customers: 1, invoices: 1 });
     const [row] = [
       ...(await withBusiness(db, business.id, (tx) =>
-        tx.execute<{ token: string; due: string }>(
-          sql`SELECT snapshot_json ->> 'customerToken' AS token, balance_due_k::text AS due
-                FROM invoices WHERE business_id = ${business.id}::uuid`,
+        tx.execute<{ token: string; due: string; linked: boolean }>(
+          sql`SELECT i.snapshot_json ->> 'customerToken' AS token, i.balance_due_k::text AS due,
+                     (i.customer_id = ci.customer_id AND c.token = i.snapshot_json ->> 'customerToken')
+                       AS linked
+                FROM invoices i
+                JOIN customer_identities ci ON ci.business_id = i.business_id AND ci.facet = 'email'
+                JOIN customers c ON c.id = ci.customer_id
+               WHERE i.business_id = ${business.id}::uuid`,
         ),
       )),
     ];
     expect(row?.token).toMatch(/^CUSTOMER_[0-9A-Z]{3,}$/);
     expect(row?.token).not.toMatch(/^CUSTOMER_U/);
     expect(row?.due).toBe('10000000');
+    // Linked to the customer that email became, not only stamped with a token-shaped value.
+    expect(row?.linked).toBe(true);
     expect(await plaintextIn(business.id, ['ada.obi@example.com', 'CUSTOMER_U'])).toEqual([]);
   });
 

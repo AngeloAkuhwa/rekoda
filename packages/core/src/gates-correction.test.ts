@@ -28,6 +28,9 @@ describe('a correction clear enough to keep the draft customer (clearlyCorrects,
     'actually, sold 2 bags for 20k',
     'Not paid yet, sold 2 bags for 20k',
     'sorry, Bola bought 2 shoes',
+    'Sold 2 bags for 20k not 2 days ago',
+    'sold 5 bags, not 2 days late',
+    'sold 3 bags at 10k each, not 2 paid',
     '   ',
   ])('%j does not', (text) => {
     expect(clearlyCorrects(text)).toBe(false);

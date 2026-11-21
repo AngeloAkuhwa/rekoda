@@ -375,7 +375,7 @@ describe("the plan's own example, end to end", () => {
     await send('no, 4 not 3', 'wamid.FIX');
     expect(stubSender.lastText).toContain('replaced the earlier version');
     expect(stubSender.lastText).toContain('Total: ₦200,000');
-    expect(stubSender.lastText).toContain('Ada');
+    expect(stubSender.lastText).toContain('The same customer as before');
 
     await send('yes', 'wamid.YES');
 

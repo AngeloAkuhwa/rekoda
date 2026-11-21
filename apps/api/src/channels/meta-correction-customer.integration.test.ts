@@ -97,8 +97,8 @@ describe('CG5: a correction keeps the customer of the draft it corrects', () => 
     await send('No, 4 not 3', 'wamid.C1-FIX');
     expect(stubSender.lastText).toContain('replaced the earlier version');
     expect(stubSender.lastText).toContain('Total: ₦200,000');
-    // The preview names the customer from the trusted draft, read back for the merchant.
-    expect(stubSender.lastText).toContain('Ada');
+    // The customer comes from the trusted draft; nothing is decrypted to name them (R12).
+    expect(stubSender.lastText).toContain('The same customer as before');
     expect(stubSender.lastText).not.toContain('CUSTOMER_');
 
     const rows = await drafts(business.id);
@@ -407,6 +407,73 @@ describe('CG5: a correction keeps the customer of the draft it corrects', () => 
     expect(stubSender.lastText).toContain('I could not tell which customer');
     const sales = (await drafts(business.id)).filter((r) => r.intent === 'RecordSale');
     expect(sales.map((r) => r.state)).toEqual(['pending']);
+  });
+
+  it("another member's nameless correction never replaces an invoice-only payment preview", async () => {
+    const { business } = await seedOwner();
+    const member = await identity.upsertUserByPhone(db, `+${MEMBER}`);
+    await identity.addMembership(db, business.id, member.id, 'delegate');
+    stubTransport.replyWith({ ...SALE, reportedPayment: 0 });
+    await send('Ada bought 3 wigs for 150k', 'wamid.C17-SA');
+    await send('yes', 'wamid.C17-SA-YES');
+    const [invoice] = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ invoice_number: string }>(
+        sql`SELECT invoice_number FROM invoices WHERE business_id = ${business.id}::uuid`,
+      ),
+    );
+    const pay = (amount: number, documentRef: string | null) => ({
+      intent: 'RecordPayment',
+      customer: NAMELESS,
+      amount,
+      relativeAmount: null,
+      documentRef,
+      paymentMethod: 'cash',
+    });
+    stubTransport.replyWith(pay(50_000, invoice!.invoice_number));
+    await send(`${invoice!.invoice_number} paid 50k`, 'wamid.C17-PAY');
+    expect(stubSender.lastText).toContain(`Payment on ${invoice!.invoice_number}`);
+
+    stubTransport.replyWith(pay(60_000, null));
+    await send('no, 60k not 50k', 'wamid.C17-FIX', MEMBER);
+    const payments = (await drafts(business.id)).filter((r) => r.intent === 'RecordPayment');
+    expect(payments.map((r) => r.state)).toEqual(['pending']);
+  });
+
+  it('a clarification still waiting counts as a second draft, so the correction is asked about', async () => {
+    const { business } = await seedOwner();
+    stubTransport.replyWith(SALE);
+    await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.C18-SALE');
+    stubTransport.replyWith({ intent: 'Unclear', clarification: 'Which bags?' });
+    await send('and the bags', 'wamid.C18-Q');
+    stubTransport.replyWith(FOUR);
+    await send('No, 4 not 3', 'wamid.C18-FIX');
+    expect(stubSender.lastText).toContain('I could not tell which customer');
+    const sales = (await drafts(business.id)).filter((r) => r.intent === 'RecordSale');
+    expect(sales.map((r) => r.state)).toEqual(['pending']);
+  });
+
+  it('an expired preview the sweep has not reached does not count as a second draft', async () => {
+    const { business, ada } = await seedOwner();
+    stubTransport.replyWith({
+      intent: 'RecordExpense',
+      description: 'diesel',
+      amount: 12_000,
+      category: 'fuel',
+      paymentMethod: 'cash',
+    });
+    await send('diesel 12k cash', 'wamid.C19-EXP');
+    stubTransport.replyWith(SALE);
+    await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.C19-SALE');
+    // The expense's window closes after the sale arrived, so no sweep has marked it yet.
+    await withBusiness(db, business.id, (tx) =>
+      tx.execute(sql`UPDATE command_drafts SET expires_at = clock_timestamp() - interval '1 second'
+                      WHERE business_id = ${business.id}::uuid AND intent = 'RecordExpense'`),
+    );
+    stubTransport.replyWith(FOUR);
+    await send('No, 4 not 3', 'wamid.C19-FIX');
+    expect(stubSender.lastText).toContain('replaced the earlier version');
+    const sales = (await drafts(business.id)).filter((r) => r.intent === 'RecordSale');
+    expect(sales.at(-1)?.customer).toEqual({ kind: 'token', token: ada.token });
   });
 
   it('a token the model wrote is still refused on a correction (G-137)', async () => {

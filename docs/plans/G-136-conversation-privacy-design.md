@@ -143,8 +143,9 @@ a token not in `tokens.displays` gets the following treatment.
     intent, the requesting member's own (`requestedBy`), with no question since (`hasReadsAfter`), and
     names a customer this business holds (`customerIdForToken`, under RLS);
   - a payment correction also keeps the draft's invoice reference when it gives none;
-  - the customer's stored name is decrypted only into this reply's token table, for the send boundary
-    (`noteInheritedCustomer`): never to a model, never stored (the reply body is a placeholder);
+  - the preview names the inherited customer as "The same customer as before": nothing is decrypted
+    in the job, which R12 (`docs/safety-review.md`) forbids (`noteInheritedCustomer`; CodeRabbit on
+    #437), and the inherited token is allowed only in the record's `customer`, never in its words;
   - the draft is then superseded by the ordinary CG5 path and the new preview needs its own "yes".
     With two or more drafts waiting, or a draft whose customer token no longer resolves, the correction
     is asked about. A correction the model reads as `Unclear` (the likeliest reading of a bare
@@ -471,8 +472,12 @@ built. The proposal, verified against HEAD, for the owner to approve or change:
    and a page size refused outside 1 to 200 (22023), `REVOKE ALL … FROM PUBLIC, rekoda_app,
 rekoda_settlement, rekoda_billing_operator`, `GRANT EXECUTE … TO rekoda_worker`.
 5. **Output.** `business_id` only, distinct, never an event id, payload, error or time.
-6. **Mutation.** Per business, `eraseFinishedMessagePayloads` with a new `finishedBefore` option, in
-   short per-pass transactions under `withBusiness()`, with a counts-only audit row.
+6. **Mutation.** Per business, `eraseFinishedMessagePayloads` with a new `finishedBefore` option and
+   the deploy cutoff as a `created_at` filter on every pass, so the mutation applies exactly the
+   discovery's exclusions (a business that qualifies through one row never has a pre-cutoff or, under
+   Option A, a flagged row erased), in short per-pass transactions under `withBusiness()`, with a
+   counts-only audit row. Boundary tests prove each excluded row keeps its payload (CodeRabbit on
+   #437).
 7. **Cutoff.** `processed_at < now() - 30 days`, never `created_at`.
 8. **Idempotency.** Erased rows hold `{"erased": true}` and are excluded by the predicate; a re-run
    erases nothing.
@@ -498,6 +503,9 @@ sweep, for events with no business), so erasing a finished one never blocks a re
 - **Option A (recommended):** exclude `error IS NOT NULL AND resolved_at IS NULL` exactly, and fix
   separately the handler that writes outcome notes into `error`, after which the exclusion means what it
   says. Safe now; the Integrate payloads wait for that fix.
+  Option A for R3 would not change R4: the earlier ruling that `error` is no reason to keep a payload
+  (`events.ts`, owner review of `3a60b0f`) was for the merchant's own DELETE MY DATA request and stands
+  there. The owner decides whether a time-based purge should be more conservative than a request.
 - **Option B:** exclude only unprocessed rows, as R4 does. Bounds every finished payload at 30 days now;
   an operator flag on a finished message no longer keeps its payload.
 
