@@ -79,6 +79,23 @@ describe('a record names a customer only by a token this message was issued (G-1
     expect(await footprint(business.id)).toEqual(before);
   });
 
+  /* A recorded name in the message is tokenised before the model reads it, so a mention the
+   * model writes that finds a recorded customer was not typed: refused like an unissued token
+   * (CodeRabbit on #437 at ebeeadb). */
+  it('a sale naming a recorded customer the message never typed is not drafted', async () => {
+    const business = await seedMerchant();
+    const bola = await deps.gateway.resolveMention(business.id, 'Bola Ige');
+    await invoiceTo(business.id, bola.token);
+    const before = await footprint(business.id);
+
+    await say('wamid.T2m', payment({ kind: 'mention', mention: 'Bola Ige' }), 'she paid 20k');
+
+    expect(stubSender.lastText).toContain('could not tell which customer');
+    expect(await footprint(business.id)).toEqual(before);
+    await plain('wamid.T2m-yes', 'yes');
+    expect(await footprint(business.id)).toEqual(before);
+  });
+
   it('a known customer typed in the message still previews and confirms', async () => {
     const business = await seedMerchant();
     const ada = await deps.gateway.resolveMention(business.id, 'Ada Obi');

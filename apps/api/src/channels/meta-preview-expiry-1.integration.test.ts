@@ -450,7 +450,7 @@ describe('a preview has a time limit (G-23)', () => {
         items: [{ name: 'Ankara bale', quantity: 2 }],
         note: null,
       },
-      'please I want 2 ankara bale',
+      'Ada: please I want 2 ankara bale',
     );
     expect(stubSender.lastText).toContain('Total: ₦17,000');
     await lapse(business.id);

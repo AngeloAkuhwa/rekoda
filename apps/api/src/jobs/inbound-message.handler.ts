@@ -2141,7 +2141,7 @@ async function deterministicReply(
             actor: 'system',
             ingress: 'CHAT',
             consequence:
-              'Every customer contact detail for this business will be permanently deleted.',
+              'Every customer contact detail for this business, and the stored copies of its chat messages, will be permanently deleted.',
             reason: 'merchant asked by exact phrase, twice',
           }));
         const run = await deps.commandBus.run(
@@ -2181,7 +2181,7 @@ async function deterministicReply(
           actor: 'system',
           ingress: 'CHAT',
           consequence:
-            'Every customer contact detail for this business will be permanently deleted.',
+            'Every customer contact detail for this business, and the stored copies of its chat messages, will be permanently deleted.',
           reason: 'merchant asked by exact phrase',
         });
       }
@@ -5381,6 +5381,23 @@ function draftVocabulary(command: Record<string, unknown>): string[] {
   return out;
 }
 
+/** Whether `name` appears in `text` as whole words, ignoring case, spacing and composition. */
+function typedIn(text: string, name: string): boolean {
+  const fold = (v: string) => v.normalize('NFKC').toLocaleLowerCase().replace(/\s+/gu, ' ').trim();
+  const needle = fold(name);
+  if (!needle) return false;
+  const hay = fold(text);
+  let from = 0;
+  for (;;) {
+    const at = hay.indexOf(needle, from);
+    if (at < 0) return false;
+    const before = at === 0 ? '' : hay[at - 1]!;
+    const after = hay[at + needle.length] ?? '';
+    if (!/[\p{L}\p{N}]/u.test(before) && !/[\p{L}\p{N}]/u.test(after)) return true;
+    from = at + 1;
+  }
+}
+
 function customerTokenOf(command: Record<string, unknown>): string | null {
   const customer = command['customer'] as { kind?: string; token?: string } | undefined;
   return customer?.kind === 'token' ? (customer.token ?? null) : null;
@@ -6010,6 +6027,21 @@ async function interpretedReply(
   }
   if ('customer' in command && command.customer && command.customer.kind === 'mention') {
     const mention = command.customer.mention;
+    /* A recorded name the merchant typed was tokenised before the model read the message, so a
+     * mention that finds a recorded customer and is nowhere in the merchant's words is the
+     * model's, not theirs: refused like an unissued token (G-137; CodeRabbit on #437 at
+     * ebeeadb). A photo's names are on the page, never in these words, and are left to the
+     * preview. A new name keeps the vault path (ADR 0005 case 4). */
+    if (!fromDocument && !typedIn(rawText, mention)) {
+      const recorded = await deps.gateway.findMention(businessId, mention);
+      /* Unless this message was issued that customer's token, by a phone or an email of theirs
+       * ("sold 3 wigs to 0803…" composes with their name, G-60). */
+      if (recorded && !tokens.displays.has(recorded.token)) {
+        authorisationLog.warn(`${command.intent} named a recorded customer the message did not`);
+        await refundMessage(tx, businessId, eventId, period);
+        return refusedAs(replies.customerNotRecognised());
+      }
+    }
     const named = await deps.gateway.resolveMention(businessId, mention);
     /* A name that is new beside a customer the message already named (a
      * storefront buyer's phone) may be one person: asked, never joined

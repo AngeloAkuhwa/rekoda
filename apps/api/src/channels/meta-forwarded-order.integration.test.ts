@@ -86,7 +86,7 @@ describe('a forwarded order', () => {
 
   const THE_ORDER = {
     intent: 'RecordOrder',
-    /* The forwarded message names Ada; she is recorded as CUSTOMER_7K2 (G-137: a
+    /* The forwarded message names Ada ("Ada: ..."); she is recorded as CUSTOMER_7K2 (G-137: a
      * stubbed model names a customer by mention or by a token the message carried). */
     customer: { kind: 'mention', mention: 'Ada' },
     items: [{ name: 'Ankara bale', quantity: 2 }],
@@ -98,7 +98,7 @@ describe('a forwarded order', () => {
     await seedCatalogue(business.id);
     stubTransport.replyWith(THE_ORDER);
 
-    await send('please I want 2 ankara bale', 'wamid.ORDER');
+    await send('Ada: please I want 2 ankara bale', 'wamid.ORDER');
 
     /* Priced by Rekoda, from the merchant's own list. Nothing the customer
      * or the model said about money reached this figure. */
@@ -153,7 +153,7 @@ describe('a forwarded order', () => {
     await seedCatalogue(business.id);
     stubTransport.replyWith(THE_ORDER);
 
-    await send('please I want 2 ankara bale, deliver to Lekki on Friday', 'wamid.ORDERNOTE');
+    await send('Ada: please I want 2 ankara bale, deliver to Lekki on Friday', 'wamid.ORDERNOTE');
 
     // Said once, to the merchant, from the LIVE command.
     expect(stubSender.lastText).toContain('They also said: deliver to Lekki on Friday');
@@ -180,7 +180,7 @@ describe('a forwarded order', () => {
     await seedCatalogue(business.id);
     stubTransport.replyWith(THE_ORDER);
 
-    await send('please I want 2 ankara bale', 'wamid.METER');
+    await send('Ada: please I want 2 ankara bale', 'wamid.METER');
     await send('yes', 'wamid.METERYES');
 
     const rows = await withBusiness(db, business.id, (tx) =>
@@ -203,7 +203,7 @@ describe('a forwarded order', () => {
 
     /* The quote itself is free and still works: refusing to PRICE would
      * punish the merchant before they even hit the gate. */
-    await send('please I want 2 ankara bale', 'wamid.CHATORDER');
+    await send('Ada: please I want 2 ankara bale', 'wamid.CHATORDER');
     expect(stubSender.lastText).toContain('Total: ₦17,000');
 
     await send('yes', 'wamid.CHATORDERYES');
@@ -249,7 +249,7 @@ describe('a forwarded order', () => {
     }
 
     stubTransport.replyWith(THE_ORDER);
-    await send('please I want 2 ankara bale', 'wamid.ORDERCAP');
+    await send('Ada: please I want 2 ankara bale', 'wamid.ORDERCAP');
     await send('yes', 'wamid.ORDERCAPYES');
 
     expect(stubSender.lastText).toContain(`You have used all ${orderAllowance} orders`);
@@ -279,7 +279,7 @@ describe('a forwarded order', () => {
       ],
     });
 
-    await send('they want a bale and 2 head ties', 'wamid.UNPRICED');
+    await send('Ada: they want a bale and 2 head ties', 'wamid.UNPRICED');
     expect(stubSender.lastText).toContain('I do not have a price for Head tie');
     /* And nothing was quoted, so there is nothing to say yes to. */
     expect(stubSender.lastText).not.toContain('Total:');
@@ -307,7 +307,7 @@ describe('a forwarded order', () => {
     });
     stubTransport.replyWith({ ...THE_ORDER, items: [{ name: 'Zobo drink', quantity: 4 }] });
 
-    await send('customer wants 4 zobo', 'wamid.PASTCAP');
+    await send('Ada: customer wants 4 zobo', 'wamid.PASTCAP');
 
     expect(stubSender.lastText).toContain('4 × Zobo drink at ₦500');
     expect(stubSender.lastText).toContain('Total: ₦2,000');
@@ -324,7 +324,7 @@ describe('a forwarded order', () => {
     await seedCatalogue(business.id);
     stubTransport.replyWith({ ...THE_ORDER, items: [{ name: 'gele', quantity: 1 }] });
 
-    await send('customer wants a gele', 'wamid.UNKNOWN');
+    await send('Ada: customer wants a gele', 'wamid.UNKNOWN');
     expect(stubSender.lastText).toContain('I cannot find gele in what you sell');
     expect(await invoiceCount(business.id)).toBe(0);
   });
@@ -340,7 +340,7 @@ describe('a forwarded order', () => {
     await seedCatalogue(business.id);
     stubTransport.replyWith(THE_ORDER);
 
-    await send('please I want 2 ankara bale', 'wamid.STALE');
+    await send('Ada: please I want 2 ankara bale', 'wamid.STALE');
     expect(stubSender.lastText).toContain('Total: ₦17,000');
 
     await withBusiness(db, business.id, async (tx) => {
@@ -390,7 +390,7 @@ describe('a forwarded order', () => {
     });
 
     stubTransport.replyWith(THE_ORDER);
-    await send('please I want 2 ankara bale', 'wamid.LINK');
+    await send('Ada: please I want 2 ankara bale', 'wamid.LINK');
     await send('yes', 'wamid.LINKYES');
 
     expect(stubSender.lastText).toMatch(/Payment link for INV-\d{4}-000001: ₦17,000 outstanding/);
@@ -405,7 +405,7 @@ describe('a forwarded order', () => {
     await seedCatalogue(business.id);
     stubTransport.replyWith(THE_ORDER);
 
-    await send('please I want 2 ankara bale', 'wamid.NOLINK');
+    await send('Ada: please I want 2 ankara bale', 'wamid.NOLINK');
     await send('yes', 'wamid.NOLINKYES');
 
     /* The last thing they heard is the confirmation itself, not an apology. */
@@ -418,7 +418,7 @@ describe('a forwarded order', () => {
     await seedCatalogue(business.id);
     stubTransport.replyWith(THE_ORDER);
 
-    await send('please I want 2 ankara bale', 'wamid.LINKED');
+    await send('Ada: please I want 2 ankara bale', 'wamid.LINKED');
     await send('yes', 'wamid.LINKEDYES');
 
     const [order] = (
@@ -435,7 +435,7 @@ describe('a forwarded order', () => {
     await seedCatalogue(business.id);
     stubTransport.replyWith(THE_ORDER);
 
-    await send('please I want 2 ankara bale', 'wamid.DUE');
+    await send('Ada: please I want 2 ankara bale', 'wamid.DUE');
     await send('yes', 'wamid.DUEYES');
 
     const invoices = await withBusiness(db, business.id, (tx) =>

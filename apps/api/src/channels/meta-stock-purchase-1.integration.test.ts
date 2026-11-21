@@ -502,7 +502,7 @@ describe('stock arriving with a purchase', () => {
         deliveryFee: null,
         dueDescription: null,
       },
-      'sold 3 crates of ankara for 27k',
+      'sold Ada 3 crates of ankara for 27k',
     );
     await plain('wamid.C4', 'yes');
 

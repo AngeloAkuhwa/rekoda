@@ -49,7 +49,7 @@ describe('stock arriving with a purchase', () => {
         deliveryFee: null,
         dueDescription: null,
       },
-      'sold 2 head ties for 5k',
+      'sold Ada 2 head ties for 5k',
     );
     await plain('wamid.C8', 'yes');
 
