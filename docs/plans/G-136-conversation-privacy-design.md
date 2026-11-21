@@ -678,8 +678,11 @@ webhook (§1.2), or any time limit on the encrypted originals (R3 is not approve
 13. **An earlier message still retrying.** A message sent between the preview and the correction whose
     job failed once and is backing off has no conversation row yet, so `hasInboundBetween` cannot see
     it. The correction therefore also checks the queue (`hasEarlierLiveJobByArrival`): while any earlier
-    inbound merchant message of the business is pending or running, the correction is asked about and
-    changes nothing. It counts the business's merchant-thread messages only: a customer's message on the
+    inbound merchant message of the business is pending or running, the correction never keeps the
+    customer. Since OD-60 (`6c327e1`, and CodeRabbit on #437 at `1db1a0a`) it still supersedes the
+    preview it corrects, so a "yes" retried after it books nothing: a correction that keeps no customer
+    is previewed on its own, and a nameless correction of a customer's preview withdraws that preview
+    and asks for the record with its customer. It counts the business's merchant-thread messages only: a customer's message on the
     Integrate thread is a `customer.message` job, a different kind, and never counts. Tests in
     `meta-correction-ambiguous.integration.test.ts`, RED first: a message backing off, and one running
     in another lane. Another business's queue never counts, and a message that died in between retires
