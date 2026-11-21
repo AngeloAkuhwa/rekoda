@@ -3,12 +3,11 @@
  * Beside `gates.test.ts`, which is over the layout limit and may not grow.
  */
 import { describe, expect, it } from 'vitest';
-import { clearlyCorrects, looksLikeCorrection } from './gates.js';
+import { clearlyCorrects, correctionWordsExplained, looksLikeCorrection } from './gates.js';
 
 describe('a correction clear enough to keep the draft customer (clearlyCorrects, OWN-100)', () => {
   it.each([
     'No, 4 not 3',
-    'No, 4 for Ada, not 3',
     'sorry, 60k each not 50k',
     'no, 60k not 50k',
     '4 not 3',
@@ -160,6 +159,34 @@ describe('a correction clear enough to keep the draft customer (clearlyCorrects,
     (text) => {
       expect(looksLikeCorrection(text, true)).toBe(true);
       expect(looksLikeCorrection(text, false)).toBe(false);
+    },
+  );
+});
+
+describe('a correction that names someone is never clear enough to inherit (OWN-100)', () => {
+  /* "for <word>" may be a person or an item; asked about (CodeRabbit on #437 at ebeeadb). */
+  it.each(['No, 4 for Ada, not 3', 'No, 4 for Tunde, not 3'])('%j is not clearlyCorrects', (t) => {
+    expect(clearlyCorrects(t)).toBe(false);
+  });
+
+  const WIGS = ['wig'];
+  it.each([
+    'No, 4 not 3',
+    'make it 4 wigs',
+    '4 wigs instead of 3',
+    'sorry, 60k each not 50k',
+    'make it 4pcs',
+    'make it N60k',
+    'the price should be 50k',
+    'change the delivery fee to 2k',
+  ])('%j holds only words the sale explains', (t) => {
+    expect(correctionWordsExplained(t, WIGS)).toBe(true);
+  });
+
+  it.each(['make it 5 Tunde', '4 Bola not 3', 'make it 5 shoes', 'no, 4 sunglasses not 3'])(
+    '%j holds a word the sale does not, which may be a person',
+    (t) => {
+      expect(correctionWordsExplained(t, WIGS)).toBe(false);
     },
   );
 });

@@ -10,7 +10,7 @@
  * (owner review of #437 at 49f2586).
  */
 import { describe, expect, it } from 'vitest';
-import { identity, sql, withBusiness } from '@rekoda/db';
+import { identity, settleRepo, sql, withBusiness } from '@rekoda/db';
 import { buildRunner } from '../jobs/jobs.module.js';
 import {
   db,
@@ -205,5 +205,95 @@ describe("CG5: the owner's correction forms keep the customer end to end", () =>
     const rows = await sales(business.id);
     expect(rows.map((r) => r.state)).toEqual(['superseded', 'pending']);
     expect(rows[1]?.customer).toEqual({ kind: 'token', token: ada.token });
+  });
+});
+
+/**
+ * A correction that names somebody in its own words never takes the waiting draft's customer,
+ * whatever the model returned for `customer` (OWN-100: "the correction names no other customer";
+ * CodeRabbit and the independent review of #437 at ebeeadb). The preview would otherwise say
+ * "The same customer as before" over a sale to Ada the merchant meant for Bola.
+ */
+describe('CG5: a correction that names somebody, read by the model as naming nobody', () => {
+  it.each([
+    /* Bola is recorded: the gateway issued this message her token. */
+    'No, 4 for Bola, not 3',
+    '4 Bola not 3',
+    /* Tunde is recorded nowhere: the one free word is no word of the sale. */
+    'No, 4 for Tunde, not 3',
+    'make it 5 Tunde',
+  ])('%j is asked about and the preview keeps Ada', async (text) => {
+    const { business, ada } = await seedOwner();
+    await knownCustomer(business.id, 'Bola', 'CUSTOMER_9B1');
+    stubTransport.replyWith(SALE);
+    await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.N-SALE');
+    stubTransport.replyWith(FOUR);
+    await send(text, 'wamid.N-FIX');
+    expect(stubSender.lastText).toContain('I could not tell which customer');
+    expect(stubSender.lastText).not.toContain('The same customer as before');
+    await expectAdaUntouched(business.id, ada.token);
+  });
+});
+
+/**
+ * A payment correction that inherits Ada keeps the invoice its preview showed: an invoice number
+ * the model wrote that the draft did not carry cannot have come from "no, 60k not 50k", and it may
+ * be another customer's (independent review of #437 at ebeeadb). Asked about, nothing booked.
+ */
+describe('CG5: a payment correction whose reading names another invoice', () => {
+  it('is asked about, and neither invoice is paid', async () => {
+    const { business, ada } = await seedOwner();
+    const bola = await knownCustomer(business.id, 'Bola', 'CUSTOMER_9B1');
+    stubTransport.replyWith({ ...SALE, reportedPayment: 0 });
+    await send('Ada bought 3 wigs for 150k', 'wamid.P-SA');
+    await send('yes', 'wamid.P-SA-YES');
+    stubTransport.replyWith({
+      ...SALE,
+      customer: { kind: 'token', token: bola.token },
+      reportedPayment: 0,
+    });
+    await send('Bola bought 3 wigs for 150k', 'wamid.P-SB');
+    await send('yes', 'wamid.P-SB-YES');
+    const numbers = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ invoice_number: string; customer_id: string }>(
+        sql`SELECT invoice_number, customer_id FROM invoices
+             WHERE business_id = ${business.id}::uuid ORDER BY invoice_number`,
+      ),
+    );
+    const adaInvoice = numbers.find((r) => r.customer_id === ada.id)!.invoice_number;
+    const bolaInvoice = numbers.find((r) => r.customer_id === bola.id)!.invoice_number;
+
+    const PAY = {
+      intent: 'RecordPayment',
+      customer: { kind: 'token', token: ada.token },
+      amount: 50_000,
+      relativeAmount: null,
+      documentRef: adaInvoice,
+      paymentMethod: 'cash',
+    };
+    stubTransport.replyWith(PAY);
+    await send(`Ada paid 50k on ${adaInvoice}`, 'wamid.P-PAY');
+    expect(stubSender.lastText).toContain(`Payment on ${adaInvoice}`);
+
+    stubTransport.replyWith({
+      ...PAY,
+      customer: { kind: 'none' },
+      amount: 60_000,
+      documentRef: bolaInvoice,
+    });
+    await send('no, 60k not 50k', 'wamid.P-FIX');
+    expect(stubSender.lastText).toContain('I could not tell which customer');
+    await send('yes', 'wamid.P-YES');
+    const { rows: payments } = await withBusiness(db, business.id, (tx) =>
+      settleRepo.paymentsFor(tx),
+    );
+    expect(payments.every((p) => p.amountK !== 6_000_000)).toBe(true);
+    const owed = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ balance_due_k: string }>(
+        sql`SELECT balance_due_k::text FROM invoices
+             WHERE business_id = ${business.id}::uuid AND invoice_number = ${bolaInvoice}`,
+      ),
+    );
+    expect(owed[0]?.balance_due_k).toBe('15000000');
   });
 });

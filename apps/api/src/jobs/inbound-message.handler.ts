@@ -14,6 +14,7 @@ import {
   isSaleSource,
   looksLikeCorrection,
   clearlyCorrects,
+  correctionWordsExplained,
   orderPreview,
   orderQuestion,
   postCostOfSale,
@@ -5360,6 +5361,26 @@ async function confirmPayment(
   );
 }
 
+/**
+ * The words a draft holds about what it records (items, products, descriptions), never who: its
+ * `customer` is skipped, and so is any token. What a correction's one free word may be.
+ */
+function draftVocabulary(command: Record<string, unknown>): string[] {
+  const out: string[] = [];
+  const walk = (value: unknown, key: string | null): void => {
+    if (key === 'customer' || key === 'documentRef') return;
+    if (typeof value === 'string') {
+      if (!/\b[A-Z]+_[0-9A-Z]+\b/u.test(value)) out.push(value);
+    } else if (Array.isArray(value)) {
+      for (const v of value) walk(v, null);
+    } else if (value && typeof value === 'object') {
+      for (const [k, v] of Object.entries(value)) walk(v, k);
+    }
+  };
+  walk(command, null);
+  return out;
+}
+
 function customerTokenOf(command: Record<string, unknown>): string | null {
   const customer = command['customer'] as { kind?: string; token?: string } | undefined;
   return customer?.kind === 'token' ? (customer.token ?? null) : null;
@@ -5409,6 +5430,8 @@ async function correctionInheritance(
     messageId: string;
     /** This correction's own job; null only where no job runs it. */
     jobId: string | null;
+    /** Whether the gateway issued this message any customer token, recorded or provisional. */
+    namesSomeone: boolean;
   },
 ): Promise<Inherited> {
   const none = { kind: 'none' } as const;
@@ -5461,8 +5484,21 @@ async function correctionInheritance(
   /* The draft named nobody: nothing to carry, nothing to ask. */
   if (!customerId && !documentRef) return none;
 
+  /* The model's own invoice number on a payment correction that names nobody cannot have come
+   * from its words ("no, 60k not 50k"): only the draft's own, or none, is kept (independent review
+   * of #437 at ebeeadb). Another one may be another customer's invoice. */
+  const modelRef =
+    command.intent === 'RecordPayment' && typeof command.documentRef === 'string'
+      ? command.documentRef
+      : null;
   const eligible =
     clear &&
+    /* Somebody named in the correction's own words, recorded (a token) or not (a word the draft
+     * does not hold), is never overridden by the draft's customer (OWN-100; CodeRabbit and the
+     * independent review of #437 at ebeeadb). */
+    !input.namesSomeone &&
+    correctionWordsExplained(input.rawText, draftVocabulary(stored)) &&
+    (modelRef === null || modelRef.length === 0 || modelRef === documentRef) &&
     !refusalInFront &&
     target.intent === command.intent &&
     target.previewed === true &&
@@ -5800,6 +5836,7 @@ async function interpretedReply(
       fromDocument,
       messageId: conversationMessageId,
       jobId,
+      namesSomeone: tokens.displays.size > 0 || (tokens.provisional?.size ?? 0) > 0,
     });
     if (carried.kind === 'unclear') {
       await refundMessage(tx, businessId, eventId, period);

@@ -429,7 +429,9 @@ const CLEAR_CORRECTION = new RegExp(
   String.raw`^${OPENER}(?:` +
     String.raw`${SUBJECT}(?:should\s+be|make\s+it|change\s+(?:it\s+|(?:the\s+)?${FIELD}\s+)?to)\s+${AMOUNT}(?:,?\s+not\s+${AMOUNT})?` +
     String.raw`|${AMOUNT}\s+(?:instead\s+of|rather\s+than)\s+${AMOUNT}` +
-    String.raw`|(?:(?:it\s+was|it'?s|it\s+is|(?:she|he|they)\s+paid|paid)\s+)?${AMOUNT}(?:\s+for\s+[a-z]+)?,?\s+not\s+${AMOUNT}` +
+    /* No "for <word>": "4 for Bola, not 3" names someone, and the grammar cannot tell a name from
+     * an item ("4 for shoes"), so it is asked about (CodeRabbit on #437 at ebeeadb). */
+    String.raw`|(?:(?:it\s+was|it'?s|it\s+is|(?:she|he|they)\s+paid|paid)\s+)?${AMOUNT},?\s+not\s+${AMOUNT}` +
     String.raw`)\s*[.!]*$`,
   'i',
 );
@@ -441,6 +443,120 @@ export function clearlyCorrects(text: string): boolean {
   const trimmed = text.trim();
   if (!trimmed || trimmed.length > MAX_CORRECTION_LENGTH) return false;
   return CLEAR_CORRECTION.test(trimmed);
+}
+
+/* The words a clear correction is built from, which say nothing about who or what. */
+const STRUCTURE_WORDS = new Set([
+  'no',
+  'noo',
+  'nooo',
+  'nope',
+  'nah',
+  'sorry',
+  'wait',
+  'actually',
+  'correction',
+  'oh',
+  'ok',
+  'okay',
+  'e',
+  'be',
+  'should',
+  'make',
+  'it',
+  'change',
+  'to',
+  'the',
+  'instead',
+  'of',
+  'rather',
+  'than',
+  'not',
+  'was',
+  'is',
+  's',
+  'she',
+  'he',
+  'they',
+  'paid',
+  'k',
+  'n',
+  'ngn',
+  'price',
+  'unit',
+  'total',
+  'amount',
+  'quantity',
+  'qty',
+  'balance',
+  'cost',
+  'rate',
+  'discount',
+  'delivery',
+  'fee',
+  'payment',
+]);
+/* Units and counting words a figure may carry whatever was sold ("60k each", "4pcs"). */
+const UNIT_WORDS = new Set([
+  'each',
+  'pc',
+  'pcs',
+  'piece',
+  'pieces',
+  'unit',
+  'units',
+  'item',
+  'items',
+  'naira',
+  'pack',
+  'packs',
+  'carton',
+  'cartons',
+  'dozen',
+  'kg',
+  'kgs',
+  'g',
+  'l',
+  'litre',
+  'litres',
+  'liter',
+  'liters',
+  'yard',
+  'yards',
+  'metre',
+  'metres',
+  'meter',
+  'meters',
+  'set',
+  'sets',
+  'pair',
+  'pairs',
+]);
+const WORD = /\p{L}+/gu;
+
+/**
+ * Whether every word of a clear correction is explained by the draft it corrects (CG5, OWN-100:
+ * "the correction names no other customer"). A figure may carry one word, and nothing in the
+ * grammar tells "make it 5 wigs" from "make it 5 Tunde": the word must be one of the structure
+ * words, a unit, or a word of the waiting draft itself (`vocabulary`, its items and products, no
+ * names), matched with or without a plural ending. Any other word may be a person, so the
+ * correction is asked about and inherits nobody (independent review of #437 at ebeeadb).
+ */
+export function correctionWordsExplained(text: string, vocabulary: Iterable<string>): boolean {
+  const known = new Set<string>();
+  for (const phrase of vocabulary) {
+    for (const w of phrase.toLowerCase().match(WORD) ?? []) known.add(w);
+  }
+  const explained = (word: string): boolean => {
+    if (STRUCTURE_WORDS.has(word) || UNIT_WORDS.has(word) || known.has(word)) return true;
+    for (const k of known) {
+      if (k.length < 3) continue;
+      if (word === `${k}s` || word === `${k}es` || k === `${word}s` || k === `${word}es`)
+        return true;
+    }
+    return false;
+  };
+  return (text.toLowerCase().match(WORD) ?? []).every(explained);
 }
 
 /* ── money coming IN against an invoice already issued ───────────────────── */
