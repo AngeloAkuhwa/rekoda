@@ -6106,17 +6106,17 @@ async function interpretedReply(
   }
   if ('customer' in command && command.customer && command.customer.kind === 'mention') {
     const mention = command.customer.mention;
-    /* A recorded name the merchant typed was tokenised before the model read the message, so a
-     * mention that finds a recorded customer and is nowhere in the merchant's words is the
-     * model's, not theirs: refused like an unissued token (G-137; CodeRabbit on #437 at
-     * ebeeadb). A photo's names are on the page, never in these words, and are left to the
-     * preview. A new name keeps the vault path (ADR 0005 case 4). */
+    /* A mention nowhere in the merchant's words is the model's, not theirs: refused like an
+     * unissued token, and whether or not the vault holds that name (G-137; OD-62(n), CodeRabbit
+     * on #437 at ebeeadb and 58dd68b). A recorded name the merchant typed was tokenised before
+     * the model read the message; a new one they typed keeps the vault path (ADR 0005 case 4). A
+     * photo's names are on the page, never in these words, and are left to the preview. */
     if (!fromDocument && !typedIn(rawText, mention)) {
       const recorded = await deps.gateway.findMention(businessId, mention);
-      /* Unless this message was issued that customer's token, by a phone or an email of theirs
-       * ("sold 3 wigs to 0803…" composes with their name, G-60). */
-      if (recorded && !tokens.displays.has(recorded.token)) {
-        authorisationLog.warn(`${command.intent} named a recorded customer the message did not`);
+      /* Unless this message was issued that recorded customer's token, by a phone or an email of
+       * theirs ("sold 3 wigs to 0803…" composes with their name, G-60). */
+      if (!recorded || !tokens.displays.has(recorded.token)) {
+        authorisationLog.warn(`${command.intent} named a customer the message did not`);
         await refundMessage(tx, businessId, eventId, period);
         return refusedAs(replies.customerNotRecognised());
       }

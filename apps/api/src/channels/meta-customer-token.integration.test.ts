@@ -113,6 +113,43 @@ describe('a record names a customer only by a token this message was issued (G-1
     expect(await footprint(business.id)).toEqual(before);
   });
 
+  /* OD-62(n): the guard never depended on the vault. A name nobody recorded that the merchant
+   * never typed is the model's, so it creates nobody and drafts nothing (CodeRabbit on #437 at
+   * 58dd68b). */
+  it.each([
+    ['a sale', 'wamid.T2n-sale', 'sold 2 wigs for 100k'],
+    ['a payment', 'wamid.T2n-pay', 'she paid 20k'],
+  ])('%s naming a new customer the message never typed creates nobody', async (_, wamid, text) => {
+    const business = await seedMerchant();
+    const before = await footprint(business.id);
+    const mention = { kind: 'mention', mention: 'Bola Ige' };
+
+    await say(wamid, text === 'she paid 20k' ? payment(mention) : sale(mention), text);
+
+    expect(stubSender.lastText).toContain('could not tell which customer');
+    expect(await footprint(business.id)).toEqual(before);
+    expect(await deps.gateway.findMention(business.id, 'Bola Ige')).toBeNull();
+    await plain(`${wamid}-yes`, 'yes');
+    expect(await footprint(business.id)).toEqual(before);
+  });
+
+  it('a new customer the merchant typed is created at the sale and confirmed', async () => {
+    const business = await seedMerchant();
+    const before = await footprint(business.id);
+
+    await say(
+      'wamid.T2t',
+      sale({ kind: 'mention', mention: 'tunde bakare' }),
+      'sold Tunde Bakare 2 wigs for 100k',
+    );
+    expect(stubSender.lastText).not.toContain('could not tell which customer');
+    await plain('wamid.T2t-yes', 'yes');
+
+    const after = await footprint(business.id);
+    expect(after.invoices).toBe(before.invoices + 1);
+    expect(after.customers).toBe(before.customers + 1);
+  });
+
   it('a known customer typed in the message still previews and confirms', async () => {
     const business = await seedMerchant();
     const ada = await deps.gateway.resolveMention(business.id, 'Ada Obi');
