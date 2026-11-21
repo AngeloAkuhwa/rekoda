@@ -90,6 +90,30 @@ describe('customer creation follows the record, not the token (owner review of #
     expect(await plaintextIn(business.id, ['8039998888', 'CUSTOMER_U'])).toEqual([]);
   });
 
+  /* Two phones and a comma leave only punctuation: no "From:" line, and no supplier (CodeRabbit on
+   * #437 at ce75a9e). */
+  it('a supplier given only as two phone numbers names no supplier', async () => {
+    const business = await seedMerchant();
+    await say(
+      'wamid.S8p',
+      {
+        intent: 'RecordPurchase',
+        supplierMention: 'CUSTOMER_U01, CUSTOMER_U02',
+        description: 'cement',
+        amount: 40_000,
+        reportedPayment: 40_000,
+        paymentMethod: 'cash',
+        productMention: null,
+        quantity: null,
+        supplierReference: null,
+      },
+      'bought cement from 08039998888, 08037776666 for 40k cash',
+    );
+    expect(stubSender.lastText).not.toContain('From:');
+    await plain('wamid.S8p-yes', 'yes');
+    expect(await purchasesOf(business.id)).toEqual([{ amount_k: '4000000', supplier_id: null }]);
+  });
+
   it('suppliers known only by phone are never merged into one supplier called [phone]', async () => {
     const business = await seedMerchant();
     /* A different amount each time, so the same-purchase question (G-81) never stands in for a save. */

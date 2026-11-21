@@ -296,3 +296,43 @@ describe('a preview that never reached the merchant keeps their refusal', () => 
     expect(await footprint(business.id)).toEqual(before);
   });
 });
+
+/**
+ * A purchase question (G-61) closes the older previews it replaces, never another member's refusal
+ * (CodeRabbit on #437 at ce75a9e): the delegate's next yes is about their refusal and books nothing.
+ */
+describe("a purchase question keeps another member's refusal", () => {
+  it("the delegate's refusal stays pending and their yes books nothing", async () => {
+    const business = await seedMerchant();
+    const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+    await identity.addMembership(db, business.id, delegate.id, 'delegate');
+    await post(mediaMessage('wamid.RG1', STICKER, DELEGATE));
+    await drain();
+    await say(
+      'wamid.RG2',
+      {
+        intent: 'RecordPurchase',
+        supplierMention: 'Emeka',
+        description: '10 cartons',
+        amount: 180_000,
+        reportedPayment: 100_000,
+        paymentMethod: null,
+        productMention: null,
+        quantity: null,
+      },
+      'I bought 10 cartons for 180k from Emeka, paid 100k',
+    );
+    expect(stubSender.lastText).toContain('Was that cash or transfer?');
+    const refusals = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ state: string }>(sql`
+        SELECT state FROM command_drafts
+         WHERE business_id = ${business.id}::uuid AND command->>'refused' = 'true'`),
+    );
+    expect([...refusals].map((r) => r.state)).toEqual(['pending']);
+    const before = await footprint(business.id);
+
+    await post(messagePayload(DELEGATE, 'wamid.RG3', 'yes'));
+    await drain();
+    expect(await footprint(business.id)).toEqual(before);
+  });
+});

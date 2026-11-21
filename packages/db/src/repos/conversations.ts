@@ -1440,7 +1440,14 @@ export async function supersedeDraftsBefore(
   tx: TenantDb,
   businessId: string,
   draftId: string,
+  /* `skipRefusalsNotBy`: another member's refusal stays pending, as `supersedePendingDrafts` keeps
+   * it (CodeRabbit on #437 at ce75a9e). */
+  options: { skipRefusalsNotBy?: string | null } = {},
 ): Promise<number> {
+  const keep = options.skipRefusalsNotBy
+    ? sql`AND NOT (intent = 'Unclear' AND COALESCE(command->>'refused', '') = 'true'
+                   AND requested_by IS DISTINCT FROM ${options.skipRefusalsNotBy}::uuid)`
+    : sql``;
   const rows = await tx.execute<{ id: string }>(sql`
     UPDATE command_drafts SET state = 'superseded', updated_at = now()
      WHERE business_id = ${businessId}::uuid
@@ -1448,6 +1455,7 @@ export async function supersedeDraftsBefore(
        AND insertion_seq < (
          SELECT d.insertion_seq FROM command_drafts d
           WHERE d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid)
+       ${keep}
     RETURNING id`);
   return [...rows].length;
 }

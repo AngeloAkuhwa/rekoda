@@ -125,3 +125,46 @@ describe('an erasure whose first prompt failed after WhatsApp accepted it', () =
     expect(await claimed()).toBe(1);
   });
 });
+
+/* Judged at the second ask's arrival, not a late worker's clock (CodeRabbit on #437 at 0114957 and
+ * ce75a9e): a first ask recorded under an older consequence whose confirmation was still open when
+ * the second ask ARRIVED is asked again, even if it lapsed by the time the job ran. */
+describe('an erasure whose second ask is processed after the first confirmation lapsed', () => {
+  it('still checks the consequence shown at the first ask, and erases nothing', async () => {
+    const user = await identity.upsertUserByPhone(db, `+${OWNER}`);
+    const business = await identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    await say('DELETE MY DATA', 'wamid.W1');
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`
+        UPDATE pending_confirmations
+           SET consequence = 'Every customer contact detail for this business will be permanently deleted.'
+         WHERE business_id = ${business.id}::uuid AND command = 'EraseData'`);
+      /* The second ask arrives now; its confirmation lapses a moment after it arrived. */
+      await post(messagePayload(OWNER, 'wamid.W2', 'DELETE MY DATA'));
+      await ownerDb.execute(sql`
+        UPDATE pending_confirmations
+           SET expires_at = (SELECT created_at FROM external_events
+                              WHERE external_id = 'wamid.W2') + interval '1 millisecond'
+         WHERE business_id = ${business.id}::uuid AND command = 'EraseData'`);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    } finally {
+      await close();
+    }
+    await drain();
+
+    expect(stubSender.lastText).toBe(replies.confirmErasure().text);
+    const claimed = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ n: number }>(
+        sql`SELECT count(*)::int AS n FROM pending_confirmations
+             WHERE business_id = ${business.id}::uuid AND command = 'EraseData'
+               AND claimed_at IS NOT NULL`,
+      ),
+    ).then((r) => r[0]?.n);
+    expect(claimed).toBe(0);
+  });
+});

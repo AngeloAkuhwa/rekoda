@@ -2147,12 +2147,14 @@ async function deterministicReply(
           pending.id,
           ctx.eventId,
         )) === 0;
-      /* The first ask must have shown the consequence that runs now. One recorded with an older,
+      /* The first ask must have shown the consequence that runs now, judged at this message's
+       * arrival as the draft window is, never at a late worker's clock (CodeRabbit on #437 at
+       * 0114957 and ce75a9e). One recorded with an older,
        * narrower one (before the erasure reached stored chat copies) is no agreement to this: this
        * ask becomes a new first ask below, shown and recorded under the current consequence, and
        * nothing is erased (CodeRabbit on #437 at 3d66867). */
       const askedBefore = paired
-        ? (await riskRepo.openConfirmationsFor(tx, businessId)).filter(
+        ? (await riskRepo.openConfirmationsFor(tx, businessId, ctx.receivedAt)).filter(
             (c) => c.command === 'EraseData' && c.subject === `draft:${pending.id}`,
           )
         : [];
@@ -6524,7 +6526,13 @@ async function interpretedReply(
     /* Only on the first delivery: a replayed message changes nothing. The
      * question becomes the conversation, so a preview left waiting from
      * before it is closed, not left pending and never confirmable. */
-    if (draft.isNew) await conversationsRepo.supersedeDraftsBefore(tx, businessId, draft.id);
+    if (draft.isNew) {
+      /* Never another member's refusal: it still guards what they were shown (CodeRabbit on #437
+       * at ce75a9e), as the correction path keeps it. */
+      await conversationsRepo.supersedeDraftsBefore(tx, businessId, draft.id, {
+        skipRefusalsNotBy: actorId,
+      });
+    }
     /* The newest question wins, business-wide (Codex review): a NEW
      * purchase question closes every older one, and every member's short
      * answer naming one is retired, in this transaction. Nobody can then
@@ -6607,10 +6615,13 @@ function supplierNameOf(command: StructuredBusinessCommand, displays: Iterable<s
     cursor = Math.max(cursor, span.end);
   }
   untokened += words.slice(cursor);
-  return untokened
+  const name = untokened
     .replace(/\[(?:phone|email|customer)\]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+  /* What is left of "[phone], [email]" is punctuation, which names nobody: no "From:" line and no
+   * supplier row (CodeRabbit on #437 at ce75a9e). A name keeps its own punctuation. */
+  return /[\p{L}\p{N}]/u.test(name) ? name : '';
 }
 
 async function acknowledge(
