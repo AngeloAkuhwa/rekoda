@@ -83,11 +83,12 @@ export default function AiPrivacyPage() {
                 the number.
               </p>
               <p>
-                <strong>What the chat history keeps.</strong> For your messages and Rekoda&rsquo;s
-                replies, it records that a message was sent and what kind it was, not what it said.
-                A document Rekoda sends you is recorded by its number and amount. Messages from
-                before this change can still hold their text until you send{' '}
-                <strong>DELETE MY DATA</strong> or your account is deleted.
+                <strong>What the chat history keeps.</strong> For your ordinary messages and
+                Rekoda&rsquo;s ordinary replies, it records that a message was sent and what kind it
+                was, not what it said. A document Rekoda sends you is recorded by its number and
+                amount, and a template message by its name. Messages from before this change can
+                still hold their text until you send <strong>DELETE MY DATA</strong> or your account
+                is deleted.
               </p>
               <p>
                 <strong>The original WhatsApp message.</strong> It is kept encrypted, separately

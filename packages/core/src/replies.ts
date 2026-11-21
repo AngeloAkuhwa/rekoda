@@ -84,8 +84,9 @@ export function confirmErasure(draftsDiscarded = 0): Reply {
      * reaches the stored copies of their chat messages (R4, OWN-100; independent review at
      * ebeeadb). */
     'You are asking me to delete your data. This removes your customers and ' +
-      'their details, and the copies Rekoda kept of your chat messages, permanently. ' +
-      'It cannot be undone.',
+      'their details, and the stored copies of chat messages Rekoda has finished ' +
+      'processing, permanently. It cannot be undone. A message still being processed, and ' +
+      'some older copies the data deletion page describes, are kept.',
   ];
   /* Asking to erase clears whatever was waiting for a yes, and the merchant
    * has to be told: a sale they previewed a minute ago silently vanishing is
