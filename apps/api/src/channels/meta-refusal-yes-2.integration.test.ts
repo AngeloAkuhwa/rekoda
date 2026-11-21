@@ -5,7 +5,14 @@
 import { describe, expect, it } from 'vitest';
 import { replies } from '@rekoda/core';
 import { identity, sql, withBusiness } from '@rekoda/db';
-import { db, deps, post, stubSender, useMetaWebhookHarness } from './meta-webhook.fixtures.js';
+import {
+  db,
+  deps,
+  messagePayload,
+  post,
+  stubSender,
+  useMetaWebhookHarness,
+} from './meta-webhook.fixtures.js';
 import { drain } from './meta-voice-note.fixtures.js';
 import { mediaMessage } from './meta-continuations.fixtures.js';
 import {
@@ -81,6 +88,60 @@ describe("a questioned yes looks past another member's refusal", () => {
       ),
     );
     expect([...refusals].map((r) => r.state)).toEqual(['pending']);
+    expect(await footprint(business.id)).toEqual(before);
+  });
+});
+
+/**
+ * The answer to a refusal that never reached the merchant is undone: the refusal (and any question
+ * it retired) is pending again, so the merchant's repeated yes is still about the refusal and
+ * never books the older sale (Codex on #437 at 3d66867).
+ */
+describe('an undelivered answer to a refusal', () => {
+  it('leaves the refusal in place: the repeated yes saves nothing', async () => {
+    const business = await seedMerchant();
+    const ada = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+    await say(
+      'wamid.RU1',
+      sale({ kind: 'token', token: ada.token }),
+      'sold Ada Obi 2 wigs for 100k',
+    );
+    await post(mediaMessage('wamid.RU2', STICKER, OWNER));
+    await drain();
+    const before = await footprint(business.id);
+
+    stubSender.failWith();
+    await plain('wamid.RU3', 'yes');
+    await plain('wamid.RU4', 'yes');
+    expect(stubSender.lastText).toBe(replies.previewBehindRefusal().text);
+    expect(await footprint(business.id)).toEqual(before);
+  });
+});
+
+/**
+ * A bare "no" supersedes every pending draft but another member's refusal, which stays theirs:
+ * the delegate's next yes is still about it, never the owner's newer preview (CodeRabbit on #437
+ * at 3d66867).
+ */
+describe("a bare no keeps another member's refusal", () => {
+  it("so the delegate's yes never confirms the owner's newer preview", async () => {
+    const business = await seedMerchant();
+    const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+    await identity.addMembership(db, business.id, delegate.id, 'delegate');
+    const ada = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+    await post(mediaMessage('wamid.RN1', STICKER, DELEGATE));
+    await drain();
+    await plain('wamid.RN2', 'no');
+    await say(
+      'wamid.RN3',
+      sale({ kind: 'token', token: ada.token }),
+      'sold Ada Obi 2 wigs for 100k',
+    );
+    const before = await footprint(business.id);
+
+    await post(messagePayload(DELEGATE, 'wamid.RN4', 'yes'));
+    await drain();
+    expect(stubSender.lastText).toBe(replies.previewWaitingForAnotherMember().text);
     expect(await footprint(business.id)).toEqual(before);
   });
 });

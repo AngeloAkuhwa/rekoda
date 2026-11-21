@@ -9,7 +9,7 @@
  * to obtain one; storing a raw message through it is not an oversight that
  * could happen, it is a value the caller would have to construct by hand.
  */
-import { type SQL, and, desc, eq, isNull, notInArray, sql } from 'drizzle-orm';
+import { type SQL, and, desc, eq, inArray, isNull, notInArray, sql } from 'drizzle-orm';
 import {
   CONFIRMATION_TTL_SECONDS,
   PURCHASE_QUESTION_SECONDS,
@@ -724,6 +724,57 @@ export async function hasRefusalOrQuestionSince(
 }
 
 /**
+ * Put back drafts a reply nobody received had closed (Codex on #437 at 3d66867): a refusal it
+ * answered and the questions it retired, each only while still `superseded`, in this business.
+ */
+export async function reopenClosedDrafts(
+  tx: TenantDb,
+  businessId: string,
+  draftIds: readonly string[],
+): Promise<number> {
+  if (draftIds.length === 0) return 0;
+  const updated = await tx
+    .update(commandDrafts)
+    .set({ state: 'pending', updatedAt: new Date() })
+    .where(
+      and(
+        eq(commandDrafts.businessId, businessId),
+        inArray(commandDrafts.id, [...draftIds]),
+        eq(commandDrafts.state, 'superseded'),
+        inArray(commandDrafts.intent, ['Unclear', 'Query']),
+      ),
+    )
+    .returning({ id: commandDrafts.id });
+  return updated.length;
+}
+
+/**
+ * Retire every pending question to the books asked since `draftId` (seen as of `asOf`) and return
+ * their ids, so a reply that was never delivered can put them back.
+ */
+export async function retireReadsAfter(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  options: { asOf?: Date } = {},
+): Promise<string[]> {
+  const seen = options.asOf
+    ? sql`AND created_at <= ${options.asOf.toISOString()}::timestamptz`
+    : sql``;
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE command_drafts SET state = 'superseded', updated_at = clock_timestamp()
+     WHERE business_id = ${businessId}::uuid
+       AND state = 'pending'
+       AND intent = 'Query'
+       AND insertion_seq > (
+         SELECT d.insertion_seq FROM command_drafts d
+          WHERE d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid)
+       ${seen}
+    RETURNING id`);
+  return [...rows].map((r) => r.id);
+}
+
+/**
  * Close one pending refusal draft (owner review of #437 at 3a60b0f).
  *
  * A message Rekoda answered with a refusal or a failed reading instead of a
@@ -1248,7 +1299,9 @@ export async function expireStaleDrafts(
 export async function supersedePendingDrafts(
   tx: TenantDb,
   businessId: string,
-  options: { asOf?: Date } = {},
+  /* `skipRefusalsNotBy`: another member's refusal is left pending, as `latestDraftToAnswer` looks
+   * past it, so a bare "no" never takes away the guard it holds (CodeRabbit on #437 at 3d66867). */
+  options: { asOf?: Date; skipRefusalsNotBy?: string | null } = {},
 ): Promise<number> {
   const updated = await tx
     .update(commandDrafts)
@@ -1258,10 +1311,18 @@ export async function supersedePendingDrafts(
         eq(commandDrafts.businessId, businessId),
         eq(commandDrafts.state, 'pending'),
         seenBy(options.asOf),
+        options.skipRefusalsNotBy ? notAnotherMembersRefusal(options.skipRefusalsNotBy) : undefined,
       ),
     )
     .returning({ id: commandDrafts.id });
   return updated.length;
+}
+
+/** Not a refusal another member (or nobody) recorded: NULL-safe, see `latestDraftToAnswer`. */
+function notAnotherMembersRefusal(memberId: string): SQL {
+  return sql`NOT (${commandDrafts.intent} = 'Unclear'
+             AND COALESCE(${commandDrafts.command} ->> 'refused', '') = 'true'
+             AND ${commandDrafts.requestedBy} IS DISTINCT FROM ${memberId}::uuid)`;
 }
 
 /**
@@ -1455,9 +1516,7 @@ async function newestDraft(
           ? /* NULL-safe: a model `Unclear` has no `refused` key, and NOT NULL would drop it
              * (independent review of #437 at 4480bc2). An unattributed refusal is looked past
              * too, exactly as `pastRefusals` looks past it. */
-            sql`NOT (${commandDrafts.intent} = 'Unclear'
-                 AND COALESCE(${commandDrafts.command} ->> 'refused', '') = 'true'
-                 AND ${commandDrafts.requestedBy} IS DISTINCT FROM ${options.skipRefusalsNotBy}::uuid)`
+            notAnotherMembersRefusal(options.skipRefusalsNotBy)
           : undefined,
       ),
     )

@@ -852,6 +852,11 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
         }
       }
       if (!sent.delivered) {
+        /* The answer to a refusal never arrived: the refusal and the questions it closed are
+         * put back, so the merchant's repeated yes is about the refusal again (Codex on #437). */
+        if (outcome.closedByAnswer?.length) {
+          await conversationsRepo.reopenClosedDrafts(tx, businessId, outcome.closedByAnswer);
+        }
         await conversationsRepo.markDraftUnseen(tx, businessId, message.id);
         /* Build 6: nor was the question or the answer a continuation holds
          * on to. A member who never saw "Which period?" is not answering it
@@ -1051,6 +1056,9 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
  */
 type RebuildOutcome = {
   retiredQuestion: boolean;
+  /** A refusal this answer closed and the questions it retired: put back if the reply never
+   * reached the merchant, so a repeated yes is still about the refusal (Codex on #437). */
+  closedByAnswer?: string[];
   rebuiltFrom?: string;
   retiredHolders?: { userId: string; expiresAt: Date }[];
   /** Pending rebuilds this message's preview replaced (same member, total). */
@@ -1256,23 +1264,9 @@ async function pastRefusals(
   }
 }
 
-/**
- * Retire every question to the books asked since `draftId` (Build 6 keeps one per yes): used only
- * where a reply has just pointed at that preview and said a yes saves it. Bounded by the reads
- * that exist; each pass retires one.
- */
-async function retireReadsAfter(
-  tx: TenantDb,
-  businessId: string,
-  draftId: string,
-  asOf: Date,
-): Promise<void> {
-  for (let i = 0; i < 50; i++) {
-    if ((await conversationsRepo.retireNewestReadAfter(tx, businessId, draftId, { asOf })) === 0) {
-      return;
-    }
-  }
-}
+/** What DELETE MY DATA erases, as recorded with the merchant's two asks (Appendix D). */
+const ERASURE_CONSEQUENCE =
+  'Every customer contact detail for this business, and the stored copies of its chat messages that Rekoda has finished processing, will be permanently deleted.';
 
 /** What a voice note or photo reader answered instead of reading: a refusal, already sent. */
 interface RefusedReading {
@@ -2012,6 +2006,7 @@ async function deterministicReply(
     const past = await pastRefusals(tx, businessId, ctx.from, ctx.receivedAt);
     if (past.ownRefusal) {
       await conversationsRepo.closeRefusalDraft(tx, businessId, past.ownRefusal.id);
+      if (ctx.outcome) (ctx.outcome.closedByAnswer ??= []).push(past.ownRefusal.id);
       if (intent.kind === 'deny') {
         const behind = await pastRefusals(tx, businessId, ctx.from, ctx.receivedAt);
         /* Pointing at a preview only a "yes" could save, and only while Chat stands (G-65). */
@@ -2020,7 +2015,13 @@ async function deterministicReply(
             return replies.previewWaitingForAnotherMember();
           }
           /* As for a yes: the next yes is the one the reply promises saves it. */
-          await retireReadsAfter(tx, businessId, behind.draft.id, ctx.receivedAt);
+          const retired = await conversationsRepo.retireReadsAfter(
+            tx,
+            businessId,
+            behind.draft.id,
+            { asOf: ctx.receivedAt },
+          );
+          if (ctx.outcome) (ctx.outcome.closedByAnswer ??= []).push(...retired);
           return replies.previewBehindRefusal();
         }
         return (await withoutChat(tx, businessId))
@@ -2031,7 +2032,12 @@ async function deterministicReply(
     const cancellable = past.ownRefusal
       ? (await pastRefusals(tx, businessId, ctx.from, ctx.receivedAt)).draft
       : past.draft;
-    await conversationsRepo.supersedePendingDrafts(tx, businessId, { asOf: ctx.receivedAt });
+    /* Every pending draft, but never another member's refusal: it is theirs to answer and still
+     * guards what they were shown (CodeRabbit on #437 at 3d66867). */
+    await conversationsRepo.supersedePendingDrafts(tx, businessId, {
+      asOf: ctx.receivedAt,
+      skipRefusalsNotBy: await actorOf(tx, businessId, ctx.from),
+    });
     const dropped = (cancellable ? 1 : 0) + (closedQuestion ? 1 : 0) + (closedHeld ? 1 : 0);
     /* A bare "no" or "cancel" with nothing to refuse is answered, never met
      * with silence, and never told something was cancelled (G-68). */
@@ -2134,9 +2140,21 @@ async function deterministicReply(
           pending.id,
           ctx.eventId,
         )) === 0;
-      const claim = paired
-        ? await conversationsRepo.claimDraft(tx, pending.id, { now: ctx.receivedAt })
-        : null;
+      /* The first ask must have shown the consequence that runs now. One recorded with an older,
+       * narrower one (before the erasure reached stored chat copies) is no agreement to this: this
+       * ask becomes a new first ask below, shown and recorded under the current consequence, and
+       * nothing is erased (CodeRabbit on #437 at 3d66867). */
+      const askedBefore = paired
+        ? (await riskRepo.openConfirmationsFor(tx, businessId)).filter(
+            (c) => c.command === 'EraseData' && c.subject === `draft:${pending.id}`,
+          )
+        : [];
+      const shownBefore =
+        askedBefore.length === 0 || askedBefore.some((c) => c.consequence === ERASURE_CONSEQUENCE);
+      const claim =
+        paired && shownBefore
+          ? await conversationsRepo.claimDraft(tx, pending.id, { now: ctx.receivedAt })
+          : null;
       if (claim?.outcome === 'not_pending') return replies.alreadyConfirmed();
       /* Only a claim inside the window erases. A first ask that expired (even
        * between the line above and the claim) is no confirmation: this ask
@@ -2154,7 +2172,10 @@ async function deterministicReply(
          * transaction: the two-message mechanism already did the waiting. */
         const subject = `draft:${pending.id}`;
         const open = (await riskRepo.openConfirmationsFor(tx, businessId)).find(
-          (c) => c.command === 'EraseData' && c.subject === subject,
+          (c) =>
+            c.command === 'EraseData' &&
+            c.subject === subject &&
+            c.consequence === ERASURE_CONSEQUENCE,
         );
         const confirmation =
           open ??
@@ -2164,8 +2185,7 @@ async function deterministicReply(
             subject,
             actor: 'system',
             ingress: 'CHAT',
-            consequence:
-              'Every customer contact detail for this business, and the stored copies of its chat messages that Rekoda has finished processing, will be permanently deleted.',
+            consequence: ERASURE_CONSEQUENCE,
             reason: 'merchant asked by exact phrase, twice',
           }));
         const run = await deps.commandBus.run(
@@ -2185,9 +2205,12 @@ async function deterministicReply(
         if (run.outcome !== 'done') return replies.erasureKept();
         return replies.erasureDone(run.result.erased, deps.config.webUrl);
       }
-      const discarded = await conversationsRepo.supersedePendingDrafts(tx, businessId, {
-        asOf: ctx.receivedAt,
-      });
+      /* A first ask asked again under the current consequence is not a preview the merchant
+       * loses: it is not counted as discarded. */
+      const discarded =
+        (await conversationsRepo.supersedePendingDrafts(tx, businessId, {
+          asOf: ctx.receivedAt,
+        })) - (paired && !shownBefore ? 1 : 0);
       const parked = await conversationsRepo.recordDraft(tx, {
         businessId,
         conversationMessageId: ctx.messageId,
@@ -2204,8 +2227,7 @@ async function deterministicReply(
           subject: `draft:${parked.id}`,
           actor: 'system',
           ingress: 'CHAT',
-          consequence:
-            'Every customer contact detail for this business, and the stored copies of its chat messages that Rekoda has finished processing, will be permanently deleted.',
+          consequence: ERASURE_CONSEQUENCE,
           reason: 'merchant asked by exact phrase',
         });
       }
@@ -2850,6 +2872,7 @@ async function confirmPendingDraft(
     const past = await pastRefusals(tx, businessId, sender.from, receivedAt);
     if (past.ownRefusal) {
       await conversationsRepo.closeRefusalDraft(tx, businessId, past.ownRefusal.id);
+      if (sender.outcome) (sender.outcome.closedByAnswer ??= []).push(past.ownRefusal.id);
       if (retrying) {
         await refundRecordedReservations(tx, businessId, eventId, usagePeriod(receivedAt));
       }
@@ -2866,7 +2889,10 @@ async function confirmPendingDraft(
       }
       /* The reply points at the preview and says a yes saves it, so it must: a question asked
        * before the refusal would otherwise take that next yes (CodeRabbit on #437 at 96b1b52). */
-      await retireReadsAfter(tx, businessId, behind.draft.id, receivedAt);
+      const retired = await conversationsRepo.retireReadsAfter(tx, businessId, behind.draft.id, {
+        asOf: receivedAt,
+      });
+      if (sender.outcome) (sender.outcome.closedByAnswer ??= []).push(...retired);
       return replies.previewBehindRefusal();
     }
     draft = past.draft;
@@ -5421,7 +5447,9 @@ function typedIn(text: string, name: string): boolean {
   const fold = (v: string) => v.normalize('NFKC').toLocaleLowerCase().replace(/\s+/gu, ' ').trim();
   const needle = fold(name);
   if (!needle) return false;
-  const hay = fold(text);
+  /* A contact is not a name the merchant typed: an email (its local part included) and a link
+   * are taken out first, so "ada@example.com" never counts as typing "Ada" (CodeRabbit on #437). */
+  const hay = fold(text.replace(/\S+@\S+|https?:\/\/\S+/gu, ' '));
   let from = 0;
   for (;;) {
     const at = hay.indexOf(needle, from);
@@ -6036,7 +6064,14 @@ async function interpretedReply(
    */
   if (command.intent === 'Query' && command.customer?.kind === 'mention') {
     const mention = command.customer.mention;
-    const known = await deps.gateway.findMention(businessId, mention);
+    const found = await deps.gateway.findMention(businessId, mention);
+    /* Only a name the merchant typed, or a customer this message was issued, is the one asked
+     * about: a recorded name the model wrote is unknown here, never answered with that customer's
+     * balance (CodeRabbit on #437 at 3d66867; the record path's rule, G-137). */
+    const known =
+      found && (fromDocument || typedIn(rawText, mention) || tokens.displays.has(found.token))
+        ? found
+        : null;
     if (known) deps.gateway.noteMention(tokens, known.token, mention);
     /* Answered through the ordinary path, not by returning here: a question
      * leaves its read-only Query draft, which is what stops a later "yes"
