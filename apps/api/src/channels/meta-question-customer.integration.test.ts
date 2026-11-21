@@ -52,20 +52,24 @@ describe('a question that names a customer', () => {
   }
 
   /** One ₦150,000 invoice to `customerToken`, nothing paid. */
-  async function seedTrading(businessId: string, customerToken = 'CUSTOMER_7K2') {
+  async function seedTrading(
+    businessId: string,
+    customerToken = 'CUSTOMER_7K2',
+    unitPriceK = 5_000_000,
+  ) {
     await withBusiness(db, businessId, (tx) =>
       issueRepo.issueSale(tx, {
         businessId,
         customerId: null,
         customerToken,
-        items: [{ name: 'wig', quantity: 3, unitPriceK: 5_000_000 }],
-        subtotalK: 15_000_000,
+        items: [{ name: 'wig', quantity: 3, unitPriceK }],
+        subtotalK: 3 * unitPriceK,
         discountK: 0,
         deliveryFeeK: 0,
         vatK: 0,
-        totalK: 15_000_000,
+        totalK: 3 * unitPriceK,
         paidK: 0,
-        balanceDueK: 15_000_000,
+        balanceDueK: 3 * unitPriceK,
         method: 'transfer',
         sourceType: 'chat',
         sourceId: 'draft-q',
@@ -91,10 +95,13 @@ describe('a question that names a customer', () => {
   const storedBody = async (businessId: string, wamid: string) => {
     const rows = await withBusiness(db, businessId, (tx) =>
       tx.execute<{ body: string }>(
-        sql`SELECT body FROM conversation_messages WHERE provider_message_id = ${wamid}`,
+        sql`SELECT body FROM conversation_messages
+             WHERE business_id = ${businessId}::uuid AND provider_message_id = ${wamid}`,
       ),
     );
-    return [...rows].map((r) => r.body).join(' ');
+    /* Exactly one stored copy: a missing row would make every "not.toContain" pass vacuously. */
+    expect(rows).toHaveLength(1);
+    return rows[0]!.body;
   };
   const lastModelText = () => stubTransport.requests.at(-1)?.userText ?? '';
 
@@ -117,8 +124,8 @@ describe('a question that names a customer', () => {
 
     expect(await customerRows(business.id)).toEqual(before);
     expect(stubSender.lastText).toContain('do not have a customer by that name');
-    expect(await storedBody(business.id, 'wamid.Q5R1')).not.toContain('Bola');
-    expect(await storedBody(business.id, 'wamid.Q5R2')).not.toContain('Bola');
+    expect(await storedBody(business.id, 'wamid.Q5R1')).toBe(STORED_BODY.text);
+    expect(await storedBody(business.id, 'wamid.Q5R2')).toBe(STORED_BODY.text);
     /* The exception itself: the second ask carried the name to the model. */
     expect(lastModelText()).toContain('Bola Ige');
   });
@@ -248,6 +255,10 @@ describe('a question that names a customer', () => {
     const business = await seedMerchant('+2348031234567');
     const { token } = await deps.gateway.resolveMention(business.id, 'Ada Obi');
     await seedTrading(business.id, token);
+    /* Another customer owes a different amount, so Ada's answer cannot be the business's
+     * (CodeRabbit on #437 at ebeeadb): ₦150,000 is hers, ₦60,000 Bola's, ₦210,000 both. */
+    const bola = await deps.gateway.resolveMention(business.id, 'Bola Ige');
+    await seedTrading(business.id, bola.token, 2_000_000);
 
     await ask(
       'wamid.Q5D',
@@ -256,7 +267,9 @@ describe('a question that names a customer', () => {
     );
 
     expect(stubSender.lastText).toContain('₦150,000');
-    expect(stubSender.lastText).toContain('INV-');
+    expect(stubSender.lastText).not.toContain('₦60,000');
+    expect(stubSender.lastText).not.toContain('₦210,000');
+    expect(stubSender.lastText?.match(/INV-/g) ?? []).toHaveLength(1);
     expect(stubSender.lastText).not.toContain('Ada');
   });
 

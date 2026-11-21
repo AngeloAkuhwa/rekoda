@@ -6,10 +6,11 @@
  * webhook.fixtures.ts.
  */
 import { describe, expect, it } from 'vitest';
-import { createDb, identity, sql } from '@rekoda/db';
+import { conversationsRepo, createDb, identity, sql, withBusiness } from '@rekoda/db';
 import { replies } from '@rekoda/core';
 import {
   db,
+  messagePayload,
   photoPayload,
   post,
   stubOcr,
@@ -201,29 +202,46 @@ describe('a receipt photo', () => {
       // The stub's last reply outlives reset(): leave it answering as the file expects.
       stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
     }
-    return g57Footprint(business.id);
+    const left = await g57Footprint(business.id);
+    const reply = stubSender.lastText;
+    /* The one draft is the refusal, holding the sentence only: no confirmable expense is left
+     * behind, and a yes after it saves nothing (independent review of #437 at ebeeadb). */
+    const drafts = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ intent: string; command: unknown }>(
+        sql`SELECT intent, command FROM command_drafts WHERE business_id = ${business.id}::uuid`,
+      ),
+    );
+    expect([...drafts].map((d) => conversationsRepo.isRefusalDraft(d))).toEqual([true]);
+    await post(messagePayload(phone, `${wamid}-YES`, 'yes'));
+    await drain();
+    expect(stubSender.lastText).not.toContain('Saved');
+    expect({ ...(await g57Footprint(business.id)), drafts: left.drafts }).toEqual(left);
+    return { left, reply };
   }
 
   it('gives back the message unit an earlier attempt took when the classifier refuses', async () => {
     const refusal = { toolInput: null, usage: { inputTokens: 400, outputTokens: 3 } };
-    const left = await retryEndsAtTheClassifier('2348031234589', 'wamid.P-GATE-REFUSED', {
-      ...refusal,
-      stopReason: 'refusal',
-    });
-    expect(stubSender.lastText).toBe(replies.couldNotRead().text);
-    /* The one draft is the refusal (owner review of #437): it holds the sentence
-     * only, so a yes after it saves nothing (its shape is pinned in
-     * meta-receipt-photo-2 and meta-customer-token). Nothing else is touched. */
+    const { left, reply } = await retryEndsAtTheClassifier(
+      '2348031234589',
+      'wamid.P-GATE-REFUSED',
+      {
+        ...refusal,
+        stopReason: 'refusal',
+      },
+    );
+    expect(reply).toBe(replies.couldNotRead().text);
+    /* The one draft is the refusal (owner review of #437), and a yes after it saves nothing
+     * (`retryEndsAtTheClassifier`). Nothing else is touched. */
     expect(left).toEqual({ ...NOTHING_TOUCHED, drafts: 1 });
   });
 
   it('gives back the message unit an earlier attempt took when the page is junk', async () => {
-    const left = await retryEndsAtTheClassifier('2348031234588', 'wamid.P-GATE-JUNK', {
+    const { left, reply } = await retryEndsAtTheClassifier('2348031234588', 'wamid.P-GATE-JUNK', {
       toolInput: { type: 'junk' },
       usage: { inputTokens: 400, outputTokens: 12 },
       stopReason: 'tool_use',
     });
-    expect(stubSender.lastText).toBe(replies.notABusinessDocument().text);
+    expect(reply).toBe(replies.notABusinessDocument().text);
     expect(left).toEqual({ ...NOTHING_TOUCHED, documents: 1, drafts: 1 });
   });
 });

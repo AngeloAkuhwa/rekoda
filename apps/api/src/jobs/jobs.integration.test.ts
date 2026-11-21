@@ -328,13 +328,15 @@ describe('a customer name never reaches the model twice', () => {
     expect(stubSender.sent[stubSender.sent.length - 1]?.text ?? '').toContain('Ada Obi');
   });
 
-  it('scrubs the name from the stored message however it was spaced', async () => {
+  /* There is nothing left to scrub (G-136): the history keeps a placeholder for the message
+   * and the reply, however the name was spaced (independent review of #437 at ebeeadb). */
+  it('keeps no word of a name however it was spaced: the history holds placeholders', async () => {
     const businessId = await seedBusiness('Names Spaced Ltd', '+2348140020010');
     await saleMention(businessId, '+2348140020010', 'sold 3 wigs to Ada   Obi for 150k, paid');
     const messages = await withBusiness(appDb, businessId, (tx) =>
       tx.select().from(schema.conversationMessages),
     );
-    for (const m of messages) expect(m.body ?? '').not.toMatch(/Obi/);
+    expect(messages.map((m) => m.body).sort()).toEqual(['[reply]', '[text message]']);
   });
 
   /* Was "never rewrites a token while scrubbing a name": the after-model scrub is gone
