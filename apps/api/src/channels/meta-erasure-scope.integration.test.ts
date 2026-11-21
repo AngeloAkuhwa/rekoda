@@ -58,3 +58,34 @@ describe('an erasure asked under an older consequence', () => {
     expect(await claimed()).toBe(1);
   });
 });
+
+/* A first ask whose prompt never reached WhatsApp showed the merchant nothing: the next exact
+ * phrase is shown the prompt and keeps the data (CodeRabbit on #437 at 58dd68b). */
+describe('an erasure whose first prompt was never sent', () => {
+  it('erases only after a prompt that was sent', async () => {
+    const user = await identity.upsertUserByPhone(db, `+${OWNER}`);
+    const business = await identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    const claimed = () =>
+      withBusiness(db, business.id, (tx) =>
+        tx.execute<{ n: number }>(
+          sql`SELECT count(*)::int AS n FROM pending_confirmations
+               WHERE business_id = ${business.id}::uuid AND command = 'EraseData'
+                 AND claimed_at IS NOT NULL`,
+        ),
+      ).then((r) => r[0]?.n);
+
+    stubSender.failWith();
+    await say('DELETE MY DATA', 'wamid.U1');
+    await say('DELETE MY DATA', 'wamid.U2');
+    expect(stubSender.lastText).toBe(replies.confirmErasure().text);
+    expect(await claimed()).toBe(0);
+
+    await say('DELETE MY DATA', 'wamid.U3');
+    expect(stubSender.lastText).not.toBe(replies.confirmErasure().text);
+    expect(await claimed()).toBe(1);
+  });
+});

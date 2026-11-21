@@ -724,6 +724,30 @@ export async function hasRefusalOrQuestionSince(
 }
 
 /**
+ * Whether WhatsApp accepted the reply that answered the message `draftId` was recorded from: an
+ * outbound row that names that message and carries Meta's id (`markOutboundSent`). The erasure's
+ * first ask counts only when its prompt was sent (CodeRabbit on #437 at 58dd68b).
+ */
+export async function draftReplyWasSent(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ sent: boolean }>(sql`
+    SELECT EXISTS (
+      SELECT 1 FROM conversation_messages m
+        JOIN command_drafts d
+          ON d.conversation_message_id = m.reply_to_message_id
+         AND d.business_id = m.business_id
+       WHERE d.id = ${draftId}::uuid
+         AND d.business_id = ${businessId}::uuid
+         AND m.direction = 'outbound'
+         AND m.provider_message_id IS NOT NULL
+    ) AS sent`);
+  return rows[0]?.sent === true;
+}
+
+/**
  * Put back drafts a reply nobody received had closed (Codex on #437 at 3d66867): a refusal it
  * answered and the questions it retired, each only while still `superseded`, in this business.
  */

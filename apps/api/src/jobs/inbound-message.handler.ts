@@ -2149,8 +2149,12 @@ async function deterministicReply(
             (c) => c.command === 'EraseData' && c.subject === `draft:${pending.id}`,
           )
         : [];
+      /* And the first ask's prompt must have reached WhatsApp: a prompt whose send failed showed
+       * the merchant nothing, so this ask is a new first ask (CodeRabbit on #437 at 58dd68b). */
       const shownBefore =
-        askedBefore.length === 0 || askedBefore.some((c) => c.consequence === ERASURE_CONSEQUENCE);
+        (askedBefore.length === 0 ||
+          askedBefore.some((c) => c.consequence === ERASURE_CONSEQUENCE)) &&
+        (!paired || (await conversationsRepo.draftReplyWasSent(tx, businessId, pending.id)));
       const claim =
         paired && shownBefore
           ? await conversationsRepo.claimDraft(tx, pending.id, { now: ctx.receivedAt })
