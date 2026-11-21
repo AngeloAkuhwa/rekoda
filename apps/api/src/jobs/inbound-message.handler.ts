@@ -5439,7 +5439,8 @@ async function correctionInheritance(
     !(await conversationsRepo.hasRefusalOrQuestionSince(tx, businessId, target.id, {
       asOf: receivedAt,
     })) &&
-    /* A free question ("who owes me") writes no draft: the thread shows it (CodeRabbit on #437). */
+    /* Any message since the preview, a free question ("who owes me") included, which writes no
+     * draft: the merchant thread shows it, whichever member sent it (CodeRabbit on #437). */
     !(await conversationsRepo.hasInboundBetween(tx, businessId, target.id, input.messageId));
   /* Any draft that reaches here names a customer or an invoice: an ineligible correction is asked
    * about and never supersedes it (CodeRabbit on #437). */

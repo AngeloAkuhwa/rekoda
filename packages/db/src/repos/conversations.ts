@@ -783,11 +783,12 @@ export async function hasDraftsAfterBy(
 }
 
 /**
- * Whether the member's thread holds an inbound message between the one that drafted `draftId`
+ * Whether the merchant thread holds an inbound message between the one that drafted `draftId`
  * and `currentMessageId` (CodeRabbit on #437). A free question such as "who owes me" is answered
- * by the router and writes no draft, so only the thread shows that the merchant asked something
- * since the preview. Threads are per participant, so another member's or a customer's message is
- * not counted.
+ * by the router and writes no draft, so only the thread shows that something was asked since the
+ * preview. The merchant thread is one per business and channel (`resolveThread`), so a message
+ * from any member counts: the correction is then asked about, the safe reading under OWN-100. A
+ * customer's message is in its own CUSTOMER thread and does not count.
  */
 export async function hasInboundBetween(
   tx: TenantDb,

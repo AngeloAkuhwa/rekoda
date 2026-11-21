@@ -316,6 +316,22 @@ describe('CG5: a correction keeps the customer of the draft it corrects', () => 
     expect(await invoiceCount(business.id)).toBe(0);
   });
 
+  /* The merchant thread is shared by every member, so another member's message in between makes
+   * the correction a question too: asked about, never applied (CodeRabbit on #437). */
+  it("another member's message in between makes a nameless correction a question", async () => {
+    const { business } = await seedOwner();
+    const member = await identity.upsertUserByPhone(db, `+${MEMBER}`);
+    await identity.addMembership(db, business.id, member.id, 'delegate');
+    stubTransport.replyWith(SALE);
+    await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.C9c-SALE');
+    await send('help', 'wamid.C9c-HELP', MEMBER);
+    stubTransport.replyWith(FOUR);
+    await send('No, 4 not 3', 'wamid.C9c-FIX');
+    expect(stubSender.lastText).toContain('I could not tell which customer');
+    const sale = (await drafts(business.id)).filter((r) => r.intent === 'RecordSale');
+    expect(sale.map((r) => r.state)).toEqual(['pending']);
+  });
+
   it("another member's correction never inherits the owner's draft", async () => {
     const { business } = await seedOwner();
     const member = await identity.upsertUserByPhone(db, `+${MEMBER}`);

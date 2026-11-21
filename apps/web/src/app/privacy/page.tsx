@@ -209,7 +209,8 @@ export default function PrivacyPage() {
                 <a href="/data-deletion">Delete my data</a>) or, for a trial you never converted, no
                 earlier than {RETENTION.abandonedTrialDays} days after it ends and never before you
                 have had {RETENTION.noticeDays} days&apos; notice. Until that notice can reach you,
-                the trial is kept.
+                the trial is kept, and a subscription checkout started in the last 14 days also
+                holds it back.
               </p>
               <p>
                 If you stop paying, your account becomes read-only rather than closed or deleted.
