@@ -242,7 +242,10 @@ describe('an unseen preview can never be confirmed (G-20, owner ruling)', () => 
                       WHERE business_id = ${businessId}::uuid AND id = ${sent.draftId}::uuid`),
     );
     await undelivered(businessId, sent.wamid);
-    expect(await draftRow(businessId, sent.draftId)).toEqual({ state: 'expired', reason: null });
+    expect(await draftRow(businessId, sent.draftId)).toEqual({
+      state: 'expired',
+      reason: 'preview_not_delivered',
+    });
   });
 
   it('a draft already confirmed keeps its state when a failed receipt arrives later', async () => {

@@ -3,7 +3,8 @@
  * meta-customer-token.integration.test.ts by concern.
  */
 import { describe, expect, it } from 'vitest';
-import { conversationsRepo, identity, withBusiness } from '@rekoda/db';
+import { replies } from '@rekoda/core';
+import { conversationsRepo, identity, sql, withBusiness } from '@rekoda/db';
 import { setPlanForTest } from '@rekoda/db/testing';
 import {
   db,
@@ -316,6 +317,66 @@ describe('a yes after a refused record', () => {
 
     // The last thing the merchant saw is the refusal: this yes saves nothing.
     await plain('wamid.R53', 'yes');
+    expect((await footprint(business.id)).invoices).toBe(0);
+  });
+  /* CodeRabbit on #437 at 3799977: the same receipt arriving after the preview's window closed. The
+   * expired preview was never read either, so the refusal is still the last thing the owner saw,
+   * and a newer request from another member is not answered by the owner's "yes". */
+  it('a preview that expired before it was reported undelivered does not close the refusal', async () => {
+    const business = await seedMerchant();
+    const ada = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+    const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+    await identity.addMembership(db, business.id, delegate.id, 'delegate');
+    await say(
+      'wamid.R60',
+      sale({ kind: 'token', token: ada.token }),
+      'sold Ada Obi 2 wigs for 100k',
+    );
+    await say('wamid.R61', payment({ kind: 'token', token: 'CUSTOMER_7K2' }), 'Bisi paid 20k');
+    await say(
+      'wamid.R62',
+      {
+        intent: 'RecordExpense',
+        description: 'diesel',
+        amount: 12_000,
+        category: 'fuel',
+        paymentMethod: 'cash',
+      },
+      'diesel 12k cash',
+    );
+    const expenseReceipt = `wamid.STUB${stubSender.sent.length}`;
+    await withBusiness(db, business.id, (tx) =>
+      tx.execute(sql`UPDATE command_drafts SET state = 'expired'
+                      WHERE business_id = ${business.id}::uuid AND intent = 'RecordExpense'`),
+    );
+    // The failure receipt is delayed past the expense preview's window.
+    await post(statusPayload(OWNER, expenseReceipt, 'failed'));
+    await drain();
+
+    stubTransport.replyWith({
+      intent: 'RecordExpense',
+      description: 'transport',
+      amount: 5_000,
+      category: 'transport',
+      paymentMethod: 'cash',
+    });
+    await post(messagePayload(DELEGATE, 'wamid.R63', 'transport 5k cash'));
+    await drain();
+
+    await plain('wamid.R64', 'yes');
+    expect(stubSender.lastText).toBe(replies.previewWaitingForAnotherMember().text);
+    const states = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ intent: string; state: string }>(sql`
+        SELECT intent, state FROM command_drafts
+         WHERE business_id = ${business.id}::uuid AND intent IN ('RecordSale', 'RecordExpense')
+         ORDER BY insertion_seq`),
+    );
+    // Neither Ada's older sale nor the delegate's newer expense was posted by the owner's yes.
+    expect([...states].map((r) => `${r.intent}:${r.state}`)).toEqual([
+      'RecordSale:pending',
+      'RecordExpense:expired',
+      'RecordExpense:pending',
+    ]);
     expect((await footprint(business.id)).invoices).toBe(0);
   });
 });

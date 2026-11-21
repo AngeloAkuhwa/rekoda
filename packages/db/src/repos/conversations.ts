@@ -940,7 +940,8 @@ export async function markDraftUnseen(
  * Only `pending` and `expired` drafts move: a confirmed or cancelled one was
  * answered, so its preview was read, a superseded one is gone, and an expired
  * one still carries `previewed` into the "that request has expired" answer a
- * later "yes" gets, which would be false for a preview never received. A
+ * later "yes" gets, which would be false for a preview never received. Both
+ * carry `preview_not_delivered`; an expired one keeps its state. A
  * preview is only ever shown once, by the reply to the message that drafted it
  * (a correction supersedes with a new draft; "I sent you a preview a moment
  * ago" does not re-display one), so the link from reply to drafting message is
@@ -964,8 +965,9 @@ export async function markPreviewUndelivered(
     ), drafts AS (
       UPDATE command_drafts d SET previewed = false, identity_link = NULL,
              state = CASE WHEN d.state = 'pending' THEN 'superseded' ELSE d.state END,
-             retired_reason = CASE WHEN d.state = 'pending' THEN 'preview_not_delivered'
-                                   ELSE d.retired_reason END,
+             -- Expired too: its preview was never read, so it is not something its member has
+             -- recorded since a refusal (hasDraftsAfterBy; CodeRabbit on #437).
+             retired_reason = 'preview_not_delivered',
              updated_at = clock_timestamp()
         FROM reply
        WHERE d.business_id = ${businessId}::uuid

@@ -338,21 +338,22 @@ of the procedure, reported to the owner before anything is written:
 -- As the migration owner, read-only, one row per business (counts only, nothing of the text):
 SELECT business_id, count(*) AS eligible
   FROM conversation_messages
- WHERE created_at < :deployed_at
+ WHERE created_at < :writers_stopped_at
    AND NOT ((direction = 'inbound'  AND body ~ :inbound_labels) OR
             (direction = 'outbound' AND body ~ :outbound_labels))
  GROUP BY business_id ORDER BY eligible DESC;
 ```
 
-(`:inbound_labels` and `:outbound_labels` are `INBOUND_STRUCTURAL_BODY` and `OUTBOUND_STRUCTURAL_BODY`
+(`:writers_stopped_at` is the cutoff of go/no-go item 2 below. `:inbound_labels` and `:outbound_labels` are `INBOUND_STRUCTURAL_BODY` and `OUTBOUND_STRUCTURAL_BODY`
 from `conversations.ts`, exactly.)
 
 **Proposed procedure:**
 
 1. Take a backup and confirm it restores (the off-box drill in `docs/runbooks/`).
 2. Report the counts above to the owner. Go/no-go.
-3. For each business: one transaction per pass of 5,000, `before` = the deploy time of #437, `after` =
-   the previous pass's `last`, until a pass returns `last: null`. Short transactions, so no business's
+3. For each business: one transaction per pass of 5,000, `before` = `:writers_stopped_at` (the time
+   the last pre-#437 api and worker process stopped writing, go/no-go item 2; never the deploy time and
+   never "now"), `after` = the previous pass's `last`, until a pass returns `last: null`. Short transactions, so no business's
    inbound messages wait behind a long one.
 4. One counts-only `audit_events` row per business (as `eraseTextOutsideTheVault` writes).
 5. Re-run the counts: every business must read 0.
