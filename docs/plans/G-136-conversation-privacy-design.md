@@ -648,3 +648,8 @@ webhook (§1.2), or any time limit on the encrypted originals (R3 is not approve
     it replaced stays superseded on both failure paths, and the replacement is never confirmable. A "yes"
     is told nothing is waiting, and the merchant sends the request again. Tests:
     `meta-preview-expiry-3.integration.test.ts` (OD-58 cases).
+12. **A figure after "should be" need not be the replacement (MINOR, older than this PR).**
+    `clearlyCorrects` takes "balance should be 10k by Friday" as a clear correction. The other CG5
+    gates still apply: same member, same kind, the only live preview, and nothing in between. The
+    result is a new preview that needs its own "yes", and nothing posts. A follow-up could end the
+    figure at the clause boundary, as `FIGURE_NOT_FIGURE` does.

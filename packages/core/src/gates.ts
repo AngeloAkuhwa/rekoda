@@ -405,7 +405,7 @@ const FIGURE_NOT_FIGURE =
 
 /* "should be 60k", "make it 5", "change it to 4": the replacement is a figure. Without one ("should
  * be delivered tomorrow", "make it quick") the words replace nothing (CodeRabbit on #437). */
-const REPLACEMENT_FIGURE = /\b(?:change (?:it |the )?to|make it|should be)\s+(?:₦\s*)?\d/i;
+const REPLACEMENT_FIGURE = /\b(?:change (?:it |the )?to|make it|should be)\s+(?:[₦N]\s*)?\d/i;
 
 export function clearlyCorrects(text: string): boolean {
   const trimmed = text.trim();
