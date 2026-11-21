@@ -167,10 +167,14 @@ describe('CG5: a correction sent while an earlier message is still live', () => 
   });
 });
 
-describe('CG5: a correction mixed with another instruction', () => {
+describe('CG5: a correction mixed with another instruction, or about no field of the sale', () => {
   it.each([
     'No, 4 not 3, and I also sold 2 bags for 20k',
     'No, 4 not 3. Sold 2 bags at 10k to someone else',
+    /* A comparison or a figure that changes no field of the sale (CodeRabbit at 49f2586). */
+    'Sold 2 bags for 20k; deliver by bike rather than car',
+    'No, delivery should be 2 days',
+    'balance should be 10k by Friday',
   ])('%j is asked about and the preview keeps its customer', async (text) => {
     const { business, ada } = await seedOwner();
     stubTransport.replyWith(SALE);

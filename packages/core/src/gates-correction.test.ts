@@ -29,6 +29,8 @@ describe('a correction clear enough to keep the draft customer (clearlyCorrects,
     'should be ₦ 60,000',
     'make it 60.5k',
     'no, 60k not 50k!',
+    'make it 20k',
+    'no, the balance should be 10k',
     'make it 5 wigs',
   ])('%j clearly corrects', (text) => {
     expect(clearlyCorrects(text)).toBe(true);
@@ -69,6 +71,12 @@ describe('a correction clear enough to keep the draft customer (clearlyCorrects,
     'No, 4 not 3, and I also sold 2 bags for 20k',
     'No, 4 not 3. Sold 2 bags at 10k to someone else',
     'make it NGN 60000',
+    /* A figure or comparison that changes no field of the draft (CodeRabbit on #437 at 49f2586). */
+    'Sold 2 bags for 20k; deliver by bike rather than car',
+    'deliver by bike rather than car',
+    'No, delivery should be 2 days',
+    'balance should be 10k by Friday',
+    'make it 5 wigs and 2 bags for Bola',
     'Bola bought 2 shoes for 30k, should be 2',
     '   ',
   ])('%j does not', (text) => {

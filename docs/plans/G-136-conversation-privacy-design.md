@@ -655,10 +655,10 @@ webhook (§1.2), or any time limit on the encrypted originals (R3 is not approve
     count. Neither does a message that states its own sale or purchase with a price ("Sold 2 bags for
     20k, make it 5pm delivery"), whatever wording it contains. Fixed RED first after the owner's review
     at `49f2586`: `gates-correction.test.ts`, and the four owner sentences in
-    `meta-correction-customer.integration.test.ts`. **Residual (MINOR):** a figure after the wording
-    that is not the replacement and is not a time, such as "balance should be 10k by Friday", still
-    counts. The other CG5 gates still apply (same member, same kind, the only live preview, nothing in
-    between), and the result is a new preview that needs its own "yes". Nothing posts.
+    `meta-correction-customer.integration.test.ts`. The replacement figure must also end its clause,
+    with at most one word after it ("make it 5 wigs"), so "balance should be 10k by Friday" and "deliver by bike rather than car" are asked about
+    (CodeRabbit on #437 at `49f2586`). A correction that ends its figure differently ("make it 5 wigs
+    please") is asked about too: the safe reading.
 13. **An earlier message still retrying.** A message sent between the preview and the correction whose
     job failed once and is backing off has no conversation row yet, so `hasInboundBetween` cannot see
     it. The correction therefore also checks the queue (`hasEarlierLiveJobByArrival`). While an

@@ -407,12 +407,14 @@ const FIGURE_NOT_FIGURE =
  * the replacement for a quantity or a price (owner review of #437 at 49f2586). */
 const NOT_A_TIME = String.raw`(?![\d,.]*\s*(?::\d|(?:am|pm|o'?clock|h|hrs?|hours?|mins?|minutes?|days?|weeks?|months?|years?|st|nd|rd|th)\b))`;
 
-/* "should be 60k", "make it 5", "change it to 4", "5 wigs instead of 3": the replacement is a
- * figure. Without one ("should be delivered tomorrow", "make it quick", "instead of going home")
- * the words replace nothing (CodeRabbit on #437). */
+/* "should be 60k", "make it 5 wigs", "change it to 4", "5 wigs instead of 3": the replacement is a
+ * figure that ends its clause, with at most one word after it. Without one ("should be delivered
+ * tomorrow", "make it quick", "rather than car"), or with more after it ("balance should be 10k by
+ * Friday"), the words replace nothing in the draft (CodeRabbit on #437). */
 const REPLACEMENT_FIGURE = new RegExp(
   String.raw`\b(?:change (?:it |the )?to|make it|should be|instead of|rather than)\s+(?:[₦N]\s*)?\d` +
-    NOT_A_TIME,
+    NOT_A_TIME +
+    String.raw`[\d,.]*\s*k?(?:\s+[a-z]+)?\s*(?:[!?,;)]|\.(?!\d)|$)`,
   'i',
 );
 
