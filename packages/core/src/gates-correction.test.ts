@@ -16,6 +16,9 @@ describe('a correction clear enough to keep the draft customer (clearlyCorrects,
     'it was 60k not 50k',
     'the price should be 60k',
     'make it 5',
+    'make it ₦60,000',
+    'change it to 4',
+    'no, it should be 4 wigs',
     '5 wigs instead of 3',
   ])('%j clearly corrects', (text) => {
     expect(clearlyCorrects(text)).toBe(true);
@@ -33,6 +36,11 @@ describe('a correction clear enough to keep the draft customer (clearlyCorrects,
     'sold 5 bags, not 2 days late',
     'sold 3 bags at 10k each, not 2 paid',
     'Sold 2 bags for 20k not 2.5 days ago',
+    /* "should be", "make it" or "change it to" without a figure says no replacement figure
+     * (CodeRabbit on #437 at c712b1e). */
+    'Sold 2 bags for 20k, not paid yet; should be delivered tomorrow',
+    'Sold 2 bags for 20k, make it quick',
+    'Bola bought 2 shoes, change it to Friday delivery',
     '   ',
   ])('%j does not', (text) => {
     expect(clearlyCorrects(text)).toBe(false);

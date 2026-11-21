@@ -811,8 +811,10 @@ export async function hasInboundBetween(
          AND m.direction = 'inbound'
          AND m.id <> src.id
          AND m.id <> cur.id
-         AND m.created_at > src.created_at
-         AND m.created_at < cur.created_at) AS found`);
+         -- Inclusive: created_at is not unique, so a message sharing either instant still came
+         -- between them; the two ends are excluded by id (CodeRabbit on #437 at c712b1e).
+         AND m.created_at >= src.created_at
+         AND m.created_at <= cur.created_at) AS found`);
   return [...rows][0]?.found === true;
 }
 

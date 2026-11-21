@@ -437,3 +437,57 @@ describe('the claim exemption needs the stored command to agree (G-20)', () => {
     expect(await claim(businessId, sent.draftId)).toEqual({ outcome: 'unseen' });
   });
 });
+
+/**
+ * CG5 inherits a customer only when no message came between the preview and the correction
+ * (`hasInboundBetween`, OWN-100). `created_at` is `clock_timestamp()`, not unique: a message that
+ * shares the correction's or the preview's instant still came between them (CodeRabbit on #437
+ * at c712b1e). A tie blocks inheritance, which is the safe answer: the correction is asked about.
+ */
+describe('a message between a preview and its correction is seen even at the same instant', () => {
+  const inbound = (businessId: string, n: string) =>
+    withBusiness(app, businessId, (tx) =>
+      conversationsRepo.recordInbound(tx, {
+        businessId,
+        channel: 'meta',
+        kind: 'text',
+        body: '[text]',
+        providerMessageId: `wamid.between-${n}`,
+      }),
+    );
+  const at = (businessId: string, messageId: string, sameAs: string) =>
+    withBusiness(ownerDb(), businessId, (tx) =>
+      tx.execute(sql`UPDATE conversation_messages SET created_at =
+                       (SELECT created_at FROM conversation_messages WHERE id = ${sameAs}::uuid)
+                     WHERE business_id = ${businessId}::uuid AND id = ${messageId}::uuid`),
+    );
+  const between = (businessId: string, draftId: string, currentId: string) =>
+    withBusiness(app, businessId, (tx) =>
+      conversationsRepo.hasInboundBetween(tx, businessId, draftId, currentId),
+    );
+
+  it('nothing in between: the correction may inherit', async () => {
+    const businessId = await seedBusiness();
+    const sent = await previewed(businessId);
+    const fix = await inbound(businessId, `fix-${seq}`);
+    expect(await between(businessId, sent.draftId, fix.id)).toBe(false);
+  });
+
+  it("a question that shares the correction's instant counts", async () => {
+    const businessId = await seedBusiness();
+    const sent = await previewed(businessId);
+    const asked = await inbound(businessId, `q-${seq}`);
+    const fix = await inbound(businessId, `fix-${seq}`);
+    await at(businessId, asked.id, fix.id);
+    expect(await between(businessId, sent.draftId, fix.id)).toBe(true);
+  });
+
+  it("a question that shares the preview request's instant counts", async () => {
+    const businessId = await seedBusiness();
+    const sent = await previewed(businessId);
+    const asked = await inbound(businessId, `q2-${seq}`);
+    const fix = await inbound(businessId, `fix2-${seq}`);
+    await at(businessId, asked.id, sent.messageId);
+    expect(await between(businessId, sent.draftId, fix.id)).toBe(true);
+  });
+});

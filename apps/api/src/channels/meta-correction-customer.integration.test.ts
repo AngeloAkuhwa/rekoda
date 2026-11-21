@@ -349,7 +349,11 @@ describe('CG5: a correction keeps the customer of the draft it corrects', () => 
     expect(rows.filter((r) => r.requested_by === member.id && r.intent !== 'Unclear')).toEqual([]);
   });
 
-  it('a new sale that only contains "not" never takes the waiting sale’s customer', async () => {
+  it.each([
+    'Sold 2 bags for 20k, not paid yet',
+    /* "should be" with no figure after it replaces nothing (CodeRabbit on #437 at c712b1e). */
+    'Sold 2 bags for 20k, not paid yet; should be delivered tomorrow',
+  ])('a new sale %j never takes the waiting sale’s customer', async (text) => {
     const { business, ada } = await seedOwner();
     stubTransport.replyWith(SALE);
     await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.C12-SALE');
@@ -360,7 +364,7 @@ describe('CG5: a correction keeps the customer of the draft it corrects', () => 
       statedTotal: 20_000,
       reportedPayment: 0,
     });
-    await send('Sold 2 bags for 20k, not paid yet', 'wamid.C12-NEW');
+    await send(text, 'wamid.C12-NEW');
     // Not clearly a correction of Ada's sale: asked about, and Ada's preview is untouched.
     expect(stubSender.lastText).toContain('I could not tell which customer');
     const sales = (await drafts(business.id)).filter((r) => r.intent === 'RecordSale');
