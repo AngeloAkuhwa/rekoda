@@ -269,9 +269,12 @@ stays far below the 30 s timeout at any size; what grows is the transaction. An 
   second run erases nothing and writes a zero-count audit row.
 - A failure after the erasure in the same transaction leaves every row as it was and writes no audit
   row; the retry then erases everything. In the chat path, `eraseDataWork` runs before the reply is
-  built, so a failed pass throws, the job rolls back and retries, and the merchant is never told the
-  erasure is done before it is (the reply is sent inside the job's transaction after the work, as every
-  reply is).
+  built, so a failed pass throws, the job rolls back and retries. The success reply is sent before the
+  job commits (`ReplySender.send` runs inside the job's transaction; the runner commits after the
+  handler and `markDone` return), so a failure after the send can leave the merchant told the erasure
+  is done while it did not persist. The retry normally completes it, and may send the reply a second
+  time (the at-least-once resend of OD-62(e)). Sending after commit would close this gap; that is a
+  code change with its own regression test, not part of #437 (CodeRabbit on #437 at 0e12742).
 - The job keeps its lease while it runs (heartbeat, `runner.ts`); the business's later messages wait
   behind it (OWN-74), which is the intended order for an irreversible request. Rows are locked only as
   they are erased; ingress keeps inserting new events and messages meanwhile.

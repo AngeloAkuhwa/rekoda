@@ -364,7 +364,8 @@ export const InvoiceCriteria = z.object({
   sort: z
     .enum(['newest', 'oldest', 'highest', 'lowest', 'largest_balance', 'most_overdue', 'customer'])
     .nullable(),
-  limit: z.number().int().min(1).max(10).nullable(),
+  /* At most 9: a choice list holds 9 ordinals (`MAX_CHOICE_OPTIONS`, §9.1). */
+  limit: z.number().int().min(1).max(9).nullable(),
 });
 export const InvoiceQuery = z.object({
   intent: z.literal('InvoiceQuery'),
@@ -577,7 +578,7 @@ A new `packages/db/src/repos/invoice-search.ts` (§18) holds three functions:
   - issue or due date range;
   - status set;
   - amount bound on `total_k`, `balance_due_k` or `paid_k`;
-  - item name: `EXISTS` on `invoice_items` with `lower(name) LIKE $p` and an optional quantity;
+  - item name: `EXISTS` on `invoice_items` with an optional quantity, and one bound pattern per query word, never one pattern for the phrase. Each word `w` binds `$w`, the lower-cased word with its regex metacharacters escaped, matched as a whole word or a word prefix of `lower(name)` (`lower(name) ~ ('(^|[^a-z0-9])' || $w)`). T4 (§8.2) requires every word's pattern to match in the same item row (`AND` inside one `EXISTS`), so word order and the words between do not matter: "red shoe" matches "red leather shoes" ("red" whole, "shoe" a prefix of "shoes"). T5 requires at least one word's pattern (`OR`) and ranks below T4. Tests: "red shoe" against "red leather shoes" is T4; "red bag" against it is T5 only; "shoe red" ranks as "red shoe" does;
   - keyset on `(sortKey, id)`, `LIMIT page + 1`.
 - `invoiceAggregate(tx, businessId, filter)` runs over the same predicate: `COUNT`, the sums, `COUNT FILTER` by status, overdue sum, top 3 by balance, latest activity, and an optional `GROUP BY` token or Lagos month. **Counts come from SQL** (CLAUDE.md §5).
 - `invoiceByReference(tx, businessId, ref)` does an exact match on canonical upper case, which uses the existing unique index.
@@ -649,7 +650,7 @@ The existing table already provides:
 - supersession when a new row opens;
 - the `options` invoice choice list, validated by the database, with up to 9 entries.
 
-That covers ordinal selection ("the second one") with **no schema change**: `kind='clarification', expects='choice'`.
+That covers ordinal selection ("the second one") with **no schema change**: `kind='clarification', expects='choice'`. A search therefore returns at most 9 invoices per page (`limit` max 9, §8.1), so every invoice listed has an ordinal; a larger result says how many more there are and asks the member to narrow the search, and is never shown as a numbered list it cannot select from.
 
 What it cannot hold is the **analysis context** needed to apply "what about expenses?", "now the previous three months" or "generate the PDF" to the prior answer. Its columns are closed CHECK lists (§2.6).
 
@@ -866,7 +867,7 @@ Three layers:
 inbound (Analyse with output:'pdf', or "PDF" in a books continuation)
   1  authenticate, attribute, role, entitlement           (existing, handler)
   2  plan = resolve(intent)                               (core)
-  3  result = BooksResult via withBusiness(tx) queries    (db, read-only)
+  3  result = BooksResult from ONE database snapshot      (db, read-only; see below)
   4  reply = chat summary from result                     (replies.ts)
   5  reserve REPORT_EXPORTS unit (OD-23)                  (existing reserveUnit; refund on terminal failure)
   6  enqueue document.render {report: result, requestedBy}   singletonKey report:<inboundEventId>
@@ -878,6 +879,8 @@ worker:
  11  enqueue document.deliver {documentId, recipientUserId}   singletonKey deliver:<docId>
  12  deliver: upload, send, caption "Your Rekoda report for <period>", outbound row, usage row (existing)
 ```
+
+**One snapshot.** Every total and breakdown in a `BooksResult` comes from one database state. `withBusiness` opens its transaction at PostgreSQL's default READ COMMITTED (`packages/db/src/client.ts`), where each statement reads its own snapshot, so a sale committed between the ledger-total query and the customer-breakdown query would mix two states in one report. Step 3 therefore either computes every figure in a single statement, or runs its statements in a `REPEATABLE READ READ ONLY` transaction; `withBusiness` takes no isolation argument today, so that route extends it with an optional isolation level (tenant context and RLS unchanged) and adds a test that a sale committed between two of the step's statements appears in neither or both (CodeRabbit on #437 at 0e12742).
 
 **Single source of truth.** The result computed in step 3 is the only data used in steps 4, 8 and 9. The job payload carries it: jsonb, a few KB to roughly 50 KB for quarterly reports with capped appendices _(inference; to be measured in Stage F)_. Nothing re-queries.
 
