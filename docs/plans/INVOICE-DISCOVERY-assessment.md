@@ -505,8 +505,8 @@ Additions, all in core:
 **Zero rules.** These templates are fixed in core:
 
 - **Previous period zero, current positive:** "₦X this period; nothing was recorded in the comparison period, so there is no percentage."
-- **Current zero:** "No {metric} {was/were} recorded {window}." (sales today: "No sales were recorded so far today."). It names the metric compared and never a different one: an expenses comparison that is zero while sales exist says "No expenses were recorded …", never "No sales …". It is not "you sold nothing", because the books only hold what was recorded.
-- **Both zero:** "No recorded {metric} in either period."
+- **Current zero:** "{Metric} {window} comes to ₦0." (sales today: "Sales so far today come to ₦0."). It states the computed figure, never that nothing was recorded: a sale and its void in the same period net to zero while both postings exist (CodeRabbit on #437 at `96b1b52`). It names the metric compared and never a different one: an expenses comparison at zero while sales exist speaks of expenses, never of sales. It is not "you sold nothing", because the books only hold what was recorded.
+- **Both zero:** "{Metric} come to ₦0 in both periods."
 - The metric label and the window come from the deterministic command, never from the model, and each label is a fixed core string. Tests: one per metric, including an expenses comparison at zero while sales were recorded (CodeRabbit on #437 at `ebeeadb`).
 
 ### 6.4 Missing data versus recorded zero
