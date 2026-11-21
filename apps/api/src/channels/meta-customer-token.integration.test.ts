@@ -96,6 +96,23 @@ describe('a record names a customer only by a token this message was issued (G-1
     expect(await footprint(business.id)).toEqual(before);
   });
 
+  /* An email's local part is a contact, not a name typed (CodeRabbit on #437 at 3d66867). */
+  it('a recorded name that appears only inside an email is not typed', async () => {
+    const business = await seedMerchant();
+    const bola = await deps.gateway.resolveMention(business.id, 'Bola');
+    await invoiceTo(business.id, bola.token);
+    const before = await footprint(business.id);
+
+    await say(
+      'wamid.T2e',
+      payment({ kind: 'mention', mention: 'Bola' }),
+      'bola@example.com paid 20k',
+    );
+
+    expect(stubSender.lastText).toContain('could not tell which customer');
+    expect(await footprint(business.id)).toEqual(before);
+  });
+
   it('a known customer typed in the message still previews and confirms', async () => {
     const business = await seedMerchant();
     const ada = await deps.gateway.resolveMention(business.id, 'Ada Obi');

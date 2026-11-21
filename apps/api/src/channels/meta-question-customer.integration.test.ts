@@ -251,6 +251,24 @@ describe('a question that names a customer', () => {
     expect(stubSender.lastText).not.toMatch(/sales|invoiced|₦/i);
   });
 
+  /* A recorded name the model wrote, which the merchant never typed and the message was never
+   * issued, is unknown here: never answered with that customer's balance (CodeRabbit on #437 at
+   * 3d66867). */
+  it('a question whose model names a recorded customer the message never named gets no balance', async () => {
+    const business = await seedMerchant('+2348031234567');
+    const bola = await deps.gateway.resolveMention(business.id, 'Bola Ige');
+    await seedTrading(business.id, bola.token);
+
+    await ask(
+      'wamid.Q5X',
+      askAbout({ topic: 'customer_balance', customer: { kind: 'mention', mention: 'Bola Ige' } }),
+      'how much does Tunde owe me',
+    );
+
+    expect(stubSender.lastText).toContain('do not have a customer by that name');
+    expect(stubSender.lastText).not.toContain('₦150,000');
+  });
+
   it('a debtors question naming a known customer is answered as their balance', async () => {
     const business = await seedMerchant('+2348031234567');
     const { token } = await deps.gateway.resolveMention(business.id, 'Ada Obi');
