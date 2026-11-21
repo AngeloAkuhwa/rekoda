@@ -134,9 +134,10 @@ a token not in `tokens.displays` gets the following treatment.
   - only for a sale, payment or order the model read with **no** customer. A correction that names a
     customer (by name or by an issued token) is its own; one carrying a token this message was not
     issued is still refused by G-137, so no earlier token is ever whitelisted;
-  - only when the message clearly corrects (`clearlyCorrects` in `@rekoda/core`: it opens like a
-    correction, says what replaces what, or sets one figure against another); a new request that
-    merely contains "not" ("Sold 2 bags for 20k, not paid yet") is asked about instead;
+  - only when the message clearly corrects (`clearlyCorrects` in `@rekoda/core`: it says what replaces
+    what, or sets one figure against another, "4 not 3"). An opener alone ("Wait, I also sold 2
+    bags", independent review of #437) or a bare "not" ("Sold 2 bags for 20k, not paid yet") is
+    asked about instead;
   - only when the draft is the newest answerable one with no refusal in front of it, the only one
     waiting in the business (`answerableDraftCount`), live at this message, previewed, of the same
     intent, the requesting member's own (`requestedBy`), with no question since (`hasReadsAfter`), and
@@ -145,11 +146,14 @@ a token not in `tokens.displays` gets the following treatment.
   - the customer's stored name is decrypted only into this reply's token table, for the send boundary
     (`noteInheritedCustomer`): never to a model, never stored (the reply body is a placeholder);
   - the draft is then superseded by the ordinary CG5 path and the new preview needs its own "yes".
+    With two or more drafts waiting, or a draft whose customer token no longer resolves, the correction
+    is asked about. A correction the model reads as `Unclear` (the likeliest reading of a bare
+    "No, 4 not 3") or as a question no longer supersedes anything: the preview stays as it was.
     When a draft with a customer is waiting but any condition fails (another member's draft, two drafts,
     a refusal or question since, a different intent, an unshown draft), the correction is answered with
     `customerNotRecognised`: nothing is superseded or drafted and the unit goes back. With nothing live
     waiting (expired, cancelled, confirmed) it is a new request and inherits nobody. Tests:
-    `meta-correction-customer.integration.test.ts` (12 cases) and the restored name-free case in
+    `meta-correction-customer.integration.test.ts` (17 cases) and the restored name-free case in
     `meta-plan-example` ("lets a correction replace the draft…").
     **Limitation, unchanged by this:** every other field of a correction is still what the model reads
     in the correction's own words. A real model given only "No, 4 not 3" may not reproduce the item and

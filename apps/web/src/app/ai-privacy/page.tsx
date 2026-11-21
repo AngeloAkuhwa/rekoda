@@ -60,9 +60,9 @@ export default function AiPrivacyPage() {
                 before the bookkeeping AI reads it.
               </p>
               <p>
-                <strong>Customers you have recorded.</strong> Their names, phone numbers and email
-                addresses are replaced with a token before a message is sent to the model, in
-                questions and in records alike.
+                <strong>Customers you have recorded.</strong> When Rekoda recognises their name,
+                phone number or email address in a message, it is replaced with a token before the
+                message is sent to the model, in questions and in records alike.
               </p>
               <p>
                 <strong>Someone new.</strong> When you record a sale, invoice, payment or order for

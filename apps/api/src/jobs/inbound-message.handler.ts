@@ -5327,7 +5327,7 @@ function customerTokenOf(command: Record<string, unknown>): string | null {
  * the model wrote: a token this message was not issued is still refused by the G-137 guard
  * after this, so no earlier token is ever whitelisted. Only a sale, a payment or an order
  * the model read with no customer at all looks here, and the draft must be:
- *  - clearly corrected (`clearlyCorrects`), not merely containing a "not";
+ *  - clearly corrected (`clearlyCorrects`: says what replaces what), not merely "no" or a "not";
  *  - the newest thing a correction can be about, with no refusal in front of it;
  *  - the only one waiting in the business (`answerableDraftCount`);
  *  - live at this message, previewed to the merchant, and of the same kind;
@@ -5388,17 +5388,24 @@ async function correctionInheritance(
     return none;
   }
   if (!looksLikeCorrection(input.rawText, true)) return none;
-  /* Read as a correction, but not clearly one of this draft ("Sold 2 bags, not paid yet"): never
+  /* Two or more previews waiting: which one this corrects is a question (OWN-100). */
+  if ((await conversationsRepo.answerableDraftCount(tx, businessId, { asOf: receivedAt })) > 1) {
+    return { kind: 'unclear' };
+  }
+  /* Read as a correction, but not clearly one of this draft ("Wait, I also sold 2 bags"): never
    * given the draft's customer; asked about below when the draft has one. */
   const clear = clearlyCorrects(input.rawText);
 
   const stored = (target.command ?? {}) as Record<string, unknown>;
   const token = customerTokenOf(stored);
   const customerId = token ? await customerIdFor(tx, businessId, token) : null;
+  /* The draft named a customer this business no longer holds by that token (merged since): asked
+   * about, never turned into a sale to nobody. */
+  if (token && !customerId) return { kind: 'unclear' };
   const ref = stored['documentRef'];
   const documentRef =
     command.intent === 'RecordPayment' && typeof ref === 'string' && ref.length > 0 ? ref : null;
-  /* The draft named nobody this business holds: nothing to carry, nothing to ask. */
+  /* The draft named nobody: nothing to carry, nothing to ask. */
   if (!customerId && !documentRef) return none;
 
   const eligible =
@@ -5408,7 +5415,6 @@ async function correctionInheritance(
     target.previewed === true &&
     input.actorId !== null &&
     target.requestedBy === input.actorId &&
-    (await conversationsRepo.answerableDraftCount(tx, businessId, { asOf: receivedAt })) === 1 &&
     !(await conversationsRepo.hasReadsAfter(tx, businessId, target.id, { asOf: receivedAt }));
   if (!eligible) return customerId ? { kind: 'unclear' } : none;
   return {
@@ -5438,10 +5444,16 @@ async function noteInheritedCustomer(
     (f): f is { facet: 'name' | 'phone' | 'email'; ciphertext: string } =>
       f.facet === 'name' || f.facet === 'phone' || f.facet === 'email',
   );
-  const typed: TypedFacet[] = shown.map((f) => {
-    const value = decryptFacet(f.ciphertext, deps.config.vaultKey, `${businessId}:${f.facet}`);
-    return { facet: f.facet, value, key: normaliseFacet(f.facet, value) };
-  });
+  /* A facet that will not open reads as "this customer", never as a failed job. */
+  const typed: TypedFacet[] = [];
+  for (const f of shown) {
+    try {
+      const value = decryptFacet(f.ciphertext, deps.config.vaultKey, `${businessId}:${f.facet}`);
+      typed.push({ facet: f.facet, value, key: normaliseFacet(f.facet, value) });
+    } catch {
+      /* Nothing logged: the ciphertext and its customer are not log material. */
+    }
+  }
   tokens.facets.set(customer.token, typed);
   /* Never a blank line where the customer's name goes. */
   const display = displayOf(typed);
@@ -5952,7 +5964,13 @@ async function interpretedReply(
     asOf: receivedAt,
   });
   /* G-78: words on a photograph are never a correction. */
-  const correcting = !fromDocument && looksLikeCorrection(rawText, existing !== null);
+  /* Only a record corrects a record: a reading the model could not make (`Unclear`) or a question
+   * is answered and leaves the preview as it was (independent review of #437, OWN-100). */
+  const correcting =
+    !fromDocument &&
+    command.intent !== 'Unclear' &&
+    command.intent !== 'Query' &&
+    looksLikeCorrection(rawText, existing !== null);
   if (correcting) {
     await conversationsRepo.supersedePendingDrafts(tx, businessId, { asOf: receivedAt });
   }

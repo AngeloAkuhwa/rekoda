@@ -106,6 +106,7 @@ describe('CG5: a correction keeps the customer of the draft it corrects', () => 
     expect(rows[1]?.customer).toEqual({ kind: 'token', token: ada.token });
 
     await send('yes', 'wamid.C1-YES');
+    // A double-tapped yes (CG3): the superseded draft is not confirmable either.
     await send('yes', 'wamid.C1-YES2');
     expect(await invoiceCount(business.id)).toBe(1);
     expect(await invoiceCustomers(business.id)).toEqual([
@@ -334,6 +335,78 @@ describe('CG5: a correction keeps the customer of the draft it corrects', () => 
     const sales = (await drafts(business.id)).filter((r) => r.intent === 'RecordSale');
     expect(sales.map((r) => r.state)).toEqual(['pending']);
     expect(sales[0]?.customer).toEqual({ kind: 'token', token: ada.token });
+  });
+
+  it('a correction the model could not read leaves the waiting preview as it was', async () => {
+    const { business, ada } = await seedOwner();
+    stubTransport.replyWith(SALE);
+    await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.C13-SALE');
+    // What a real model most often makes of "No, 4 not 3" without the earlier turn.
+    stubTransport.replyWith({ intent: 'Unclear', clarification: 'Four of what?' });
+    await send('No, 4 not 3', 'wamid.C13-FIX');
+    const sales = (await drafts(business.id)).filter((r) => r.intent === 'RecordSale');
+    expect(sales.map((r) => r.state)).toEqual(['pending']);
+    expect(sales[0]?.customer).toEqual({ kind: 'token', token: ada.token });
+  });
+
+  it.each([
+    ['Wait, I also sold 2 bags for 20k', 'wamid.C14a'],
+    ['actually, sold 2 bags for 20k', 'wamid.C14b'],
+  ])('%j is not a correction of the waiting sale and takes nobody', async (text, wamid) => {
+    const { business, ada } = await seedOwner();
+    stubTransport.replyWith(SALE);
+    await send('Ada bought 3 wigs for 150k, paid 100k', `${wamid}-SALE`);
+    stubTransport.replyWith({
+      ...SALE,
+      customer: NAMELESS,
+      items: [{ name: 'bag', quantity: 2, unitPrice: 10_000 }],
+      statedTotal: 20_000,
+      reportedPayment: 0,
+    });
+    await send(text, wamid);
+    expect(stubSender.lastText).not.toContain('Ada');
+    const sales = (await drafts(business.id)).filter((r) => r.intent === 'RecordSale');
+    expect(sales.map((r) => r.state)).toEqual(['pending']);
+    expect(sales[0]?.customer).toEqual({ kind: 'token', token: ada.token });
+  });
+
+  it('with two previews waiting, a nameless correction is asked about', async () => {
+    const { business } = await seedOwner();
+    stubTransport.replyWith(SALE);
+    await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.C15-SALE');
+    stubTransport.replyWith({
+      intent: 'RecordExpense',
+      description: 'diesel',
+      amount: 12_000,
+      category: 'fuel',
+      paymentMethod: 'cash',
+    });
+    await send('diesel 12k cash', 'wamid.C15-EXP');
+    stubTransport.replyWith(FOUR);
+    await send('No, 4 not 3', 'wamid.C15-FIX');
+    expect(stubSender.lastText).toContain('I could not tell which customer');
+    const states = (await drafts(business.id))
+      .filter((r) => r.intent !== 'Unclear')
+      .map((r) => `${r.intent}:${r.state}`);
+    expect(states).toEqual(['RecordSale:pending', 'RecordExpense:pending']);
+  });
+
+  it('a correction of a different kind is asked about, never given the sale’s customer', async () => {
+    const { business } = await seedOwner();
+    stubTransport.replyWith(SALE);
+    await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.C16-SALE');
+    stubTransport.replyWith({
+      intent: 'RecordPayment',
+      customer: NAMELESS,
+      amount: 60_000,
+      relativeAmount: null,
+      documentRef: null,
+      paymentMethod: 'cash',
+    });
+    await send('no, she paid 60k not 50k', 'wamid.C16-FIX');
+    expect(stubSender.lastText).toContain('I could not tell which customer');
+    const sales = (await drafts(business.id)).filter((r) => r.intent === 'RecordSale');
+    expect(sales.map((r) => r.state)).toEqual(['pending']);
   });
 
   it('a token the model wrote is still refused on a correction (G-137)', async () => {

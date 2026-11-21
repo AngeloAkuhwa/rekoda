@@ -149,8 +149,8 @@ export default function PrivacyPage() {
                       <td>Drafts of records you were asked to confirm</td>
                       <td>Until your account is deleted</td>
                       <td>
-                        They are how the records were made, not records themselves. Customers appear
-                        in them only as tokens.
+                        They are how the records were made, not records themselves. The customer a
+                        record is for is kept as a token, not by name.
                       </td>
                     </tr>
                     <tr>
@@ -158,7 +158,9 @@ export default function PrivacyPage() {
                       <td>Until you send DELETE MY DATA, or your account is deleted</td>
                       <td>
                         Kept while Rekoda processes a message. DELETE MY DATA erases the ones
-                        already processed.
+                        already processed. A message delivered before our latest privacy change in
+                        the same batch as another business&apos;s message can still have a copy
+                        stored with that business&apos;s message.
                       </td>
                     </tr>
                     <tr>
