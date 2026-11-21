@@ -607,7 +607,8 @@ const readsFilter = (reads: ReadDrafts) =>
 export function pendingDraft(
   tx: TenantDb,
   businessId: string,
-  options: { asOf?: Date } = {},
+  /* `except`: drafts to look past, such as another member's refusal (CodeRabbit on #437). */
+  options: { asOf?: Date; except?: readonly string[] } = {},
 ): Promise<DraftRow | null> {
   return newestPendingDraft(tx, businessId, { ...options, reads: 'count' });
 }

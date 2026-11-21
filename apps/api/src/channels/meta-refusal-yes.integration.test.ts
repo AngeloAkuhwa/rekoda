@@ -476,3 +476,56 @@ describe('an unsupported media message whose refusal fails to record', () => {
     expect(refusals[0]?.n).toBe(1);
   });
 });
+
+/**
+ * A "yes" behind a question to the books falls back to the newest pending draft, which can be
+ * another member's refusal: it is looked past, never claimed (independent review of #437 at
+ * ebeeadb). Claiming it would answer the owner with the delegate's refusal and spend the guard
+ * that refusal holds on the delegate's own preview.
+ */
+describe("a yes never claims another member's refusal", () => {
+  it('after an unseen preview and a question, the delegate refusal stays theirs', async () => {
+    const business = await seedMerchant();
+    const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+    await identity.addMembership(db, business.id, delegate.id, 'delegate');
+    const ada = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+    stubSender.failWith();
+    await say(
+      'wamid.RX1',
+      sale({ kind: 'token', token: ada.token }),
+      'sold Ada Obi 2 wigs for 100k',
+    );
+    await say(
+      'wamid.RX2',
+      {
+        intent: 'Query',
+        topic: 'sales_summary',
+        customer: null,
+        period: 'today',
+        periodText: 'today',
+        format: 'chat',
+      },
+      'how much did I sell today',
+    );
+    await post(
+      mediaMessage(
+        'wamid.RX3',
+        { type: 'sticker', sticker: { id: 'sticker-1', mime_type: 'image/webp' } },
+        DELEGATE,
+      ),
+    );
+    await drain();
+    const before = await footprint(business.id);
+
+    await plain('wamid.RX4', 'yes');
+    expect(stubSender.lastText).not.toBe(replies.onlyText().text);
+    const refusals = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ state: string }>(
+        sql`SELECT state FROM command_drafts
+             WHERE business_id = ${business.id}::uuid AND command->>'refused' = 'true'`,
+      ),
+    );
+    expect([...refusals].map((r) => r.state)).toEqual(['pending']);
+    expect(await footprint(business.id)).toEqual(before);
+  });
+});

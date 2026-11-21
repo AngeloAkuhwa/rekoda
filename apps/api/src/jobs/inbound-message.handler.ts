@@ -2915,8 +2915,26 @@ async function confirmPendingDraft(
       }
       return replies.previewBehindQuestion();
     }
-    const newest = await conversationsRepo.pendingDraft(tx, businessId, { asOf: receivedAt });
-    if (newest) draft = newest;
+    /* Another member's refusal is theirs to answer, never claimed by this yes: looked past and
+     * left as it is, exactly as `pastRefusals` does (independent review of #437 at ebeeadb). */
+    const lookedPast: string[] = [];
+    for (;;) {
+      const newest = await conversationsRepo.pendingDraft(tx, businessId, {
+        asOf: receivedAt,
+        except: lookedPast,
+      });
+      if (
+        newest &&
+        conversationsRepo.isRefusalDraft(newest) &&
+        newest.requestedBy !== null &&
+        newest.requestedBy !== answering
+      ) {
+        lookedPast.push(newest.id);
+        continue;
+      }
+      if (newest) draft = newest;
+      break;
+    }
   }
 
   let command = draft.command as { intent?: string } & Record<string, unknown>;
