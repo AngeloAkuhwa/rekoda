@@ -1395,7 +1395,8 @@ export function latestDraftToAnswer(
     skipHeld?: boolean;
     /* Another member's refusal is not what this member's yes or no is about: looked past, never
      * touched, so it still guards that member's own older preview (CodeRabbit on #437 at
-     * ebeeadb). The member's own refusal, and an unattributed one, are kept. */
+     * ebeeadb). Only the member's own refusal is kept; an unattributed one is looked past, as in
+     * `pastRefusals`. Any other draft, another member's clarification included, is kept. */
     skipRefusalsNotBy?: string | null;
   } = {},
 ): Promise<LatestDraft | null> {
@@ -1451,10 +1452,12 @@ async function newestDraft(
         eq(commandDrafts.withdrawn, false),
         options.skipHeld ? sql`${commandDrafts.state} <> 'held'` : undefined,
         options.skipRefusalsNotBy
-          ? sql`NOT (${commandDrafts.intent} = 'Unclear'
-                 AND ${commandDrafts.command} ->> 'refused' = 'true'
-                 AND ${commandDrafts.requestedBy} IS NOT NULL
-                 AND ${commandDrafts.requestedBy} <> ${options.skipRefusalsNotBy}::uuid)`
+          ? /* NULL-safe: a model `Unclear` has no `refused` key, and NOT NULL would drop it
+             * (independent review of #437 at 4480bc2). An unattributed refusal is looked past
+             * too, exactly as `pastRefusals` looks past it. */
+            sql`NOT (${commandDrafts.intent} = 'Unclear'
+                 AND COALESCE(${commandDrafts.command} ->> 'refused', '') = 'true'
+                 AND ${commandDrafts.requestedBy} IS DISTINCT FROM ${options.skipRefusalsNotBy}::uuid)`
           : undefined,
       ),
     )

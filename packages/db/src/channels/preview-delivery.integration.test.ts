@@ -491,3 +491,71 @@ describe('a message between a preview and its correction is seen even at the sam
     expect(await between(businessId, sent.draftId, fix.id)).toBe(true);
   });
 });
+
+/**
+ * A member's yes or no looks past another member's REFUSAL, and only that: another member's
+ * ordinary clarification (a model `Unclear`, no `refused` key) is still the newest thing a yes is
+ * about (independent review of #437 at 4480bc2: `->> 'refused'` is NULL there, and NOT NULL
+ * dropped the row).
+ */
+describe("latestDraftToAnswer looks past another member's refusal only", () => {
+  async function twoMembers() {
+    const businessId = await seedBusiness();
+    const owner = await withBusiness(app, businessId, (tx) =>
+      tx.execute<{ user_id: string }>(
+        sql`SELECT user_id FROM memberships WHERE business_id = ${businessId}::uuid`,
+      ),
+    );
+    seq += 1;
+    const delegate = await identity.upsertUserByPhone(
+      app,
+      `+23481901${String(seq).padStart(5, '0')}`,
+    );
+    await identity.addMembership(app, businessId, delegate.id, 'delegate');
+    return { businessId, ownerId: [...owner][0]!.user_id, delegateId: delegate.id };
+  }
+  const draftBy = (businessId: string, requestedBy: string, command: Record<string, unknown>) =>
+    withBusiness(app, businessId, async (tx) => {
+      seq += 1;
+      const message = await conversationsRepo.recordInbound(tx, {
+        businessId,
+        channel: 'meta',
+        kind: 'text',
+        body: '[text message]',
+        providerMessageId: `wamid.unclear-${seq}`,
+      });
+      return conversationsRepo.recordDraft(tx, {
+        businessId,
+        conversationMessageId: message.id,
+        intent: 'Unclear',
+        command,
+        model: null,
+        previewed: false,
+        requestedBy,
+      });
+    });
+  const latest = (businessId: string, by: string) =>
+    withBusiness(app, businessId, (tx) =>
+      conversationsRepo.latestDraftToAnswer(tx, businessId, { skipRefusalsNotBy: by }),
+    );
+
+  it("another member's ordinary clarification is still the latest", async () => {
+    const { businessId, ownerId, delegateId } = await twoMembers();
+    const asked = await draftBy(businessId, delegateId, {
+      intent: 'Unclear',
+      clarification: '[clarification]',
+    });
+    expect((await latest(businessId, ownerId))?.id).toBe(asked.id);
+  });
+
+  it("another member's refusal is looked past; the member's own is not", async () => {
+    const { businessId, ownerId, delegateId } = await twoMembers();
+    const refusal = await draftBy(businessId, delegateId, {
+      intent: 'Unclear',
+      clarification: 'Please send text.',
+      refused: true,
+    });
+    expect(await latest(businessId, ownerId)).toBeNull();
+    expect((await latest(businessId, delegateId))?.id).toBe(refusal.id);
+  });
+});
