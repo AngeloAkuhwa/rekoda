@@ -157,3 +157,38 @@ describe('the role ensemble (docs/ai-model-strategy.md)', () => {
     expect(config.aiModelVisionVerifier).toBe('gpt-test-verifier');
   });
 });
+
+/**
+ * OD-63(c): the high-value verifier reads the document text, where a name nobody recorded is still
+ * plain, and sends it to OpenAI. Until the owner rules on that processor boundary, a production
+ * process refuses to start with the verifier configured, as `FX_MODE=live` is refused until its
+ * gate opens; the PR that implements the ruling replaces this refusal, never an env change.
+ */
+describe('the high-value verifier in production (OD-63(c))', () => {
+  const PROD = {
+    ...BASE,
+    NODE_ENV: 'production',
+    ANTHROPIC_API_KEY: 'k',
+    REKODA_TRUSTED_PROXIES: '172.30.10.10',
+    OPERATOR_OIDC_ISSUER: 'https://issuer.example.com',
+    OPERATOR_OIDC_AUDIENCE: 'rekoda-ops',
+    OPERATOR_OIDC_JWKS_URL: 'https://issuer.example.com/jwks',
+    META_APP_SECRET: 'm'.repeat(40),
+    META_VERIFY_TOKEN: 'v'.repeat(40),
+    REKODA_TRUSTED_WEB: '172.30.10.11',
+  } as NodeJS.ProcessEnv;
+
+  it('starts with no verifier, and refuses to start with one', () => {
+    expect(loadConfig(PROD).aiModelVisionVerifier).toBeNull();
+    expect(() =>
+      loadConfig({ ...PROD, AI_MODEL_VISION_VERIFIER: 'gpt-test-verifier', OPENAI_API_KEY: 'k' }),
+    ).toThrow(/OD-63\(c\)/);
+  });
+
+  it('is still allowed outside production, for development and tests', () => {
+    expect(
+      loadConfig({ ...BASE, ANTHROPIC_API_KEY: 'k', AI_MODEL_VISION_VERIFIER: 'gpt-test-verifier' })
+        .aiModelVisionVerifier,
+    ).toBe('gpt-test-verifier');
+  });
+});

@@ -1081,6 +1081,29 @@ function fxMode(env: NodeJS.ProcessEnv, isProduction: boolean): FxMode {
 }
 
 /**
+ * The high-value document verifier (AI hardening item 9), or a refusal to run with one in
+ * production (OD-63(c), PR #437, 21 Nov 2026).
+ *
+ * The verifier reads the same `safeText` the interpreter read, where a name nobody recorded is
+ * still plain text, and sends it to OpenAI. Whether OpenAI may receive such names, and how a
+ * comparison that also checks name fields would survive their redaction, is an open owner
+ * decision. Until it is ruled, a production process refuses to start with the verifier set, as
+ * `FX_MODE=live` is refused until its gate opens: the PR that implements the ruling replaces this
+ * refusal, never an environment change. Outside production it stays available for development
+ * and tests. Unset is the default everywhere.
+ */
+function visionVerifier(env: NodeJS.ProcessEnv, isProduction: boolean): string | null {
+  const model = env['AI_MODEL_VISION_VERIFIER'] || null;
+  if (model && isProduction) {
+    throw new ConfigError(
+      'AI_MODEL_VISION_VERIFIER is refused in production until the owner rules on OD-63(c): ' +
+        'the verifier would send names nobody recorded to OpenAI. Unset it to start.',
+    );
+  }
+  return model;
+}
+
+/**
  * The operator plane's identity provider, or a refusal to run without one.
  *
  * Provider-neutral on purpose: issuer, audience and key set are deployment
@@ -1560,7 +1583,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     aiModelVision: env['AI_MODEL_VISION'] ?? ROLE_DEFAULTS.vision,
     aiModelEscalation: env['AI_MODEL_ESCALATION'] ?? ROLE_DEFAULTS.escalation,
     aiModelTranscriber: env['AI_MODEL_TRANSCRIBER'] ?? ROLE_DEFAULTS.transcriber,
-    aiModelVisionVerifier: env['AI_MODEL_VISION_VERIFIER'] || null,
+    aiModelVisionVerifier: visionVerifier(env, isProduction),
     aiBaseUrl: aiBaseUrl(env, isProduction),
     aiModelPrices: env['AI_MODEL_PRICES'] || null,
     aiTranscriptionPrices: env['AI_TRANSCRIPTION_PRICES'] || null,
