@@ -79,6 +79,8 @@ describe('customer creation follows the record, not the token (owner review of #
       'bought cement from Musa 08039998888 for 40k cash',
     );
     expect(stubSender.lastText).not.toContain('CUSTOMER_');
+    /* A usable supplier name is still shown, exactly as it is stored (`supplierNameOf`). */
+    expect(stubSender.lastText).toContain('From: Musa\n');
     await plain('wamid.S1-yes', 'yes');
 
     /* The purchase itself is saved, once, for its amount: the checks below are not vacuous. */

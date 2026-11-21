@@ -4679,11 +4679,13 @@ async function unsureReply(
   if (latest?.state === 'expired') {
     return expiredAnswer(latest.command, latest.previewed, 'yes') ?? replies.nothingToConfirm();
   }
-  /* The scan a plain yes makes (`pastRefusals`), read-only: another member's refusal is looked
-   * past, and so is another member's newer request while the sender's own refusal may stand behind
-   * it. Found and still the last thing the sender recorded, that refusal is what a plain yes would
-   * be about, so this answer is the one that yes gets, never an invitation to send it (CodeRabbit
-   * on #437 at 0e12742). */
+  /* Close to the scan a plain yes makes (`pastRefusals`), read-only: another member's refusal is
+   * looked past, and so is another member's newer request while the sender's own refusal may stand
+   * behind it. Found behind another member's preview and still the last thing the sender recorded,
+   * that refusal is what a plain yes would be about, so this answers as that yes does, never as an
+   * invitation to send it (CodeRabbit on #437 at 0e12742). Where a plain yes would close the
+   * sender's own refusal and point at a preview behind it, this still answers "nothing waiting"
+   * (OD-62(p)); nothing is saved either way. */
   const lookedPast: string[] = [];
   let first: conversationsRepo.DraftRow | null = null;
   let pending = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
