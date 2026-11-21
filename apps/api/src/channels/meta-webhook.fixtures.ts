@@ -14,7 +14,8 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type RunnerDeps } from '../jobs/jobs.module.js';
-import { issueRepo } from '@rekoda/db';
+import { customersRepo, issueRepo } from '@rekoda/db';
+import { encryptFacet, matchKeyFor, normaliseFacet } from '@rekoda/core/vault';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { Interpreter } from '../ai/interpreter.service.js';
 import { StubTransport } from '../ai/transport.stub.js';
@@ -310,4 +311,36 @@ export function orderPayload(
       },
     ],
   };
+}
+
+/**
+ * A customer the business already recorded, under a fixed token, with a NAME the
+ * gateway's known-name pass recognises (G-137). A stubbed model may name a customer
+ * only by a token this message was issued, exactly as the real one can: so a test
+ * whose stub answers `CUSTOMER_7K2` records "Ada" as that customer, and its message
+ * names Ada, which is what issues the token. Idempotent per business and token.
+ */
+export async function knownCustomer(
+  businessId: string,
+  name = 'Ada',
+  token = 'CUSTOMER_7K2',
+): Promise<{ id: string; token: string }> {
+  const existing = await withBusiness(db, businessId, (tx) =>
+    customersRepo.customerIdForToken(tx, businessId, token),
+  );
+  if (existing) return { id: existing, token };
+  const composed = name.normalize('NFC');
+  const created = await customersRepo.createCustomerWithIdentities(db, businessId, token, [
+    {
+      facet: 'name',
+      ciphertext: encryptFacet(composed, deps.config.vaultKey, `${businessId}:name`),
+      matchKey: matchKeyFor(
+        businessId,
+        'name',
+        normaliseFacet('name', composed),
+        deps.config.matchKey,
+      ),
+    },
+  ]);
+  return { id: created.id, token: created.token };
 }

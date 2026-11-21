@@ -1,6 +1,6 @@
 # 0005 — Privacy gateway: deterministic-first tokenisation, self-hosted STT
 
-**Status:** Accepted; the self-hosted STT portion is **superseded by [0032](0032-launch-media-architecture.md)** (2026-08-29) — the launch transcriber is OpenAI, and no self-hosted STT service exists. The tokenisation gateway this ADR designed is unchanged and current.
+**Status:** Accepted, amended by Amendment 1 (accepted 21 Nov 2026, OWN-100) for names in read-only questions; the self-hosted STT portion is **superseded by [0032](0032-launch-media-architecture.md)** (2026-08-29) — the launch transcriber is OpenAI, and no self-hosted STT service exists. The tokenisation gateway this ADR designed is unchanged and current.
 **Date:** 2026-08-19
 
 ## Context
@@ -43,3 +43,86 @@ name ever." Layer 1 improves automatically as a business's customer list
 grows. The vault is the single highest-sensitivity store in the system:
 encrypted at rest, access-audited, and excluded from ordinary backups'
 retention rules only via the documented erasure procedure.
+
+## Amendment 1 (ACCEPTED 21 Nov 2026, owner ruling OWN-100): names in questions, and what the history keeps
+
+**Status: ACCEPTED** by the owner on 21 Nov 2026 (OWN-100, `REKODA_OWNER_DECISIONS.md`), on PR #437
+(G-135). Proposed 20 Nov 2026 after CodeRabbit raised the conflict on #437; the owner chose the narrowed
+Option A. Option C (questions create customers) is rejected, and Option B (a permanent store of unknown
+names) is not approved. Layer 3 above is kept as it was accepted on 2026-08-19 and is history for the
+case this amendment covers: from this amendment on, an unknown name in a read-only question is governed
+by case 3 below, not by "reaches the LLM once". Every other part of this ADR is unchanged. The
+implementation and evidence are in `docs/plans/G-136-conversation-privacy-design.md`.
+
+**Why.** BA-OD-3 (OWN-99) rules that a read never creates a customer. Layer 3 assumed that every name the
+model reports is vaulted at once, so that later mentions resolve through layer 1. Since #437, a question
+resolves a name by lookup only, and a phone or email nobody recorded stands as a provisional token. So
+for a person nobody recorded, nothing is vaulted until a record needs them.
+
+**Rule: five cases.**
+
+1. **A recognised customer** (a name, phone or email already in the business's vault). Unchanged.
+   Layer 1 or layer 2 replaces it with its token before any model call, in questions and in records
+   alike.
+2. **An unknown phone or email.** Layer 2 still replaces it before any model call, but with a provisional
+   per-message token (`CUSTOMER_U…`) and no customer. A question names nobody by it. It becomes a
+   customer only as the `customer` of a sale, payment or order (found or created, as layer 2 always did,
+   and the record carries the stored token), or as the second facet beside that customer that PR #77's
+   owner rule asks about in the preview. Anywhere else in a record's words it is kept as `[phone]` or
+   `[email]`, and creates nobody (owner review of #437 at `3a60b0f`).
+3. **An unknown name in a read-only question** (`Query`).
+   - Nothing is created (BA-OD-3).
+   - The reply says the books hold no customer by that name.
+   - **The exception:** the name reaches the interpretation model as typed each time a message contains
+     it, until the merchant records the person. It is bounded as follows:
+     - at most two calls per interpretation attempt (the primary and one escalation), both to
+       Anthropic;
+     - text read from a photographed document also passes the Anthropic document classifier first;
+     - a job that rolls back and is retried makes its attempt again;
+     - no other processor, no other intent, and no log line or `usage_events.meta` field;
+     - it adds no disclosure to any other provider and no new store of identities, and the
+       retention, erasure and access controls that apply to every message apply to these.
+4. **A name first met in a record** (sale, invoice, payment, order and the other record intents).
+   Unchanged. It is vaulted as soon as the command is interpreted (`resolveMention`), before the merchant
+   confirms.
+5. **A correction (CG5) that names nobody** ("No, 4 not 3"). The model reads it from its own words and
+   never sees an earlier turn. The customer is carried from the trusted pending draft it corrects, by
+   Rekoda and never by the model: that draft must be the merchant's own, the only one waiting, live,
+   previewed, of the same kind, with no refusal or question since. A token the model writes is still
+   refused (G-137 below). Anything less clear is asked about (owner ruling OWN-100).
+
+**What the history keeps (G-136).** The exception covers what the model reads. It never covers what
+Rekoda stores.
+
+- **Conversation history.** `conversation_messages.body` holds only a structural placeholder for every
+  model-routed message, every chat reply and every message to a customer (`[text message]`,
+  `[voice note]`, `[receipt photo]`, `[customer message]`, `[reply]`). Template sends and document
+  deliveries keep their existing bodies, a template name or a document caption (its number and amount),
+  which name no person. The text lives only in the job's memory while it runs.
+- **The webhook body** stays sealed under the vault key in `external_events.payload`. When the merchant
+  sends DELETE MY DATA, it is erased for every message Rekoda has finished processing, whatever outcome
+  its handler noted, along with the identities and any conversation text stored before G-136. Messages
+  not yet processed, delivery-status events and events with no business keep their sealed bodies. Each
+  event seals only its own message; a row stored before #437 may still hold a body Meta batched with
+  another business's message, which that business's erasure does not reach.
+
+**A record's token** must be one this message was issued (G-137). Token syntax is not authority: a
+record whose `customer` is any other token is refused, and any other customer token in a record's words
+reads `[customer]`.
+
+**Bounds that do not change:**
+
+- the no-training API terms;
+- the approved interpretation processor (Anthropic);
+- the observability contract;
+- the vault's encryption and audit;
+- two-ask erasure of vault identities.
+
+No table, migration or store of unknown names is added.
+
+**Public copy.** `/ai-privacy` said: "The first time you mention a new customer by name, the model reads
+that one message to understand it. The name is then stored encrypted with its own token, nothing keeps a
+readable copy, and every later message that names them is protected before it leaves." Case 3
+contradicted it for questions, so the owner approved the replacement (OWN-100) and it is applied in
+PR #437 together with this amendment (`apps/web/src/app/ai-privacy/page.tsx`; the claims are mapped to
+code and tests in `docs/plans/G-136-conversation-privacy-design.md` §6.1).

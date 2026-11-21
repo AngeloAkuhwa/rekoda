@@ -68,7 +68,10 @@ function messagesOf(businessId: string) {
 }
 
 describe('rehydration happens at the boundary and nowhere before it', () => {
-  it('sends the real name and stores the token', async () => {
+  /* Was "sends the real name and stores the token". Since G-136 (owner directive on #437)
+   * a reply is stored as what it was, never what it said: a reply can repeat a name
+   * nobody recorded (a supplier, a model-written question) and nothing reads it back. */
+  it('sends the real name and stores neither it nor the text', async () => {
     const businessId = await seedBusiness();
     const tokens = new Map([['CUSTOMER_7K2', 'Adaeze Okonkwo']]);
 
@@ -87,8 +90,7 @@ describe('rehydration happens at the boundary and nowhere before it', () => {
     // What the database holds. If these two were the same string, the gateway
     // would be decorative.
     const [stored] = await messagesOf(businessId);
-    expect(stored!.body).toBe('CUSTOMER_7K2 now owes ₦50,000.');
-    expect(stored!.body).not.toContain('Adaeze');
+    expect(stored!.body).toBe('[reply]');
   });
 
   it('substitutes the longest token first', async () => {
@@ -212,11 +214,9 @@ describe('the text that leaves fits after rehydration (G-60 final review)', () =
      * taken out, no fragment of a name, number or address is left. */
     const rest = sent.replaceAll(display, '');
     expect(rest).not.toMatch(/Adaeze|Okonkwo|Bello|0803|example/);
+    /* Stored as what it was (G-136): the record no longer repeats the text sent. */
     const [stored] = await messagesOf(businessId);
-    expect(stored!.body).not.toContain('Adaeze');
-    expect(stored!.body).toContain('CUSTOMER_7K2');
-    /* The record says what was sent, in tokens. */
-    expect((stored!.body ?? '').replaceAll('CUSTOMER_7K2', display)).toBe(sent);
+    expect(stored!.body).toBe('[reply]');
   });
 
   it('fits one long display that alone pushes a short reply over', async () => {

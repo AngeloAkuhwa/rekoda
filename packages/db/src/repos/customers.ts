@@ -9,6 +9,8 @@
  * Both tables are under row-level security, so every read and write here goes
  * through a tenant pin.
  */
+import { eraseStoredText } from './conversations.js';
+import { eraseFinishedMessagePayloads } from './events.js';
 import { and, eq, sql } from 'drizzle-orm';
 import type { Db, TenantDb } from '../client.js';
 import { withBusiness } from '../client.js';
@@ -485,6 +487,49 @@ export async function eraseAllIdentities(
   });
 
   return deleted.length;
+}
+
+/**
+ * The text outside the vault that can still name a customer, erased with them
+ * (G-136 R4, owner directive on #437): conversation text stored before G-136
+ * (`eraseStoredText`) and the sealed bodies of finished WhatsApp messages
+ * (`eraseFinishedMessagePayloads`). In bounded batches, in the caller's
+ * transaction, audited with counts only.
+ */
+export async function eraseTextOutsideTheVault(
+  tx: TenantDb,
+  businessId: string,
+  sourceType: string,
+): Promise<{ messageText: number; messagePayloads: number }> {
+  /* Keyset passes of 5,000 rows each (`eraseInBatches`): each pass reads about the rows
+   * it erases, so the whole erasure grows linearly with the business's history. */
+  const all = async (
+    pass: (after: string | null) => Promise<{ count: number; last: string | null }>,
+  ) => {
+    let total = 0;
+    let after: string | null = null;
+    for (;;) {
+      const { count, last } = await pass(after);
+      total += count;
+      if (last === null) return total;
+      after = last;
+    }
+  };
+  const messageText = await all((after) => eraseStoredText(tx, businessId, { after }));
+  const messagePayloads = await all((after) =>
+    eraseFinishedMessagePayloads(tx, businessId, { after }),
+  );
+  await tx.insert(auditEvents).values({
+    businessId,
+    actor: 'system',
+    entity: 'conversation_messages',
+    entityId: null,
+    action: 'erased',
+    newValue: { messageTextErased: messageText, messagePayloadsErased: messagePayloads },
+    reason: 'the merchant asked for erasure',
+    sourceType,
+  });
+  return { messageText, messagePayloads };
 }
 
 /** Whether this customer holds a known (matchable) name (G-60). */

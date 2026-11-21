@@ -28,6 +28,7 @@ import {
   stubTransport,
   useMetaWebhookHarness,
   workerDb,
+  knownCustomer,
 } from './meta-webhook.fixtures.js';
 import { setPlanForTest } from '@rekoda/db/testing';
 
@@ -36,7 +37,15 @@ useMetaWebhookHarness();
 describe('consent (STOP/START) and erasure, as facts not sentences', () => {
   async function seedMerchant(phone: string, name: string) {
     const user = await identity.upsertUserByPhone(db, phone);
-    return identity.createBusinessWithOwner(db, { name, businessType: null, ownerUserId: user.id });
+    const business = await identity.createBusinessWithOwner(db, {
+      name,
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    /* The customer the stubbed model names as CUSTOMER_7K2, recorded so a message
+     * naming Ada is issued that token (G-137). */
+    await knownCustomer(business.id);
+    return business;
   }
 
   it('STOP persists, suppresses proactive deliveries, and START undoes it', async () => {
@@ -156,6 +165,16 @@ describe('consent (STOP/START) and erasure, as facts not sentences', () => {
         { facet: 'phone', ciphertext: 'sealed-phone', matchKey: 'mk-phone' },
       ],
     );
+    /* A body stored as text before G-136: the erasure reaches it too (R4). */
+    await withBusiness(db, business.id, (tx) =>
+      conversationsRepo.recordInbound(tx, {
+        businessId: business.id,
+        channel: 'meta',
+        kind: 'text',
+        body: 'sold Chiamaka Okafor 2 wigs',
+        providerMessageId: 'wamid.LEGACY',
+      }),
+    );
 
     await post(messagePayload('2348031234567', 'wamid.DEL1', 'delete my data'));
     expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
@@ -163,7 +182,8 @@ describe('consent (STOP/START) and erasure, as facts not sentences', () => {
 
     await post(messagePayload('2348031234567', 'wamid.DEL2', 'delete my data'));
     expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
-    expect(stubSender.lastText).toContain('deleted (2 records)');
+    /* One more than the test seeds: seedMerchant records Ada (G-137), and erasure takes her name too. */
+    expect(stubSender.lastText).toContain('deleted (3 records)');
     /* The rest is on the deployment's own data deletion page: REKODA_WEB_URL,
      * through config.webUrl, the only link and the last thing in the reply. */
     expect((stubSender.lastText ?? '').match(/\S+:\/\/\S+/g)).toEqual([
@@ -179,6 +199,72 @@ describe('consent (STOP/START) and erasure, as facts not sentences', () => {
       customersRepo.identityFacetsFor(tx, business.id, customer.id),
     );
     expect(left).toEqual([]);
+    /* Through the chat path, not only the repository: the old text and the sealed
+     * bodies of the finished messages are erased with the identities (G-136 R4). */
+    const leftovers = await withBusiness(db, business.id, async (tx) => ({
+      text: [
+        ...(await tx.execute<{ n: number }>(sql`
+          SELECT count(*)::int AS n FROM conversation_messages
+          WHERE business_id = ${business.id}::uuid AND body LIKE '%Chiamaka%'`)),
+      ][0]!.n,
+      erasedPayloads: [
+        ...(await tx.execute<{ n: number }>(sql`
+          SELECT count(*)::int AS n FROM external_events
+          WHERE business_id = ${business.id}::uuid AND payload = '{"erased": true}'::jsonb`)),
+      ][0]!.n,
+    }));
+    expect(leftovers.text).toBe(0);
+    /* DEL1 was finished before DEL2 ran; DEL2 itself is still being processed. */
+    expect(leftovers.erasedPayloads).toBe(1);
+
+    /* Meta redelivers DEL1 after its body was erased (owner review of #437): the row
+     * still names the message by its provider id, so it is a duplicate, nothing is
+     * queued and nothing is answered. */
+    const sentBefore = stubSender.sent.length;
+    await post(messagePayload('2348031234567', 'wamid.DEL1', 'delete my data'));
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(false);
+    expect(stubSender.sent.length).toBe(sentBefore);
+  });
+
+  it('DELETE MY DATA leaves the books exactly as they were (R4, OWN-100)', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    async function say(text: string, wamid: string) {
+      await post(messagePayload('2348031234567', wamid, text));
+      const runner = buildRunner(workerDb, db, deps);
+      let worked = await runner.runOnce();
+      while (worked) worked = await runner.runOnce();
+    }
+    stubTransport.replyWith({
+      intent: 'RecordSale',
+      customer: { kind: 'token', token: 'CUSTOMER_7K2' },
+      items: [{ name: 'wig', quantity: 3, unitPrice: 50_000 }],
+      statedTotal: 150_000,
+      reportedPayment: 100_000,
+      paymentMethod: 'transfer',
+      discount: null,
+      deliveryFee: null,
+      dueDescription: null,
+    });
+    await say('Ada bought 3 wigs for 150k, paid 100k', 'wamid.R4-SALE');
+    await say('yes', 'wamid.R4-YES');
+    const books = () =>
+      withBusiness(db, business.id, async (tx) => ({
+        entries: await issueRepo.ledgerEntriesFor(tx, business.id),
+        documents: [
+          ...(await tx.execute<{ invoices: number; receipts: number; payments: number }>(sql`
+            SELECT (SELECT count(*)::int FROM invoices WHERE business_id = ${business.id}::uuid) AS invoices,
+                   (SELECT count(*)::int FROM receipts WHERE business_id = ${business.id}::uuid) AS receipts,
+                   (SELECT count(*)::int FROM payments WHERE business_id = ${business.id}::uuid) AS payments`)),
+        ],
+      }));
+    const before = await books();
+    expect(await invoiceCount(business.id)).toBe(1);
+
+    await say('delete my data', 'wamid.R4-DEL1');
+    await say('delete my data', 'wamid.R4-DEL2');
+    expect(stubSender.lastText).toContain('deleted (');
+
+    expect(await books()).toEqual(before);
   });
 
   it('erasure with no web URL still deletes, and names no link at all', async () => {
@@ -196,7 +282,8 @@ describe('consent (STOP/START) and erasure, as facts not sentences', () => {
     await post(messagePayload('2348031234567', 'wamid.DELN2', 'delete my data'));
     expect(await buildRunner(workerDb, db, noWeb).runOnce()).toBe(true);
 
-    expect(stubSender.lastText).toContain('deleted (1 record)');
+    /* One more than the test seeds: seedMerchant records Ada (G-137), and erasure takes her name too. */
+    expect(stubSender.lastText).toContain('deleted (2 records)');
     expect(stubSender.lastText).toContain('Your conversations and account can be deleted too');
     // No scheme, no www, and no bare `name.tld` a phone would still link.
     expect(stubSender.lastText).not.toMatch(/:\/\/|www\.|[a-z0-9-]\.[a-z]{2,}/i);
@@ -226,7 +313,8 @@ describe('consent (STOP/START) and erasure, as facts not sentences', () => {
 
     await post(messagePayload('2348031234567', 'wamid.DELF2', 'delete my data'));
     expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
-    expect(stubSender.lastText).toContain('deleted (1 record)');
+    /* One more than the test seeds: seedMerchant records Ada (G-137), and erasure takes her name too. */
+    expect(stubSender.lastText).toContain('deleted (2 records)');
 
     const confirmations = await withBusiness(db, business.id, (tx) =>
       tx.execute<{ command: string; claimed_at: Date | null }>(
@@ -324,7 +412,15 @@ describe('consent (STOP/START) and erasure, as facts not sentences', () => {
 describe('the trial clock and the upgrade door', () => {
   async function seedMerchant(phone: string, name: string) {
     const user = await identity.upsertUserByPhone(db, phone);
-    return identity.createBusinessWithOwner(db, { name, businessType: null, ownerUserId: user.id });
+    const business = await identity.createBusinessWithOwner(db, {
+      name,
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    /* The customer the stubbed model names as CUSTOMER_7K2, recorded so a message
+     * naming Ada is issued that token (G-137). */
+    await knownCustomer(business.id);
+    return business;
   }
 
   /** Age the trial past its date, as the full trial length would. */
@@ -418,6 +514,7 @@ describe('metering the things that cost money', () => {
       businessType: null,
       ownerUserId: user.id,
     });
+    await knownCustomer(business.id);
 
     // Burn the trial's 25 documents, leaving the allowance exactly spent.
     const period = usagePeriod(new Date());

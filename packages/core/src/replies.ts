@@ -112,6 +112,17 @@ export function erasureNotYours(): Reply {
 }
 
 /**
+ * A record named a customer by a reference this message never carried
+ * (G-137): nothing was drafted, because the reference could be somebody else's.
+ */
+export function customerNotRecognised(): Reply {
+  return reply(
+    'I could not tell which customer that is for, so I have not recorded it. ' +
+      "Tell me the record again with the customer's name or phone number.",
+  );
+}
+
+/**
  * A write refused by role, not by understanding.
  *
  * An accountant's access is view only across the whole product (spec §35):
@@ -841,6 +852,18 @@ export function previewBehindQuestion(): Reply {
   return reply(
     'There is still a preview waiting from before the last question. Check it, then ' +
       'reply *yes* to save it.',
+  );
+}
+
+/**
+ * A "yes" straight after a refusal or a failed reading, with a preview still
+ * waiting from before it (owner review of #437). The yes was about the
+ * refusal, so nothing is saved; the preview is pointed at, never confirmed.
+ */
+export function previewBehindRefusal(): Reply {
+  return reply(
+    'Nothing was saved from your last message. There is still a preview waiting from ' +
+      'before it. Check it, then reply *yes* to save it.',
   );
 }
 
@@ -1723,12 +1746,62 @@ export function expensesAnswer(input: {
  * about; anybody reading over their shoulder does not, and this text is
  * plaintext on somebody else's servers.
  */
-export function customerBalanceAnswer(rows: DebtorLine[], totalK: number): Reply {
-  if (rows.length === 0) {
+export function customerBalanceAnswer(
+  rows: DebtorLine[],
+  totalK: number,
+  /** Every open invoice of theirs, from SQL; `rows` may list fewer. */
+  count: number = rows.length,
+): Reply {
+  if (count === 0) {
     return reply('That customer has nothing outstanding. Every invoice of theirs is paid.');
   }
   const lines = rows.map((r) => `${r.invoiceNumber}: ${formatKobo(r.balanceDueK)}`);
-  return reply(`They owe you ${formatKobo(totalK)} in total.\n\n${lines.join('\n')}`);
+  const unlisted = count - rows.length;
+  const more =
+    unlisted > 0
+      ? `\n…and ${unlisted} additional outstanding invoice${unlisted === 1 ? '' : 's'}, included in the total.`
+      : '';
+  return reply(`They owe you ${formatKobo(totalK)} in total.\n\n${lines.join('\n')}${more}`);
+}
+
+/**
+ * A balance whose figures could not be stated exactly (an amount past what
+ * Rekoda can count to the kobo). Never a rounded figure; the records are
+ * unchanged and the dashboard is the next step.
+ */
+export function balanceNotStated(): Reply {
+  return reply(
+    'I could not total that balance exactly, so I have not sent a figure. ' +
+      'Your records are unchanged. Open the invoices list on your dashboard to see each one.',
+  );
+}
+
+/**
+ * A balance question about a name the books do not hold (OD-3).
+ *
+ * Not "they owe nothing": that is a claim about somebody Rekoda has never
+ * recorded. And no customer is created to answer it, because a question is
+ * a read.
+ */
+export function customerNotKnown(): Reply {
+  return reply(
+    'I do not have a customer by that name in your records. Check the spelling, ' +
+      'or send *who owes me* to see everyone who owes you.',
+  );
+}
+
+/**
+ * A customer named on a question whose figures are kept only for the whole
+ * business (G-135): sales, spending, suppliers, exceptions, reports. Answering
+ * with the business's totals would read as that customer's; only what a
+ * customer owes is kept per customer, so that is the question offered.
+ */
+export function customerFiguresNotKept(): Reply {
+  return reply(
+    'I can tell you what one customer owes you, but I do not keep sales, spending or ' +
+      'other figures per customer yet. For a balance, ask like *how much does Ada owe me*. ' +
+      'For your whole business, ask again without a name.',
+  );
 }
 
 /** Money owed OUT, to suppliers. The other side of the debtors question. */

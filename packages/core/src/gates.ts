@@ -392,6 +392,50 @@ export function looksLikeCorrection(text: string, hasPendingDraft: boolean): boo
   return CORRECTION_OPENERS.test(trimmed) || CORRECTION_PHRASES.test(trimmed);
 }
 
+/**
+ * Whether a message CLEARLY corrects the draft before it (CG5, owner ruling OWN-100), the bar a
+ * correction must meet to keep that draft's customer. Stricter than `looksLikeCorrection`, whose
+ * bare "not" anywhere also matches a new request ("Sold 2 bags for 20k, not paid yet").
+ *
+ * The WHOLE message must be a short correction and nothing else (independent review of #437 at
+ * b5079a8): an optional opener ("no", "sorry", "wait"), then one of
+ *  - "should be", "make it" or "change it to" a figure ("the price should be 60k", "make it 5 wigs");
+ *  - one figure instead of / rather than another ("5 wigs instead of 3");
+ *  - one figure not another ("4 not 3", "it was 60k not 50k", "she paid 60k not 50k").
+ * A figure may carry ₦, N or NGN, commas, a decimal point and "k", and at most one word after it
+ * that is not a time or a date ("5pm", "2 days", "tomorrow", "25 Dec" are never figures here).
+ * Anything else, whatever wording it contains ("Sold 5 bags, 10k each, total should be 50k"), is
+ * not clearly a correction and is asked about: listing new-sale wordings can never be complete, so
+ * the shape of a correction is allowed and everything else is refused.
+ */
+const FIG = String.raw`(?:(?:₦|NGN|N)\s*)?\d[\d,]*(?:\.\d+)?(?:\s*k)?`;
+const TIME_WORD = String.raw`(?:am|pm|o'?clock|h|hrs?|hours?|mins?|minutes?|days?|weeks?|months?|years?|st|nd|rd|th|today|tomorrow|tonight|noon|midnight|morning|evening|night|jan\w*|feb\w*|mar\w*|apr\w*|may|jun\w*|jul\w*|aug\w*|sep\w*|oct\w*|nov\w*|dec\w*|mon\w*|tue\w*|wed\w*|thu\w*|fri\w*|sat\w*|sun\w*)`;
+/* A figure, then at most one word that is not a time or a date ("4 wigs", "4pcs", "60k each"). */
+/* Words that add to the draft or start another one ("5 more", "5 also", "another") never fill it. */
+const ADDING_WORD = String.raw`(?:more|extra|also|too|again|another|new|additional|plus|and|other|others)`;
+const AMOUNT = String.raw`${FIG}(?:\s*(?!(?:${TIME_WORD}|${ADDING_WORD})\b)[a-z]+)?`;
+const OPENER = String.raw`(?:(?:no+|nope|nah|sorry|wait|actually|correction|oh|ok|okay|e no be)\b[\s,.!:;-]*)*`;
+/* Who or which field is corrected: a closed list, never "the other" or "the new" (another sale). */
+const FIELD = String.raw`(?:price|unit\s+price|total|amount|quantity|qty|balance|cost|rate|discount|delivery\s+fee|payment)`;
+const SUBJECT = String.raw`(?:(?:it|she|he|they|(?:the\s+)?${FIELD})\s+)?`;
+const CLEAR_CORRECTION = new RegExp(
+  String.raw`^${OPENER}(?:` +
+    String.raw`${SUBJECT}(?:should\s+be|make\s+it|change\s+(?:it\s+|(?:the\s+)?${FIELD}\s+)?to)\s+${AMOUNT}(?:,?\s+not\s+${AMOUNT})?` +
+    String.raw`|${AMOUNT}\s+(?:instead\s+of|rather\s+than)\s+${AMOUNT}` +
+    String.raw`|(?:(?:it\s+was|it'?s|it\s+is|(?:she|he|they)\s+paid|paid)\s+)?${AMOUNT}(?:\s+for\s+[a-z]+)?,?\s+not\s+${AMOUNT}` +
+    String.raw`)\s*[.!]*$`,
+  'i',
+);
+
+/** A correction is a line, never a paragraph: anything longer is asked about, in constant time. */
+const MAX_CORRECTION_LENGTH = 80;
+
+export function clearlyCorrects(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed || trimmed.length > MAX_CORRECTION_LENGTH) return false;
+  return CLEAR_CORRECTION.test(trimmed);
+}
+
 /* ── money coming IN against an invoice already issued ───────────────────── */
 
 export interface PaymentLike {

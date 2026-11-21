@@ -9,7 +9,7 @@
  * to obtain one; storing a raw message through it is not an oversight that
  * could happen, it is a value the caller would have to construct by hand.
  */
-import { and, desc, eq, isNull, sql } from 'drizzle-orm';
+import { type SQL, and, desc, eq, isNull, notInArray, sql } from 'drizzle-orm';
 import {
   CONFIRMATION_TTL_SECONDS,
   PURCHASE_QUESTION_SECONDS,
@@ -619,7 +619,8 @@ export function pendingDraft(
 export function pendingDraftToAnswer(
   tx: TenantDb,
   businessId: string,
-  options: { asOf?: Date } = {},
+  /* `except`: drafts to look past, such as another member's refusal (owner review of #437). */
+  options: { asOf?: Date; except?: readonly string[] } = {},
 ): Promise<DraftRow | null> {
   return newestPendingDraft(tx, businessId, { ...options, reads: 'skip' });
 }
@@ -627,7 +628,7 @@ export function pendingDraftToAnswer(
 async function newestPendingDraft(
   tx: TenantDb,
   businessId: string,
-  options: { asOf?: Date | undefined; reads: ReadDrafts },
+  options: { asOf?: Date | undefined; reads: ReadDrafts; except?: readonly string[] | undefined },
 ): Promise<DraftRow | null> {
   const rows = await tx
     .select({
@@ -654,6 +655,7 @@ async function newestPendingDraft(
         eq(commandDrafts.state, 'pending'),
         readsFilter(options.reads),
         seenBy(options.asOf),
+        options.except?.length ? notInArray(commandDrafts.id, [...options.except]) : undefined,
       ),
     )
     /* The newest PENDING draft is what the merchant's "yes" will execute, so
@@ -664,6 +666,166 @@ async function newestPendingDraft(
     .orderBy(desc(commandDrafts.insertionSeq))
     .limit(1);
   return rows[0] ?? null;
+}
+
+/**
+ * How many drafts a "yes", a "no" or a correction could be about, seen by `asOf`: pending,
+ * not a read-only Query (Build 6) and not a refusal (`isRefusalDraft`). Counted in SQL. A
+ * correction keeps the customer of the draft it corrects only when this is exactly one (CG5,
+ * owner ruling 21 Nov 2026): with two waiting, which one it corrects is a question.
+ */
+export async function answerableDraftCount(
+  tx: TenantDb,
+  businessId: string,
+  options: { asOf?: Date } = {},
+): Promise<number> {
+  /* Seen by `asOf` and still inside its window at `asOf` (G-23): an expired preview the sweep has
+   * not reached yet is not waiting. A refusal is excluded only when `refused` is exactly true: an
+   * `Unclear` clarification with no such key counts (null-safe, CodeRabbit on #437). */
+  const at = options.asOf
+    ? sql`${options.asOf.toISOString()}::timestamptz`
+    : sql`clock_timestamp()`;
+  const rows = await tx.execute<{ n: number }>(sql`
+    SELECT count(*)::int AS n FROM command_drafts
+     WHERE business_id = ${businessId}::uuid
+       AND state = 'pending'
+       AND intent <> 'Query'
+       AND NOT (intent = 'Unclear' AND COALESCE(command->>'refused', '') = 'true')
+       AND created_at <= ${at}
+       AND (expires_at IS NULL OR expires_at > ${at})`);
+  return [...rows][0]?.n ?? 0;
+}
+
+/**
+ * Whether a refusal or a read-only question was recorded after `draftId`, seen by `asOf`, in ANY
+ * state (CG5, OWN-100). A correction keeps the customer only when nothing came between the
+ * preview and it; a "yes" that closed the refusal or retired the question does not remove that.
+ */
+export async function hasRefusalOrQuestionSince(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  options: { asOf?: Date } = {},
+): Promise<boolean> {
+  const seen = options.asOf
+    ? sql`AND created_at <= ${options.asOf.toISOString()}::timestamptz`
+    : sql``;
+  const rows = await tx.execute<{ found: boolean }>(sql`
+    SELECT EXISTS (
+      SELECT 1 FROM command_drafts
+       WHERE business_id = ${businessId}::uuid
+         AND (intent = 'Query' OR (intent = 'Unclear' AND COALESCE(command->>'refused', '') = 'true'))
+         AND insertion_seq > (
+           SELECT d.insertion_seq FROM command_drafts d
+            WHERE d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid)
+         ${seen}) AS found`);
+  return [...rows][0]?.found === true;
+}
+
+/**
+ * Close one pending refusal draft (owner review of #437 at 3a60b0f).
+ *
+ * A message Rekoda answered with a refusal or a failed reading instead of a
+ * record leaves a pending `Unclear` draft marked `refused` that holds only the
+ * sentence, so that a "yes" right after it is about it and never about an
+ * older preview. The answer that "yes" (or a "no") gets closes it here, once:
+ * `superseded`, never `abandoned`, which would read as a retired purchase
+ * question and leave the preview before it unconfirmable for good
+ * (`isBehindRetiredQuestion`). Only that draft, only while pending.
+ */
+export async function closeRefusalDraft(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+): Promise<boolean> {
+  const updated = await tx
+    .update(commandDrafts)
+    .set({ state: 'superseded', updatedAt: new Date() })
+    .where(
+      and(
+        eq(commandDrafts.businessId, businessId),
+        eq(commandDrafts.id, draftId),
+        eq(commandDrafts.state, 'pending'),
+        eq(commandDrafts.intent, 'Unclear'),
+      ),
+    )
+    .returning({ id: commandDrafts.id });
+  return updated.length === 1;
+}
+
+/**
+ * Whether `requestedBy` has recorded any draft since `draftId`, in any state and of any
+ * intent, a question included (owner review of #437): their refusal is then no longer the
+ * last thing they read, so a "yes" or "no" of theirs is not about it.
+ */
+export async function hasDraftsAfterBy(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  requestedBy: string,
+  options: { asOf?: Date } = {},
+): Promise<boolean> {
+  const seen = options.asOf
+    ? sql`AND created_at <= ${options.asOf.toISOString()}::timestamptz`
+    : sql``;
+  const rows = await tx.execute<{ found: boolean }>(sql`
+    SELECT EXISTS (
+      SELECT 1 FROM command_drafts
+       WHERE business_id = ${businessId}::uuid
+         AND requested_by = ${requestedBy}::uuid
+         -- A preview WhatsApp reported undelivered was never read (CodeRabbit on #437).
+         AND retired_reason IS DISTINCT FROM 'preview_not_delivered'
+         AND insertion_seq > (
+           SELECT d.insertion_seq FROM command_drafts d
+            WHERE d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid)
+         ${seen}) AS found`);
+  return [...rows][0]?.found === true;
+}
+
+/**
+ * Whether the merchant thread holds an inbound message between the one that drafted `draftId`
+ * and `currentMessageId` (CodeRabbit on #437). A free question such as "who owes me" is answered
+ * by the router and writes no draft, so only the thread shows that something was asked since the
+ * preview. The merchant thread is one per business and channel (`resolveThread`), so a message
+ * from any member counts: the correction is then asked about, the safe reading under OWN-100. A
+ * customer's message is in its own CUSTOMER thread and does not count.
+ */
+export async function hasInboundBetween(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  currentMessageId: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ found: boolean }>(sql`
+    SELECT EXISTS (
+      SELECT 1
+        FROM command_drafts d
+        JOIN conversation_messages src
+          ON src.business_id = d.business_id AND src.id = d.conversation_message_id
+        JOIN conversation_messages cur
+          ON cur.business_id = d.business_id AND cur.id = ${currentMessageId}::uuid
+        JOIN conversation_messages m
+          ON m.business_id = d.business_id AND m.conversation_id = src.conversation_id
+       WHERE d.business_id = ${businessId}::uuid
+         AND d.id = ${draftId}::uuid
+         AND m.direction = 'inbound'
+         AND m.id <> src.id
+         AND m.id <> cur.id
+         -- Inclusive: created_at is not unique, so a message sharing either instant still came
+         -- between them; the two ends are excluded by id (CodeRabbit on #437 at c712b1e).
+         AND m.created_at >= src.created_at
+         AND m.created_at <= cur.created_at) AS found`);
+  return [...rows][0]?.found === true;
+}
+
+/** Whether a draft is a refusal's (`closeRefusalDraft`), never a request. */
+export function isRefusalDraft(draft: { intent: string; command: unknown }): boolean {
+  return (
+    draft.intent === 'Unclear' &&
+    typeof draft.command === 'object' &&
+    draft.command !== null &&
+    (draft.command as { refused?: unknown }).refused === true
+  );
 }
 
 /** What a claim found (CG3, G-23). */
@@ -814,7 +976,8 @@ export async function markDraftUnseen(
  * Only `pending` and `expired` drafts move: a confirmed or cancelled one was
  * answered, so its preview was read, a superseded one is gone, and an expired
  * one still carries `previewed` into the "that request has expired" answer a
- * later "yes" gets, which would be false for a preview never received. A
+ * later "yes" gets, which would be false for a preview never received. Both
+ * carry `preview_not_delivered`; an expired one keeps its state. A
  * preview is only ever shown once, by the reply to the message that drafted it
  * (a correction supersedes with a new draft; "I sent you a preview a moment
  * ago" does not re-display one), so the link from reply to drafting message is
@@ -838,8 +1001,9 @@ export async function markPreviewUndelivered(
     ), drafts AS (
       UPDATE command_drafts d SET previewed = false, identity_link = NULL,
              state = CASE WHEN d.state = 'pending' THEN 'superseded' ELSE d.state END,
-             retired_reason = CASE WHEN d.state = 'pending' THEN 'preview_not_delivered'
-                                   ELSE d.retired_reason END,
+             -- Expired too: its preview was never read, so it is not something its member has
+             -- recorded since a refusal (hasDraftsAfterBy; CodeRabbit on #437).
+             retired_reason = 'preview_not_delivered',
              updated_at = clock_timestamp()
         FROM reply
        WHERE d.business_id = ${businessId}::uuid
@@ -2136,4 +2300,183 @@ export async function identityQuestionState(
   return row
     ? { state: row.state, expiresAt: new Date(row.expires_at), freshPreviewWaiting: row.fresh }
     : null;
+}
+
+/** What an erased message body reads as: a fact that a message was here, nothing it said. */
+export const ERASED_BODY = '[erased]';
+
+/**
+ * The structural bodies the product writes, exactly, and nothing else (independent
+ * review and Codex on #437): a deterministic intent by its name (`[affirm]`,
+ * `[number:2]`), a placeholder (`[text message]`, `[voice note]`, `[receipt photo]`,
+ * `[customer message]`, `[reply]`), a non-text Meta message by its type, a template
+ * by its name, the gateway's refusals, and `[erased]`. A body is exempt only when it
+ * is one of these; anything else in brackets ("[ask Bola Ige]", "[ada]") is text
+ * and is erased. A kind added to the router later and missing here is erased too,
+ * which loses nothing: the body is a label, and the row stays.
+ */
+const DETERMINISTIC_KINDS = [
+  'affirm',
+  'business_email',
+  'cancel',
+  'dashboard',
+  'debtors',
+  'delete_my_data',
+  'deny',
+  'greeting',
+  'help',
+  'payment_details',
+  'records',
+  'remind',
+  'resend',
+  'start',
+  'stock',
+  'stop',
+  'unsure',
+  'upgrade',
+];
+const META_TYPES = [
+  'audio',
+  'button',
+  'contacts',
+  'document',
+  'image',
+  'interactive',
+  'location',
+  'order',
+  'reaction',
+  'sticker',
+  'system',
+  'unsupported',
+  'video',
+];
+/**
+ * Exempt only in the direction the product writes it (owner review of #437 at
+ * 3a60b0f): what a merchant or a customer SENT is inbound, so an inbound body is
+ * exempt only as one of the inbound labels; "[reply]" and "[template name]" are
+ * only ever Rekoda's own outbound messages, and is the only outbound label kept. Before this a merchant's pre-G-136
+ * message typed as "[template chiamaka]" matched a label and kept its text.
+ */
+const anchored = (labels: readonly string[]) => '^\\[(?:' + labels.join('|') + ')\\]$';
+const INBOUND_STRUCTURAL_BODY = anchored([
+  ...DETERMINISTIC_KINDS,
+  'number:[0-9]+',
+  ...META_TYPES.map((t) => `${t} message`),
+  'text message',
+  'voice note',
+  'receipt photo',
+  'customer message',
+  'erased',
+  'message too long to read',
+  'message withheld: it held a protected detail',
+]);
+/* No "[template name]": the shape alone does not prove Rekoda's template writer made it
+ * (a merchant's message to a customer was stored as its text before G-136), and erasing
+ * a real label loses nothing (CodeRabbit on #437). */
+const OUTBOUND_STRUCTURAL_BODY = anchored(['reply', 'erased']);
+
+/**
+ * Replace the stored text of this business's conversation history with a
+ * placeholder (G-136 R1 and R4, owner directive on #437, 20 Nov 2026).
+ *
+ * Only rows whose body is not one of the structural bodies of its direction
+ * (`INBOUND_STRUCTURAL_BODY`, `OUTBOUND_STRUCTURAL_BODY`):
+ * since G-136 every new model-routed message is stored as one, so what is left
+ * is text written before it, which can hold a name nobody recorded. The rows
+ * themselves stay (ids, direction, timing, provider ids, the drafts and
+ * receipts that reference them); no financial record is touched.
+ *
+ * Bounded (`limit` rows per call, oldest first) and `before` a cutoff, so an
+ * operator run walks a business in batches. `dryRun` counts and writes
+ * nothing. Returns the count only: nothing of what was erased is read out.
+ */
+export async function eraseStoredText(
+  tx: TenantDb,
+  businessId: string,
+  options: EraseBatchOptions = {},
+): Promise<ErasedBatch> {
+  return eraseInBatches(tx, businessId, options, {
+    name: 'eraseStoredText',
+    table: sql`conversation_messages`,
+    eligible: sql`NOT (
+        (t.direction = 'inbound' AND t.body ~ ${INBOUND_STRUCTURAL_BODY}) OR
+        (t.direction = 'outbound' AND t.body ~ ${OUTBOUND_STRUCTURAL_BODY}))`,
+    set: sql`body = ${ERASED_BODY}`,
+  });
+}
+
+/** Options of a bounded erasure pass (`eraseStoredText`, `eraseFinishedMessagePayloads`). */
+export interface EraseBatchOptions {
+  /** Count every eligible row, ignoring `limit` and `after`, and write nothing. */
+  dryRun?: boolean;
+  /** Only rows created before this instant. */
+  before?: Date;
+  /** At most this many rows (default 5,000). */
+  limit?: number;
+  /** Only rows whose id sorts after this one: the `last` of the previous pass. */
+  after?: string | null;
+}
+
+/** What one pass erased (or, dry, would erase), and where the next pass starts. */
+export interface ErasedBatch {
+  count: number;
+  /** The greatest id this pass touched, or null when it touched none. */
+  last: string | null;
+}
+
+/**
+ * One bounded pass of an erasure over a business's rows, in id order (owner review of
+ * #437 at 3a60b0f).
+ *
+ * Keyset-paged by id, and the update finds its batch by primary key. On
+ * `conversation_messages` the `(business_id, id)` index makes a pass read about
+ * `limit` rows; `external_events` has only a `business_id` index, so its pass reads
+ * the business's events once (0.26 s at 200,000 rows, measured). The earlier form (`id IN (SELECT ...
+ * ORDER BY created_at, id LIMIT n)`) was planned as a nested loop over the whole
+ * business: one 5,000-row batch of a 12,345-row business took 17.7 s, so a larger
+ * business would pass the 30 s statement timeout and its DELETE MY DATA could never
+ * complete. A dry run counts every eligible row (the exact figure an operator is
+ * shown), not the first `limit`.
+ */
+export async function eraseInBatches(
+  tx: TenantDb,
+  businessId: string,
+  options: EraseBatchOptions,
+  target: { name: string; table: SQL; eligible: SQL; set: SQL },
+): Promise<ErasedBatch> {
+  const limit = options.limit ?? 5_000;
+  if (!Number.isSafeInteger(limit) || limit <= 0) {
+    throw new Error(`${target.name}: limit must be a positive integer, got ${limit}`);
+  }
+  const before = options.before?.toISOString() ?? null;
+  const scope = sql`t.business_id = ${businessId}::uuid
+      AND ${target.eligible}
+      AND (${before}::timestamptz IS NULL OR t.created_at < ${before}::timestamptz)`;
+  if (options.dryRun) {
+    const rows = await tx.execute<{ n: number }>(
+      sql`SELECT count(*)::int AS n FROM ${target.table} t WHERE ${scope}`,
+    );
+    return { count: [...rows][0]?.n ?? 0, last: null };
+  }
+  const after = options.after ?? null;
+  /* The batch is chosen in this business by code (`scope`) and resolved once (an
+   * InitPlan), and the update finds its rows by primary key, so it can only touch ids
+   * that selection returned: rows of this business, whatever role runs it. RLS is the
+   * second guard, as on every statement here. Repeating `business_id = ...` on the
+   * update side is deliberately left out: with it the planner walks the business's whole
+   * history and tests each row against the 5,000 ids (4 s a pass at 200,000 rows,
+   * measured), instead of 5,000 primary-key lookups (0.2 s). */
+  const rows = await tx.execute<{ n: number; last: string | null }>(sql`
+    WITH erased AS (
+      UPDATE ${target.table} u SET ${target.set}
+       WHERE u.id = ANY (ARRAY (
+         SELECT t.id FROM ${target.table} t
+          WHERE ${scope}
+            AND (${after}::uuid IS NULL OR t.id > ${after}::uuid)
+          ORDER BY t.id
+          LIMIT ${limit}))
+      RETURNING u.id)
+    SELECT count(*)::int AS n, max(id::text) AS last FROM erased`);
+  const row = [...rows][0];
+  return { count: row?.n ?? 0, last: row?.last ?? null };
 }

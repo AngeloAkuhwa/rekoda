@@ -291,3 +291,43 @@ export function extractInboundEvents(body: MetaWebhookBody): InboundEvent[] {
 
   return events;
 }
+
+/**
+ * The webhook body as it concerns ONE event: the same envelope, holding only that
+ * event's own message or status (CodeRabbit on #437, G-136).
+ *
+ * Meta can batch several events into one delivery, for several businesses on
+ * Rekoda's own number. Each event's stored payload used to seal the whole body, so a
+ * business's message was also kept, sealed, under every other business whose message
+ * arrived with it, and that business's DELETE MY DATA could never reach those
+ * copies. `extractInboundEvents` of the result yields exactly the one event, so every
+ * reader that finds its event by `externalId` reads it unchanged. A body that does not
+ * hold the event yields an empty envelope.
+ */
+export function bodyForEvent(body: MetaWebhookBody, externalId: string): MetaWebhookBody {
+  for (const entry of body.entry ?? []) {
+    for (const change of entry.changes ?? []) {
+      const { messages, statuses, ...rest } = change.value;
+      const message = (messages ?? []).find((m) => m.id === externalId);
+      const status = (statuses ?? []).find((s) => `${s.id}:${s.status}` === externalId);
+      if (!message && !status) continue;
+      return {
+        ...(body.object !== undefined ? { object: body.object } : {}),
+        entry: [
+          {
+            ...(entry.id !== undefined ? { id: entry.id } : {}),
+            changes: [
+              {
+                ...(change.field !== undefined ? { field: change.field } : {}),
+                value: message
+                  ? { ...rest, messages: [message] }
+                  : { ...rest, statuses: [status!] },
+              },
+            ],
+          },
+        ],
+      };
+    }
+  }
+  return { ...(body.object !== undefined ? { object: body.object } : {}), entry: [] };
+}

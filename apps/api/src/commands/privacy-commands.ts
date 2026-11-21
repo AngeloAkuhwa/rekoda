@@ -25,6 +25,11 @@ export async function eraseDataWork(
   input: EraseDataInput,
 ): Promise<{ erased: number }> {
   const erased = await customersRepo.eraseAllIdentities(tx, input.businessId, input.sourceType);
+  /* The vault is not the only place a customer's name was ever written (G-136, owner
+   * directive on #437): conversation text stored before G-136 and the sealed bodies of
+   * finished WhatsApp messages can hold one too. Both go with the identities, in the
+   * same transaction; the rows, the books and payment providers' events stay. */
+  await customersRepo.eraseTextOutsideTheVault(tx, input.businessId, input.sourceType);
 
   await outboxRepo.append(tx, {
     businessId: input.businessId,

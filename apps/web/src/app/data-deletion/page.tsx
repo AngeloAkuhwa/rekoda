@@ -55,10 +55,18 @@ export default function DataDeletionPage() {
           body: (
             <ul>
               <li>
-                Your customers&rsquo; names, numbers and addresses are deleted immediately when you
-                send <strong>DELETE MY DATA</strong> on WhatsApp and confirm.
+                Straight away, when you send <strong>DELETE MY DATA</strong> on WhatsApp and
+                confirm: your customers&rsquo; names, numbers and addresses, any text of your
+                messages that Rekoda&rsquo;s chat history still held, and the encrypted originals of
+                the WhatsApp messages Rekoda has finished processing. Messages still being processed
+                at that moment and delivery receipts are not part of that step. A message delivered
+                before our latest privacy change in the same batch as another business&rsquo;s
+                message can still have an encrypted copy stored with that other business&rsquo;s
+                message.
               </li>
-              <li>Your conversations with Rekoda.</li>
+              <li>
+                When the deletion of your account is complete: your conversations with Rekoda.
+              </li>
               <li>Your business profile and settings.</li>
               <li>Your sign-in history and sessions.</li>
               <li>Connections to your payment provider and WhatsApp catalogue.</li>

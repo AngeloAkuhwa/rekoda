@@ -18,6 +18,7 @@ import {
   stubTransport,
   useMetaWebhookHarness,
   workerDb,
+  knownCustomer,
 } from './meta-webhook.fixtures.js';
 
 useMetaWebhookHarness();
@@ -53,11 +54,15 @@ describe('G-68 final review 2: one-shot rebuild, strict erasure pair, answer win
 
   async function seedMerchant(phone = `+${OWNER}`) {
     const user = await identity.upsertUserByPhone(db, phone);
-    return identity.createBusinessWithOwner(db, {
+    const business = await identity.createBusinessWithOwner(db, {
       name: 'Ada Fashion',
       businessType: null,
       ownerUserId: user.id,
     });
+    /* The customer the stubbed model names as CUSTOMER_7K2, recorded so a message
+     * naming Ada is issued that token (G-137). */
+    await knownCustomer(business.id);
+    return business;
   }
 
   async function addDelegate(businessId: string) {
@@ -414,7 +419,8 @@ describe('G-68 final review 2: one-shot rebuild, strict erasure pair, answer win
       const facets = await seedCustomer(business.id);
       await reply('wamid.F1d-del1', 'delete my data');
       await reply('wamid.F1d-del2', 'delete my data');
-      expect(stubSender.lastText).toContain('deleted (1 record)');
+      /* One more than the test seeds: seedMerchant records Ada (G-137), and erasure takes her name too. */
+      expect(stubSender.lastText).toContain('deleted (2 records)');
       expect(await facets()).toHaveLength(0);
     });
   });

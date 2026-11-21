@@ -6,7 +6,14 @@ import { expect } from 'vitest';
 import { identity, withBusiness, sql } from '@rekoda/db';
 import { replies } from '@rekoda/core';
 import { buildRunner } from '../jobs/jobs.module.js';
-import { db, deps, intentsProvider, stubSender, workerDb } from './meta-webhook.fixtures.js';
+import {
+  db,
+  deps,
+  intentsProvider,
+  stubSender,
+  workerDb,
+  knownCustomer,
+} from './meta-webhook.fixtures.js';
 
 export const OWNER = '2348031234567';
 
@@ -55,11 +62,15 @@ export const HOW_MUCH_DID_I_SELL = { ...DEBTORS_QUESTION, topic: 'sales_summary'
 
 export async function seedMerchant() {
   const user = await identity.upsertUserByPhone(db, `+${OWNER}`);
-  return identity.createBusinessWithOwner(db, {
+  const business = await identity.createBusinessWithOwner(db, {
     name: 'Ada Fashion',
     businessType: null,
     ownerUserId: user.id,
   });
+  /* The customer the stubbed model names as CUSTOMER_7K2, recorded so a message
+   * naming Ada is issued that token (G-137). */
+  await knownCustomer(business.id);
+  return business;
 }
 
 export async function drain() {

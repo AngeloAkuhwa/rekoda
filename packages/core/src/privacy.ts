@@ -457,3 +457,50 @@ export function redactForLog(text: string): string {
     .replace(PHONE, '[phone]')
     .replace(/\b\d{10,11}\b/g, '[digits]');
 }
+
+/**
+ * What the conversation history keeps of a message (G-136): what it was,
+ * never what it said. Nothing in production reads `conversation_messages.body`,
+ * and the text can still hold a name nobody recorded: an inbound message's
+ * tokenised text keeps any name the vault does not know, and a reply can
+ * repeat one (a supplier on a purchase preview, a model-written question).
+ * So none of it is kept, in either direction.
+ */
+export const STORED_BODY = {
+  text: '[text message]',
+  voice: '[voice note]',
+  photo: '[receipt photo]',
+  customerText: '[customer message]',
+  reply: '[reply]',
+} as const;
+
+/**
+ * A record's free text with every token it may not keep replaced (owner review
+ * of #437 at 3a60b0f).
+ *
+ * A token in a record's words is kept only when it names a customer this
+ * message was issued (`keep`). A phone or email nobody recorded that is not the
+ * record's customer reads as what it was (`placeholders`: "[phone]",
+ * "[email]"), so the books hold neither the number nor a customer made from it.
+ * Any other customer token, one the model invented or copied, may be another
+ * real customer's, so it reads "[customer]" and never resolves to anyone. Other
+ * token shapes (ACCOUNT_1) are left as they are: they name nobody.
+ */
+export function neutraliseTokens(
+  text: string,
+  keep: ReadonlySet<string>,
+  placeholders: ReadonlyMap<string, string>,
+): string {
+  let out = '';
+  let cursor = 0;
+  for (const span of protectedSpans(text, [...keep, ...placeholders.keys()])) {
+    if (span.start < cursor) continue;
+    const token = text.slice(span.start, span.end);
+    const placeholder = placeholders.get(token);
+    const replacement =
+      placeholder ?? (keep.has(token) || !token.startsWith('CUSTOMER_') ? token : '[customer]');
+    out += text.slice(cursor, span.start) + replacement;
+    cursor = span.end;
+  }
+  return out + text.slice(cursor);
+}
