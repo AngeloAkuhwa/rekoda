@@ -217,9 +217,7 @@ describe('a receipt photo', () => {
     const drafts = await withBusiness(db, business.id, (tx) =>
       conversationsRepo.draftsFor(tx, business.id),
     );
-    /* Exactly one draft: the refusal, holding only its sentence (CodeRabbit on #437 at fa62d87). */
-    expect(drafts).toHaveLength(1);
-    expect(conversationsRepo.isRefusalDraft(drafts[0]!)).toBe(true);
+    expect(drafts.map((d) => conversationsRepo.isRefusalDraft(d))).toEqual([true]);
   });
 
   it('previews normally when both high-value readings agree', async () => {
