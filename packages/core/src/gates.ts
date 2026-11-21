@@ -401,7 +401,7 @@ export function looksLikeCorrection(text: string, hasPendingDraft: boolean): boo
  * late" is not one. Opening with "no" or "sorry" is not enough on its own.
  */
 const FIGURE_NOT_FIGURE =
-  /\d[\d,.]*\s*k?\b[^.!?\n]{0,12}?\bnot\s+(?:₦\s*)?\d[\d,.]*\s*k?(?:\s+each)?\s*(?:[.!?,;)]|$)/i;
+  /\d[\d,.]*\s*k?\b[^.!?\n]{0,12}?\bnot\s+(?:₦\s*)?\d[\d,.]*\s*k?(?:\s+each)?\s*(?:[!?,;)]|\.(?!\d)|$)/i;
 
 export function clearlyCorrects(text: string): boolean {
   const trimmed = text.trim();

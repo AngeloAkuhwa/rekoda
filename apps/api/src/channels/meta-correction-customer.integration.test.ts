@@ -476,6 +476,69 @@ describe('CG5: a correction keeps the customer of the draft it corrects', () => 
     expect(sales.at(-1)?.customer).toEqual({ kind: 'token', token: ada.token });
   });
 
+  it('a nameless sale correction never replaces an invoice-only payment preview', async () => {
+    const { business } = await seedOwner();
+    stubTransport.replyWith({ ...SALE, reportedPayment: 0 });
+    await send('Ada bought 3 wigs for 150k', 'wamid.C20-SA');
+    await send('yes', 'wamid.C20-SA-YES');
+    const [invoice] = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ invoice_number: string }>(
+        sql`SELECT invoice_number FROM invoices WHERE business_id = ${business.id}::uuid`,
+      ),
+    );
+    stubTransport.replyWith({
+      intent: 'RecordPayment',
+      customer: NAMELESS,
+      amount: 50_000,
+      relativeAmount: null,
+      documentRef: invoice!.invoice_number,
+      paymentMethod: 'cash',
+    });
+    await send(`${invoice!.invoice_number} paid 50k`, 'wamid.C20-PAY');
+    stubTransport.replyWith(FOUR);
+    await send('No, 4 not 3', 'wamid.C20-FIX');
+    expect(stubSender.lastText).toContain('I could not tell which customer');
+    const payments = (await drafts(business.id)).filter((r) => r.intent === 'RecordPayment');
+    expect(payments.map((r) => r.state)).toEqual(['pending']);
+  });
+
+  it.each([
+    [
+      'a refusal, even one already answered',
+      async () => {
+        stubTransport.replyWith({ ...SALE, customer: { kind: 'token', token: 'CUSTOMER_Z99' } });
+        await send('sold 2 wigs for 100k', 'wamid.C21-R');
+      },
+    ],
+    [
+      'a question, even one a yes has retired',
+      async () => {
+        stubTransport.replyWith({
+          intent: 'Query',
+          topic: 'sales_summary',
+          customer: null,
+          period: 'month',
+          periodText: null,
+          format: 'chat',
+        });
+        await send('how much did I sell this month?', 'wamid.C21-Q');
+      },
+    ],
+  ])('after %s, a nameless correction is still asked about', async (_why, between) => {
+    const { business } = await seedOwner();
+    stubTransport.replyWith(SALE);
+    await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.C21-SALE');
+    await between();
+    // The yes answers what came between and leaves the sale waiting.
+    await send('yes', 'wamid.C21-YES');
+    expect(await invoiceCount(business.id)).toBe(0);
+    stubTransport.replyWith(FOUR);
+    await send('No, 4 not 3', 'wamid.C21-FIX');
+    expect(stubSender.lastText).toContain('I could not tell which customer');
+    const sales = (await drafts(business.id)).filter((r) => r.intent === 'RecordSale');
+    expect(sales.map((r) => r.state)).toEqual(['pending']);
+  });
+
   it('a token the model wrote is still refused on a correction (G-137)', async () => {
     const { business, ada } = await seedOwner();
     stubTransport.replyWith(SALE);

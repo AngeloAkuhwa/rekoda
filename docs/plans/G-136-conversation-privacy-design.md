@@ -366,8 +366,10 @@ built**; choosing it is part of the approval.
 
 1. **Backup and restore:** the backup's id and time, and a restore of it completed and checked by the
    off-box drill (`docs/runbooks/`), on the date of the run.
-2. **Deployment cutoff:** the time #437's code was live on the target (the first placeholder-only row is
-   after it); `before` is that time, never "now".
+2. **Deployment cutoff:** the time the last pre-#437 api and worker process stopped writing on the target,
+   including its stop grace period; `before` is that time, never "now". Report the count of body-bearing
+   rows with `created_at >= before`; it must be zero, or the package states how those rows are erased
+   (CodeRabbit on #437).
 3. **Read-only dry run:** the SQL above, as the migration owner, reporting `business_id, eligible` per
    business, and the total. Nothing of any body is printed.
 4. **Predicate check:** a sample of ids per business re-read by direction and label only, confirming
@@ -435,7 +437,8 @@ than 30 days ago: R4's selection (`eraseFinishedMessagePayloads`) with a cutoff 
 DEFINER` function returning business ids only:
 
   ```sql
-  -- PROPOSED, not applied. Needs its own line in ADR 0035 (a new ID-only discovery function).
+  -- SUPERSEDED by the OWN-100 proposed migration below (deploy cutoff, flagged-row choice, refused
+  -- page size). Kept as the history of the first proposal; never implement this block.
   CREATE FUNCTION businesses_with_finished_message_payloads(p_cutoff timestamptz, p_limit int)
     RETURNS TABLE (business_id uuid)
     LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$

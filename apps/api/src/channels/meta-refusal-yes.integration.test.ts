@@ -12,6 +12,7 @@ import {
   photoPayload,
   post,
   stubSender,
+  statusPayload,
   stubTransport,
   useMetaWebhookHarness,
 } from './meta-webhook.fixtures.js';
@@ -286,6 +287,35 @@ describe('a yes after a refused record', () => {
     expect(stubSender.lastText).not.toContain('reply *yes* to save it');
     await plain('wamid.R43', 'no');
     expect(stubSender.lastText).not.toContain('reply *yes* to save it');
+    expect((await footprint(business.id)).invoices).toBe(0);
+  });
+
+  it('a newer preview that was never delivered does not close the refusal before it', async () => {
+    const business = await seedMerchant();
+    const ada = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+    await say(
+      'wamid.R50',
+      sale({ kind: 'token', token: ada.token }),
+      'sold Ada Obi 2 wigs for 100k',
+    );
+    await say('wamid.R51', payment({ kind: 'token', token: 'CUSTOMER_7K2' }), 'Bisi paid 20k');
+    await say(
+      'wamid.R52',
+      {
+        intent: 'RecordExpense',
+        description: 'diesel',
+        amount: 12_000,
+        category: 'fuel',
+        paymentMethod: 'cash',
+      },
+      'diesel 12k cash',
+    );
+    // WhatsApp later reports that the expense preview never reached the merchant.
+    await post(statusPayload(OWNER, `wamid.STUB${stubSender.sent.length}`, 'failed'));
+    await drain();
+
+    // The last thing the merchant saw is the refusal: this yes saves nothing.
+    await plain('wamid.R53', 'yes');
     expect((await footprint(business.id)).invoices).toBe(0);
   });
 });

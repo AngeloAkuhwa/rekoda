@@ -317,6 +317,9 @@ describe('customer creation follows the record, not the token (owner review of #
       'Bola Ige paid 20k, her driver is 08039998888 and 08037776666',
     );
 
+    // The payment reached its preview (a refusal before linking would pass for the wrong reason).
+    expect(stubSender.lastText).toContain('Payment on INV-');
+    expect(stubSender.lastText).not.toContain('same customer');
     expect(await identitiesOf(business.id)).toEqual([]);
   });
 });

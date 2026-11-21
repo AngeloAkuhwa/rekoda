@@ -697,6 +697,32 @@ export async function answerableDraftCount(
 }
 
 /**
+ * Whether a refusal or a read-only question was recorded after `draftId`, seen by `asOf`, in ANY
+ * state (CG5, OWN-100). A correction keeps the customer only when nothing came between the
+ * preview and it; a "yes" that closed the refusal or retired the question does not remove that.
+ */
+export async function hasRefusalOrQuestionSince(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  options: { asOf?: Date } = {},
+): Promise<boolean> {
+  const seen = options.asOf
+    ? sql`AND created_at <= ${options.asOf.toISOString()}::timestamptz`
+    : sql``;
+  const rows = await tx.execute<{ found: boolean }>(sql`
+    SELECT EXISTS (
+      SELECT 1 FROM command_drafts
+       WHERE business_id = ${businessId}::uuid
+         AND (intent = 'Query' OR (intent = 'Unclear' AND COALESCE(command->>'refused', '') = 'true'))
+         AND insertion_seq > (
+           SELECT d.insertion_seq FROM command_drafts d
+            WHERE d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid)
+         ${seen}) AS found`);
+  return [...rows][0]?.found === true;
+}
+
+/**
  * Close one pending refusal draft (owner review of #437 at 3a60b0f).
  *
  * A message Rekoda answered with a refusal or a failed reading instead of a
@@ -747,6 +773,8 @@ export async function hasDraftsAfterBy(
       SELECT 1 FROM command_drafts
        WHERE business_id = ${businessId}::uuid
          AND requested_by = ${requestedBy}::uuid
+         -- A preview WhatsApp reported undelivered was never read (CodeRabbit on #437).
+         AND retired_reason IS DISTINCT FROM 'preview_not_delivered'
          AND insertion_seq > (
            SELECT d.insertion_seq FROM command_drafts d
             WHERE d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid)

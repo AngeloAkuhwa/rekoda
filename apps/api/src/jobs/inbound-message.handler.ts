@@ -5418,7 +5418,9 @@ async function correctionInheritance(
   if (token && !customerId) return { kind: 'unclear' };
   const ref = stored['documentRef'];
   const documentRef =
-    command.intent === 'RecordPayment' && typeof ref === 'string' && ref.length > 0 ? ref : null;
+    /* The waiting draft's own reference, whatever the correction reads as: a sale correction to a
+     * payment preview then reaches the same-kind check below and is asked about (CodeRabbit). */
+    target.intent === 'RecordPayment' && typeof ref === 'string' && ref.length > 0 ? ref : null;
   /* The draft named nobody: nothing to carry, nothing to ask. */
   if (!customerId && !documentRef) return none;
 
@@ -5429,7 +5431,12 @@ async function correctionInheritance(
     target.previewed === true &&
     input.actorId !== null &&
     target.requestedBy === input.actorId &&
-    !(await conversationsRepo.hasReadsAfter(tx, businessId, target.id, { asOf: receivedAt }));
+    !(await conversationsRepo.hasReadsAfter(tx, businessId, target.id, { asOf: receivedAt })) &&
+    /* A refusal or a question since the preview, in any state: a "yes" that closed or retired it
+     * leaves the preview waiting, never the barrier gone (CodeRabbit on #437). */
+    !(await conversationsRepo.hasRefusalOrQuestionSince(tx, businessId, target.id, {
+      asOf: receivedAt,
+    }));
   /* Any draft that reaches here names a customer or an invoice: an ineligible correction is asked
    * about and never supersedes it (CodeRabbit on #437). */
   if (!eligible) return { kind: 'unclear' };
