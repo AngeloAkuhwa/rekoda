@@ -6089,6 +6089,12 @@ async function interpretedReply(
    * VAULT ROW the mention resolved to (migration 0050) — an opaque id the
    * confirm can stamp on the purchase, never the name itself. */
   let stored: Record<string, unknown> = command;
+  /* A model's clarifying question may repeat a name nobody recorded. It is sent once, from the
+   * reply above, and nothing reads it back from the draft, so the draft keeps a placeholder
+   * (independent review of #437 at ebeeadb; ADR 0005 Amendment 1: never what Rekoda stores). */
+  if (command.intent === 'Unclear') {
+    stored = { ...command, clarification: STORED_BODY.clarification };
+  }
   if (command.intent === 'RecordPurchase') {
     /* What the record's words keep in place of a phone, an email or a foreign
      * token names nobody, so it is never part of a supplier's name: "[phone]"

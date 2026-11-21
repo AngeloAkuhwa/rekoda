@@ -472,6 +472,8 @@ export const STORED_BODY = {
   photo: '[receipt photo]',
   customerText: '[customer message]',
   reply: '[reply]',
+  /** A model's clarifying question in an `Unclear` draft: sent once, never kept (ADR 0005 Am. 1). */
+  clarification: '[clarification]',
 } as const;
 
 /**

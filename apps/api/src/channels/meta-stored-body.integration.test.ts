@@ -100,6 +100,15 @@ describe('the stored copy of a message keeps no name (G-136)', () => {
       STORED_BODY.reply,
     ]);
     expect(await everythingStored(business.id)).not.toMatch(/Chiamaka|Okafor/);
+    /* Nor does its draft: the model's question is sent once and never stored (independent review
+     * of #437 at ebeeadb; ADR 0005 Amendment 1: the exception never covers what Rekoda stores). */
+    const drafts = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ command: unknown }>(
+        sql`SELECT command FROM command_drafts WHERE business_id = ${business.id}::uuid`,
+      ),
+    );
+    expect(drafts).toHaveLength(1);
+    expect(JSON.stringify([...drafts])).not.toMatch(/Chiamaka|Okafor|CUSTOMER_U/);
   });
 
   it('a question whose model returned part of the name keeps no part of it', async () => {
