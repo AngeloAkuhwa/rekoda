@@ -651,6 +651,17 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
     if (tokenised?.unread) {
       await releaseHeldUnits(deps, businessId, eventId, usagePeriod(event.receivedAt));
       await retireSenderContinuation(tx, businessId, inbound.from, event.receivedAt);
+      /* Recorded before the send: a write after it that failed would answer again on the retry
+       * (independent review of #437 at 4480bc2). */
+      await recordRefusal(
+        deps,
+        tx,
+        businessId,
+        message.id,
+        await actorOf(tx, businessId, inbound.from),
+        '[message not read]',
+        inbound.from,
+      );
       await deps.replySender.send(tx, {
         businessId,
         to: inbound.from,
@@ -661,15 +672,6 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
               ? replies.documentNotReadSafely()
               : replies.messageNotReadSafely(),
       });
-      await recordRefusal(
-        deps,
-        tx,
-        businessId,
-        message.id,
-        await actorOf(tx, businessId, inbound.from),
-        '[message not read]',
-        inbound.from,
-      );
       await events.markProcessed(tx, eventId, null, businessId);
       return;
     }
@@ -714,11 +716,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
           await giveBackUnit(deps, businessId, eventId, period, 'AI_ACTIONS');
         }
         await retireSenderContinuation(tx, businessId, inbound.from, event.receivedAt);
-        await deps.replySender.send(tx, {
-          businessId,
-          to: inbound.from,
-          reply: kind === 'junk' ? replies.notABusinessDocument() : replies.couldNotRead(),
-        });
+        /* Recorded before the send, as above (independent review of #437 at 4480bc2). */
         await recordRefusal(
           deps,
           tx,
@@ -728,6 +726,11 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
           '[photo not read]',
           inbound.from,
         );
+        await deps.replySender.send(tx, {
+          businessId,
+          to: inbound.from,
+          reply: kind === 'junk' ? replies.notABusinessDocument() : replies.couldNotRead(),
+        });
         await events.markProcessed(tx, eventId, null, businessId);
         return;
       }
@@ -2924,12 +2927,7 @@ async function confirmPendingDraft(
         asOf: receivedAt,
         except: lookedPast,
       });
-      if (
-        newest &&
-        conversationsRepo.isRefusalDraft(newest) &&
-        newest.requestedBy !== null &&
-        newest.requestedBy !== answering
-      ) {
+      if (newest && conversationsRepo.isRefusalDraft(newest) && newest.requestedBy !== answering) {
         lookedPast.push(newest.id);
         continue;
       }
@@ -5362,23 +5360,16 @@ async function confirmPayment(
 }
 
 /**
- * The words a draft holds about what it records (items, products, descriptions), never who: its
- * `customer` is skipped, and so is any token. What a correction's one free word may be.
+ * The words a draft holds about what it records: its items' names, never who and never the
+ * model's free text (a `dueDescription` of "when Tunde comes" must not explain "make it 5
+ * Tunde"; independent review of #437 at 4480bc2). What a correction's one free word may be.
  */
 function draftVocabulary(command: Record<string, unknown>): string[] {
-  const out: string[] = [];
-  const walk = (value: unknown, key: string | null): void => {
-    if (key === 'customer' || key === 'documentRef') return;
-    if (typeof value === 'string') {
-      if (!/\b[A-Z]+_[0-9A-Z]+\b/u.test(value)) out.push(value);
-    } else if (Array.isArray(value)) {
-      for (const v of value) walk(v, null);
-    } else if (value && typeof value === 'object') {
-      for (const [k, v] of Object.entries(value)) walk(v, k);
-    }
-  };
-  walk(command, null);
-  return out;
+  const items = command['items'];
+  if (!Array.isArray(items)) return [];
+  return items
+    .map((item) => (item && typeof item === 'object' ? (item as { name?: unknown }).name : null))
+    .filter((name): name is string => typeof name === 'string' && !/[A-Z]+_[0-9A-Z]+/u.test(name));
 }
 
 /** Whether `name` appears in `text` as whole words, ignoring case, spacing and composition. */

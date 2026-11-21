@@ -245,3 +245,48 @@ describe('a receipt photo', () => {
     expect(left).toEqual({ ...NOTHING_TOUCHED, documents: 1, drafts: 1 });
   });
 });
+
+/* A junk page's refusal is recorded before its reply is sent: a failure recording it rolls back
+ * before anything is sent, and the retry answers once (independent review of #437 at 4480bc2). */
+describe('a junk page whose refusal fails to record', () => {
+  it('is answered once across the retry', async () => {
+    const business = await seedMerchant('+2348031234587');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'TOTAL 12,000 diesel', confidence: 0.9 });
+    const junk = {
+      toolInput: { type: 'junk' },
+      usage: { inputTokens: 400, outputTokens: 12 },
+      stopReason: 'tool_use',
+    };
+    stubTransport.script(junk, junk);
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS junk_refusal_once`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION junk_refusal_fail_once() RETURNS trigger
+          SECURITY DEFINER AS $$
+        BEGIN
+          IF NEW.command->>'refused' = 'true' AND nextval('junk_refusal_once') = 1 THEN
+            RAISE EXCEPTION 'junk refusal: first record fails';
+          END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER junk_refusal_fail_once BEFORE INSERT ON command_drafts
+          FOR EACH ROW EXECUTE FUNCTION junk_refusal_fail_once()`);
+      await post(photoPayload('2348031234587', 'wamid.P-JUNK-ONCE'));
+      await drain();
+      await ownerDb.execute(sql`UPDATE jobs SET run_at = now() - interval '1 minute'
+             WHERE business_id = ${business.id}::uuid AND state <> 'done'`);
+      await drain();
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS junk_refusal_fail_once ON command_drafts`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS junk_refusal_fail_once()`);
+      await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS junk_refusal_once`);
+      await close();
+      stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
+    }
+    const sent = stubSender.sent.filter((m) => m.text === replies.notABusinessDocument().text);
+    expect(sent).toHaveLength(1);
+  });
+});

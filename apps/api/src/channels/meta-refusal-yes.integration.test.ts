@@ -424,8 +424,26 @@ describe('a yes after a refused record', () => {
  * a write after it that fails rolls the inbound row back, and the retry sends the same
  * refusal again.
  */
-describe('an unsupported media message whose refusal fails to record', () => {
-  it('is answered once across the retry', async () => {
+describe('a refusal that fails to record is answered once across the retry', () => {
+  it.each([
+    {
+      name: 'unsupported media',
+      payload: () =>
+        mediaMessage(
+          'wamid.MEDIA-ONCE',
+          { type: 'sticker', sticker: { id: 'sticker-1', mime_type: 'image/webp' } },
+          OWNER,
+        ),
+      answer: () => replies.onlyText().text,
+    },
+    {
+      /* The gateway withholds a message holding a second account number (G-60): no model reads
+       * it, and the refusal used to be recorded after the send (independent review at 4480bc2). */
+      name: 'a message the gateway would not hand on',
+      payload: () => messagePayload(OWNER, 'wamid.UNREAD-ONCE', 'account 0123456789 or 0987654321'),
+      answer: () => replies.messageNotReadSafely().text,
+    },
+  ])('$name', async ({ payload, answer }) => {
     const business = await seedMerchant();
     const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
     try {
@@ -443,13 +461,7 @@ describe('an unsupported media message whose refusal fails to record', () => {
         CREATE TRIGGER media_refusal_fail_once BEFORE INSERT ON command_drafts
           FOR EACH ROW EXECUTE FUNCTION media_refusal_fail_once()`);
 
-      await post(
-        mediaMessage(
-          'wamid.MEDIA-ONCE',
-          { type: 'sticker', sticker: { id: 'sticker-1', mime_type: 'image/webp' } },
-          OWNER,
-        ),
-      );
+      await post(payload());
       await drain();
       await ownerDb.execute(sql`UPDATE jobs SET run_at = now() - interval '1 minute'
              WHERE business_id = ${business.id}::uuid AND state <> 'done'`);
@@ -465,7 +477,7 @@ describe('an unsupported media message whose refusal fails to record', () => {
       await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS media_refusal_once`);
       await close();
     }
-    const sent = stubSender.sent.filter((m) => m.text === replies.onlyText().text);
+    const sent = stubSender.sent.filter((m) => m.text === answer());
     expect(sent).toHaveLength(1);
     const refusals = await withBusiness(db, business.id, (tx) =>
       tx.execute<{ n: number }>(
