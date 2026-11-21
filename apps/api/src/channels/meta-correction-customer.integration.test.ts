@@ -496,3 +496,93 @@ describe('CG5: a correction keeps the customer of the draft it corrects', () => 
     );
   });
 });
+
+describe('CG5: the "no refusal or question since" barrier outlives the answer to it (CodeRabbit on #437 at 7418d0d)', () => {
+  it('a refusal already answered by a "yes" still blocks inheritance', async () => {
+    const { business } = await seedOwner();
+    stubTransport.replyWith(SALE);
+    await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.C30-SALE');
+    stubTransport.replyWith({ ...SALE, customer: { kind: 'token', token: 'CUSTOMER_Z99' } });
+    await send('sold 2 wigs for 100k', 'wamid.C30-REFUSED');
+    expect(stubSender.lastText).toContain('I could not tell which customer');
+    // The yes answers the refusal and closes it; the sale stays pending and unposted.
+    await send('yes', 'wamid.C30-YES');
+    expect(await invoiceCount(business.id)).toBe(0);
+
+    stubTransport.replyWith(FOUR);
+    await send('No, 4 not 3', 'wamid.C30-FIX');
+    expect(stubSender.lastText).toContain('I could not tell which customer');
+    expect(stubSender.lastText).not.toContain('replaced the earlier version');
+    const sale = (await drafts(business.id)).filter((r) => r.intent === 'RecordSale');
+    expect(sale.map((r) => r.state)).toEqual(['pending']);
+    expect(await invoiceCount(business.id)).toBe(0);
+  });
+
+  it('a question already answered by a "yes" still blocks inheritance', async () => {
+    const { business } = await seedOwner();
+    stubTransport.replyWith(SALE);
+    await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.C31-SALE');
+    stubTransport.replyWith({
+      intent: 'Query',
+      topic: 'sales_summary',
+      customer: null,
+      period: 'month',
+      periodText: null,
+      format: 'chat',
+    });
+    await send('how much did I sell this month?', 'wamid.C31-Q');
+    // The yes retires the question and points back at the preview; nothing posts.
+    await send('yes', 'wamid.C31-YES');
+    expect(await invoiceCount(business.id)).toBe(0);
+
+    stubTransport.replyWith(FOUR);
+    await send('No, 4 not 3', 'wamid.C31-FIX');
+    expect(stubSender.lastText).toContain('I could not tell which customer');
+    expect(stubSender.lastText).not.toContain('replaced the earlier version');
+    const sale = (await drafts(business.id)).filter((r) => r.intent === 'RecordSale');
+    expect(sale.map((r) => r.state)).toEqual(['pending']);
+  });
+
+  it('control: with no refusal or question since, the same correction still inherits', async () => {
+    const { business, ada } = await seedOwner();
+    stubTransport.replyWith(SALE);
+    await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.C32-SALE');
+    stubTransport.replyWith(FOUR);
+    await send('No, 4 not 3', 'wamid.C32-FIX');
+    expect(stubSender.lastText).toContain('replaced the earlier version');
+    const rows = await drafts(business.id);
+    expect(rows[1]?.customer).toEqual({ kind: 'token', token: ada.token });
+  });
+
+  it('a nameless sale correction never replaces an invoice-only payment preview', async () => {
+    const { business } = await seedOwner();
+    stubTransport.replyWith({ ...SALE, reportedPayment: 0 });
+    await send('Ada bought 3 wigs for 150k', 'wamid.C33-SA');
+    await send('yes', 'wamid.C33-SA-YES');
+    const [invoice] = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ invoice_number: string }>(
+        sql`SELECT invoice_number FROM invoices WHERE business_id = ${business.id}::uuid`,
+      ),
+    );
+    stubTransport.replyWith({
+      intent: 'RecordPayment',
+      customer: NAMELESS,
+      amount: 50_000,
+      relativeAmount: null,
+      documentRef: invoice!.invoice_number,
+      paymentMethod: 'cash',
+    });
+    await send(`${invoice!.invoice_number} paid 50k`, 'wamid.C33-PAY');
+    expect(stubSender.lastText).toContain(`Payment on ${invoice!.invoice_number}`);
+
+    stubTransport.replyWith(FOUR);
+    await send('No, 4 not 3', 'wamid.C33-FIX');
+    expect(stubSender.lastText).toContain('I could not tell which customer');
+    expect(stubSender.lastText).not.toContain('replaced the earlier version');
+    const payments = (await drafts(business.id)).filter((r) => r.intent === 'RecordPayment');
+    expect(payments.map((r) => r.state)).toEqual(['pending']);
+    expect(
+      (await drafts(business.id)).filter((r) => r.intent === 'RecordSale' && r.state === 'pending'),
+    ).toHaveLength(0);
+  });
+});

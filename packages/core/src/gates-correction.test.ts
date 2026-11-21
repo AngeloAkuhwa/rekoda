@@ -16,6 +16,8 @@ describe('a correction clear enough to keep the draft customer (clearlyCorrects,
     'the price should be 60k',
     'make it 5',
     '5 wigs instead of 3',
+    'No, 4.5 not 3.5',
+    'it was 2.5k not 2k.',
   ])('%j clearly corrects', (text) => {
     expect(clearlyCorrects(text)).toBe(true);
   });
@@ -29,6 +31,8 @@ describe('a correction clear enough to keep the draft customer (clearlyCorrects,
     'Not paid yet, sold 2 bags for 20k',
     'sorry, Bola bought 2 shoes',
     'Sold 2 bags for 20k not 2 days ago',
+    'Sold 2 bags for 20k not 2.5 days ago',
+    'sold 3 bags at 10.5k, not 2.5 paid',
     'sold 5 bags, not 2 days late',
     'sold 3 bags at 10k each, not 2 paid',
     '   ',

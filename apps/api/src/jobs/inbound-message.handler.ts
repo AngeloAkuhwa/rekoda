@@ -5346,7 +5346,8 @@ function customerTokenOf(command: Record<string, unknown>): string | null {
  *  - the only one waiting in the business (`answerableDraftCount`);
  *  - live at this message, previewed to the merchant, and of the same kind;
  *  - this member's own (`requestedBy`), never another member's or an unattributed one;
- *  - with no question asked since (`hasReadsAfter`: "correct" may be about the answer);
+ *  - with no question asked and no refusal sent since, in any state (`hasRefusalOrReadAfter`:
+ *    "correct" may be about the answer, and a "yes" that closed it does not undo it);
  *  - naming a customer this business holds (or, for a payment, an invoice).
  * Then the customer (and a payment's invoice reference, when the correction gives none) is
  * kept, the draft is superseded by the ordinary CG5 path, and the new preview needs its own
@@ -5416,9 +5417,12 @@ async function correctionInheritance(
   /* The draft named a customer this business no longer holds by that token (merged since): asked
    * about, never turned into a sale to nobody. */
   if (token && !customerId) return { kind: 'unclear' };
+  /* The reference is the waiting draft's, whatever kind the correction reads as: a sale
+   * correction aimed at an invoice-only payment is then asked about by the same-kind check below,
+   * never let through to supersede it (CodeRabbit on #437 at 7418d0d). */
   const ref = stored['documentRef'];
   const documentRef =
-    command.intent === 'RecordPayment' && typeof ref === 'string' && ref.length > 0 ? ref : null;
+    target.intent === 'RecordPayment' && typeof ref === 'string' && ref.length > 0 ? ref : null;
   /* The draft named nobody: nothing to carry, nothing to ask. */
   if (!customerId && !documentRef) return none;
 
@@ -5429,7 +5433,11 @@ async function correctionInheritance(
     target.previewed === true &&
     input.actorId !== null &&
     target.requestedBy === input.actorId &&
-    !(await conversationsRepo.hasReadsAfter(tx, businessId, target.id, { asOf: receivedAt }));
+    /* Any refusal or question since the preview, in any state: a "yes" that closed it does not
+     * undo that it came between (CodeRabbit on #437 at 7418d0d). */
+    !(await conversationsRepo.hasRefusalOrReadAfter(tx, businessId, target.id, {
+      asOf: receivedAt,
+    }));
   /* Any draft that reaches here names a customer or an invoice: an ineligible correction is asked
    * about and never supersedes it (CodeRabbit on #437). */
   if (!eligible) return { kind: 'unclear' };

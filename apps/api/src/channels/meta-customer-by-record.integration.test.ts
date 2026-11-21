@@ -317,6 +317,10 @@ describe('customer creation follows the record, not the token (owner review of #
       'Bola Ige paid 20k, her driver is 08039998888 and 08037776666',
     );
 
+    /* The payment path was taken: a preview on Bola's invoice, no link question, so the empty
+     * facets below are not an early refusal's (CodeRabbit on #437 at 7418d0d). */
+    expect(stubSender.lastText).toContain('Payment on');
+    expect(stubSender.lastText).not.toContain('same customer');
     expect(await identitiesOf(business.id)).toEqual([]);
   });
 });

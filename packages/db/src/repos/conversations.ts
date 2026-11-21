@@ -730,7 +730,9 @@ export async function closeRefusalDraft(
 /**
  * Whether `requestedBy` has recorded any draft since `draftId`, in any state and of any
  * intent, a question included (owner review of #437): their refusal is then no longer the
- * last thing they read, so a "yes" or "no" of theirs is not about it.
+ * last thing they read, so a "yes" or "no" of theirs is not about it. A preview that never
+ * reached them (`markPreviewUndelivered`) is not something they read and does not count
+ * (CodeRabbit on #437 at 7418d0d).
  */
 export async function hasDraftsAfterBy(
   tx: TenantDb,
@@ -747,6 +749,7 @@ export async function hasDraftsAfterBy(
       SELECT 1 FROM command_drafts
        WHERE business_id = ${businessId}::uuid
          AND requested_by = ${requestedBy}::uuid
+         AND retired_reason IS DISTINCT FROM 'preview_not_delivered'
          AND insertion_seq > (
            SELECT d.insertion_seq FROM command_drafts d
             WHERE d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid)
@@ -1243,6 +1246,35 @@ export async function hasReadsAfter(
        WHERE business_id = ${businessId}::uuid
          AND state = 'pending'
          AND intent = 'Query'
+         AND insertion_seq > (
+           SELECT d.insertion_seq FROM command_drafts d
+            WHERE d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid)
+         ${seen}) AS found`);
+  return [...rows][0]?.found === true;
+}
+
+/**
+ * Whether a refusal (`isRefusalDraft`) or a read-only Query draft was recorded AFTER `draftId`,
+ * in ANY state, seen by `asOf` (CG5, OWN-100: "no refusal or question since" the preview). A
+ * "yes" that answers the refusal or retires the question closes that draft but does not undo
+ * that it came after the preview, so a later nameless correction still inherits nothing
+ * (CodeRabbit on #437 at 7418d0d). Changes nothing.
+ */
+export async function hasRefusalOrReadAfter(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  options: { asOf?: Date } = {},
+): Promise<boolean> {
+  const seen = options.asOf
+    ? sql`AND created_at <= ${options.asOf.toISOString()}::timestamptz`
+    : sql``;
+  const rows = await tx.execute<{ found: boolean }>(sql`
+    SELECT EXISTS (
+      SELECT 1 FROM command_drafts
+       WHERE business_id = ${businessId}::uuid
+         AND (intent = 'Query'
+              OR (intent = 'Unclear' AND COALESCE(command->>'refused', '') = 'true'))
          AND insertion_seq > (
            SELECT d.insertion_seq FROM command_drafts d
             WHERE d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid)

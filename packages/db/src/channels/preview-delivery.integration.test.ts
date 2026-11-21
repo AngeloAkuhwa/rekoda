@@ -434,3 +434,46 @@ describe('the claim exemption needs the stored command to agree (G-20)', () => {
     expect(await claim(businessId, sent.draftId)).toEqual({ outcome: 'unseen' });
   });
 });
+
+describe('a preview never delivered is not one the member has read (CodeRabbit on #437 at 7418d0d)', () => {
+  it('does not move the member past their own refusal (hasDraftsAfterBy)', async () => {
+    const businessId = await seedBusiness();
+    const owner = await withBusiness(app, businessId, (tx) =>
+      tx.execute<{ id: string }>(
+        sql`SELECT user_id AS id FROM memberships WHERE business_id = ${businessId}::uuid LIMIT 1`,
+      ),
+    ).then((rows) => [...rows][0]!.id);
+    const refusal = await withBusiness(app, businessId, async (tx) => {
+      const message = await conversationsRepo.recordInbound(tx, {
+        businessId,
+        channel: 'meta',
+        kind: 'text',
+        body: 'sold 2 wigs',
+        providerMessageId: 'wamid.in-refusal',
+      });
+      return conversationsRepo.recordDraft(tx, {
+        businessId,
+        conversationMessageId: message.id,
+        intent: 'Unclear',
+        command: { intent: 'Unclear', clarification: 'Which customer?', refused: true },
+        model: null,
+        previewed: false,
+        requestedBy: owner,
+      });
+    });
+    const sent = await previewed(businessId);
+    await withBusiness(app, businessId, (tx) =>
+      tx.execute(sql`UPDATE command_drafts SET requested_by = ${owner}::uuid
+                      WHERE id = ${sent.draftId}::uuid`),
+    );
+    const after = () =>
+      withBusiness(app, businessId, (tx) =>
+        conversationsRepo.hasDraftsAfterBy(tx, businessId, refusal.id, owner),
+      );
+    // Delivered, the later preview is something the member read since their refusal.
+    expect(await after()).toBe(true);
+    expect(await undelivered(businessId, sent.wamid)).toBe(1);
+    // Never delivered, it is not: the refusal is still the last thing they read.
+    expect(await after()).toBe(false);
+  });
+});

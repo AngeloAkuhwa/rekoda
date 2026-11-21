@@ -366,8 +366,12 @@ built**; choosing it is part of the approval.
 
 1. **Backup and restore:** the backup's id and time, and a restore of it completed and checked by the
    off-box drill (`docs/runbooks/`), on the date of the run.
-2. **Deployment cutoff:** the time #437's code was live on the target (the first placeholder-only row is
-   after it); `before` is that time, never "now".
+2. **Deployment cutoff:** `before` is the time the LAST pre-#437 api and worker process stopped writing on
+   the target, including its stop grace period (at least 120 s, `scripts/check-deploy.mjs`), never the
+   moment #437 went live and never "now": an old process can finish in-flight work after the new code is
+   up. The package also reports the count of body-bearing rows (same predicate, without the time bound)
+   with `created_at >= before`; the go/no-go requires that count to be 0, or states how those rows are
+   erased (CodeRabbit on #437 at 7418d0d).
 3. **Read-only dry run:** the SQL above, as the migration owner, reporting `business_id, eligible` per
    business, and the total. Nothing of any body is printed.
 4. **Predicate check:** a sample of ids per business re-read by direction and label only, confirming
