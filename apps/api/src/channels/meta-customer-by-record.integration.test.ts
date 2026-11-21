@@ -42,6 +42,15 @@ async function invoiceTo(businessId: string, token: string) {
   );
 }
 
+/** The stock purchases this business saved: amount and supplier, nothing else. */
+const purchasesOf = (businessId: string) =>
+  withBusiness(db, businessId, (tx) =>
+    tx.execute<{ amount_k: string; supplier_id: string | null }>(
+      sql`SELECT amount_k::text, supplier_id FROM expenses
+           WHERE business_id = ${businessId}::uuid AND category = 'stock'`,
+    ),
+  ).then((rows) => [...rows]);
+
 /**
  * Customer creation follows the record's meaning, not where a token landed (owner
  * review of #437 at 3a60b0f). Only the customer of a sale, payment or order is a
@@ -72,6 +81,8 @@ describe('customer creation follows the record, not the token (owner review of #
     expect(stubSender.lastText).not.toContain('CUSTOMER_');
     await plain('wamid.S1-yes', 'yes');
 
+    /* The purchase itself is saved, once, for its amount: the checks below are not vacuous. */
+    expect((await purchasesOf(business.id)).map((p) => p.amount_k)).toEqual(['4000000']);
     expect((await footprint(business.id)).customers).toBe(0);
     expect(await identitiesOf(business.id)).toEqual([]);
     expect(await plaintextIn(business.id, ['8039998888', 'CUSTOMER_U'])).toEqual([]);
@@ -165,6 +176,8 @@ describe('customer creation follows the record, not the token (owner review of #
         ][0]!.n,
     );
     expect(suppliers).toBe(0);
+    /* Saved, with no supplier row, not refused (CodeRabbit on #437 at fa62d87). */
+    expect(await purchasesOf(business.id)).toEqual([{ amount_k: '4000000', supplier_id: null }]);
   });
 
   it('a second facet beside a sale customer creates nobody when no preview asks about it', async () => {

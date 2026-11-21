@@ -389,7 +389,11 @@ export function looksLikeCorrection(text: string, hasPendingDraft: boolean): boo
   if (!hasPendingDraft) return false;
   const trimmed = text.trim();
   if (!trimmed) return false;
-  return CORRECTION_OPENERS.test(trimmed) || CORRECTION_PHRASES.test(trimmed);
+  /* A whole-message correction `clearlyCorrects` accepts ("change the price to 60k") is one here
+   * too, so it reaches the same CG5 gates (Codex and CodeRabbit on #437 at fa62d87). */
+  return (
+    CORRECTION_OPENERS.test(trimmed) || CORRECTION_PHRASES.test(trimmed) || clearlyCorrects(trimmed)
+  );
 }
 
 /**

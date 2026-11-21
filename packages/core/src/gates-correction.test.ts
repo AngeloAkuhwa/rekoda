@@ -3,7 +3,7 @@
  * Beside `gates.test.ts`, which is over the layout limit and may not grow.
  */
 import { describe, expect, it } from 'vitest';
-import { clearlyCorrects } from './gates.js';
+import { clearlyCorrects, looksLikeCorrection } from './gates.js';
 
 describe('a correction clear enough to keep the draft customer (clearlyCorrects, OWN-100)', () => {
   it.each([
@@ -154,4 +154,12 @@ describe('a correction clear enough to keep the draft customer (clearlyCorrects,
     expect(clearlyCorrects(`no, ${'1,'.repeat(2_000)}1 not 2`)).toBe(false);
     expect(Date.now() - started).toBeLessThan(50);
   });
+
+  it.each(['change the price to 60k', 'price should be 60k each', 'the delivery fee should be 2k'])(
+    '%j is a correction to the outer gate too, so it reaches the CG5 checks',
+    (text) => {
+      expect(looksLikeCorrection(text, true)).toBe(true);
+      expect(looksLikeCorrection(text, false)).toBe(false);
+    },
+  );
 });

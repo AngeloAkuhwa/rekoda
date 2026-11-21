@@ -188,18 +188,22 @@ describe('CG5: a correction mixed with another instruction, or about no field of
 });
 
 describe("CG5: the owner's correction forms keep the customer end to end", () => {
-  it.each(['make it 4', 'the price should be 50k', '4 wigs instead of 3', 'No, 4 not 3.'])(
-    '%j corrects the waiting sale and keeps Ada',
-    async (text) => {
-      const { business, ada } = await seedOwner();
-      stubTransport.replyWith(SALE);
-      await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.K-SALE');
-      stubTransport.replyWith(FOUR);
-      await send(text, 'wamid.K-FIX');
-      expect(stubSender.lastText).toContain('The same customer as before');
-      const rows = await sales(business.id);
-      expect(rows.map((r) => r.state)).toEqual(['superseded', 'pending']);
-      expect(rows[1]?.customer).toEqual({ kind: 'token', token: ada.token });
-    },
-  );
+  it.each([
+    'make it 4',
+    'the price should be 50k',
+    '4 wigs instead of 3',
+    'No, 4 not 3.',
+    /* A named field, which the outer gate missed (Codex and CodeRabbit at fa62d87). */
+    'change the price to 50k',
+  ])('%j corrects the waiting sale and keeps Ada', async (text) => {
+    const { business, ada } = await seedOwner();
+    stubTransport.replyWith(SALE);
+    await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.K-SALE');
+    stubTransport.replyWith(FOUR);
+    await send(text, 'wamid.K-FIX');
+    expect(stubSender.lastText).toContain('The same customer as before');
+    const rows = await sales(business.id);
+    expect(rows.map((r) => r.state)).toEqual(['superseded', 'pending']);
+    expect(rows[1]?.customer).toEqual({ kind: 'token', token: ada.token });
+  });
 });

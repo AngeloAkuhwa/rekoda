@@ -6017,19 +6017,10 @@ async function interpretedReply(
     nameNotKnown && command.intent === 'Query'
       ? { reply: replies.customerNotKnown(), linkAsked: false, continuation: NO_PERIOD_TO_RESUME }
       : await acknowledge(tx, businessId, command, correcting, link, receivedAt);
-  /* A balance question about a name the books do not hold: honest about
-   * that, never "they owe nothing" (G-135). The draft and continuation are
-   * the ordinary ones of a question with no customer. */
-  let answered =
-    nameNotKnown && command.intent === 'Query'
-      ? {
-          ...acknowledged,
-          reply: replies.customerNotKnown(),
-          /* Never a subject a later "last month" could resume into the
-           * business's totals (independent review of #437). */
-          continuation: NO_PERIOD_TO_RESUME,
-        }
-      : acknowledged;
+  /* A balance question about a name the books do not hold is answered honestly above, never
+   * "they owe nothing" (G-135), and never with a subject a later "last month" could resume into
+   * the business's totals (independent review of #437). */
+  let answered = acknowledged;
 
   /* The beside facet is created now, and only because the preview really asks
    * about it; the reply and the link then carry its stored token and id. When
