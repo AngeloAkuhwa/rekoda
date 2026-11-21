@@ -331,7 +331,7 @@ describe('an unseen preview can never be confirmed (G-20, owner ruling)', () => 
     const again = await withBusiness(app, businessId, (tx) =>
       conversationsRepo.markPreviewUndelivered(tx, businessId, asked.wamid),
     );
-    expect(again).toEqual({ drafts: 0, continuations: 0 });
+    expect(again).toEqual({ drafts: 0, continuations: 0, reopened: 0 });
   });
 });
 

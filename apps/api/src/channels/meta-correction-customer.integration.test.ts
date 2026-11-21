@@ -6,11 +6,11 @@
  * draft the correction is about: the newest preview this member was shown, still live, the
  * only one waiting, of the same kind, with no question or refusal since. Never from a
  * token the model wrote: the issued-token guard (G-137) stays the authority, so a token
- * this message was not issued is still refused. Anything less clear is asked about and
- * changes nothing; a correction that comes when nothing is waiting is a new request and
- * inherits nobody.
+ * this message was not issued is still refused. Anything less clear is asked about and changes
+ * nothing (OD-60); a correction when nothing is waiting is a new request, inheriting nobody.
  */
 import { describe, expect, it } from 'vitest';
+import { replies } from '@rekoda/core';
 import { conversationsRepo, identity, settleRepo, sql, withBusiness } from '@rekoda/db';
 import { buildRunner } from '../jobs/jobs.module.js';
 import {
@@ -271,7 +271,7 @@ describe('CG5: a correction keeps the customer of the draft it corrects', () => 
 
     stubTransport.replyWith(FOUR);
     await send('No, 4 not 3', 'wamid.C8-FIX');
-    expect(stubSender.lastText).toContain('I could not tell which customer');
+    expect(stubSender.lastText).toBe(replies.correctionNotClear().text);
     expect(stubSender.lastText).not.toContain('replaced the earlier version');
     const sale = (await drafts(business.id)).filter((r) => r.intent === 'RecordSale');
     expect(sale.map((r) => r.state)).toEqual(['pending']);
@@ -295,7 +295,7 @@ describe('CG5: a correction keeps the customer of the draft it corrects', () => 
     await send('how much did I sell this month?', 'wamid.C9-Q');
     stubTransport.replyWith(FOUR);
     await send('No, 4 not 3', 'wamid.C9-FIX');
-    expect(stubSender.lastText).toContain('I could not tell which customer');
+    expect(stubSender.lastText).toBe(replies.correctionNotClear().text);
     const sale = (await drafts(business.id)).filter((r) => r.intent === 'RecordSale');
     expect(sale.map((r) => r.state)).toEqual(['pending']);
     expect(await invoiceCount(business.id)).toBe(0);
@@ -310,7 +310,7 @@ describe('CG5: a correction keeps the customer of the draft it corrects', () => 
     await send('who owes me', 'wamid.C9b-Q');
     stubTransport.replyWith(FOUR);
     await send('No, 4 not 3', 'wamid.C9b-FIX');
-    expect(stubSender.lastText).toContain('I could not tell which customer');
+    expect(stubSender.lastText).toBe(replies.correctionNotClear().text);
     const sale = (await drafts(business.id)).filter((r) => r.intent === 'RecordSale');
     expect(sale.map((r) => r.state)).toEqual(['pending']);
     expect(await invoiceCount(business.id)).toBe(0);
@@ -327,7 +327,7 @@ describe('CG5: a correction keeps the customer of the draft it corrects', () => 
     await send('help', 'wamid.C9c-HELP', MEMBER);
     stubTransport.replyWith(FOUR);
     await send('No, 4 not 3', 'wamid.C9c-FIX');
-    expect(stubSender.lastText).toContain('I could not tell which customer');
+    expect(stubSender.lastText).toBe(replies.correctionNotClear().text);
     const sale = (await drafts(business.id)).filter((r) => r.intent === 'RecordSale');
     expect(sale.map((r) => r.state)).toEqual(['pending']);
   });
@@ -341,7 +341,7 @@ describe('CG5: a correction keeps the customer of the draft it corrects', () => 
 
     stubTransport.replyWith(FOUR);
     await send('No, 4 not 3', 'wamid.C10-FIX', MEMBER);
-    expect(stubSender.lastText).toContain('I could not tell which customer');
+    expect(stubSender.lastText).toBe(replies.correctionNotClear().text);
     const rows = await drafts(business.id);
     const sales = rows.filter((r) => r.intent === 'RecordSale');
     // The owner's preview is untouched, and the member holds no draft naming Ada.
@@ -423,7 +423,7 @@ describe('CG5: a correction keeps the customer of the draft it corrects', () => 
     await send('diesel 12k cash', 'wamid.C15-EXP');
     stubTransport.replyWith(FOUR);
     await send('No, 4 not 3', 'wamid.C15-FIX');
-    expect(stubSender.lastText).toContain('I could not tell which customer');
+    expect(stubSender.lastText).toBe(replies.correctionNotClear().text);
     const states = (await drafts(business.id))
       .filter((r) => r.intent !== 'Unclear')
       .map((r) => `${r.intent}:${r.state}`);
@@ -443,7 +443,7 @@ describe('CG5: a correction keeps the customer of the draft it corrects', () => 
       paymentMethod: 'cash',
     });
     await send('no, she paid 60k not 50k', 'wamid.C16-FIX');
-    expect(stubSender.lastText).toContain('I could not tell which customer');
+    expect(stubSender.lastText).toBe(replies.correctionNotClear().text);
     const sales = (await drafts(business.id)).filter((r) => r.intent === 'RecordSale');
     expect(sales.map((r) => r.state)).toEqual(['pending']);
   });
@@ -486,7 +486,7 @@ describe('CG5: a correction keeps the customer of the draft it corrects', () => 
     await send('and the bags', 'wamid.C18-Q');
     stubTransport.replyWith(FOUR);
     await send('No, 4 not 3', 'wamid.C18-FIX');
-    expect(stubSender.lastText).toContain('I could not tell which customer');
+    expect(stubSender.lastText).toBe(replies.correctionNotClear().text);
     const sales = (await drafts(business.id)).filter((r) => r.intent === 'RecordSale');
     expect(sales.map((r) => r.state)).toEqual(['pending']);
   });
@@ -536,7 +536,7 @@ describe('CG5: a correction keeps the customer of the draft it corrects', () => 
     await send(`${invoice!.invoice_number} paid 50k`, 'wamid.C20-PAY');
     stubTransport.replyWith(FOUR);
     await send('No, 4 not 3', 'wamid.C20-FIX');
-    expect(stubSender.lastText).toContain('I could not tell which customer');
+    expect(stubSender.lastText).toBe(replies.correctionNotClear().text);
     const payments = (await drafts(business.id)).filter((r) => r.intent === 'RecordPayment');
     expect(payments.map((r) => r.state)).toEqual(['pending']);
   });
@@ -573,7 +573,7 @@ describe('CG5: a correction keeps the customer of the draft it corrects', () => 
     expect(await invoiceCount(business.id)).toBe(0);
     stubTransport.replyWith(FOUR);
     await send('No, 4 not 3', 'wamid.C21-FIX');
-    expect(stubSender.lastText).toContain('I could not tell which customer');
+    expect(stubSender.lastText).toBe(replies.correctionNotClear().text);
     const sales = (await drafts(business.id)).filter((r) => r.intent === 'RecordSale');
     expect(sales.map((r) => r.state)).toEqual(['pending']);
   });

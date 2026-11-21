@@ -89,6 +89,7 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   erasureKept: [replies.erasureKept()],
   viewOnlyRole: [replies.viewOnlyRole()],
   customerNotRecognised: [replies.customerNotRecognised()],
+  correctionNotClear: [replies.correctionNotClear()],
   balanceNotStated: [replies.balanceNotStated()],
   viewOnlyAskAQuestion: [replies.viewOnlyAskAQuestion()],
   viewOnlyPhoto: [replies.viewOnlyPhoto()],
