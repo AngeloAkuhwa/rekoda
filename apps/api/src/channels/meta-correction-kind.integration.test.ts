@@ -290,7 +290,7 @@ describe("CG5: a nameless correction of a customer's sale while a yes retries", 
       items: [{ name: 'wig', quantity: 4, unitPrice: 50_000 }],
       statedTotal: 200_000,
     });
-    expect(stubSender.lastText).toBe(replies.customerNotRecognised().text);
+    expect(stubSender.lastText).toBe(replies.correctionWithdrawn().text);
     expect(await drafts(business.id)).toEqual(['RecordSale:superseded']);
     await bringDue(business.id);
     await run();
@@ -311,12 +311,44 @@ describe('CG5: an ineligible correction while a yes retries', () => {
       items: [{ name: 'bag', quantity: 2, unitPrice: 10_000 }],
       statedTotal: 20_000,
     });
-    expect(stubSender.lastText).toBe(replies.customerNotRecognised().text);
+    expect(stubSender.lastText).toBe(replies.correctionCustomerNotClear().text);
     expect(await drafts(business.id)).toEqual(['RecordSale:pending']);
     await bringDue(business.id);
     await run();
     expect((await books(business.id)).invoices).toEqual([
       { customer_id: ada.id, total_k: 15_000_000 },
+    ]);
+  });
+});
+
+/**
+ * A correction asked about because of its customer leaves the waiting preview as it was, and the
+ * reply says so and gives the step that works (independent review of #437 at 0114957): following
+ * it books the corrected sale once, never the uncorrected one beside it.
+ */
+describe("CG5: the customer question's advice works", () => {
+  it('"cancel", then the whole record, books only the corrected sale, even on a second yes', async () => {
+    const { business, ada } = await seedOwner();
+    await send('Ada bought 3 wigs for 150k', 'wamid.K15-SALE', SALE);
+    await send('No, it should be 4 wigs please', 'wamid.K15-FIX', {
+      ...SALE,
+      customer: { kind: 'none' },
+      items: [{ name: 'wig', quantity: 4, unitPrice: 50_000 }],
+      statedTotal: 200_000,
+    });
+    expect(stubSender.lastText).toBe(replies.correctionCustomerNotClear().text);
+    expect(await drafts(business.id)).toEqual(['RecordSale:pending']);
+
+    await send('cancel', 'wamid.K15-CANCEL');
+    await send('Ada bought 4 wigs for 200k', 'wamid.K15-NEW', {
+      ...SALE,
+      items: [{ name: 'wig', quantity: 4, unitPrice: 50_000 }],
+      statedTotal: 200_000,
+    });
+    await send('yes', 'wamid.K15-YES1');
+    await send('yes', 'wamid.K15-YES2');
+    expect((await books(business.id)).invoices).toEqual([
+      { customer_id: ada.id, total_k: 20_000_000 },
     ]);
   });
 });

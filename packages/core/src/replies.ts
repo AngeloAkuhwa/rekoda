@@ -1017,8 +1017,8 @@ export function correctionNotClear(): Reply {
   return reply(
     'I could not tell if that changes the request waiting for your yes or is a new record, ' +
       'so I have not changed anything. To keep the waiting request, reply *yes* and I will ' +
-      'tell you what is still waiting. To change it or record something new instead, reply ' +
-      '*cancel*, then send the whole corrected or new record.',
+      'tell you what is still waiting, then send any new record. To replace it, reply ' +
+      '*cancel*, then send the whole corrected record.',
   );
 }
 
@@ -1041,6 +1041,33 @@ export function correctionForAnotherMember(): Reply {
   return reply(
     'The request waiting for a yes is from another member of this business, so I have not ' +
       'changed it. Ask them to reply *yes* or *no* to it, then send your record in full.',
+  );
+}
+
+/**
+ * CG5: a correction that may be about the waiting request but cannot keep its customer (not clearly
+ * a correction, or it may name somebody). Nothing changed, and the waiting request is still there:
+ * a merchant who resent the record without cancelling would leave two previews of one sale for two
+ * yeses to book (independent review of #437 at 0114957). Keeps "could not tell which customer".
+ */
+export function correctionCustomerNotClear(): Reply {
+  return reply(
+    'I could not tell which customer that change is for, so I have not changed the request ' +
+      'waiting for your yes. To keep it as shown, reply *yes* and I will tell you what is still ' +
+      "waiting. To change it, reply *cancel*, then send the whole record with the customer's name.",
+  );
+}
+
+/**
+ * CG5: a correction sent while an earlier message is still being processed. Its customer cannot be
+ * kept safely, so the request it corrects is withdrawn and nothing from it is saved; the merchant
+ * sends the record again whole (independent review of #437 at 0114957).
+ */
+export function correctionWithdrawn(): Reply {
+  return reply(
+    'An earlier message of yours is still being processed, so I could not safely tell which ' +
+      'customer that change is for. I have withdrawn the request that was waiting for your yes, ' +
+      "so nothing from it will be saved. Send the whole record with the customer's name.",
   );
 }
 

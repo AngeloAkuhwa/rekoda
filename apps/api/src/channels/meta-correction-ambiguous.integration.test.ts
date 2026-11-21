@@ -10,6 +10,7 @@
  * (owner review of #437 at 49f2586).
  */
 import { describe, expect, it } from 'vitest';
+import { replies } from '@rekoda/core';
 import { identity, settleRepo, sql, withBusiness } from '@rekoda/db';
 import { buildRunner } from '../jobs/jobs.module.js';
 import {
@@ -84,6 +85,13 @@ async function seedOwner(phone = OWNER, name = 'Ada Fashion') {
  * corrects is withdrawn rather than left for a retried yes to book (CodeRabbit on #437 at
  * 1db1a0a): nothing waiting names her, and the merchant is asked for the record with its customer.
  */
+const invoiceTotals = (businessId: string) =>
+  withBusiness(db, businessId, (tx) =>
+    tx.execute<{ total: string }>(
+      sql`SELECT total_k::text AS total FROM invoices WHERE business_id = ${businessId}::uuid`,
+    ),
+  ).then((rows) => [...rows].map((r) => r.total));
+
 async function expectAdaWithdrawn(businessId: string) {
   const rows = await sales(businessId);
   expect(rows.map((r) => r.state)).toEqual(['superseded']);
@@ -98,7 +106,7 @@ async function expectAdaUntouched(businessId: string, adaToken: string) {
 
 describe('CG5: a correction sent while an earlier message is still live', () => {
   it('is asked about while the earlier message backs off, and the preview is withdrawn', async () => {
-    const { business, ada } = await seedOwner();
+    const { business } = await seedOwner();
     stubTransport.replyWith(SALE);
     await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.R1-SALE');
 
@@ -108,12 +116,15 @@ describe('CG5: a correction sent while an earlier message is still live', () => 
 
     stubTransport.replyWith(FOUR);
     await send('No, 4 not 3', 'wamid.R1-FIX');
-    expect(stubSender.lastText).toContain('I could not tell which customer');
+    expect(stubSender.lastText).toBe(replies.correctionWithdrawn().text);
     await expectAdaWithdrawn(business.id);
+    /* Withdrawn, so a yes now books nothing of it. */
+    await send('yes', 'wamid.R1-YES');
+    expect(await invoiceTotals(business.id)).toEqual([]);
   });
 
   it('is asked about while the earlier message is running in another lane, and the preview is withdrawn', async () => {
-    const { business, ada } = await seedOwner();
+    const { business } = await seedOwner();
     stubTransport.replyWith(SALE);
     await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.R2-SALE');
     await queueOnly('wamid.R2-Q', 'how much did I sell this month?');
@@ -129,8 +140,11 @@ describe('CG5: a correction sent while an earlier message is still live', () => 
 
     stubTransport.replyWith(FOUR);
     await send('No, 4 not 3', 'wamid.R2-FIX');
-    expect(stubSender.lastText).toContain('I could not tell which customer');
+    expect(stubSender.lastText).toBe(replies.correctionWithdrawn().text);
     await expectAdaWithdrawn(business.id);
+    /* Withdrawn, so a yes now books nothing of it. */
+    await send('yes', 'wamid.R2-YES');
+    expect(await invoiceTotals(business.id)).toEqual([]);
   });
 
   it("another business's retrying message never blocks this one's correction", async () => {

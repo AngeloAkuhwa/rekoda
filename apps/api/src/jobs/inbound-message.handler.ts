@@ -6046,7 +6046,7 @@ async function interpretedReply(
       await refundMessage(tx, businessId, eventId, period);
       return refusedAs(
         carried.ask === 'customer'
-          ? replies.customerNotRecognised()
+          ? replies.correctionCustomerNotClear()
           : carried.ask === 'several'
             ? replies.correctionNotClearSeveral()
             : carried.ask === 'another'
@@ -6055,12 +6055,14 @@ async function interpretedReply(
       );
     }
     if (carried.kind === 'withdraw') {
+      /* A window that closed is closed first, so a later yes about it is told it expired (G-23). */
+      await conversationsRepo.expireStaleDrafts(tx, businessId, { now: receivedAt });
       await conversationsRepo.supersedePendingDrafts(tx, businessId, {
         asOf: receivedAt,
         skipRefusalsNotBy: actorId,
       });
       await refundMessage(tx, businessId, eventId, period);
-      return refusedAs(replies.customerNotRecognised());
+      return refusedAs(replies.correctionWithdrawn());
     }
     correcting = carried.kind !== 'none';
     if (carried.kind === 'inherit') {
