@@ -653,7 +653,8 @@ webhook (§1.2), or any time limit on the encrypted originals (R3 is not approve
     then "should be", "make it" or "change it to" a figure, one figure "instead of" or "rather than"
     another, or one figure "not" another ("4 not 3", "it was 60k not 50k", "she paid 60k not 50k"). A
     figure may carry ₦, N or NGN, commas, a decimal point and "k", and at most one word after it that is
-    not a time or a date. Anything else is asked about, whatever wording it contains, so a new sale in
+    not a time, a date or an adding word ("more", "also", "another"); the field named before "should
+    be" comes from a closed list (price, total, quantity, balance and the like), never "the other". Anything else is asked about, whatever wording it contains, so a new sale in
     any phrasing ("Sold 5 bags, 10k each, total should be 50k", "Sold 3 wigs @30k, make it 4") never
     keeps the waiting draft's customer. Messages longer than 80 characters are never a clear correction.
     Fixed RED first after the owner's review at `49f2586`, CodeRabbit at `49f2586` and the independent
@@ -662,9 +663,10 @@ webhook (§1.2), or any time limit on the encrypted originals (R3 is not approve
     about ("make it 5 wigs please", "Sold 2 bags for 20k not 25k"): the safe reading.
 13. **An earlier message still retrying.** A message sent between the preview and the correction whose
     job failed once and is backing off has no conversation row yet, so `hasInboundBetween` cannot see
-    it. The correction therefore also checks the queue (`hasEarlierLiveJobByArrival`): while an earlier
-    inbound merchant message of the business is pending or running, the correction is asked about and
-    changes nothing. Tests in `meta-correction-ambiguous.integration.test.ts`, RED first: a message
+    it. The correction therefore also checks the queue (`hasEarlierLiveJobByArrival`): while any earlier
+    inbound message of the business is pending or running, the correction is asked about and changes
+    nothing. That includes a customer's message on the Integrate thread, whose job is the same kind: a
+    busy Integrate business may see a correction asked about more often, which is the safe reading. Tests in `meta-correction-ambiguous.integration.test.ts`, RED first: a message
     backing off, and one running in another lane. Another business's queue never counts, and a message
     that died in between retires the preview (OWN-74). A message sharing the preview's or the
     correction's `created_at` counts as between them (`hasInboundBetween` is inclusive and excludes the

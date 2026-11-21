@@ -411,12 +411,16 @@ export function looksLikeCorrection(text: string, hasPendingDraft: boolean): boo
 const FIG = String.raw`(?:(?:₦|NGN|N)\s*)?\d[\d,]*(?:\.\d+)?(?:\s*k)?`;
 const TIME_WORD = String.raw`(?:am|pm|o'?clock|h|hrs?|hours?|mins?|minutes?|days?|weeks?|months?|years?|st|nd|rd|th|today|tomorrow|tonight|noon|midnight|morning|evening|night|jan\w*|feb\w*|mar\w*|apr\w*|may|jun\w*|jul\w*|aug\w*|sep\w*|oct\w*|nov\w*|dec\w*|mon\w*|tue\w*|wed\w*|thu\w*|fri\w*|sat\w*|sun\w*)`;
 /* A figure, then at most one word that is not a time or a date ("4 wigs", "4pcs", "60k each"). */
-const AMOUNT = String.raw`${FIG}(?:\s*(?!${TIME_WORD}\b)[a-z]+)?`;
+/* Words that add to the draft or start another one ("5 more", "5 also", "another") never fill it. */
+const ADDING_WORD = String.raw`(?:more|extra|also|too|again|another|new|additional|plus|and|other|others)`;
+const AMOUNT = String.raw`${FIG}(?:\s*(?!(?:${TIME_WORD}|${ADDING_WORD})\b)[a-z]+)?`;
 const OPENER = String.raw`(?:(?:no+|nope|nah|sorry|wait|actually|correction|oh|ok|okay|e no be)\b[\s,.!:;-]*)*`;
-const SUBJECT = String.raw`(?:(?:it|she|he|they|the\s+[a-z]+|price|total|amount|quantity|qty|balance|cost|rate)\s+)?`;
+/* Who or which field is corrected: a closed list, never "the other" or "the new" (another sale). */
+const FIELD = String.raw`(?:price|unit\s+price|total|amount|quantity|qty|balance|cost|rate|discount|delivery\s+fee|payment)`;
+const SUBJECT = String.raw`(?:(?:it|she|he|they|(?:the\s+)?${FIELD})\s+)?`;
 const CLEAR_CORRECTION = new RegExp(
   String.raw`^${OPENER}(?:` +
-    String.raw`${SUBJECT}(?:should\s+be|make\s+it|change\s+(?:it\s+|the\s+[a-z]+\s+)?to)\s+${AMOUNT}(?:,?\s+not\s+${AMOUNT})?` +
+    String.raw`${SUBJECT}(?:should\s+be|make\s+it|change\s+(?:it\s+|(?:the\s+)?${FIELD}\s+)?to)\s+${AMOUNT}(?:,?\s+not\s+${AMOUNT})?` +
     String.raw`|${AMOUNT}\s+(?:instead\s+of|rather\s+than)\s+${AMOUNT}` +
     String.raw`|(?:(?:it\s+was|it'?s|it\s+is|(?:she|he|they)\s+paid|paid)\s+)?${AMOUNT}(?:\s+for\s+[a-z]+)?,?\s+not\s+${AMOUNT}` +
     String.raw`)\s*[.!]*$`,
