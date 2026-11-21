@@ -1916,8 +1916,11 @@ async function deterministicReply(
      * it still closes past a read asked since (Build 6), exactly as a "yes"
      * there still re-asks it. A question answered long ago by a resend is
      * not what this "no" is about. */
+    /* Another member's refusal is looked past, as for a "yes" (CodeRabbit on #437 at ebeeadb). */
+    const answering = await actorOf(tx, businessId, ctx.from);
     let latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, {
       asOf: ctx.receivedAt,
+      skipRefusalsNotBy: answering,
     });
     /* G-81: to the member asked "Is this the same purchase?", a "no" could
      * mean "no, not the same" or "no, do not save it", so it is asked
@@ -1939,6 +1942,7 @@ async function deterministicReply(
       await continuationsRepo.retireContinuationsForDraft(tx, businessId, asking.heldId);
       latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, {
         asOf: ctx.receivedAt,
+        skipRefusalsNotBy: answering,
       });
     }
     if (latest?.state === 'held') {
@@ -1955,6 +1959,7 @@ async function deterministicReply(
       latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, {
         asOf: ctx.receivedAt,
         skipHeld: true,
+        skipRefusalsNotBy: answering,
       });
     }
     /* The last thing the merchant saw had already expired: this "no" is
@@ -2742,8 +2747,12 @@ async function confirmPendingDraft(
     }
     return reaskPurchaseIdentity(tx, businessId, asking.heldId, asking.actorId, sender);
   }
+  /* Another member's refusal is looked past here exactly as `pastRefusals` looks past it below:
+   * it never hides this member's own retired question (CodeRabbit on #437 at ebeeadb). */
+  const answering = await actorOf(tx, businessId, sender.from);
   let latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, {
     asOf: receivedAt,
+    skipRefusalsNotBy: answering,
   });
   /* G-81: a purchase held for its identity question. The yes of the member
    * who was asked is about that question: it is asked again, and nothing
@@ -2769,6 +2778,7 @@ async function confirmPendingDraft(
     latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, {
       asOf: receivedAt,
       skipHeld: true,
+      skipRefusalsNotBy: answering,
     });
   }
   /* `abandoned` is only ever a retired purchase question; a draft the

@@ -1389,7 +1389,14 @@ export function latestDraftToAnswer(
   /* `skipHeld` (G-81): a purchase held for ANOTHER member's identity
    * question is not what this member's yes or no is about; the caller
    * decides whose it is, and asks again without it. */
-  options: { asOf?: Date; skipHeld?: boolean } = {},
+  options: {
+    asOf?: Date;
+    skipHeld?: boolean;
+    /* Another member's refusal is not what this member's yes or no is about: looked past, never
+     * touched, so it still guards that member's own older preview (CodeRabbit on #437 at
+     * ebeeadb). The member's own refusal, and an unattributed one, are kept. */
+    skipRefusalsNotBy?: string | null;
+  } = {},
 ): Promise<LatestDraft | null> {
   return newestDraft(tx, businessId, { ...options, reads: 'skip' });
 }
@@ -1411,7 +1418,12 @@ export interface LatestDraft {
 async function newestDraft(
   tx: TenantDb,
   businessId: string,
-  options: { asOf?: Date | undefined; reads: ReadDrafts; skipHeld?: boolean | undefined },
+  options: {
+    asOf?: Date | undefined;
+    reads: ReadDrafts;
+    skipHeld?: boolean | undefined;
+    skipRefusalsNotBy?: string | null | undefined;
+  },
 ): Promise<LatestDraft | null> {
   const rows = await tx
     .select({
@@ -1437,6 +1449,12 @@ async function newestDraft(
         /* Nor is a withdrawn preview (0157): it never reached anybody. */
         eq(commandDrafts.withdrawn, false),
         options.skipHeld ? sql`${commandDrafts.state} <> 'held'` : undefined,
+        options.skipRefusalsNotBy
+          ? sql`NOT (${commandDrafts.intent} = 'Unclear'
+                 AND ${commandDrafts.command} ->> 'refused' = 'true'
+                 AND ${commandDrafts.requestedBy} IS NOT NULL
+                 AND ${commandDrafts.requestedBy} <> ${options.skipRefusalsNotBy}::uuid)`
+          : undefined,
       ),
     )
     .orderBy(desc(commandDrafts.insertionSeq))

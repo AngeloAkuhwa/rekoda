@@ -21,6 +21,7 @@ import {
   workerDb,
   knownCustomer,
 } from './meta-webhook.fixtures.js';
+import { mediaMessage } from './meta-continuations.fixtures.js';
 import { setPlanForTest } from '@rekoda/db/testing';
 
 useMetaWebhookHarness();
@@ -501,6 +502,50 @@ describe('G-68 final review: erasure, doubt anywhere, re-asked funding question'
       expect(stubSender.lastText).toContain('Paid in full by transfer');
       expect(modelCalls()).toBe(0);
       expect(await purchaseStates(business.id)).toEqual(['superseded', 'pending']);
+    });
+
+    it("another member's refusal never hides the owner's question from the owner's yes", async () => {
+      const business = await seedMerchant();
+      const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+      await identity.addMembership(db, business.id, delegate.id, 'delegate');
+      await say('wamid.F-r5-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
+      /* The delegate's unsupported media leaves a refusal of theirs, newer than the question
+       * (CodeRabbit on #437 at ebeeadb). */
+      await post(
+        mediaMessage(
+          'wamid.F-r5-sticker',
+          { type: 'sticker', sticker: { id: 'sticker-1', mime_type: 'image/webp' } },
+          DELEGATE,
+        ),
+      );
+      await drain();
+      expect(stubSender.lastText).toBe(replies.onlyText().text);
+
+      await reply('wamid.F-r5-yes', 'yes');
+      expect(stubSender.lastText).toContain(POS_QUESTION);
+      /* The delegate's own refusal is still theirs to answer: their yes saves nothing. */
+      await reply('wamid.F-r5-d-yes', 'yes', DELEGATE);
+      expect(stubSender.lastText).not.toContain(POS_QUESTION);
+      expect(await footprint(business.id)).toEqual({ invoices: 0, purchases: 0, postings: 0 });
+    });
+
+    it("another member's refusal never stops the owner's no from closing their question", async () => {
+      const business = await seedMerchant();
+      const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+      await identity.addMembership(db, business.id, delegate.id, 'delegate');
+      await say('wamid.F-r6-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
+      await post(
+        mediaMessage(
+          'wamid.F-r6-sticker',
+          { type: 'sticker', sticker: { id: 'sticker-1', mime_type: 'image/webp' } },
+          DELEGATE,
+        ),
+      );
+      await drain();
+      await reply('wamid.F-r6-no', 'no');
+      expect(stubSender.lastText).toBe(replies.cancelled().text);
+      expect(await purchaseStates(business.id)).toEqual(['superseded']);
+      expect(await footprint(business.id)).toEqual({ invoices: 0, purchases: 0, postings: 0 });
     });
 
     it('a questioned answer ("cash?") rebuilds nothing and asks again, keeping it open', async () => {
