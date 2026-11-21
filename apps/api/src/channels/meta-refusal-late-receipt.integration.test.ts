@@ -191,3 +191,40 @@ describe('a late failed receipt for the answer to a refusal (OD-62(o))', () => {
     expect(await footprint(business.id)).toEqual(before);
   });
 });
+
+describe('a late failed receipt never reaches past its own reply (OD-62(o))', () => {
+  it('after the preview was already booked, the restored refusal books nothing more', async () => {
+    const business = await saleAndRefusal('LB');
+    const before = await footprint(business.id);
+    await plain('wamid.LB3', 'yes');
+    const answer = lastWamid();
+    await plain('wamid.LB4', 'yes');
+    expect((await footprint(business.id)).invoices).toBe(before.invoices + 1);
+
+    await receipt(OWNER, answer, 'failed');
+    await drain();
+    await plain('wamid.LB5', 'yes');
+    expect((await footprint(business.id)).invoices).toBe(before.invoices + 1);
+  });
+
+  it("another business's reply id restores nothing in this business", async () => {
+    const other = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+    const shop = await identity.createBusinessWithOwner(db, {
+      name: 'Other Shop',
+      businessType: null,
+      ownerUserId: other.id,
+    });
+    await post(mediaMessage('wamid.LY1', STICKER, DELEGATE));
+    await drain();
+    await post(messagePayload(DELEGATE, 'wamid.LY2', 'yes'));
+    await drain();
+    const theirs = lastWamid();
+    expect(await refusalStates(shop.id)).toEqual([`+${DELEGATE}:superseded`]);
+
+    const business = await saleAndRefusal('LX');
+    await receipt(OWNER, theirs, 'failed');
+    await drain();
+    expect(await refusalStates(shop.id)).toEqual([`+${DELEGATE}:superseded`]);
+    expect(await refusalStates(business.id)).toEqual([`+${OWNER}:pending`]);
+  });
+});
