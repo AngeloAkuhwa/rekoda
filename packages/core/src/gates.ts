@@ -395,41 +395,41 @@ export function looksLikeCorrection(text: string, hasPendingDraft: boolean): boo
 /**
  * Whether a message CLEARLY corrects the draft before it (CG5, owner ruling OWN-100), the bar a
  * correction must meet to keep that draft's customer. Stricter than `looksLikeCorrection`, whose
- * bare "not" anywhere also matches a new request ("Sold 2 bags for 20k, not paid yet"): it says
- * what replaces what ("instead of", "make it" or "should be" followed by a figure that is not a time) or sets one figure against another
- * ("4 not 3", "60k each not 50k"), the second figure ending the clause, so "sold 5 bags, not 2 days
- * late" is not one. Opening with "no" or "sorry" is not enough on its own.
+ * bare "not" anywhere also matches a new request ("Sold 2 bags for 20k, not paid yet").
+ *
+ * The WHOLE message must be a short correction and nothing else (independent review of #437 at
+ * b5079a8): an optional opener ("no", "sorry", "wait"), then one of
+ *  - "should be", "make it" or "change it to" a figure ("the price should be 60k", "make it 5 wigs");
+ *  - one figure instead of / rather than another ("5 wigs instead of 3");
+ *  - one figure not another ("4 not 3", "it was 60k not 50k", "she paid 60k not 50k").
+ * A figure may carry ₦, N or NGN, commas, a decimal point and "k", and at most one word after it
+ * that is not a time or a date ("5pm", "2 days", "tomorrow", "25 Dec" are never figures here).
+ * Anything else, whatever wording it contains ("Sold 5 bags, 10k each, total should be 50k"), is
+ * not clearly a correction and is asked about: listing new-sale wordings can never be complete, so
+ * the shape of a correction is allowed and everything else is refused.
  */
-const FIGURE_NOT_FIGURE =
-  /\d[\d,.]*\s*k?\b[^.!?\n]{0,12}?\bnot\s+(?:₦\s*)?\d[\d,.]*\s*k?(?:\s+each)?\s*(?:[!?,;)]|\.(?!\d)|$)/i;
-
-/* A figure that is a clock time, a date or a span ("5pm", "4:30", "2 days", "the 5th") is never
- * the replacement for a quantity or a price (owner review of #437 at 49f2586). */
-const NOT_A_TIME = String.raw`(?![\d,.]*\s*(?::\d|(?:am|pm|o'?clock|h|hrs?|hours?|mins?|minutes?|days?|weeks?|months?|years?|st|nd|rd|th)\b))`;
-
-/* "should be 60k", "make it 5 wigs", "change it to 4", "5 wigs instead of 3": the replacement is a
- * figure that ends its clause, with at most one word after it. Without one ("should be delivered
- * tomorrow", "make it quick", "rather than car"), or with more after it ("balance should be 10k by
- * Friday"), the words replace nothing in the draft (CodeRabbit on #437). */
-const REPLACEMENT_FIGURE = new RegExp(
-  String.raw`\b(?:change (?:it |the )?to|make it|should be|instead of|rather than)\s+(?:[₦N]\s*)?\d` +
-    NOT_A_TIME +
-    String.raw`[\d,.]*\s*k?(?:\s+[a-z]+)?\s*(?:[!?,;)]|\.(?!\d)|$)`,
+const FIG = String.raw`(?:(?:₦|NGN|N)\s*)?\d[\d,]*(?:\.\d+)?(?:\s*k)?`;
+const TIME_WORD = String.raw`(?:am|pm|o'?clock|h|hrs?|hours?|mins?|minutes?|days?|weeks?|months?|years?|st|nd|rd|th|today|tomorrow|tonight|noon|midnight|morning|evening|night|jan\w*|feb\w*|mar\w*|apr\w*|may|jun\w*|jul\w*|aug\w*|sep\w*|oct\w*|nov\w*|dec\w*|mon\w*|tue\w*|wed\w*|thu\w*|fri\w*|sat\w*|sun\w*)`;
+/* A figure, then at most one word that is not a time or a date ("4 wigs", "4pcs", "60k each"). */
+const AMOUNT = String.raw`${FIG}(?:\s*(?!${TIME_WORD}\b)[a-z]+)?`;
+const OPENER = String.raw`(?:(?:no+|nope|nah|sorry|wait|actually|correction|oh|ok|okay|e no be)\b[\s,.!:;-]*)*`;
+const SUBJECT = String.raw`(?:(?:it|she|he|they|the\s+[a-z]+|price|total|amount|quantity|qty|balance|cost|rate)\s+)?`;
+const CLEAR_CORRECTION = new RegExp(
+  String.raw`^${OPENER}(?:` +
+    String.raw`${SUBJECT}(?:should\s+be|make\s+it|change\s+(?:it\s+|the\s+[a-z]+\s+)?to)\s+${AMOUNT}(?:,?\s+not\s+${AMOUNT})?` +
+    String.raw`|${AMOUNT}\s+(?:instead\s+of|rather\s+than)\s+${AMOUNT}` +
+    String.raw`|(?:(?:it\s+was|it'?s|it\s+is|(?:she|he|they)\s+paid|paid)\s+)?${AMOUNT}(?:\s+for\s+[a-z]+)?,?\s+not\s+${AMOUNT}` +
+    String.raw`)\s*[.!]*$`,
   'i',
 );
 
-/* A whole new sale or purchase, with its own price ("Sold 2 bags for 20k, make it 5"): correction
- * wording inside it never makes it a correction of the waiting draft (owner review at 49f2586). */
-const OWN_TRANSACTION =
-  /\b(?:sold|sell|bought|buy|purchased|ordered|supplied|delivered)\b[^.!?;\n]{0,40}?\b(?:for|at)\s+(?:[₦N]\s*)?\d/i;
+/** A correction is a line, never a paragraph: anything longer is asked about, in constant time. */
+const MAX_CORRECTION_LENGTH = 80;
 
 export function clearlyCorrects(text: string): boolean {
   const trimmed = text.trim();
-  if (!trimmed) return false;
-  /* An opener alone ("Wait, I also sold…", "actually, sold 2 bags") is not enough: the message
-   * must say what replaces what (independent review of #437). Anything less is asked about. */
-  if (OWN_TRANSACTION.test(trimmed)) return false;
-  return REPLACEMENT_FIGURE.test(trimmed) || FIGURE_NOT_FIGURE.test(trimmed);
+  if (!trimmed || trimmed.length > MAX_CORRECTION_LENGTH) return false;
+  return CLEAR_CORRECTION.test(trimmed);
 }
 
 /* ── money coming IN against an invoice already issued ───────────────────── */

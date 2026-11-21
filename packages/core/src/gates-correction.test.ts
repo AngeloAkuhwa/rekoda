@@ -31,6 +31,12 @@ describe('a correction clear enough to keep the draft customer (clearlyCorrects,
     'no, 60k not 50k!',
     'make it 20k',
     'no, the balance should be 10k',
+    'make it NGN 60000',
+    'should be N60k not N50k',
+    'make it 4pcs',
+    'total should be 50k',
+    'Price should be 60k each',
+    'no, she paid 60k not 50k',
     'make it 5 wigs',
   ])('%j clearly corrects', (text) => {
     expect(clearlyCorrects(text)).toBe(true);
@@ -70,16 +76,42 @@ describe('a correction clear enough to keep the draft customer (clearlyCorrects,
     /* A correction mixed with a new sale, and a currency the gate does not read: asked about. */
     'No, 4 not 3, and I also sold 2 bags for 20k',
     'No, 4 not 3. Sold 2 bags at 10k to someone else',
-    'make it NGN 60000',
     /* A figure or comparison that changes no field of the draft (CodeRabbit on #437 at 49f2586). */
     'Sold 2 bags for 20k; deliver by bike rather than car',
     'deliver by bike rather than car',
     'No, delivery should be 2 days',
     'balance should be 10k by Friday',
     'make it 5 wigs and 2 bags for Bola',
+    /* A whole new sale in any wording: the message must be only a correction (independent review
+     * of #437 at b5079a8). */
+    'Sold 5 bags, 10k each, total should be 50k',
+    'Sold 3 wigs @ 30k each, should be 90k total',
+    'Sold 3 wigs @30k, make it 4',
+    'Sold 3 wigs 90k, delivery should be 25 Dec',
+    'Order 3 wigs 90k, delivery should be 2 Dec',
+    'New sale: 3 wigs at 30k, total should be 90k',
+    'Sold 2 bags 20k, make it 5 tomorrow',
+    'Sold 2 bags 20k. Balance should be 5k',
+    'Sold 2 bags 20k, she paid 15k not 20k',
+    'Sold 2 bags 20k, discount should be 10 percent',
+    'Sold 2 bags at NGN20k, make it 3',
+    'Sold 3 shoes\nprice 15k each\nshould be 45k',
+    'Sold 2 bags. Total should be 40k.',
+    'SOLD 2 BAGS 20K, SHOULD BE 25K',
+    'Sold two bags for twenty thousand, make it 3',
+    'Customer carry 2 bags 20k, should be 2',
+    'Wait, sold 2 bags 20k instead of 3',
+    'should be 12 noon',
+    'make it 5 tomorrow',
     'Bola bought 2 shoes for 30k, should be 2',
     '   ',
   ])('%j does not', (text) => {
     expect(clearlyCorrects(text)).toBe(false);
+  });
+
+  it('answers a 4,000-character message at once, and not as a correction', () => {
+    const started = Date.now();
+    expect(clearlyCorrects(`no, ${'1,'.repeat(2_000)}1 not 2`)).toBe(false);
+    expect(Date.now() - started).toBeLessThan(50);
   });
 });

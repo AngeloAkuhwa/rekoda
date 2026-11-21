@@ -648,21 +648,24 @@ webhook (§1.2), or any time limit on the encrypted originals (R3 is not approve
     it replaced stays superseded on both failure paths, and the replacement is never confirmable. A "yes"
     is told nothing is waiting, and the merchant sends the request again. Tests:
     `meta-preview-expiry-3.integration.test.ts` (OD-58 cases).
-12. **Which corrections count as clear (`clearlyCorrects`, `packages/core/src/gates.ts`).** A
-    correction keeps the draft's customer only when it sets one figure against another ("4 not 3") or
-    puts a replacement figure after "make it", "should be", "change it to", "instead of" or "rather
-    than". A figure that is a time, a date or a span ("5pm", "4:30", "2 days", "the 5th") does not
-    count. Neither does a message that states its own sale or purchase with a price ("Sold 2 bags for
-    20k, make it 5pm delivery"), whatever wording it contains. Fixed RED first after the owner's review
-    at `49f2586`: `gates-correction.test.ts`, and the four owner sentences in
-    `meta-correction-customer.integration.test.ts`. The replacement figure must also end its clause,
-    with at most one word after it ("make it 5 wigs"), so "balance should be 10k by Friday" and "deliver by bike rather than car" are asked about
-    (CodeRabbit on #437 at `49f2586`). A correction that ends its figure differently ("make it 5 wigs
-    please") is asked about too: the safe reading.
+12. **Which corrections count as clear (`clearlyCorrects`, `packages/core/src/gates.ts`).** The whole
+    message must be a short correction and nothing else: an optional opener ("no", "sorry", "wait"),
+    then "should be", "make it" or "change it to" a figure, one figure "instead of" or "rather than"
+    another, or one figure "not" another ("4 not 3", "it was 60k not 50k", "she paid 60k not 50k"). A
+    figure may carry ₦, N or NGN, commas, a decimal point and "k", and at most one word after it that is
+    not a time or a date. Anything else is asked about, whatever wording it contains, so a new sale in
+    any phrasing ("Sold 5 bags, 10k each, total should be 50k", "Sold 3 wigs @30k, make it 4") never
+    keeps the waiting draft's customer. Messages longer than 80 characters are never a clear correction.
+    Fixed RED first after the owner's review at `49f2586`, CodeRabbit at `49f2586` and the independent
+    review at `b5079a8`: `gates-correction.test.ts`, `meta-correction-customer.integration.test.ts` and
+    `meta-correction-ambiguous.integration.test.ts`. The cost is that some genuine corrections are asked
+    about ("make it 5 wigs please", "Sold 2 bags for 20k not 25k"): the safe reading.
 13. **An earlier message still retrying.** A message sent between the preview and the correction whose
     job failed once and is backing off has no conversation row yet, so `hasInboundBetween` cannot see
-    it. The correction therefore also checks the queue (`hasEarlierLiveJobByArrival`). While an
-    earlier inbound message of the business is pending or running, the correction is asked about and
-    changes nothing (`meta-correction-ambiguous.integration.test.ts`, RED first; a correction behind a sibling running in another lane is put back by the queue before it is read). Another business's queue never counts, a message that died in between retires the preview (OWN-74), and a correction mixed with a new sale ("No, 4 not 3, and I also sold 2 bags for 20k") is asked about. A message sharing the
-    preview's or the correction's `created_at` counts as between them (`hasInboundBetween` is inclusive,
-    and excludes the two ends by id; `preview-delivery.integration.test.ts`).
+    it. The correction therefore also checks the queue (`hasEarlierLiveJobByArrival`): while an earlier
+    inbound merchant message of the business is pending or running, the correction is asked about and
+    changes nothing. Tests in `meta-correction-ambiguous.integration.test.ts`, RED first: a message
+    backing off, and one running in another lane. Another business's queue never counts, and a message
+    that died in between retires the preview (OWN-74). A message sharing the preview's or the
+    correction's `created_at` counts as between them (`hasInboundBetween` is inclusive and excludes the
+    two ends by id; `preview-delivery.integration.test.ts`).

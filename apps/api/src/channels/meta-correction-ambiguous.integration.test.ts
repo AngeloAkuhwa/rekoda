@@ -102,31 +102,25 @@ describe('CG5: a correction sent while an earlier message is still live', () => 
     await expectAdaUntouched(business.id, ada.token);
   });
 
-  it('waits while the earlier message is running in another lane, and changes nothing', async () => {
+  it('is asked about while the earlier message is running in another lane', async () => {
     const { business, ada } = await seedOwner();
     stubTransport.replyWith(SALE);
     await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.R2-SALE');
     await queueOnly('wamid.R2-Q', 'how much did I sell this month?');
-    /* Claimed by a lane that has not committed anything yet (as the owner: the worker's column). */
+    /* Claimed by a lane that has not committed anything yet, scheduled after the correction, so the
+     * queue's entry check lets the correction pass and only the CG5 check can see it (as the owner:
+     * the worker's columns). */
     await asTenant(
       business.id,
       sql`UPDATE jobs SET state = 'running', attempts = 1, locked_by = 'other-lane',
-                          locked_at = now()
+                          locked_at = now(), run_at = now() + interval '1 hour'
            WHERE business_id = ${business.id}::uuid AND state = 'pending'`,
     );
 
     stubTransport.replyWith(FOUR);
-    const asked = stubTransport.requests.length;
     await send('No, 4 not 3', 'wamid.R2-FIX');
-    /* The queue orders it first (`hasEarlierLiveJob`): the correction steps back, unread. */
-    expect(stubTransport.requests).toHaveLength(asked);
+    expect(stubSender.lastText).toContain('I could not tell which customer');
     await expectAdaUntouched(business.id, ada.token);
-    const waiting = await asTenant(
-      business.id,
-      sql`SELECT count(*)::int AS n FROM jobs
-           WHERE business_id = ${business.id}::uuid AND kind = 'inbound.message' AND state = 'pending'`,
-    );
-    expect([...waiting][0]).toEqual({ n: 1 });
   });
 
   it("another business's retrying message never blocks this one's correction", async () => {
@@ -175,6 +169,10 @@ describe('CG5: a correction mixed with another instruction, or about no field of
     'Sold 2 bags for 20k; deliver by bike rather than car',
     'No, delivery should be 2 days',
     'balance should be 10k by Friday',
+    /* A new sale in any wording (independent review at b5079a8). */
+    'Sold 5 bags, 10k each, total should be 50k',
+    'Sold 3 wigs @30k, make it 4',
+    'Sold 2 bags 20k. Balance should be 5k',
   ])('%j is asked about and the preview keeps its customer', async (text) => {
     const { business, ada } = await seedOwner();
     stubTransport.replyWith(SALE);
