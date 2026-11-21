@@ -1256,6 +1256,24 @@ async function pastRefusals(
   }
 }
 
+/**
+ * Retire every question to the books asked since `draftId` (Build 6 keeps one per yes): used only
+ * where a reply has just pointed at that preview and said a yes saves it. Bounded by the reads
+ * that exist; each pass retires one.
+ */
+async function retireReadsAfter(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  asOf: Date,
+): Promise<void> {
+  for (let i = 0; i < 50; i++) {
+    if ((await conversationsRepo.retireNewestReadAfter(tx, businessId, draftId, { asOf })) === 0) {
+      return;
+    }
+  }
+}
+
 /** What a voice note or photo reader answered instead of reading: a refusal, already sent. */
 interface RefusedReading {
   readonly refusedIn: string;
@@ -1998,9 +2016,12 @@ async function deterministicReply(
         const behind = await pastRefusals(tx, businessId, ctx.from, ctx.receivedAt);
         /* Pointing at a preview only a "yes" could save, and only while Chat stands (G-65). */
         if (behind.draft?.previewed === true && !(await withoutChat(tx, businessId))) {
-          return behind.draft.requestedBy === (await actorOf(tx, businessId, ctx.from))
-            ? replies.previewBehindRefusal()
-            : replies.previewWaitingForAnotherMember();
+          if (behind.draft.requestedBy !== (await actorOf(tx, businessId, ctx.from))) {
+            return replies.previewWaitingForAnotherMember();
+          }
+          /* As for a yes: the next yes is the one the reply promises saves it. */
+          await retireReadsAfter(tx, businessId, behind.draft.id, ctx.receivedAt);
+          return replies.previewBehindRefusal();
         }
         return (await withoutChat(tx, businessId))
           ? replies.nothingToDeclineWithoutChat()
@@ -2144,7 +2165,7 @@ async function deterministicReply(
             actor: 'system',
             ingress: 'CHAT',
             consequence:
-              'Every customer contact detail for this business, and the stored copies of its chat messages, will be permanently deleted.',
+              'Every customer contact detail for this business, and the stored copies of its chat messages that Rekoda has finished processing, will be permanently deleted.',
             reason: 'merchant asked by exact phrase, twice',
           }));
         const run = await deps.commandBus.run(
@@ -2184,7 +2205,7 @@ async function deterministicReply(
           actor: 'system',
           ingress: 'CHAT',
           consequence:
-            'Every customer contact detail for this business, and the stored copies of its chat messages, will be permanently deleted.',
+            'Every customer contact detail for this business, and the stored copies of its chat messages that Rekoda has finished processing, will be permanently deleted.',
           reason: 'merchant asked by exact phrase',
         });
       }
@@ -2843,6 +2864,9 @@ async function confirmPendingDraft(
       if (behind.draft.requestedBy !== (await actorOf(tx, businessId, sender.from))) {
         return replies.previewWaitingForAnotherMember();
       }
+      /* The reply points at the preview and says a yes saves it, so it must: a question asked
+       * before the refusal would otherwise take that next yes (CodeRabbit on #437 at 96b1b52). */
+      await retireReadsAfter(tx, businessId, behind.draft.id, receivedAt);
       return replies.previewBehindRefusal();
     }
     draft = past.draft;
@@ -4586,7 +4610,13 @@ async function unsureReply(
       : replies.nothingToConfirmWithoutChat();
   }
 
-  let latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, { asOf: receivedAt });
+  /* Read-only, and member-aware as a yes is: another member's refusal is looked past, never
+   * touched (CodeRabbit on #437 at 96b1b52). */
+  const doubting = await actorOf(tx, businessId, sender.from);
+  let latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, {
+    asOf: receivedAt,
+    skipRefusalsNotBy: doubting,
+  });
   /* G-81: doubt about the identity question asks it again, from the member
    * who was asked; nobody else is held up by it. */
   if (latest?.state === 'held') {
@@ -4595,6 +4625,7 @@ async function unsureReply(
     latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, {
       asOf: receivedAt,
       skipHeld: true,
+      skipRefusalsNotBy: doubting,
     });
   }
   if (latest?.state === 'abandoned') {
@@ -4605,9 +4636,22 @@ async function unsureReply(
   if (latest?.state === 'expired') {
     return expiredAnswer(latest.command, latest.previewed, 'yes') ?? replies.nothingToConfirm();
   }
-  const pending = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
+  const lookedPast: string[] = [];
+  let pending = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
     asOf: receivedAt,
   });
+  while (
+    pending &&
+    conversationsRepo.isRefusalDraft(pending) &&
+    pending.requestedBy !== doubting &&
+    lookedPast.length < 50
+  ) {
+    lookedPast.push(pending.id);
+    pending = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
+      asOf: receivedAt,
+      except: lookedPast,
+    });
+  }
   if (!pending?.previewed) return replies.nothingToConfirm();
   /* A question to the books asked since the preview: point back at the
    * preview, as a yes would, without retiring anything. */
