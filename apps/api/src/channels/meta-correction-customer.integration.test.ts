@@ -351,8 +351,12 @@ describe('CG5: a correction keeps the customer of the draft it corrects', () => 
 
   it.each([
     'Sold 2 bags for 20k, not paid yet',
-    /* "should be" with no figure after it replaces nothing (CodeRabbit on #437 at c712b1e). */
+    /* No replacement figure, a time, or a whole new sale (CodeRabbit at c712b1e; owner at 49f2586). */
     'Sold 2 bags for 20k, not paid yet; should be delivered tomorrow',
+    'Sold 2 bags for 20k, make it 5pm delivery.',
+    'Sold 3 wigs for 90k, delivery should be 2pm.',
+    'Sold 2 bags for 20k instead of going home.',
+    'Sold 3 wigs for 90k; change it to 4pm delivery.',
   ])('a new sale %j never takes the waiting sale’s customer', async (text) => {
     const { business, ada } = await seedOwner();
     stubTransport.replyWith(SALE);

@@ -23,6 +23,8 @@ describe('a correction clear enough to keep the draft customer (clearlyCorrects,
     'change it to 4',
     'no, it should be 4 wigs',
     '5 wigs instead of 3',
+    'no, 60k instead of 50k',
+    'make it 5 wigs',
   ])('%j clearly corrects', (text) => {
     expect(clearlyCorrects(text)).toBe(true);
   });
@@ -44,6 +46,21 @@ describe('a correction clear enough to keep the draft customer (clearlyCorrects,
     'Sold 2 bags for 20k, not paid yet; should be delivered tomorrow',
     'Sold 2 bags for 20k, make it quick',
     'Bola bought 2 shoes, change it to Friday delivery',
+    /* A figure that is a time, or wording inside a whole new sale, replaces nothing in the
+     * waiting draft (owner review of #437 at 49f2586). */
+    'Sold 2 bags for 20k, make it 5pm delivery.',
+    'Sold 3 wigs for 90k, delivery should be 2pm.',
+    'Sold 2 bags for 20k instead of going home.',
+    'Sold 3 wigs for 90k; change it to 4pm delivery.',
+    'make it 5pm',
+    'should be 2 days',
+    'change it to 4:30',
+    'make it the 5th',
+    'instead of going home',
+    'Wait, also sold 3 wigs for 90k, make it 4',
+    'I sold 2 bags for N20k rather than 3',
+    'sold 2 bags at 10k, make it 3',
+    'Bola bought 2 shoes for 30k, should be 2',
     '   ',
   ])('%j does not', (text) => {
     expect(clearlyCorrects(text)).toBe(false);

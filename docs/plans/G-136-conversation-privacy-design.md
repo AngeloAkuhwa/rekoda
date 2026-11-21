@@ -648,8 +648,21 @@ webhook (§1.2), or any time limit on the encrypted originals (R3 is not approve
     it replaced stays superseded on both failure paths, and the replacement is never confirmable. A "yes"
     is told nothing is waiting, and the merchant sends the request again. Tests:
     `meta-preview-expiry-3.integration.test.ts` (OD-58 cases).
-12. **A figure after "should be" need not be the replacement (MINOR, older than this PR).**
-    `clearlyCorrects` takes "balance should be 10k by Friday" as a clear correction. The other CG5
-    gates still apply: same member, same kind, the only live preview, and nothing in between. The
-    result is a new preview that needs its own "yes", and nothing posts. A follow-up could end the
-    figure at the clause boundary, as `FIGURE_NOT_FIGURE` does.
+12. **Which corrections count as clear (`clearlyCorrects`, `packages/core/src/gates.ts`).** A
+    correction keeps the draft's customer only when it sets one figure against another ("4 not 3") or
+    puts a replacement figure after "make it", "should be", "change it to", "instead of" or "rather
+    than". A figure that is a time, a date or a span ("5pm", "4:30", "2 days", "the 5th") does not
+    count. Neither does a message that states its own sale or purchase with a price ("Sold 2 bags for
+    20k, make it 5pm delivery"), whatever wording it contains. Fixed RED first after the owner's review
+    at `49f2586`: `gates-correction.test.ts`, and the four owner sentences in
+    `meta-correction-customer.integration.test.ts`. **Residual (MINOR):** a figure after the wording
+    that is not the replacement and is not a time, such as "balance should be 10k by Friday", still
+    counts. The other CG5 gates still apply (same member, same kind, the only live preview, nothing in
+    between), and the result is a new preview that needs its own "yes". Nothing posts.
+13. **An earlier message still retrying.** A message sent between the preview and the correction whose
+    job failed once and is backing off has no conversation row yet, so `hasInboundBetween` cannot see
+    it. The correction therefore also checks the queue (`hasEarlierLiveJobByArrival`). While an
+    earlier inbound message of the business is pending or running, the correction is asked about and
+    changes nothing (`meta-correction-retrying.integration.test.ts`, RED first). A message sharing the
+    preview's or the correction's `created_at` counts as between them (`hasInboundBetween` is inclusive,
+    and excludes the two ends by id; `preview-delivery.integration.test.ts`).

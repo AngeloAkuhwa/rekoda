@@ -396,27 +396,38 @@ export function looksLikeCorrection(text: string, hasPendingDraft: boolean): boo
  * Whether a message CLEARLY corrects the draft before it (CG5, owner ruling OWN-100), the bar a
  * correction must meet to keep that draft's customer. Stricter than `looksLikeCorrection`, whose
  * bare "not" anywhere also matches a new request ("Sold 2 bags for 20k, not paid yet"): it says
- * what replaces what ("instead of", or "make it" or "should be" followed by a figure) or sets one figure against another
+ * what replaces what ("instead of", "make it" or "should be" followed by a figure that is not a time) or sets one figure against another
  * ("4 not 3", "60k each not 50k"), the second figure ending the clause, so "sold 5 bags, not 2 days
  * late" is not one. Opening with "no" or "sorry" is not enough on its own.
  */
 const FIGURE_NOT_FIGURE =
   /\d[\d,.]*\s*k?\b[^.!?\n]{0,12}?\bnot\s+(?:₦\s*)?\d[\d,.]*\s*k?(?:\s+each)?\s*(?:[!?,;)]|\.(?!\d)|$)/i;
 
-/* "should be 60k", "make it 5", "change it to 4": the replacement is a figure. Without one ("should
- * be delivered tomorrow", "make it quick") the words replace nothing (CodeRabbit on #437). */
-const REPLACEMENT_FIGURE = /\b(?:change (?:it |the )?to|make it|should be)\s+(?:[₦N]\s*)?\d/i;
+/* A figure that is a clock time, a date or a span ("5pm", "4:30", "2 days", "the 5th") is never
+ * the replacement for a quantity or a price (owner review of #437 at 49f2586). */
+const NOT_A_TIME = String.raw`(?![\d,.]*\s*(?::\d|(?:am|pm|o'?clock|h|hrs?|hours?|mins?|minutes?|days?|weeks?|months?|years?|st|nd|rd|th)\b))`;
+
+/* "should be 60k", "make it 5", "change it to 4", "5 wigs instead of 3": the replacement is a
+ * figure. Without one ("should be delivered tomorrow", "make it quick", "instead of going home")
+ * the words replace nothing (CodeRabbit on #437). */
+const REPLACEMENT_FIGURE = new RegExp(
+  String.raw`\b(?:change (?:it |the )?to|make it|should be|instead of|rather than)\s+(?:[₦N]\s*)?\d` +
+    NOT_A_TIME,
+  'i',
+);
+
+/* A whole new sale or purchase, with its own price ("Sold 2 bags for 20k, make it 5"): correction
+ * wording inside it never makes it a correction of the waiting draft (owner review at 49f2586). */
+const OWN_TRANSACTION =
+  /\b(?:sold|sell|bought|buy|purchased|ordered|supplied|delivered)\b[^.!?;\n]{0,40}?\b(?:for|at)\s+(?:[₦N]\s*)?\d/i;
 
 export function clearlyCorrects(text: string): boolean {
   const trimmed = text.trim();
   if (!trimmed) return false;
   /* An opener alone ("Wait, I also sold…", "actually, sold 2 bags") is not enough: the message
-   * must say what replaces what (independent review of #437). */
-  return (
-    /\b(?:instead of|rather than)\b/i.test(trimmed) ||
-    REPLACEMENT_FIGURE.test(trimmed) ||
-    FIGURE_NOT_FIGURE.test(trimmed)
-  );
+   * must say what replaces what (independent review of #437). Anything less is asked about. */
+  if (OWN_TRANSACTION.test(trimmed)) return false;
+  return REPLACEMENT_FIGURE.test(trimmed) || FIGURE_NOT_FIGURE.test(trimmed);
 }
 
 /* ── money coming IN against an invoice already issued ───────────────────── */

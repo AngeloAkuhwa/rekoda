@@ -804,6 +804,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
             // Extracted-document text qualifies for dual extraction (item 9).
             read !== null,
             outcome,
+            jobId,
           );
 
     if (answer) {
@@ -5346,7 +5347,8 @@ function customerTokenOf(command: Record<string, unknown>): string | null {
  *  - the only one waiting in the business (`answerableDraftCount`);
  *  - live at this message, previewed to the merchant, and of the same kind;
  *  - this member's own (`requestedBy`), never another member's or an unattributed one;
- *  - with no question asked since (`hasReadsAfter`: "correct" may be about the answer);
+ *  - with no question asked since (`hasReadsAfter`: "correct" may be about the answer), and no
+ *    earlier message still retrying (`hasEarlierLiveJobByArrival`);
  *  - naming a customer this business holds (or, for a payment, an invoice).
  * Then the customer (and a payment's invoice reference, when the correction gives none) is
  * kept, the draft is superseded by the ordinary CG5 path, and the new preview needs its own
@@ -5374,6 +5376,8 @@ async function correctionInheritance(
     fromDocument: boolean;
     /** This correction's own stored message. */
     messageId: string;
+    /** This correction's own job; null only where no job runs it. */
+    jobId: string | null;
   },
 ): Promise<Inherited> {
   const none = { kind: 'none' } as const;
@@ -5441,7 +5445,12 @@ async function correctionInheritance(
     })) &&
     /* Any message since the preview, a free question ("who owes me") included, which writes no
      * draft: the merchant thread shows it, whichever member sent it (CodeRabbit on #437). */
-    !(await conversationsRepo.hasInboundBetween(tx, businessId, target.id, input.messageId));
+    !(await conversationsRepo.hasInboundBetween(tx, businessId, target.id, input.messageId)) &&
+    /* An earlier message still retrying has no row for the check above to see, so while one is
+     * live the correction is asked about; with no job to ask, it never inherits (owner review of
+     * #437 at 49f2586). */
+    input.jobId !== null &&
+    !(await jobsRepo.hasEarlierLiveJobByArrival(tx, input.jobId));
   /* Any draft that reaches here names a customer or an invoice: an ineligible correction is asked
    * about and never supersedes it (CodeRabbit on #437). */
   if (!eligible) return { kind: 'unclear' };
@@ -5497,6 +5506,8 @@ async function interpretedReply(
   fromDocument = false,
   /** What this reply did that a failed send must undo (G-68). */
   outcome?: RebuildOutcome,
+  /** This message's own job, for the CG5 check that no earlier message is still live. */
+  jobId: string | null = null,
 ): Promise<Reply> {
   /**
    * The MONTHLY meter (docs/metering-v1.md), checked before the model is
@@ -5757,6 +5768,7 @@ async function interpretedReply(
       receivedAt,
       fromDocument,
       messageId: conversationMessageId,
+      jobId,
     });
     if (carried.kind === 'unclear') {
       await refundMessage(tx, businessId, eventId, period);
