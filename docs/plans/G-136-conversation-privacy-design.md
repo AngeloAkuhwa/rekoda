@@ -653,21 +653,29 @@ webhook (§1.2), or any time limit on the encrypted originals (R3 is not approve
     then "should be", "make it" or "change it to" a figure, one figure "instead of" or "rather than"
     another, or one figure "not" another ("4 not 3", "it was 60k not 50k", "she paid 60k not 50k"). A
     figure may carry ₦, N or NGN, commas, a decimal point and "k", and at most one word after it that is
-    not a time, a date or an adding word ("more", "also", "another"); the field named before "should
-    be" comes from a closed list (price, total, quantity, balance and the like), never "the other". Anything else is asked about, whatever wording it contains, so a new sale in
-    any phrasing ("Sold 5 bags, 10k each, total should be 50k", "Sold 3 wigs @30k, make it 4") never
-    keeps the waiting draft's customer. Messages longer than 80 characters are never a clear correction.
-    Fixed RED first after the owner's review at `49f2586`, CodeRabbit at `49f2586` and the independent
-    review at `b5079a8`: `gates-correction.test.ts`, `meta-correction-customer.integration.test.ts` and
+    not a time, a date, an adding word ("more", "also", "another") or a count of records or people ("2
+    sales", "2 customers"), and a bare decimal ("4.30") is a time; the field named before "should be"
+    comes from a closed list (price, total, quantity, balance and the like), never "the other". Anything
+    else is asked about, whatever wording it contains, so a new sale in any phrasing ("Sold 5 bags, 10k
+    each, total should be 50k", "Sold 3 wigs @30k, make it 4") never keeps the waiting draft's customer.
+    Messages longer than 80 characters are never a clear correction. Fixed RED first after the owner's
+    review at `49f2586`, CodeRabbit at `49f2586` and the independent review at `b5079a8`:
+    `gates-correction.test.ts`, `meta-correction-customer.integration.test.ts` and
     `meta-correction-ambiguous.integration.test.ts`. The cost is that some genuine corrections are asked
     about ("make it 5 wigs please", "Sold 2 bags for 20k not 25k"): the safe reading.
 13. **An earlier message still retrying.** A message sent between the preview and the correction whose
     job failed once and is backing off has no conversation row yet, so `hasInboundBetween` cannot see
     it. The correction therefore also checks the queue (`hasEarlierLiveJobByArrival`): while any earlier
-    inbound message of the business is pending or running, the correction is asked about and changes
-    nothing. That includes a customer's message on the Integrate thread, whose job is the same kind: a
-    busy Integrate business may see a correction asked about more often, which is the safe reading. Tests in `meta-correction-ambiguous.integration.test.ts`, RED first: a message
-    backing off, and one running in another lane. Another business's queue never counts, and a message
-    that died in between retires the preview (OWN-74). A message sharing the preview's or the
-    correction's `created_at` counts as between them (`hasInboundBetween` is inclusive and excludes the
-    two ends by id; `preview-delivery.integration.test.ts`).
+    inbound merchant message of the business is pending or running, the correction is asked about and
+    changes nothing. It counts the business's merchant-thread messages only: a customer's message on the
+    Integrate thread is a `customer.message` job, a different kind, and never counts. Tests in
+    `meta-correction-ambiguous.integration.test.ts`, RED first: a message backing off, and one running
+    in another lane. Another business's queue never counts, and a message that died in between retires
+    the preview (OWN-74). A message sharing the preview's or the correction's `created_at` counts as
+    between them (`hasInboundBetween` is inclusive and excludes the two ends by id;
+    `preview-delivery.integration.test.ts`).
+14. **The replaced figure is not checked against the draft (MINOR, recorded).** "4 not 3" or "she paid
+    60k not 50k" counts as clear even when the waiting draft shows neither 3 nor 50k, so a nameless
+    message about another transaction, written exactly in correction form, can still keep the draft's
+    customer. Every other CG5 gate applies, the preview says "The same customer as before", and it needs
+    its own "yes". A follow-up could require the replaced figure to equal one of the draft's figures.

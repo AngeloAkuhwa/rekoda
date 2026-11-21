@@ -408,11 +408,14 @@ export function looksLikeCorrection(text: string, hasPendingDraft: boolean): boo
  * not clearly a correction and is asked about: listing new-sale wordings can never be complete, so
  * the shape of a correction is allowed and everything else is refused.
  */
-const FIG = String.raw`(?:(?:₦|NGN|N)\s*)?\d[\d,]*(?:\.\d+)?(?:\s*k)?`;
-const TIME_WORD = String.raw`(?:am|pm|o'?clock|h|hrs?|hours?|mins?|minutes?|days?|weeks?|months?|years?|st|nd|rd|th|today|tomorrow|tonight|noon|midnight|morning|evening|night|jan\w*|feb\w*|mar\w*|apr\w*|may|jun\w*|jul\w*|aug\w*|sep\w*|oct\w*|nov\w*|dec\w*|mon\w*|tue\w*|wed\w*|thu\w*|fri\w*|sat\w*|sun\w*)`;
+/* A decimal figure needs a currency sign or "k" ("60.5k", "₦4.50"): a bare "4.30" is a time. */
+const FIG = String.raw`(?:(?:₦|NGN|N)\s*\d[\d,]*(?:\.\d+)?(?:\s*k)?|\d[\d,]*\.\d+\s*k|\d[\d,]*(?:\s*k)?)`;
+const TIME_WORD = String.raw`(?:am|pm|o'?clock|h|hrs?|hours?|mins?|minutes?|days?|weeks?|months?|years?|st|nd|rd|th|today|tomorrow|tonight|noon|midnight|morning|evening|night|jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december|mon|monday|tue|tues|tuesday|wed|wednesday|thu|thur|thurs|thursday|fri|friday|sat|saturday|sun|sunday)`;
 /* A figure, then at most one word that is not a time or a date ("4 wigs", "4pcs", "60k each"). */
-/* Words that add to the draft or start another one ("5 more", "5 also", "another") never fill it. */
-const ADDING_WORD = String.raw`(?:more|extra|also|too|again|another|new|additional|plus|and|other|others)`;
+/* Words that add to the draft or start another one ("5 more", "5 also", "another") never fill it,
+ * nor do words that count records or people ("2 sales", "2 customers", "2 separate"): a request to
+ * restructure, not a field corrected. */
+const ADDING_WORD = String.raw`(?:more|extra|also|too|again|another|new|additional|plus|and|other|others|sales?|orders?|invoices?|receipts?|payments?|customers?|people|persons?|transactions?|times|different|separate)`;
 const AMOUNT = String.raw`${FIG}(?:\s*(?!(?:${TIME_WORD}|${ADDING_WORD})\b)[a-z]+)?`;
 const OPENER = String.raw`(?:(?:no+|nope|nah|sorry|wait|actually|correction|oh|ok|okay|e no be)\b[\s,.!:;-]*)*`;
 /* Who or which field is corrected: a closed list, never "the other" or "the new" (another sale). */

@@ -38,6 +38,10 @@ describe('a correction clear enough to keep the draft customer (clearlyCorrects,
     'Price should be 60k each',
     'change the price to 60k',
     'the delivery fee should be 2k',
+    /* Item names that begin like a month or a day are items. */
+    'make it 5 sunglasses',
+    '5 monitors instead of 3',
+    'make it 5 decoders',
     'no, she paid 60k not 50k',
     'make it 5 wigs',
   ])('%j clearly corrects', (text) => {
@@ -117,10 +121,32 @@ describe('a correction clear enough to keep the draft customer (clearlyCorrects,
     'the other should be 5k',
     'the new should be 5',
     'the order should be 5',
+    /* Counting records or people, and a bare decimal that is a time (independent review at cffb6a5). */
+    'make it 2 sales',
+    'make it 2 orders',
+    '2 customers not 3',
+    'should be 2 invoices',
+    '5 transactions instead of 3',
+    'make it 2 separate',
+    'should be 2 times',
+    'make it 4.30',
+    'should be 2.30',
     'Bola bought 2 shoes for 30k, should be 2',
     '   ',
   ])('%j does not', (text) => {
     expect(clearlyCorrects(text)).toBe(false);
+  });
+
+  it('answers an 80-character message built to backtrack at once', () => {
+    const started = Date.now();
+    for (const text of [
+      `no, ${'1,'.repeat(36)}1 not 2`,
+      `${'no '.repeat(26)}x`,
+      `make it ${'1'.repeat(70)}k`,
+    ]) {
+      clearlyCorrects(text);
+    }
+    expect(Date.now() - started).toBeLessThan(50);
   });
 
   it('answers a 4,000-character message at once, and not as a correction', () => {
