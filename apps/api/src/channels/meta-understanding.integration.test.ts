@@ -370,7 +370,7 @@ describe('asking the books a question', () => {
     });
 
   /**
-   * OD-3 (owner ruling, 20 Nov 2026): a question never creates a customer.
+   * BA-OD-3 (OWN-99, 20 Nov 2026): a question never creates a customer.
    *
    * A balance question about a name nobody recorded used to resolve the name
    * like a sale does, find-or-create: a new customer was vaulted, and the

@@ -221,10 +221,14 @@ describe('a late failed receipt never reaches past its own reply (OD-62(o))', ()
     const theirs = lastWamid();
     expect(await refusalStates(shop.id)).toEqual([`+${DELEGATE}:superseded`]);
 
+    /* This business's own refusal is answered too, so a receipt that matched by reply id alone,
+     * across businesses, would have something here to put back. */
     const business = await saleAndRefusal('LX');
+    await plain('wamid.LX3', 'yes');
+    expect(await refusalStates(business.id)).toEqual([`+${OWNER}:superseded`]);
     await receipt(OWNER, theirs, 'failed');
     await drain();
     expect(await refusalStates(shop.id)).toEqual([`+${DELEGATE}:superseded`]);
-    expect(await refusalStates(business.id)).toEqual([`+${OWNER}:pending`]);
+    expect(await refusalStates(business.id)).toEqual([`+${OWNER}:superseded`]);
   });
 });
