@@ -338,3 +338,47 @@ describe('CG5: a payment correction whose reading names another invoice', () => 
     expect(owed[0]?.balance_due_k).toBe('15000000');
   });
 });
+
+/* The replacement carries the draft's own invoice reference when the correction gives none
+ * (OWN-100(1); CodeRabbit on #437 at 3d66867): asserted on the draft, not only through a lookup
+ * that would find the same invoice anyway. */
+describe('CG5: a payment correction keeps its invoice reference on the replacement draft', () => {
+  it('"no, 60k not 50k" keeps the reference Ada\'s preview showed', async () => {
+    const { business, ada } = await seedOwner();
+    stubTransport.replyWith({ ...SALE, reportedPayment: 0 });
+    await send('Ada bought 3 wigs for 150k', 'wamid.D-SA');
+    await send('yes', 'wamid.D-SA-YES');
+    const [invoice] = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ invoice_number: string }>(
+        sql`SELECT invoice_number FROM invoices WHERE business_id = ${business.id}::uuid`,
+      ),
+    );
+    const PAY = {
+      intent: 'RecordPayment',
+      customer: { kind: 'token', token: ada.token },
+      amount: 50_000,
+      relativeAmount: null,
+      documentRef: invoice!.invoice_number,
+      paymentMethod: 'cash',
+    };
+    stubTransport.replyWith(PAY);
+    await send(`Ada paid 50k on ${invoice!.invoice_number}`, 'wamid.D-PAY');
+    stubTransport.replyWith({
+      ...PAY,
+      customer: { kind: 'none' },
+      amount: 60_000,
+      documentRef: null,
+    });
+    await send('no, 60k not 50k', 'wamid.D-FIX');
+    const [draft] = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ ref: string | null; customer: unknown }>(
+        sql`SELECT command->>'documentRef' AS ref, command->'customer' AS customer
+              FROM command_drafts
+             WHERE business_id = ${business.id}::uuid AND intent = 'RecordPayment'
+               AND state = 'pending'`,
+      ),
+    );
+    expect(draft?.ref).toBe(invoice!.invoice_number);
+    expect(draft?.customer).toEqual({ kind: 'token', token: ada.token });
+  });
+});
