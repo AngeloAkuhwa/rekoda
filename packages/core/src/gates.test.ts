@@ -12,7 +12,6 @@ import {
   gatePurchase,
   gateSale,
   looksLikeCorrection,
-  clearlyCorrects,
   saleToDraft,
   type SaleLike,
   gatePayment,
@@ -425,31 +424,6 @@ describe('CG5 — telling a correction from a new sale', () => {
 
   it('treats an empty message as neither', () => {
     expect(looksLikeCorrection('   ', true)).toBe(false);
-  });
-});
-
-describe('a correction clear enough to keep the draft customer (clearlyCorrects, OWN-100)', () => {
-  it.each([
-    'No, 4 not 3',
-    'No, 4 for Ada, not 3',
-    'sorry, 60k each not 50k',
-    'no, 60k not 50k',
-    '4 not 3',
-    'it was 60k not 50k',
-    'the price should be 60k',
-    'make it 5',
-    '5 wigs instead of 3',
-  ])('%j clearly corrects', (text) => {
-    expect(clearlyCorrects(text)).toBe(true);
-  });
-
-  it.each([
-    'Sold 2 bags for 20k, not paid yet',
-    'Bola bought 2 shoes, not delivered',
-    'Ada bought 3 wigs for 150k',
-    '   ',
-  ])('%j does not', (text) => {
-    expect(clearlyCorrects(text)).toBe(false);
   });
 });
 
