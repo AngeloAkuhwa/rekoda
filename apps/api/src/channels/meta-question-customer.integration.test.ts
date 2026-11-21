@@ -99,7 +99,7 @@ describe('a question that names a customer', () => {
   const lastModelText = () => stubTransport.requests.at(-1)?.userText ?? '';
 
   /**
-   * The documented exception (ADR 0005 Amendment 1, PROPOSED, awaiting the owner):
+   * The documented exception (ADR 0005 Amendment 1, ACCEPTED, OWN-100):
    * a question vaults nothing, so a name nobody recorded reaches the model again
    * each time a question repeats it. Pinned so the exception is never wider than
    * written: nothing is created on any ask, and no stored copy keeps the name.

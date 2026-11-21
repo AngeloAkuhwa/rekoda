@@ -253,10 +253,17 @@ describe('a yes after a refused record', () => {
     await drain();
     expect(stubSender.lastText).toContain('Reply *yes*');
 
-    // The owner was last shown their refusal: this yes is about it, never the delegate's sale.
+    // The owner was last shown their refusal: this yes is about it, never the delegate's sale,
+    // which is named as the delegate's, not as a preview from before the refusal.
     await plain('wamid.R32', 'yes');
-    expect(stubSender.lastText).toContain('Nothing was saved from your last message');
+    expect(stubSender.lastText).toContain('A preview another member asked for is already waiting');
+    expect(stubSender.lastText).not.toContain('from before it');
     expect((await footprint(business.id)).invoices).toBe(0);
+
+    // The delegate's own yes confirms the delegate's preview.
+    await post(messagePayload(DELEGATE, 'wamid.R33', 'yes'));
+    await drain();
+    expect((await footprint(business.id)).invoices).toBe(1);
   });
 
   it('a yes after a refusal never points at a preview a lapsed plan cannot save', async () => {

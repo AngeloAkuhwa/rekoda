@@ -1985,7 +1985,9 @@ async function deterministicReply(
         const behind = await pastRefusals(tx, businessId, ctx.from, ctx.receivedAt);
         /* Pointing at a preview only a "yes" could save, and only while Chat stands (G-65). */
         if (behind.draft?.previewed === true && !(await withoutChat(tx, businessId))) {
-          return replies.previewBehindRefusal();
+          return behind.draft.requestedBy === (await actorOf(tx, businessId, ctx.from))
+            ? replies.previewBehindRefusal()
+            : replies.previewWaitingForAnotherMember();
         }
         return (await withoutChat(tx, businessId))
           ? replies.nothingToDeclineWithoutChat()
@@ -2814,6 +2816,11 @@ async function confirmPendingDraft(
       }
       const behind = await pastRefusals(tx, businessId, sender.from, receivedAt);
       if (behind.draft?.previewed !== true) return replies.nothingToConfirm();
+      /* Another member's preview is theirs, never described as one this sender saw before their
+       * refusal (CodeRabbit on #437). */
+      if (behind.draft.requestedBy !== (await actorOf(tx, businessId, sender.from))) {
+        return replies.previewWaitingForAnotherMember();
+      }
       /* A preview the next "yes" could not save while Chat is lapsed is never pointed at (G-65). */
       const access = chatDraftAccess(await chatStandingOf(tx, businessId));
       return access === 'allow'
