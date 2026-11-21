@@ -2816,16 +2816,16 @@ async function confirmPendingDraft(
       }
       const behind = await pastRefusals(tx, businessId, sender.from, receivedAt);
       if (behind.draft?.previewed !== true) return replies.nothingToConfirm();
+      /* A preview no "yes" could save while Chat is lapsed is never pointed at, whoever asked for
+       * it (G-65; CodeRabbit on #437). */
+      const access = chatDraftAccess(await chatStandingOf(tx, businessId));
+      if (access !== 'allow') return chatRefusal(tx, businessId, access, 'draft');
       /* Another member's preview is theirs, never described as one this sender saw before their
        * refusal (CodeRabbit on #437). */
       if (behind.draft.requestedBy !== (await actorOf(tx, businessId, sender.from))) {
         return replies.previewWaitingForAnotherMember();
       }
-      /* A preview the next "yes" could not save while Chat is lapsed is never pointed at (G-65). */
-      const access = chatDraftAccess(await chatStandingOf(tx, businessId));
-      return access === 'allow'
-        ? replies.previewBehindRefusal()
-        : chatRefusal(tx, businessId, access, 'draft');
+      return replies.previewBehindRefusal();
     }
     draft = past.draft;
   }
@@ -5372,6 +5372,8 @@ async function correctionInheritance(
     actorId: string | null;
     receivedAt: Date;
     fromDocument: boolean;
+    /** This correction's own stored message. */
+    messageId: string;
   },
 ): Promise<Inherited> {
   const none = { kind: 'none' } as const;
@@ -5436,7 +5438,9 @@ async function correctionInheritance(
      * leaves the preview waiting, never the barrier gone (CodeRabbit on #437). */
     !(await conversationsRepo.hasRefusalOrQuestionSince(tx, businessId, target.id, {
       asOf: receivedAt,
-    }));
+    })) &&
+    /* A free question ("who owes me") writes no draft: the thread shows it (CodeRabbit on #437). */
+    !(await conversationsRepo.hasInboundBetween(tx, businessId, target.id, input.messageId));
   /* Any draft that reaches here names a customer or an invoice: an ineligible correction is asked
    * about and never supersedes it (CodeRabbit on #437). */
   if (!eligible) return { kind: 'unclear' };
@@ -5751,6 +5755,7 @@ async function interpretedReply(
       actorId,
       receivedAt,
       fromDocument,
+      messageId: conversationMessageId,
     });
     if (carried.kind === 'unclear') {
       await refundMessage(tx, businessId, eventId, period);

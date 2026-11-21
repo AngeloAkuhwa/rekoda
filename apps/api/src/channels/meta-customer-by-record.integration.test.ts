@@ -79,26 +79,35 @@ describe('customer creation follows the record, not the token (owner review of #
 
   it('suppliers known only by phone are never merged into one supplier called [phone]', async () => {
     const business = await seedMerchant();
-    const purchase = (supplierMention: string) => ({
+    /* A different amount each time, so the same-purchase question (G-81) never stands in for a save. */
+    const purchase = (supplierMention: string, amount: number) => ({
       intent: 'RecordPurchase',
       supplierMention,
       description: 'cement',
-      amount: 40_000,
-      reportedPayment: 40_000,
+      amount,
+      reportedPayment: amount,
       paymentMethod: 'cash',
       productMention: null,
       quantity: null,
       supplierReference: null,
     });
 
-    await say('wamid.S9a', purchase('CUSTOMER_U01'), 'bought cement from 08039998888 for 40k cash');
+    await say(
+      'wamid.S9a',
+      purchase('CUSTOMER_U01', 40_000),
+      'bought cement from 08039998888 for 40k cash',
+    );
     await plain('wamid.S9a-yes', 'yes');
-    await say('wamid.S9b', purchase('CUSTOMER_U01'), 'bought cement from 08037776666 for 40k cash');
+    await say(
+      'wamid.S9b',
+      purchase('CUSTOMER_U01', 41_000),
+      'bought cement from 08037776666 for 41k cash',
+    );
     await plain('wamid.S9b-yes', 'yes');
     await say(
       'wamid.S9c',
-      purchase('Musa CUSTOMER_U01'),
-      'bought cement from Musa 08035554444 for 40k cash',
+      purchase('Musa CUSTOMER_U01', 42_000),
+      'bought cement from Musa 08035554444 for 42k cash',
     );
     await plain('wamid.S9c-yes', 'yes');
 
@@ -114,6 +123,14 @@ describe('customer creation follows the record, not the token (owner review of #
     );
     /* Musa is one supplier; the two known only by number are none, never one shared. */
     expect(suppliers).toBe(1);
+    /* And that one is Musa's: only his purchase points at a supplier (CodeRabbit on #437). */
+    const linked = await withBusiness(db, business.id, async (tx) => [
+      ...(await tx.execute<{ linked: boolean }>(
+        sql`SELECT supplier_id IS NOT NULL AS linked FROM expenses
+             WHERE business_id = ${business.id}::uuid ORDER BY created_at`,
+      )),
+    ]);
+    expect(linked.map((r) => r.linked)).toEqual([false, false, true]);
   });
 
   it('a supplier named only by a customer token is no supplier (CodeRabbit on #437)', async () => {

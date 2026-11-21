@@ -782,6 +782,39 @@ export async function hasDraftsAfterBy(
   return [...rows][0]?.found === true;
 }
 
+/**
+ * Whether the member's thread holds an inbound message between the one that drafted `draftId`
+ * and `currentMessageId` (CodeRabbit on #437). A free question such as "who owes me" is answered
+ * by the router and writes no draft, so only the thread shows that the merchant asked something
+ * since the preview. Threads are per participant, so another member's or a customer's message is
+ * not counted.
+ */
+export async function hasInboundBetween(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  currentMessageId: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ found: boolean }>(sql`
+    SELECT EXISTS (
+      SELECT 1
+        FROM command_drafts d
+        JOIN conversation_messages src
+          ON src.business_id = d.business_id AND src.id = d.conversation_message_id
+        JOIN conversation_messages cur
+          ON cur.business_id = d.business_id AND cur.id = ${currentMessageId}::uuid
+        JOIN conversation_messages m
+          ON m.business_id = d.business_id AND m.conversation_id = src.conversation_id
+       WHERE d.business_id = ${businessId}::uuid
+         AND d.id = ${draftId}::uuid
+         AND m.direction = 'inbound'
+         AND m.id <> src.id
+         AND m.id <> cur.id
+         AND m.created_at > src.created_at
+         AND m.created_at < cur.created_at) AS found`);
+  return [...rows][0]?.found === true;
+}
+
 /** Whether a draft is a refusal's (`closeRefusalDraft`), never a request. */
 export function isRefusalDraft(draft: { intent: string; command: unknown }): boolean {
   return (

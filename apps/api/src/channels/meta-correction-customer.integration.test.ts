@@ -301,6 +301,21 @@ describe('CG5: a correction keeps the customer of the draft it corrects', () => 
     expect(await invoiceCount(business.id)).toBe(0);
   });
 
+  /* CodeRabbit on #437 at 3ec6a0d: "who owes me" is answered by the router and writes no draft,
+   * so the draft-based question check never saw it. */
+  it('after a free "who owes me", a nameless correction is asked about, never applied', async () => {
+    const { business } = await seedOwner();
+    stubTransport.replyWith(SALE);
+    await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.C9b-SALE');
+    await send('who owes me', 'wamid.C9b-Q');
+    stubTransport.replyWith(FOUR);
+    await send('No, 4 not 3', 'wamid.C9b-FIX');
+    expect(stubSender.lastText).toContain('I could not tell which customer');
+    const sale = (await drafts(business.id)).filter((r) => r.intent === 'RecordSale');
+    expect(sale.map((r) => r.state)).toEqual(['pending']);
+    expect(await invoiceCount(business.id)).toBe(0);
+  });
+
   it("another member's correction never inherits the owner's draft", async () => {
     const { business } = await seedOwner();
     const member = await identity.upsertUserByPhone(db, `+${MEMBER}`);

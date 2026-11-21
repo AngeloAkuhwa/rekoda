@@ -193,7 +193,7 @@ These rows are carried over from revision 1 and verified again.
 These rows are unchanged from revision 1.
 
 - **Names and phones live only in `customer_identities`** as AES-256-GCM ciphertext with an exact business-scoped HMAC `match_key` (`vault.ts:64-145`; `0000_init.sql:77-92`). There is one customer per trusted normalised value (`0005_identity_match_unique.sql:16-26`). There is no customer business-name field, no aliases and no verified flag. Storefront names are untrusted and cannot be matched.
-- **The gateway tokenises phones and known names** before the model (`gateway.service.ts:180-411`). **Resolving a mention or an unknown phone creates a customer, on reads too** (handler :5232-5262; gateway :240-246, :610-672).
+- **The gateway tokenises phones and known names** before the model (`gateway.service.ts:180-411`). **Resolving a mention or an unknown phone creates a customer, on reads too** (handler :5232-5262; gateway :240-246, :610-672). That is `main`'s behaviour at revision 1. PR #437 (open, not merged or deployed) changes it: a question resolves a name by lookup only, and an unknown phone or email becomes a customer only as the customer of a record (G-135; Progress above).
 - **Roles:** owner, accountant (view only) and delegate. `mayTransact` = owner or delegate (handler :2139-2146). Every member may use `debtors` and `records`. `resend` requires `mayTransact`. `roleOfPhone` does not filter `memberships.active` (`identity.ts:577-589`): verify before launch.
 - **Entitlements and units:**
   - `REKODA_CHAT` is on trial, chat and complete.

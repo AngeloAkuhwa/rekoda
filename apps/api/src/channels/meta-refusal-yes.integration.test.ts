@@ -291,6 +291,41 @@ describe('a yes after a refused record', () => {
     expect((await footprint(business.id)).invoices).toBe(0);
   });
 
+  /* CodeRabbit on #437 at 3ec6a0d: another member is never told to answer a preview a lapsed plan
+   * cannot save. */
+  it("a lapsed plan is said before pointing at another member's preview", async () => {
+    const business = await seedMerchant();
+    const ada = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+    const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+    await identity.addMembership(db, business.id, delegate.id, 'delegate');
+    await say(
+      'wamid.R70',
+      sale({ kind: 'token', token: ada.token }),
+      'sold Ada Obi 2 wigs for 100k',
+    );
+    await say('wamid.R71', payment({ kind: 'token', token: 'CUSTOMER_7K2' }), 'Bisi paid 20k');
+    stubTransport.replyWith({
+      intent: 'RecordExpense',
+      description: 'transport',
+      amount: 5_000,
+      category: 'transport',
+      paymentMethod: 'cash',
+    });
+    await post(messagePayload(DELEGATE, 'wamid.R72', 'transport 5k cash'));
+    await drain();
+    await setPlanForTest(db, {
+      businessId: business.id,
+      plan: 'trial',
+      expiresAt: new Date(Date.now() - 1_000),
+      actor: 'operator:test-clock',
+    });
+
+    await plain('wamid.R73', 'yes');
+    expect(stubSender.lastText).not.toBe(replies.previewWaitingForAnotherMember().text);
+    expect(stubSender.lastText).not.toContain('Ask them to reply');
+    expect((await footprint(business.id)).invoices).toBe(0);
+  });
+
   it('a newer preview that was never delivered does not close the refusal before it', async () => {
     const business = await seedMerchant();
     const ada = await deps.gateway.resolveMention(business.id, 'Ada Obi');

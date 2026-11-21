@@ -172,7 +172,10 @@ export default function PrivacyPage() {
                     </tr>
                     <tr>
                       <td>A trial you never converted</td>
-                      <td>{RETENTION.abandonedTrialDays} days after it ends</td>
+                      <td>
+                        No earlier than {RETENTION.abandonedTrialDays} days after it ends, and only
+                        after {RETENTION.noticeDays} days&apos; notice
+                      </td>
                       <td>
                         Long enough to come back or export. Not forever. A business that has ever
                         held a paid Rekoda plan is not treated as an abandoned trial.
@@ -203,8 +206,10 @@ export default function PrivacyPage() {
               </p>
               <p>
                 Your account is deleted when you ask us to delete it (see{' '}
-                <a href="/data-deletion">Delete my data</a>) or, for a trial you never converted,{' '}
-                {RETENTION.abandonedTrialDays} days after it ends.
+                <a href="/data-deletion">Delete my data</a>) or, for a trial you never converted, no
+                earlier than {RETENTION.abandonedTrialDays} days after it ends and never before you
+                have had {RETENTION.noticeDays} days&apos; notice. Until that notice can reach you,
+                the trial is kept.
               </p>
               <p>
                 If you stop paying, your account becomes read-only rather than closed or deleted.
