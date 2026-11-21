@@ -2005,7 +2005,9 @@ async function deterministicReply(
      * cancelled. Another member's refusal is looked past (`pastRefusals`). */
     const past = await pastRefusals(tx, businessId, ctx.from, ctx.receivedAt);
     if (past.ownRefusal) {
-      await conversationsRepo.closeRefusalDraft(tx, businessId, past.ownRefusal.id);
+      await conversationsRepo.closeRefusalDraft(tx, businessId, past.ownRefusal.id, {
+        answeredBy: ctx.messageId,
+      });
       if (ctx.outcome) (ctx.outcome.closedByAnswer ??= []).push(past.ownRefusal.id);
       if (intent.kind === 'deny') {
         const behind = await pastRefusals(tx, businessId, ctx.from, ctx.receivedAt);
@@ -2019,7 +2021,7 @@ async function deterministicReply(
             tx,
             businessId,
             behind.draft.id,
-            { asOf: ctx.receivedAt },
+            { asOf: ctx.receivedAt, forRefusal: past.ownRefusal.id },
           );
           if (ctx.outcome) (ctx.outcome.closedByAnswer ??= []).push(...retired);
           return replies.previewBehindRefusal();
@@ -2875,7 +2877,9 @@ async function confirmPendingDraft(
   {
     const past = await pastRefusals(tx, businessId, sender.from, receivedAt);
     if (past.ownRefusal) {
-      await conversationsRepo.closeRefusalDraft(tx, businessId, past.ownRefusal.id);
+      await conversationsRepo.closeRefusalDraft(tx, businessId, past.ownRefusal.id, {
+        answeredBy: sender.messageId,
+      });
       if (sender.outcome) (sender.outcome.closedByAnswer ??= []).push(past.ownRefusal.id);
       if (retrying) {
         await refundRecordedReservations(tx, businessId, eventId, usagePeriod(receivedAt));
@@ -2895,6 +2899,7 @@ async function confirmPendingDraft(
        * before the refusal would otherwise take that next yes (CodeRabbit on #437 at 96b1b52). */
       const retired = await conversationsRepo.retireReadsAfter(tx, businessId, behind.draft.id, {
         asOf: receivedAt,
+        forRefusal: past.ownRefusal.id,
       });
       if (sender.outcome) (sender.outcome.closedByAnswer ??= []).push(...retired);
       return replies.previewBehindRefusal();

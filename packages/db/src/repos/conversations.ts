@@ -759,7 +759,11 @@ export async function reopenClosedDrafts(
   if (draftIds.length === 0) return 0;
   const updated = await tx
     .update(commandDrafts)
-    .set({ state: 'pending', updatedAt: new Date() })
+    .set({
+      state: 'pending',
+      updatedAt: new Date(),
+      command: sql`${commandDrafts.command} - 'answeredBy' - 'retiredReads'`,
+    })
     .where(
       and(
         eq(commandDrafts.businessId, businessId),
@@ -780,7 +784,7 @@ export async function retireReadsAfter(
   tx: TenantDb,
   businessId: string,
   draftId: string,
-  options: { asOf?: Date } = {},
+  options: { asOf?: Date; forRefusal?: string } = {},
 ): Promise<string[]> {
   const seen = options.asOf
     ? sql`AND created_at <= ${options.asOf.toISOString()}::timestamptz`
@@ -795,7 +799,19 @@ export async function retireReadsAfter(
           WHERE d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid)
        ${seen}
     RETURNING id`);
-  return [...rows].map((r) => r.id);
+  const ids = [...rows].map((r) => r.id);
+  /* Kept on the refusal whose answer retired them, so a late failed receipt for that answer puts
+   * them back with it (OD-62(o), `markPreviewUndelivered`). */
+  if (options.forRefusal && ids.length > 0) {
+    await tx.execute(sql`
+      UPDATE command_drafts
+         SET command = command || jsonb_build_object('retiredReads',
+               COALESCE(command->'retiredReads', '[]'::jsonb) || ${JSON.stringify(ids)}::jsonb)
+       WHERE business_id = ${businessId}::uuid
+         AND id = ${options.forRefusal}::uuid
+         AND command ? 'answeredBy'`);
+  }
+  return ids;
 }
 
 /**
@@ -813,10 +829,16 @@ export async function closeRefusalDraft(
   tx: TenantDb,
   businessId: string,
   draftId: string,
+  options: { answeredBy?: string } = {},
 ): Promise<boolean> {
+  /* The message whose reply answers this refusal (OD-62(o)): a delivery of that reply which
+   * WhatsApp accepts and later reports failed puts the refusal back (`markPreviewUndelivered`). */
+  const answered = options.answeredBy
+    ? sql`${commandDrafts.command} || jsonb_build_object('answeredBy', ${options.answeredBy}::text, 'retiredReads', '[]'::jsonb)`
+    : sql`${commandDrafts.command} - 'answeredBy' - 'retiredReads'`;
   const updated = await tx
     .update(commandDrafts)
-    .set({ state: 'superseded', updatedAt: new Date() })
+    .set({ state: 'superseded', updatedAt: new Date(), command: answered })
     .where(
       and(
         eq(commandDrafts.businessId, businessId),
@@ -1065,8 +1087,8 @@ export async function markPreviewUndelivered(
   tx: TenantDb,
   businessId: string,
   providerMessageId: string,
-): Promise<{ drafts: number; continuations: number }> {
-  const rows = await tx.execute<{ drafts: string; continuations: string }>(sql`
+): Promise<{ drafts: number; continuations: number; reopened: number }> {
+  const rows = await tx.execute<{ drafts: string; continuations: string; reopened: string }>(sql`
     WITH reply AS (
       SELECT reply_to_message_id AS request_id
         FROM conversation_messages
@@ -1095,11 +1117,42 @@ export async function markPreviewUndelivered(
          AND c.source_message_id = reply.request_id
          AND c.state = 'open'
       RETURNING c.id
+    ), answered AS (
+      -- OD-62(o): the reply answered the member's own refusal, so the refusal it closed and the
+      -- questions it retired are put back, exactly as a send that failed outright puts them back
+      -- (reopenClosedDrafts). Only while each is still superseded, in this business.
+      SELECT d.id, COALESCE(d.command->'retiredReads', '[]'::jsonb) AS reads
+        FROM command_drafts d, reply
+       WHERE d.business_id = ${businessId}::uuid
+         AND d.state = 'superseded'
+         AND d.intent = 'Unclear'
+         AND COALESCE(d.command->>'refused', '') = 'true'
+         AND d.command->>'answeredBy' = reply.request_id::text
+    ), refusals AS (
+      UPDATE command_drafts d
+         SET state = 'pending', command = d.command - 'answeredBy' - 'retiredReads',
+             updated_at = clock_timestamp()
+        FROM answered a
+       WHERE d.business_id = ${businessId}::uuid AND d.id = a.id
+      RETURNING d.id
+    ), reads AS (
+      UPDATE command_drafts q
+         SET state = 'pending', updated_at = clock_timestamp()
+       WHERE q.business_id = ${businessId}::uuid
+         AND q.state = 'superseded'
+         AND q.intent = 'Query'
+         AND q.id::text IN (SELECT jsonb_array_elements_text(a.reads) FROM answered a)
+      RETURNING q.id
     )
     SELECT (SELECT count(*) FROM drafts)::text AS drafts,
-           (SELECT count(*) FROM continuations)::text AS continuations`);
+           (SELECT count(*) FROM continuations)::text AS continuations,
+           ((SELECT count(*) FROM refusals) + (SELECT count(*) FROM reads))::text AS reopened`);
   const row = [...rows][0];
-  return { drafts: Number(row?.drafts ?? 0), continuations: Number(row?.continuations ?? 0) };
+  return {
+    drafts: Number(row?.drafts ?? 0),
+    continuations: Number(row?.continuations ?? 0),
+    reopened: Number(row?.reopened ?? 0),
+  };
 }
 
 /**
