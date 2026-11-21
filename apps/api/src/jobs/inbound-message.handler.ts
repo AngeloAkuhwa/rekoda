@@ -5481,15 +5481,18 @@ function customerTokenOf(command: Record<string, unknown>): string | null {
  * The model reads a correction from its own words and never sees an earlier turn, so "No, 4
  * not 3" names nobody. The customer comes from the TRUSTED pending draft, never from a token
  * the model wrote: a token this message was not issued is still refused by the G-137 guard
- * after this, so no earlier token is ever whitelisted. Only a sale, a payment or an order
- * the model read with no customer at all looks here, and the draft must be:
+ * after this, so no earlier token is ever whitelisted.
+ *
+ * Every record read as a correction of a live waiting draft first passes `correctionMayChange`
+ * (OD-60): one draft waiting, of the same kind, the member's own, nothing in front of it or since
+ * its preview, no earlier message retrying. Failing it, the correction is `unclear`: asked about,
+ * superseding nothing. Passing it, the correction supersedes the draft. Only a sale, a payment or
+ * an order the model read with no customer at all also keeps the draft's customer, and then the
+ * draft must also be:
  *  - clearly corrected (`clearlyCorrects`: says what replaces what), not merely "no" or a "not";
- *  - the newest thing a correction can be about, with no refusal in front of it;
- *  - the only one waiting in the business (`answerableDraftCount`);
- *  - live at this message, previewed to the merchant, and of the same kind;
- *  - this member's own (`requestedBy`), never another member's or an unattributed one;
- *  - with no question asked since (`hasReadsAfter`: "correct" may be about the answer), and no
- *    earlier message still retrying (`hasEarlierLiveJobByArrival`);
+ *  - previewed to the merchant;
+ *  - with every word of the correction explained (`correctionWordsExplained`) and no customer
+ *    token issued to the message;
  *  - naming a customer this business holds (or, for a payment, an invoice).
  * Then the customer (and a payment's invoice reference, when the correction gives none) is
  * kept, the draft is superseded by the ordinary CG5 path, and the new preview needs its own
@@ -5498,13 +5501,68 @@ function customerTokenOf(command: Record<string, unknown>): string | null {
  * and inherits nobody. Read-only.
  */
 type Inherited =
+  /** Not a correction of anything waiting: a new request, superseding nothing. */
   | { readonly kind: 'none' }
-  | { readonly kind: 'unclear' }
+  /** A correction of the waiting draft that keeps no customer: it supersedes that draft. */
+  | { readonly kind: 'supersede' }
+  /** Read as a correction, but which draft it changes, or how, is unclear: asked about. */
+  | { readonly kind: 'unclear'; readonly ask: 'customer' | 'correction' }
   | {
       readonly kind: 'inherit';
       readonly customer: { readonly token: string; readonly customerId: string } | null;
       readonly documentRef: string | null;
     };
+
+/**
+ * The one CG5 contract (OD-60): whether a message read as a correction may change the draft it is
+ * about at all. Both outcomes of a correction, superseding the draft and keeping its customer, pass
+ * it first, so the two can never disagree. The draft must be:
+ *  - the only one waiting in the business (`answerableDraftCount`);
+ *  - of the kind the model read this message as (a "No, 4 not 3" read as an expense never
+ *    replaces a waiting sale);
+ *  - this member's own (`requestedBy`), never another member's or an unattributed one;
+ *  - with no refusal in front of it, and no question, refusal or other message since its preview
+ *    (`hasReadsAfter`, `hasRefusalOrQuestionSince`, `hasInboundBetween`);
+ *  - with no earlier message of the business still retrying (`hasEarlierLiveJobByArrival`).
+ * Read-only.
+ */
+async function correctionMayChange(
+  tx: TenantDb,
+  businessId: string,
+  target: conversationsRepo.DraftRow,
+  input: {
+    command: StructuredBusinessCommand;
+    actorId: string | null;
+    receivedAt: Date;
+    refusalInFront: boolean;
+    messageId: string;
+    jobId: string | null;
+  },
+): Promise<boolean> {
+  const { receivedAt } = input;
+  return (
+    !input.refusalInFront &&
+    target.intent === input.command.intent &&
+    input.actorId !== null &&
+    target.requestedBy === input.actorId &&
+    /* Two or more previews waiting: which one this corrects is a question (OWN-100). */
+    (await conversationsRepo.answerableDraftCount(tx, businessId, { asOf: receivedAt })) <= 1 &&
+    !(await conversationsRepo.hasReadsAfter(tx, businessId, target.id, { asOf: receivedAt })) &&
+    /* A refusal or a question since the preview, in any state: a "yes" that closed or retired it
+     * leaves the preview waiting, never the barrier gone (CodeRabbit on #437). */
+    !(await conversationsRepo.hasRefusalOrQuestionSince(tx, businessId, target.id, {
+      asOf: receivedAt,
+    })) &&
+    /* Any message since the preview, a free question ("who owes me") included, which writes no
+     * draft: the merchant thread shows it, whichever member sent it (CodeRabbit on #437). */
+    !(await conversationsRepo.hasInboundBetween(tx, businessId, target.id, input.messageId)) &&
+    /* An earlier message still retrying has no row for the checks above to see, so while one is
+     * live the correction is asked about; with no job to ask, it changes nothing (owner review of
+     * #437 at 49f2586). */
+    input.jobId !== null &&
+    !(await jobsRepo.hasEarlierLiveJobByArrival(tx, input.jobId))
+  );
+}
 
 async function correctionInheritance(
   tx: TenantDb,
@@ -5525,11 +5583,10 @@ async function correctionInheritance(
 ): Promise<Inherited> {
   const none = { kind: 'none' } as const;
   const { command, receivedAt } = input;
-  if (input.fromDocument || !CUSTOMER_BEARING.has(command.intent)) return none;
-  const named = 'customer' in command ? command.customer : null;
-  /* A customer the correction names, by a name or by any token, is its own: a different one
-   * is never overridden, and an unissued token is the G-137 guard's to refuse. */
-  if (named && named.kind !== 'none') return none;
+  /* G-78: words on a photograph are never a correction. Only a record corrects a record: a
+   * reading the model could not make (`Unclear`) or a question is answered and leaves the preview
+   * as it was (independent review of #437, OWN-100). */
+  if (input.fromDocument || command.intent === 'Unclear' || command.intent === 'Query') return none;
 
   const except: string[] = [];
   let refusalInFront = false;
@@ -5551,27 +5608,48 @@ async function correctionInheritance(
     return none;
   }
   if (!looksLikeCorrection(input.rawText, true)) return none;
-  /* Two or more previews waiting: which one this corrects is a question (OWN-100). */
-  if ((await conversationsRepo.answerableDraftCount(tx, businessId, { asOf: receivedAt })) > 1) {
-    return { kind: 'unclear' };
-  }
-  /* Read as a correction, but not clearly one of this draft ("Wait, I also sold 2 bags"): never
-   * given the draft's customer; asked about below when the draft has one. */
-  const clear = clearlyCorrects(input.rawText);
 
   const stored = (target.command ?? {}) as Record<string, unknown>;
-  const token = customerTokenOf(stored);
+  const bearing = CUSTOMER_BEARING.has(command.intent);
+  const named = bearing && 'customer' in command ? command.customer : null;
+  /* What the waiting draft holds that a correction naming nobody would keep. */
+  const token = bearing && !(named && named.kind !== 'none') ? customerTokenOf(stored) : null;
+  const ref = stored['documentRef'];
+  const draftRef =
+    /* The waiting draft's own reference, whatever the correction reads as: a sale correction to a
+     * payment preview then fails the same-kind check and is asked about (CodeRabbit). */
+    bearing &&
+    !(named && named.kind !== 'none') &&
+    target.intent === 'RecordPayment' &&
+    typeof ref === 'string' &&
+    ref.length > 0
+      ? ref
+      : null;
+
+  if (
+    !(await correctionMayChange(tx, businessId, target, {
+      command,
+      actorId: input.actorId,
+      receivedAt,
+      refusalInFront,
+      messageId: input.messageId,
+      jobId: input.jobId,
+    }))
+  ) {
+    /* Which request it changes, or whether it is a new one, is the question (OD-60). */
+    return { kind: 'unclear', ask: 'correction' };
+  }
+
+  /* A customer the correction names, by a name or by any token, is its own: a different one
+   * is never overridden, and an unissued token is the G-137 guard's to refuse. */
+  if (!bearing || (named && named.kind !== 'none')) return { kind: 'supersede' };
+
   const customerId = token ? await customerIdFor(tx, businessId, token) : null;
   /* The draft named a customer this business no longer holds by that token (merged since): asked
    * about, never turned into a sale to nobody. */
-  if (token && !customerId) return { kind: 'unclear' };
-  const ref = stored['documentRef'];
-  const documentRef =
-    /* The waiting draft's own reference, whatever the correction reads as: a sale correction to a
-     * payment preview then reaches the same-kind check below and is asked about (CodeRabbit). */
-    target.intent === 'RecordPayment' && typeof ref === 'string' && ref.length > 0 ? ref : null;
+  if (token && !customerId) return { kind: 'unclear', ask: 'customer' };
   /* The draft named nobody: nothing to carry, nothing to ask. */
-  if (!customerId && !documentRef) return none;
+  if (!customerId && !draftRef) return { kind: 'supersede' };
 
   /* The model's own invoice number on a payment correction that names nobody cannot have come
    * from its words ("no, 60k not 50k"): only the draft's own, or none, is kept (independent review
@@ -5581,39 +5659,23 @@ async function correctionInheritance(
       ? command.documentRef
       : null;
   const eligible =
-    clear &&
+    /* Read as a correction, but not clearly one of this draft ("Wait, I also sold 2 bags"): never
+     * given the draft's customer. */
+    clearlyCorrects(input.rawText) &&
     /* Somebody named in the correction's own words, recorded (a token) or not (a word the draft
      * does not hold), is never overridden by the draft's customer (OWN-100; CodeRabbit and the
      * independent review of #437 at ebeeadb). */
     !input.namesSomeone &&
     correctionWordsExplained(input.rawText, draftVocabulary(stored)) &&
-    (modelRef === null || modelRef.length === 0 || modelRef === documentRef) &&
-    !refusalInFront &&
-    target.intent === command.intent &&
-    target.previewed === true &&
-    input.actorId !== null &&
-    target.requestedBy === input.actorId &&
-    !(await conversationsRepo.hasReadsAfter(tx, businessId, target.id, { asOf: receivedAt })) &&
-    /* A refusal or a question since the preview, in any state: a "yes" that closed or retired it
-     * leaves the preview waiting, never the barrier gone (CodeRabbit on #437). */
-    !(await conversationsRepo.hasRefusalOrQuestionSince(tx, businessId, target.id, {
-      asOf: receivedAt,
-    })) &&
-    /* Any message since the preview, a free question ("who owes me") included, which writes no
-     * draft: the merchant thread shows it, whichever member sent it (CodeRabbit on #437). */
-    !(await conversationsRepo.hasInboundBetween(tx, businessId, target.id, input.messageId)) &&
-    /* An earlier message still retrying has no row for the check above to see, so while one is
-     * live the correction is asked about; with no job to ask, it never inherits (owner review of
-     * #437 at 49f2586). */
-    input.jobId !== null &&
-    !(await jobsRepo.hasEarlierLiveJobByArrival(tx, input.jobId));
+    (modelRef === null || modelRef.length === 0 || modelRef === draftRef) &&
+    target.previewed === true;
   /* Any draft that reaches here names a customer or an invoice: an ineligible correction is asked
    * about and never supersedes it (CodeRabbit on #437). */
-  if (!eligible) return { kind: 'unclear' };
+  if (!eligible) return { kind: 'unclear', ask: 'customer' };
   return {
     kind: 'inherit',
     customer: token && customerId ? { token, customerId } : null,
-    documentRef,
+    documentRef: draftRef,
   };
 }
 
@@ -5916,6 +5978,9 @@ async function interpretedReply(
    */
   /* Carried from the trusted draft for the record's `customer` only, never allowed in its words. */
   let inheritedToken: string | null = null;
+  /* Whether this message corrects, and so supersedes, the waiting draft (CG5, OD-60): decided once,
+   * by `correctionInheritance`, so supersession and inheritance can never disagree. */
+  let correcting = false;
   {
     const carried = await correctionInheritance(tx, businessId, {
       rawText,
@@ -5929,8 +5994,11 @@ async function interpretedReply(
     });
     if (carried.kind === 'unclear') {
       await refundMessage(tx, businessId, eventId, period);
-      return refusedAs(replies.customerNotRecognised());
+      return refusedAs(
+        carried.ask === 'customer' ? replies.customerNotRecognised() : replies.correctionNotClear(),
+      );
     }
+    correcting = carried.kind !== 'none';
     if (carried.kind === 'inherit') {
       if (carried.customer) {
         noteInheritedCustomer(tokens, carried.customer.token);
@@ -6162,19 +6230,9 @@ async function interpretedReply(
   /* G-23: an expired preview is not there to be corrected; a "sorry, 3 not
    * 4" after it is a new request with its own fresh window. */
   await conversationsRepo.expireStaleDrafts(tx, businessId, { now: receivedAt });
-  /* A correction is about something a "yes" could confirm, never a read:
-   * "sorry, 3 not 4" after only a question is a new request (Build 6). */
-  const existing = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
-    asOf: receivedAt,
-  });
-  /* G-78: words on a photograph are never a correction. */
-  /* Only a record corrects a record: a reading the model could not make (`Unclear`) or a question
-   * is answered and leaves the preview as it was (independent review of #437, OWN-100). */
-  const correcting =
-    !fromDocument &&
-    command.intent !== 'Unclear' &&
-    command.intent !== 'Query' &&
-    looksLikeCorrection(rawText, existing !== null);
+  /* A correction is about something a "yes" could confirm, never a read: "sorry, 3 not 4" after
+   * only a question is a new request (Build 6). Whether this is one was decided above, against the
+   * same draft and the same window (`correctionInheritance`, OD-60). */
   if (correcting) {
     await conversationsRepo.supersedePendingDrafts(tx, businessId, { asOf: receivedAt });
   }

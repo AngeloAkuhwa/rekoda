@@ -1005,6 +1005,20 @@ export function optionChosen(invoiceNumber: string): Reply {
   );
 }
 
+/**
+ * CG5 (OD-60): a message read as a correction that may not be about the request waiting for a
+ * yes (another kind of record, another member's request, two waiting, or something said since).
+ * Nothing was changed, and the reply says how to do either thing the merchant may have meant.
+ */
+export function correctionNotClear(): Reply {
+  return reply(
+    'I could not tell if that changes the request waiting for your yes or is a new record, ' +
+      'so I have not changed anything. To change the waiting request, send only the change, ' +
+      'for example *No, 4 not 3*. To record this as something new, first reply *yes* or *no* ' +
+      'to the waiting request, then send the new record.',
+  );
+}
+
 /** CG5 — the correction landed and replaced what came before. */
 export function correctionTaken(): Reply {
   return reply('Got it. I have replaced the earlier version.');
