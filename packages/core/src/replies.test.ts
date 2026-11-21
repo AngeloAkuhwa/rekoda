@@ -570,6 +570,8 @@ describe('erasure', () => {
     // The one place a second message is worth the friction: an accidental
     // deletion cannot be undone by any amount of apology.
     expect(text).toMatch(/again to confirm/i);
+    /* R4 (OWN-100) also erases the stored copies of chat messages: the merchant is told. */
+    expect(text).toMatch(/chat messages/i);
   });
 });
 

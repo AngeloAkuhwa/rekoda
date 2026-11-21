@@ -80,8 +80,12 @@ export function cancelled(): Reply {
  */
 export function confirmErasure(draftsDiscarded = 0): Reply {
   const lines = [
+    /* Everything the erasure removes, so the merchant agrees to all of it: since #437 it also
+     * reaches the stored copies of their chat messages (R4, OWN-100; independent review at
+     * ebeeadb). */
     'You are asking me to delete your data. This removes your customers and ' +
-      'their details permanently and cannot be undone.',
+      'their details, and the copies Rekoda kept of your chat messages, permanently. ' +
+      'It cannot be undone.',
   ];
   /* Asking to erase clears whatever was waiting for a yes, and the merchant
    * has to be told: a sale they previewed a minute ago silently vanishing is
