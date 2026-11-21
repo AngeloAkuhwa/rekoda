@@ -1022,6 +1022,28 @@ export function correctionNotClear(): Reply {
   );
 }
 
+/**
+ * CG5 (OD-60): a correction while more than one request waits for a yes. Never advises "cancel",
+ * which would drop every one of them; a yes is answered with what is still waiting.
+ */
+export function correctionNotClearSeveral(): Reply {
+  return reply(
+    'More than one request is waiting for a yes, so I could not tell which one that changes, ' +
+      'and I have not changed anything. Reply *yes* and I will tell you what is still waiting.',
+  );
+}
+
+/**
+ * CG5 (OD-60): a correction aimed at a request another member is waiting to answer. Only they
+ * can answer it; nothing of theirs was changed.
+ */
+export function correctionForAnotherMember(): Reply {
+  return reply(
+    'The request waiting for a yes is from another member of this business, so I have not ' +
+      'changed it. Ask them to reply *yes* or *no* to it, then send your record in full.',
+  );
+}
+
 /** CG5 — the correction landed and replaced what came before. */
 export function correctionTaken(): Reply {
   return reply('Got it. I have replaced the earlier version.');

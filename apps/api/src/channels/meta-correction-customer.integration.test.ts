@@ -341,7 +341,7 @@ describe('CG5: a correction keeps the customer of the draft it corrects', () => 
 
     stubTransport.replyWith(FOUR);
     await send('No, 4 not 3', 'wamid.C10-FIX', MEMBER);
-    expect(stubSender.lastText).toBe(replies.correctionNotClear().text);
+    expect(stubSender.lastText).toBe(replies.correctionForAnotherMember().text);
     const rows = await drafts(business.id);
     const sales = rows.filter((r) => r.intent === 'RecordSale');
     // The owner's preview is untouched, and the member holds no draft naming Ada.
@@ -423,7 +423,7 @@ describe('CG5: a correction keeps the customer of the draft it corrects', () => 
     await send('diesel 12k cash', 'wamid.C15-EXP');
     stubTransport.replyWith(FOUR);
     await send('No, 4 not 3', 'wamid.C15-FIX');
-    expect(stubSender.lastText).toBe(replies.correctionNotClear().text);
+    expect(stubSender.lastText).toBe(replies.correctionNotClearSeveral().text);
     const states = (await drafts(business.id))
       .filter((r) => r.intent !== 'Unclear')
       .map((r) => `${r.intent}:${r.state}`);
@@ -486,7 +486,7 @@ describe('CG5: a correction keeps the customer of the draft it corrects', () => 
     await send('and the bags', 'wamid.C18-Q');
     stubTransport.replyWith(FOUR);
     await send('No, 4 not 3', 'wamid.C18-FIX');
-    expect(stubSender.lastText).toBe(replies.correctionNotClear().text);
+    expect(stubSender.lastText).toBe(replies.correctionNotClearSeveral().text);
     const sales = (await drafts(business.id)).filter((r) => r.intent === 'RecordSale');
     expect(sales.map((r) => r.state)).toEqual(['pending']);
   });

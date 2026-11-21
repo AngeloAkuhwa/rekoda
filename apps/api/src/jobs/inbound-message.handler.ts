@@ -5507,7 +5507,7 @@ type Inherited =
   /** A correction of the waiting draft that keeps no customer: it supersedes that draft. */
   | { readonly kind: 'supersede' }
   /** Read as a correction, but which draft it changes, or how, is unclear: asked about. */
-  | { readonly kind: 'unclear'; readonly ask: 'customer' | 'correction' }
+  | { readonly kind: 'unclear'; readonly ask: 'customer' | CorrectionBlock }
   | {
       readonly kind: 'inherit';
       readonly customer: { readonly token: string; readonly customerId: string } | null;
@@ -5528,6 +5528,13 @@ type Inherited =
  * merchant corrected its preview then finds it superseded and books nothing (G-23). It does stop
  * a correction keeping the draft's customer (`correctionInheritance`). Read-only.
  */
+/**
+ * Why `correctionMayChange` refused, which decides what the merchant is told (independent review
+ * of #437 at 42ed8bb): several requests waiting, another member's request, or anything else about
+ * the member's one waiting request.
+ */
+type CorrectionBlock = 'several' | 'another' | 'correction';
+
 async function correctionMayChange(
   tx: TenantDb,
   businessId: string,
@@ -5539,15 +5546,17 @@ async function correctionMayChange(
     refusalInFront: boolean;
     messageId: string;
   },
-): Promise<boolean> {
+): Promise<CorrectionBlock | null> {
   const { receivedAt } = input;
-  return (
+  /* Two or more previews waiting: which one this corrects is a question (OWN-100). Checked
+   * first, so the reply never advises a "cancel" that would drop more than one request. */
+  if ((await conversationsRepo.answerableDraftCount(tx, businessId, { asOf: receivedAt })) > 1) {
+    return 'several';
+  }
+  if (input.actorId === null || target.requestedBy !== input.actorId) return 'another';
+  const may =
     !input.refusalInFront &&
     target.intent === input.command.intent &&
-    input.actorId !== null &&
-    target.requestedBy === input.actorId &&
-    /* Two or more previews waiting: which one this corrects is a question (OWN-100). */
-    (await conversationsRepo.answerableDraftCount(tx, businessId, { asOf: receivedAt })) <= 1 &&
     !(await conversationsRepo.hasReadsAfter(tx, businessId, target.id, { asOf: receivedAt })) &&
     /* A refusal or a question since the preview, in any state: a "yes" that closed or retired it
      * leaves the preview waiting, never the barrier gone (CodeRabbit on #437). */
@@ -5556,8 +5565,8 @@ async function correctionMayChange(
     })) &&
     /* Any message since the preview, a free question ("who owes me") included, which writes no
      * draft: the merchant thread shows it, whichever member sent it (CodeRabbit on #437). */
-    !(await conversationsRepo.hasInboundBetween(tx, businessId, target.id, input.messageId))
-  );
+    !(await conversationsRepo.hasInboundBetween(tx, businessId, target.id, input.messageId));
+  return may ? null : 'correction';
 }
 
 async function correctionInheritance(
@@ -5622,18 +5631,15 @@ async function correctionInheritance(
       ? ref
       : null;
 
-  if (
-    !(await correctionMayChange(tx, businessId, target, {
-      command,
-      actorId: input.actorId,
-      receivedAt,
-      refusalInFront,
-      messageId: input.messageId,
-    }))
-  ) {
-    /* Which request it changes, or whether it is a new one, is the question (OD-60). */
-    return { kind: 'unclear', ask: 'correction' };
-  }
+  const blocked = await correctionMayChange(tx, businessId, target, {
+    command,
+    actorId: input.actorId,
+    receivedAt,
+    refusalInFront,
+    messageId: input.messageId,
+  });
+  /* Which request it changes, or whether it is a new one, is the question (OD-60). */
+  if (blocked) return { kind: 'unclear', ask: blocked };
 
   /* A customer the correction names, by a name or by any token, is its own: a different one
    * is never overridden, and an unissued token is the G-137 guard's to refuse. */
@@ -5995,7 +6001,13 @@ async function interpretedReply(
     if (carried.kind === 'unclear') {
       await refundMessage(tx, businessId, eventId, period);
       return refusedAs(
-        carried.ask === 'customer' ? replies.customerNotRecognised() : replies.correctionNotClear(),
+        carried.ask === 'customer'
+          ? replies.customerNotRecognised()
+          : carried.ask === 'several'
+            ? replies.correctionNotClearSeveral()
+            : carried.ask === 'another'
+              ? replies.correctionForAnotherMember()
+              : replies.correctionNotClear(),
       );
     }
     correcting = carried.kind !== 'none';

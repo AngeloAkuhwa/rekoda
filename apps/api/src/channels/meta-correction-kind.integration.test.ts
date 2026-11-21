@@ -197,8 +197,11 @@ describe('CG5: a correction that may be about something else is asked about (OD-
     await send('fuel 5k cash', 'wamid.K4-EXP', expense(5_000));
 
     await send('no, 6k not 5k', 'wamid.K4-FIX', expense(6_000), MEMBER);
-    expect(stubSender.lastText).toBe(replies.correctionNotClear().text);
+    expect(stubSender.lastText).toBe(replies.correctionForAnotherMember().text);
     expect(await drafts(business.id)).toEqual(['RecordExpense:pending']);
+    /* As the reply says: the owner answers their own request, and only it is booked. */
+    await send('yes', 'wamid.K4-YES');
+    expect((await books(business.id)).expenses).toEqual([500_000]);
   });
 
   it('a correction after a question is asked about', async () => {
@@ -224,8 +227,12 @@ describe('CG5: a correction that may be about something else is asked about (OD-
     await send('diesel 12k cash', 'wamid.K6-E2', { ...expense(12_000), description: 'diesel' });
 
     await send('no, 6k not 5k', 'wamid.K6-FIX', expense(6_000));
-    expect(stubSender.lastText).toBe(replies.correctionNotClear().text);
+    expect(stubSender.lastText).toBe(replies.correctionNotClearSeveral().text);
     expect(await drafts(business.id)).toEqual(['RecordExpense:pending', 'RecordExpense:pending']);
+    /* As the reply says: a yes is told what is waiting, and nothing is booked until the next. */
+    await send('yes', 'wamid.K6-YES1');
+    expect(stubSender.lastText).toBe(replies.previewBehindRefusal().text);
+    expect((await books(business.id)).expenses).toEqual([]);
   });
 });
 
