@@ -226,6 +226,47 @@ describe('consent (STOP/START) and erasure, as facts not sentences', () => {
     expect(stubSender.sent.length).toBe(sentBefore);
   });
 
+  it('DELETE MY DATA leaves the books exactly as they were (R4, OWN-100)', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    async function say(text: string, wamid: string) {
+      await post(messagePayload('2348031234567', wamid, text));
+      const runner = buildRunner(workerDb, db, deps);
+      let worked = await runner.runOnce();
+      while (worked) worked = await runner.runOnce();
+    }
+    stubTransport.replyWith({
+      intent: 'RecordSale',
+      customer: { kind: 'token', token: 'CUSTOMER_7K2' },
+      items: [{ name: 'wig', quantity: 3, unitPrice: 50_000 }],
+      statedTotal: 150_000,
+      reportedPayment: 100_000,
+      paymentMethod: 'transfer',
+      discount: null,
+      deliveryFee: null,
+      dueDescription: null,
+    });
+    await say('Ada bought 3 wigs for 150k, paid 100k', 'wamid.R4-SALE');
+    await say('yes', 'wamid.R4-YES');
+    const books = () =>
+      withBusiness(db, business.id, async (tx) => ({
+        entries: await issueRepo.ledgerEntriesFor(tx, business.id),
+        documents: [
+          ...(await tx.execute<{ invoices: number; receipts: number; payments: number }>(sql`
+            SELECT (SELECT count(*)::int FROM invoices WHERE business_id = ${business.id}::uuid) AS invoices,
+                   (SELECT count(*)::int FROM receipts WHERE business_id = ${business.id}::uuid) AS receipts,
+                   (SELECT count(*)::int FROM payments WHERE business_id = ${business.id}::uuid) AS payments`)),
+        ],
+      }));
+    const before = await books();
+    expect(await invoiceCount(business.id)).toBe(1);
+
+    await say('delete my data', 'wamid.R4-DEL1');
+    await say('delete my data', 'wamid.R4-DEL2');
+    expect(stubSender.lastText).toContain('deleted (');
+
+    expect(await books()).toEqual(before);
+  });
+
   it('erasure with no web URL still deletes, and names no link at all', async () => {
     const business = await seedMerchant('+2348031234567', 'Ada Fashion');
     const customer = await customersRepo.createCustomerWithIdentities(

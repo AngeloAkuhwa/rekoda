@@ -1,18 +1,23 @@
 # G-135, G-136 and G-137 in PR #437: conversation privacy, implementation and decision package
 
-**Status (20 Nov 2026):** CODE COMPLETE in PR #437. Not merged, not deployed, STAGING ACCEPTANCE PENDING.
-Revised the same day after the owner's review of `3a60b0f` (items 1 to 12); what changed is marked
-"(owner review of `3a60b0f`)".
+**Status (21 Nov 2026):** CODE COMPLETE in PR #437. Not merged, not deployed, STAGING ACCEPTANCE PENDING.
+Revised after the owner's review of `3a60b0f` (20 Nov, marked "(owner review of `3a60b0f`)") and after
+the owner's final rulings on `755d0ef` (OWN-100, 21 Nov, marked "(OWN-100)").
 
 **Owner directive:** "consolidate all necessary fixes into the existing PR" (20 Nov 2026). This document
 replaces the proposal of the same name written earlier that day.
 
-**Not done.** Approval is still pending for each of these:
+**Decided by OWN-100 (21 Nov 2026):**
 
-- The ADR 0005 Amendment 1 status. The amendment stays PROPOSED.
-- The public wording in §6, which is not applied to any page.
-- Any historical clean-up run.
-- Every item in §5.
+- ADR 0005 Amendment 1 is ACCEPTED, and the `/ai-privacy` wording in §6 is applied.
+- CG5 corrections inherit the customer of the trusted pending draft (§2.1).
+- R2 is Option A: `/privacy` restated to the existing deletions (§5 R2).
+- R3's 30-day target is approved in principle; its migration is not (§5 R3).
+
+**Still not done, and not authorised:**
+
+- Any historical clean-up run (R1 execution needs its own go/no-go).
+- The R3 migration, grants and ADR 0035 line.
 
 **Abbreviations.**
 
@@ -122,9 +127,35 @@ a token not in `tokens.displays` gets the following treatment.
   - the gateway's own tokens for this message: stored ones from the known-name pass, phones and
     emails, and provisional ones (`CUSTOMER_U…`), which the record then materialises;
   - a mention (not a token), which is resolved after the check.
-- **Corrections (CG5).** A correction is re-interpreted from its own message, and the model never sees
-  an earlier turn. So a correction carries the customer only if the correction itself names them. That
-  was already true, and nothing changes here.
+- **Corrections (CG5), changed by OWN-100.** A correction is re-interpreted from its own message, and the
+  model never sees an earlier turn, so "No, 4 not 3" reads with no customer. Before OWN-100 it was then
+  previewed with no customer, superseding the sale it corrected. Now `correctionInheritance` (H, before
+  the G-137 guard, read-only) carries the customer of the TRUSTED pending draft into it:
+  - only for a sale, payment or order the model read with **no** customer. A correction that names a
+    customer (by name or by an issued token) is its own; one carrying a token this message was not
+    issued is still refused by G-137, so no earlier token is ever whitelisted;
+  - only when the message clearly corrects (`clearlyCorrects` in `@rekoda/core`: it opens like a
+    correction, says what replaces what, or sets one figure against another); a new request that
+    merely contains "not" ("Sold 2 bags for 20k, not paid yet") is asked about instead;
+  - only when the draft is the newest answerable one with no refusal in front of it, the only one
+    waiting in the business (`answerableDraftCount`), live at this message, previewed, of the same
+    intent, the requesting member's own (`requestedBy`), with no question since (`hasReadsAfter`), and
+    names a customer this business holds (`customerIdForToken`, under RLS);
+  - a payment correction also keeps the draft's invoice reference when it gives none;
+  - the customer's stored name is decrypted only into this reply's token table, for the send boundary
+    (`noteInheritedCustomer`): never to a model, never stored (the reply body is a placeholder);
+  - the draft is then superseded by the ordinary CG5 path and the new preview needs its own "yes".
+    When a draft with a customer is waiting but any condition fails (another member's draft, two drafts,
+    a refusal or question since, a different intent, an unshown draft), the correction is answered with
+    `customerNotRecognised`: nothing is superseded or drafted and the unit goes back. With nothing live
+    waiting (expired, cancelled, confirmed) it is a new request and inherits nobody. Tests:
+    `meta-correction-customer.integration.test.ts` (12 cases) and the restored name-free case in
+    `meta-plan-example` ("lets a correction replace the draft…").
+    **Limitation, unchanged by this:** every other field of a correction is still what the model reads
+    in the correction's own words. A real model given only "No, 4 not 3" may not reproduce the item and
+    price; the merchant then sees that preview and confirms nothing they did not read. Carrying fields
+    other than the customer and a payment's invoice would need the model to see the earlier draft, which
+    is a separate design (§6.2 item 9).
 
 ### 2.2 G-135 part 2: a phone or email nobody recorded creates no customer until a record needs one
 
@@ -248,6 +279,28 @@ stays far below the 30 s timeout at any size; what grows is the transaction. An 
 **Behaviour change, flagged for the owner.** DELETE MY DATA used to delete vault identities only. It now
 also blanks message text that could name a customer. The reply is unchanged and the rows stay.
 
+### 3.1 R4 verified against HEAD (OWN-100, 21 Nov 2026)
+
+| Check                               | Result and evidence                                                                                                                                                                                                                  |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Two-step confirmation               | Two exact asks, owner only, a "yes" confirms nothing (`meta-consent-trial`: "erasure takes two exact asks…", "refuses erasure from a member who is not the owner", "a \"yes\" after the erasure prompt keeps everything").           |
+| Scope                               | One business: vault identities, `conversation_messages.body` outside exact labels, `external_events.payload` of finished `meta` `message.*` events. Nothing else is written (`eraseTextOutsideTheVault`).                            |
+| Large business, batching, timeouts  | Keyset passes of 5,000 by id; 12,345 rows across passes, 0.17 s and 0.26 s a pass at 200,000 rows; every statement far under the 30 s timeout (§3). The whole erasure is one transaction (§6.2 item 8).                              |
+| Tenant isolation                    | Under `withBusiness()` and RLS; another business's rows untouched (`erase-text-outside-vault`: "erases every row across batches, once, and leaves another business alone").                                                          |
+| Idempotency                         | A second run erases nothing and writes a zero-count audit row (same test file).                                                                                                                                                      |
+| Counts-only audit                   | One `audit_events` row, `{messageTextErased, messagePayloadsErased}` only.                                                                                                                                                           |
+| Unprocessed and in-flight messages  | `processed_at IS NULL` is never erased, including the DELETE MY DATA message itself (`meta-consent-trial`: one payload erased, the in-flight one kept). Delivery-status events, events with no business and payment events are kept. |
+| Deduplication after payload removal | A redelivery of an erased message is still a duplicate by `(provider, external_id)`: nothing is queued or answered (`meta-consent-trial`).                                                                                           |
+| Financial records untouched         | NEW in OWN-100: `meta-consent-trial` "DELETE MY DATA leaves the books exactly as they were" (ledger entries, invoices, receipts and payments equal before and after).                                                                |
+| Failure and retry                   | A failure in the same transaction erases nothing and writes no audit row; the retry erases everything (`erase-text-outside-vault`).                                                                                                  |
+| Merchant-facing messages            | The confirmation counts the identities deleted and points to `/data-deletion` for "your conversations and account"; it claims nothing about other copies. `/data-deletion` now separates this step from full account deletion (R2).  |
+| Copies erasure does not reach       | Disclosed on `/ai-privacy` and here (§6.2 item 5): unprocessed messages, delivery receipts, and a pre-#437 copy of a message inside another business's batched webhook row.                                                          |
+
+Unresolved dead-letter inbound messages: a dead inbound job is reconciled by marking its event processed
+(OWN-74) and has no `dead_job_exceptions` row (that table enrols only `payment.process` and
+`billing.process`), and no operator path opens a Meta payload, so erasing it removes nothing an operator
+can use. The ops "flagged" list still shows the row, its error and its timing.
+
 ## 4. Actual retention and erasure behaviour after this PR
 
 | Data                                           | Kept                                                    | Erased by                                                                                              |
@@ -303,7 +356,38 @@ from `conversations.ts`, exactly.)
 touched (the rows, drafts, books and audit stay). The runner (a script or an ops route) is **not
 built**; choosing it is part of the approval.
 
+**OWN-100 (21 Nov 2026): preparation approved, execution NOT approved.** The dry-run mechanism stays in
+#437. Before any write, the go/no-go package to the owner must contain:
+
+1. **Backup and restore:** the backup's id and time, and a restore of it completed and checked by the
+   off-box drill (`docs/runbooks/`), on the date of the run.
+2. **Deployment cutoff:** the time #437's code was live on the target (the first placeholder-only row is
+   after it); `before` is that time, never "now".
+3. **Read-only dry run:** the SQL above, as the migration owner, reporting `business_id, eligible` per
+   business, and the total. Nothing of any body is printed.
+4. **Predicate check:** a sample of ids per business re-read by direction and label only, confirming
+   every exact product label (`INBOUND_STRUCTURAL_BODY`, `OUTBOUND_STRUCTURAL_BODY`) is excluded and
+   nothing outside `conversation_messages.body` is selected.
+5. **Batching and audit:** one transaction per pass of at most 5,000 rows per business, keyset by id,
+   with a counts-only `audit_events` row per business; a failed pass rolls back alone.
+6. **Financial boundary:** the statement updates `conversation_messages.body` only; invoices, receipts,
+   payments, payment evidence, drafts, the ledger and `audit_events` are not touched (verified by row
+   counts and the ledger trial balance before and after).
+7. **After:** the dry run again reads 0 for every business.
+
+Until that package is approved, historical text written before #437 remains until DELETE MY DATA,
+business deletion or the approved run. Historical remediation is **not complete**.
+
 ### R2: the conversation retention commitment
+
+**Decided (OWN-100, 21 Nov 2026): Option A.** No new state, migration or threshold. Applied in #437:
+`/privacy` now lists chat history, drafts and the encrypted originals separately, each "until your
+account is deleted" (the originals also until DELETE MY DATA), and says the account is deleted on the
+merchant's request or, for an unconverted trial, `RETENTION.abandonedTrialDays` (90) days after it ends
+(the retention sweep, `retention_delete_business`, which removes every business-owned table). A lapsed
+paid account is read-only, never closed or deleted. `RETENTION.conversationDays` is removed: it had no
+trigger. `/data-deletion` separates what DELETE MY DATA erases at once from the full deletion a person
+completes. The analysis below is the history of the decision.
 
 `/privacy` says "Chat history and drafts: While your account is open, then 90 days"
 (`RETENTION.conversationDays`). The trigger is the account **closing**, not 90 days after each message.
@@ -369,22 +453,107 @@ DEFINER` function returning business ids only:
 
 - **Owner approval needed:** the 30-day figure, the ADR 0035 line, and the migration.
 
+**OWN-100 (21 Nov 2026): the 30-day target is approved in principle; the migration is not.** Nothing is
+built. The proposal, verified against HEAD, for the owner to approve or change:
+
+1. **Roles.** The sweep runs in the worker process. Discovery runs on `rekoda_worker` (EXECUTE only);
+   each business is erased on the application connection under `withBusiness()`, where `rekoda_app`
+   already holds UPDATE on `external_events.payload` under RLS (as R4 uses it). No new write grant.
+2. **Is discovery needed?** Yes: without it the worker would read `external_events` across tenants to
+   find candidates, which ADR 0035 forbids outside a listed exception.
+3. **Owner.** The migrating role, as `dead_job_unrecorded_candidates` (0225), Amendment 1 class 2;
+   no new NOLOGIN role.
+4. **Definer.** `SECURITY DEFINER`, `SET search_path = pg_catalog, public, pg_temp`, input a cutoff
+   and a page size refused outside 1 to 200 (22023), `REVOKE ALL … FROM PUBLIC, rekoda_app,
+rekoda_settlement, rekoda_billing_operator`, `GRANT EXECUTE … TO rekoda_worker`.
+5. **Output.** `business_id` only, distinct, never an event id, payload, error or time.
+6. **Mutation.** Per business, `eraseFinishedMessagePayloads` with a new `finishedBefore` option, in
+   short per-pass transactions under `withBusiness()`, with a counts-only audit row.
+7. **Cutoff.** `processed_at < now() - 30 days`, never `created_at`.
+8. **Idempotency.** Erased rows hold `{"erased": true}` and are excluded by the predicate; a re-run
+   erases nothing.
+9. **Concurrency, retry, failure.** A message that is not finished has `processed_at IS NULL` and is
+   never selected; a pass that fails rolls back alone and the next day's sweep retries it.
+10. **Index.** Not proposed without evidence. At 200,000 events a pass took 0.26 s (§3); the sweep's
+    passes are bounded the same way. `CREATE INDEX CONCURRENTLY` would need its own
+    non-transactional step and is not part of this proposal.
+
+Exclusions in the predicate: `processed_at IS NULL` (unprocessed, retrying, dead before
+reconciliation); every provider but `meta` (payment events are evidence); `status.*` and events with no
+business; rows created before #437's deploy cutoff (they may hold a body Meta batched with another
+business's message, so they wait for an ownership-safe clean-up of their own).
+
+**One conflict to rule on before the migration (OWN-100's "open operator exceptions").** The operator
+queue's definition of an open exception is `error IS NOT NULL AND resolved_at IS NULL`
+(`events.ts`, "flagged"). The Integrate customer-message handler writes its ordinary outcome into
+`error` ("assistant answered", "handed off to a human"), so taken literally the exclusion keeps almost
+every Integrate customer message's payload indefinitely, the same flaw R4 had (§3). No operator path
+reads a Meta payload (`openPayload` is called for Meta only by the two inbound handlers and the stranger
+sweep, for events with no business), so erasing a finished one never blocks a recovery.
+
+- **Option A (recommended):** exclude `error IS NOT NULL AND resolved_at IS NULL` exactly, and fix
+  separately the handler that writes outcome notes into `error`, after which the exclusion means what it
+  says. Safe now; the Integrate payloads wait for that fix.
+- **Option B:** exclude only unprocessed rows, as R4 does. Bounds every finished payload at 30 days now;
+  an operator flag on a finished message no longer keeps its payload.
+
+**Proposed migration (NOT applied; needs owner approval and an ADR 0035 Amendment 1 line):**
+
+```sql
+CREATE OR REPLACE FUNCTION public.businesses_with_finished_message_payloads(
+  p_finished_before timestamptz, p_created_after timestamptz, p_limit integer)
+RETURNS TABLE (business_id uuid)
+LANGUAGE plpgsql STABLE SECURITY DEFINER
+SET search_path = pg_catalog, public, pg_temp
+AS $$
+BEGIN
+  IF p_limit IS NULL OR p_limit < 1 OR p_limit > 200 THEN
+    RAISE EXCEPTION 'businesses_with_finished_message_payloads: the page size is 1 to 200'
+      USING ERRCODE = '22023';
+  END IF;
+  RETURN QUERY
+  SELECT DISTINCT e.business_id FROM public.external_events e
+   WHERE e.business_id IS NOT NULL AND e.provider = 'meta'
+     AND e.event_type LIKE 'message.%'
+     AND e.processed_at IS NOT NULL AND e.processed_at < p_finished_before
+     AND e.created_at >= p_created_after
+     AND NOT (e.error IS NOT NULL AND e.resolved_at IS NULL)   -- Option A; drop for Option B
+     AND e.payload <> '{"erased": true}'::jsonb
+   LIMIT p_limit;
+END $$;
+REVOKE ALL ON FUNCTION public.businesses_with_finished_message_payloads(timestamptz, timestamptz, integer)
+  FROM PUBLIC, rekoda_app, rekoda_settlement, rekoda_billing_operator;
+GRANT EXECUTE ON FUNCTION public.businesses_with_finished_message_payloads(timestamptz, timestamptz, integer)
+  TO rekoda_worker;
+```
+
+**Proposed ADR 0035 Amendment 1 line:** "Class 2, R3 payload retention: `businesses_with_finished_message_payloads`
+returns the ids of businesses with finished Meta message events older than the cutoff whose payload is
+not erased; worker-only, at most 200 ids, no other column. Each business's payloads are then erased under
+`withBusiness()` for that business."
+
+Required with the migration: the boundary and rls-exemption register entries, a RED test that a
+not-finished, retrying, flagged (Option A), pre-cutoff, payment-provider and other-business event keeps
+its payload, idempotency and concurrency tests, and the pre-start smoke's grant pin.
+
 ### Public copy
 
-`/ai-privacy` (§6). `/data-deletion` and `/privacy` are unchanged.
+Applied in #437 under OWN-100: `/ai-privacy` (§6), `/privacy` (R2) and the DELETE MY DATA line of
+`/data-deletion`. The paragraph below is the analysis before OWN-100.
 
 The `/data-deletion` line "Your conversations with Rekoda." describes the manual account-deletion
 request, which a person handles (business deletion removes the rows). The page does not claim that DELETE
 MY DATA erases messages, so it stays true; the reply to DELETE MY DATA also claims only the customer
 details and points to the page for "your conversations and account". Nothing on it is changed here.
 
-## 6. ADR 0005 Amendment 1 and the `/ai-privacy` wording (for approval)
+## 6. ADR 0005 Amendment 1 and the `/ai-privacy` wording (ACCEPTED, OWN-100)
 
-The amendment text in `docs/adr/0005-pii-gateway-scope.md` is revised to match this implementation. It
-stays PROPOSED.
-
-**Proposed replacement** for the `/ai-privacy` paragraph "The first time you mention a new customer by
-name…" (revised after the owner review of `3a60b0f`; **not applied** to any page):
+The amendment in `docs/adr/0005-pii-gateway-scope.md` is ACCEPTED (OWN-100, 21 Nov 2026). The wording
+below replaced the `/ai-privacy` paragraph "The first time you mention a new customer by name…" in #437.
+As applied, two sentences were added after a claim check: the unknown name in a question goes only to
+the bookkeeping model, and the chat history records a document Rekoda sends by its number and amount;
+the last paragraph also says the originals are not yet deleted on a fixed schedule (R3 is not built)
+and that text from before this change can remain until DELETE MY DATA or account deletion (R1 not run).
 
 > **Customers you have recorded.** Their names, phone numbers and email addresses are replaced with a
 > token before anything is sent to the AI model, in questions and in records alike.
@@ -428,11 +597,12 @@ webhook (§1.2), or any time limit on the encrypted originals (R3 is not approve
 1. **Free text the gateway cannot recognise.** An unrecorded name still reaches the model, which is the
    stated exception. The existing caveat ("not a claim that every possible piece of personal information
    … is always detected") stays.
-2. **R1 not run.** Text stored before this PR stays until DELETE MY DATA, business deletion, or R1.
-3. **R3 not approved.** WhatsApp payloads stay sealed for the life of the business unless the merchant
-   erases them.
-4. **R2: no closure state.** The 90-day "after the account closes" commitment has no closure state to
-   run from.
+2. **R1 not run.** Text stored before this PR stays until DELETE MY DATA, business deletion, or an
+   approved R1 run (OWN-100: execution not approved).
+3. **R3 not built.** The 30-day target is approved in principle; until its migration is approved,
+   WhatsApp payloads stay sealed for the life of the business unless the merchant erases them.
+4. **R2 resolved (OWN-100, Option A).** `/privacy` no longer promises a 90-day period after a closure
+   that does not exist.
 5. **Payloads DELETE MY DATA does not reach.** Messages not yet processed when it runs (its own
    message included); delivery-status (`status.*`) events, which hold the recipient's phone; events with
    no business; and, for rows stored before this PR only, a message's copy inside another business's row
@@ -449,3 +619,6 @@ webhook (§1.2), or any time limit on the encrypted originals (R3 is not approve
 8. **A long history makes a long erasure.** Every pass is short, but DELETE MY DATA erases a business's
    whole history in one transaction, and `external_events` passes each read the business's events
    (§3). The optional index in R3 removes that.
+9. **Correction fields other than the customer.** A correction's items, prices and amounts are what
+   the model reads in the correction's own words (§2.1). Only the customer and a payment's invoice are
+   carried from the trusted draft.

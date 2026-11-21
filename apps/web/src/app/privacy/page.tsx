@@ -138,9 +138,28 @@ export default function PrivacyPage() {
                       <td>Nigerian tax law expects your books to be available for that long.</td>
                     </tr>
                     <tr>
-                      <td>Chat history and drafts</td>
-                      <td>While your account is open, then {RETENTION.conversationDays} days</td>
-                      <td>They are how the records were made, not records themselves.</td>
+                      <td>Chat history</td>
+                      <td>Until your account is deleted</td>
+                      <td>
+                        It records what kind each message was, not what it said. Text kept from
+                        before that change is erased when you send DELETE MY DATA.
+                      </td>
+                    </tr>
+                    <tr>
+                      <td>Drafts of records you were asked to confirm</td>
+                      <td>Until your account is deleted</td>
+                      <td>
+                        They are how the records were made, not records themselves. Customers appear
+                        in them only as tokens.
+                      </td>
+                    </tr>
+                    <tr>
+                      <td>The original WhatsApp messages, encrypted</td>
+                      <td>Until you send DELETE MY DATA, or your account is deleted</td>
+                      <td>
+                        Kept while Rekoda processes a message. DELETE MY DATA erases the ones
+                        already processed.
+                      </td>
                     </tr>
                     <tr>
                       <td>Voice notes</td>
@@ -179,9 +198,14 @@ export default function PrivacyPage() {
                 {RETENTION.noticeDays} days&apos; notice on the number and email we have for you.
               </p>
               <p>
-                If you stop paying, your account becomes read-only rather than closed. You can open
-                the dashboard, read your books and export them, for as long as this schedule keeps
-                them.
+                Your account is deleted when you ask us to delete it (see{' '}
+                <a href="/data-deletion">Delete my data</a>) or, for a trial you never converted,{' '}
+                {RETENTION.abandonedTrialDays} days after it ends.
+              </p>
+              <p>
+                If you stop paying, your account becomes read-only rather than closed or deleted.
+                You can open the dashboard, read your books and export them, for as long as this
+                schedule keeps them.
               </p>
               <p>
                 This is the honest carve-out: if you ask us to delete everything, we delete
