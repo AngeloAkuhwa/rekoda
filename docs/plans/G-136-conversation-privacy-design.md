@@ -154,7 +154,7 @@ a token not in `tokens.displays` gets the following treatment.
     a refusal or question since, a different intent, an unshown draft), the correction is answered with
     `customerNotRecognised`: nothing is superseded or drafted and the unit goes back. With nothing live
     waiting (expired, cancelled, confirmed) it is a new request and inherits nobody. Tests:
-    `meta-correction-customer.integration.test.ts` (21 cases) and the restored name-free case in
+    `meta-correction-customer.integration.test.ts` (25 cases) and the restored name-free case in
     `meta-plan-example` ("lets a correction replace the draft…").
     **Limitation, unchanged by this:** every other field of a correction is still what the model reads
     in the correction's own words. A real model given only "No, 4 not 3" may not reproduce the item and
