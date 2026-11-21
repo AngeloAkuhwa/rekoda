@@ -880,6 +880,12 @@ export async function hasDraftsAfterBy(
          AND requested_by = ${requestedBy}::uuid
          -- A preview WhatsApp reported undelivered was never read (CodeRabbit on #437).
          AND retired_reason IS DISTINCT FROM 'preview_not_delivered'
+         -- Nor a preview withdrawn when its send failed, nor a record's preview that never reached
+         -- the merchant (markDraftUnseen, then expired or superseded): only what they read closes
+         -- their refusal (CodeRabbit on #437 at 1db1a0a). A held purchase question was asked.
+         AND withdrawn IS NOT TRUE
+         AND NOT (intent NOT IN ('Query', 'Unclear', 'EraseData')
+                  AND previewed IS NOT TRUE AND state <> 'held')
          AND insertion_seq > (
            SELECT d.insertion_seq FROM command_drafts d
             WHERE d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid)
@@ -1116,6 +1122,18 @@ export async function markPreviewUndelivered(
          AND d.state IN ('pending', 'expired')
          AND d.previewed
       RETURNING d.id
+    ), asks AS (
+      -- A first DELETE MY DATA prompt WhatsApp accepted and then failed showed the merchant
+      -- nothing, so it is no first ask: retired, and the next ask is a new first ask that erases
+      -- nothing (CodeRabbit on #437 at 1db1a0a). It is recorded unpreviewed, so the drafts update misses it.
+      UPDATE command_drafts d SET state = 'superseded', retired_reason = 'preview_not_delivered',
+             updated_at = clock_timestamp()
+        FROM reply
+       WHERE d.business_id = ${businessId}::uuid
+         AND d.conversation_message_id = reply.request_id
+         AND d.state = 'pending'
+         AND d.intent = 'EraseData'
+      RETURNING d.id
     ), continuations AS (
       UPDATE conversation_continuations c
          SET state = 'superseded', updated_at = clock_timestamp()
@@ -1151,7 +1169,7 @@ export async function markPreviewUndelivered(
          AND q.id::text IN (SELECT jsonb_array_elements_text(a.reads) FROM answered a)
       RETURNING q.id
     )
-    SELECT (SELECT count(*) FROM drafts)::text AS drafts,
+    SELECT ((SELECT count(*) FROM drafts) + (SELECT count(*) FROM asks))::text AS drafts,
            (SELECT count(*) FROM continuations)::text AS continuations,
            ((SELECT count(*) FROM refusals) + (SELECT count(*) FROM reads))::text AS reopened`);
   const row = [...rows][0];

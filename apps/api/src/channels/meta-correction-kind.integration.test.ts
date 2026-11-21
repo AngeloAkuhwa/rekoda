@@ -277,6 +277,27 @@ describe('CG5: a correction while an earlier message is retrying', () => {
   });
 });
 
+describe("CG5: a nameless correction of a customer's sale while a yes retries", () => {
+  it('withdraws the sale and asks; the retried yes books nothing', async () => {
+    const { business } = await seedOwner();
+    await send('Ada bought 3 wigs for 150k', 'wamid.K13-SALE', SALE);
+    await queueOnly('wamid.K13-YES', 'yes');
+    await failOnceAndBackOff(business.id);
+
+    await send('No, 4 not 3', 'wamid.K13-FIX', {
+      ...SALE,
+      customer: { kind: 'none' },
+      items: [{ name: 'wig', quantity: 4, unitPrice: 50_000 }],
+      statedTotal: 200_000,
+    });
+    expect(stubSender.lastText).toBe(replies.customerNotRecognised().text);
+    expect(await drafts(business.id)).toEqual(['RecordSale:superseded']);
+    await bringDue(business.id);
+    await run();
+    expect(await books(business.id)).toEqual({ invoices: [], expenses: [] });
+  });
+});
+
 describe('CG5: a correction with no live draft to change is a new request', () => {
   it('after the preview expired, it supersedes nothing and is previewed on its own', async () => {
     const { business } = await seedOwner();

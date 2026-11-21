@@ -254,3 +254,45 @@ describe("a questioned yes finds the sender's refusal behind another member's pr
     expect(await footprint(business.id)).toEqual(before);
   });
 });
+
+/**
+ * Only what reached the merchant closes their refusal (CodeRabbit on #437 at 1db1a0a). A record
+ * preview withdrawn when its send failed, or never previewed and no longer pending, is nothing they
+ * read since the refusal: their yes is still about the refusal, never the sale they refused.
+ */
+describe('a preview that never reached the merchant keeps their refusal', () => {
+  it.each([
+    [
+      'withdrawn when its send failed',
+      sql`state = 'superseded', withdrawn = true, previewed = false`,
+    ],
+    ['never previewed, then superseded', sql`state = 'superseded', previewed = false`],
+  ])('%s: the yes saves nothing', async (_, retire) => {
+    const business = await seedMerchant();
+    const ada = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+    await say(
+      'wamid.RW1',
+      sale({ kind: 'token', token: ada.token }),
+      'sold Ada Obi 2 wigs for 100k',
+    );
+    await post(mediaMessage('wamid.RW2', STICKER, OWNER));
+    await drain();
+    const bola = await deps.gateway.resolveMention(business.id, 'Bola Ige');
+    await say(
+      'wamid.RW3',
+      sale({ kind: 'token', token: bola.token }),
+      'sold Bola Ige 2 wigs for 100k',
+    );
+    await withBusiness(db, business.id, (tx) =>
+      tx.execute(sql`
+        UPDATE command_drafts SET ${retire}
+         WHERE business_id = ${business.id}::uuid AND intent = 'RecordSale'
+           AND command->'customer'->>'token' = ${bola.token}`),
+    );
+    const before = await footprint(business.id);
+
+    await plain('wamid.RW4', 'yes');
+    expect(stubSender.lastText).toBe(replies.previewBehindRefusal().text);
+    expect(await footprint(business.id)).toEqual(before);
+  });
+});

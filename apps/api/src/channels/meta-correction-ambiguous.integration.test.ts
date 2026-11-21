@@ -79,6 +79,16 @@ async function seedOwner(phone = OWNER, name = 'Ada Fashion') {
   return { business, ada: await knownCustomer(business.id) };
 }
 
+/**
+ * While an earlier message is live, a nameless correction never keeps Ada, and the preview it
+ * corrects is withdrawn rather than left for a retried yes to book (CodeRabbit on #437 at
+ * 1db1a0a): nothing waiting names her, and the merchant is asked for the record with its customer.
+ */
+async function expectAdaWithdrawn(businessId: string) {
+  const rows = await sales(businessId);
+  expect(rows.map((r) => r.state)).toEqual(['superseded']);
+}
+
 /** Ada's preview is waiting, untouched, and still names her. */
 async function expectAdaUntouched(businessId: string, adaToken: string) {
   const rows = await sales(businessId);
@@ -87,7 +97,7 @@ async function expectAdaUntouched(businessId: string, adaToken: string) {
 }
 
 describe('CG5: a correction sent while an earlier message is still live', () => {
-  it('is asked about while the earlier message backs off, and the preview keeps its customer', async () => {
+  it('is asked about while the earlier message backs off, and the preview is withdrawn', async () => {
     const { business, ada } = await seedOwner();
     stubTransport.replyWith(SALE);
     await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.R1-SALE');
@@ -99,10 +109,10 @@ describe('CG5: a correction sent while an earlier message is still live', () => 
     stubTransport.replyWith(FOUR);
     await send('No, 4 not 3', 'wamid.R1-FIX');
     expect(stubSender.lastText).toContain('I could not tell which customer');
-    await expectAdaUntouched(business.id, ada.token);
+    await expectAdaWithdrawn(business.id);
   });
 
-  it('is asked about while the earlier message is running in another lane', async () => {
+  it('is asked about while the earlier message is running in another lane, and the preview is withdrawn', async () => {
     const { business, ada } = await seedOwner();
     stubTransport.replyWith(SALE);
     await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.R2-SALE');
@@ -120,7 +130,7 @@ describe('CG5: a correction sent while an earlier message is still live', () => 
     stubTransport.replyWith(FOUR);
     await send('No, 4 not 3', 'wamid.R2-FIX');
     expect(stubSender.lastText).toContain('I could not tell which customer');
-    await expectAdaUntouched(business.id, ada.token);
+    await expectAdaWithdrawn(business.id);
   });
 
   it("another business's retrying message never blocks this one's correction", async () => {
