@@ -377,10 +377,17 @@ built**; choosing it is part of the approval.
    every exact product label (`INBOUND_STRUCTURAL_BODY`, `OUTBOUND_STRUCTURAL_BODY`) is excluded and
    nothing outside `conversation_messages.body` is selected.
 5. **Batching and audit:** one transaction per pass of at most 5,000 rows per business, keyset by id,
-   with a counts-only `audit_events` row per business; a failed pass rolls back alone.
+   with a counts-only `audit_events` row per business; a failed pass rolls back alone. **Durable
+   progress (owner question, not yet chosen; CodeRabbit on #437 at `58dd68b`):** the package must say
+   where each committed pass's count and `after` cursor are kept so a restart resumes from them, and
+   how the final audit row totals every committed pass. Recommended: each pass writes its own
+   counts-only `audit_events` row in the same transaction (count and last id), so a restart resumes
+   from the newest row and the per-business total is their sum; no separate state table.
 6. **Financial boundary:** the statement updates `conversation_messages.body` only; invoices, receipts,
-   payments, payment evidence, drafts, the ledger and `audit_events` are not touched (verified by row
-   counts and the ledger trial balance before and after).
+   payments, payment evidence, drafts and the ledger are not touched, and every `audit_events` row that
+   existed before is unchanged (verified by row counts, the ledger trial balance before and after, and
+   the pre-existing audit rows compared by id and content). The run's own counts-only audit rows are
+   reported separately (CodeRabbit on #437 at `58dd68b`).
 7. **After:** the dry run again reads 0 for every business.
 
 Until that package is approved, historical text written before #437 remains until DELETE MY DATA,
@@ -506,7 +513,9 @@ sweep, for events with no business), so erasing a finished one never blocks a re
 
 - **Option A (recommended):** exclude `error IS NOT NULL AND resolved_at IS NULL` exactly, and fix
   separately the handler that writes outcome notes into `error`, after which the exclusion means what it
-  says. Safe now; the Integrate payloads wait for that fix.
+  says. Safe now; the Integrate payloads wait for that fix. Rows already written with an ordinary outcome
+  in `error` and no `resolved_at` stay excluded after that fix: they remain kept until a separate owner
+  decision on a one-off remediation (CodeRabbit on #437 at `58dd68b`).
   Option A for R3 would not change R4: the earlier ruling that `error` is no reason to keep a payload
   (`events.ts`, owner review of `3a60b0f`) was for the merchant's own DELETE MY DATA request and stands
   there. The owner decides whether a time-based purge should be more conservative than a request.
