@@ -13,7 +13,7 @@
 >
 > Every requirement from (1) is kept. The original 15 owner decisions keep their numbers (OD-1 to OD-15) and are reassessed in §23. New decisions continue from OD-16.
 >
-> **Baseline:** `main` at `dbe99b741d4ce68b69c5b798fc22db8415cb8999`. The branch head adds only this document.
+> **Baseline:** `main` at `dbe99b741d4ce68b69c5b798fc22db8415cb8999`. When it was written, the commit that added it added only this document; it now travels in PR #437, whose other changes it does not describe.
 >
 > Every repository claim is cited as `path:line` at that SHA. Inferences are marked _(inference)_. Where I could not measure something, I say so.
 >
@@ -505,8 +505,9 @@ Additions, all in core:
 **Zero rules.** These templates are fixed in core:
 
 - **Previous period zero, current positive:** "₦X this period; nothing was recorded in the comparison period, so there is no percentage."
-- **Current zero:** "No sales were recorded so far today." This is not "you sold nothing", because the books only hold what was recorded.
-- **Both zero:** "No recorded sales in either period."
+- **Current zero:** "No {metric} {was/were} recorded {window}." (sales today: "No sales were recorded so far today."). It names the metric compared and never a different one: an expenses comparison that is zero while sales exist says "No expenses were recorded …", never "No sales …". It is not "you sold nothing", because the books only hold what was recorded.
+- **Both zero:** "No recorded {metric} in either period."
+- The metric label and the window come from the deterministic command, never from the model, and each label is a fixed core string. Tests: one per metric, including an expenses comparison at zero while sales were recorded (CodeRabbit on #437 at `ebeeadb`).
 
 ### 6.4 Missing data versus recorded zero
 
@@ -922,7 +923,7 @@ There is no new pipeline. Transcripts enter the same router, continuation and in
 Voice-specific rules:
 
 1. **Invoice references from speech.** Spoken-form canonicalisation. Summaries may be immediate; **PDF delivery of an invoice waits for a one-tap confirmation** that quotes the number, amount and date. Partial references become candidate lists. There is no near-miss substitution. This is needed because whisper gives no confidence signal (`stt.openai.ts:79`).
-2. **Analytics from speech.** The answer is given directly, because it is read-only and the windows are echoed in the reply ("1–20 November vs 1–20 October"), so a mishearing is visible. **A report PDF requested by voice is confirmed first:** "I'll prepare a PDF report for October to December 2026. Reply _yes_." This applies only when the PDF consumes a unit (OD-22, OD-23).
+2. **Analytics from speech.** The answer is given directly, because it is read-only and the windows are echoed in the reply ("1–20 November vs 1–20 October"), so a mishearing is visible. **Proposed, needs an owner ruling before it is built:** a report PDF requested by voice confirmed first ("I'll prepare a PDF report for October to December 2026. Reply _yes_."), only when the PDF consumes a unit (OD-22, OD-23). This is a deviation from the canonical spec, Appendix D.1, where `READ_ONLY` (questions, reports, balances, statements) takes no confirmation and every front door follows the same risk tier; it needs a spec amendment (BA-OD-15) if approved. Without that ruling, the reply echoes the window and a terminal failure gives the unit back, as for every other report (CodeRabbit on #437 at `ebeeadb`). The invoice-PDF one-tap confirmation in item 1 is the same kind of deviation and waits for the same ruling.
 3. **Configuration.** `VOICE_TRANSCRIPTION_ENABLED` is off by default, and staging's value is unknown to me. Voice acceptance needs the owner to confirm it is on (with `OPENAI_API_KEY` and `AI_TRANSCRIPTION_PRICES`). No configuration is changed by this work.
 4. **Lapsed plans** are refused voice before fetch (handler :1314-1322), consistent with OD-13.
 
@@ -966,7 +967,7 @@ Voice-specific rules:
 **Privacy.**
 
 - Results and invoice data never enter a model, so item names and customer names cannot carry prompt injection.
-- Names are rehydrated in `ReplyService` and in the report renderer. The worker already holds the vault key, because the API and worker load the same environment (CLAUDE.md §3).
+- Names are rehydrated only in the authorised output layer (`ReplyService`, the only call site of `rehydrate`; CLAUDE.md invariant 4). A report job does not rehydrate: holding the vault key is not authority to use it. A report that must print customer names needs that layer extended under an ADR 0005 amendment or an owner ruling first, gated with OD-24 and OD-25 (CodeRabbit on #437 at `ebeeadb`).
 - Logging follows `redactForLog`, and the log-capture test is extended to the new paths.
 - PII in stored report PDFs: OD-24 and OD-25.
 
