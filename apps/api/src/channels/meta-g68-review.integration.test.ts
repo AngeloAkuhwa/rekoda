@@ -548,6 +548,25 @@ describe('G-68 final review: erasure, doubt anywhere, re-asked funding question'
       expect(await footprint(business.id)).toEqual({ invoices: 0, purchases: 0, postings: 0 });
     });
 
+    /* The owner's no answers their own refusal, never the delegate's later question (CodeRabbit). */
+    it("the owner's no after their own refusal never closes the delegate's funding question", async () => {
+      const business = await seedMerchant();
+      const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+      await identity.addMembership(db, business.id, delegate.id, 'delegate');
+      const sticker = { type: 'sticker', sticker: { id: 'sticker-1', mime_type: 'image/webp' } };
+      await post(mediaMessage('wamid.F-r7-sticker', sticker));
+      await drain();
+      await say('wamid.F-r7-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, by POS', DELEGATE);
+      expect(stubSender.lastText).toContain(POS_QUESTION);
+
+      await reply('wamid.F-r7-no', 'no');
+      expect(stubSender.lastText).not.toBe(replies.cancelled().text);
+      expect(await purchaseStates(business.id)).toEqual(['abandoned']);
+      await reply('wamid.F-r7-bank', 'bank', DELEGATE);
+      expect(stubSender.lastText).toContain('Paid in full by transfer');
+      expect(await purchaseStates(business.id)).toEqual(['superseded', 'pending']);
+    });
+
     it('a questioned answer ("cash?") rebuilds nothing and asks again, keeping it open', async () => {
       const business = await seedMerchant();
       await say('wamid.F-r4-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');

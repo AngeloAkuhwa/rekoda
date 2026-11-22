@@ -1126,13 +1126,16 @@ export async function markPreviewUndelivered(
       -- A first DELETE MY DATA prompt WhatsApp accepted and then failed showed the merchant
       -- nothing, so it is no first ask: retired, and the next ask is a new first ask that erases
       -- nothing (CodeRabbit on #437 at 1db1a0a). It is recorded unpreviewed, so the drafts update misses it.
+      -- An answer to a question (a read-only Query draft) WhatsApp accepted and then failed was never
+      -- read either: retired the same way, it no longer stands between the member's refusal and their
+      -- next yes, since only what the member read closes a refusal (CodeRabbit on #437 at ccdcc8e).
       UPDATE command_drafts d SET state = 'superseded', retired_reason = 'preview_not_delivered',
              updated_at = clock_timestamp()
         FROM reply
        WHERE d.business_id = ${businessId}::uuid
          AND d.conversation_message_id = reply.request_id
          AND d.state = 'pending'
-         AND d.intent = 'EraseData'
+         AND d.intent IN ('EraseData', 'Query')
       RETURNING d.id
     ), continuations AS (
       UPDATE conversation_continuations c

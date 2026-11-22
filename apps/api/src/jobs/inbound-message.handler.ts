@@ -1992,10 +1992,6 @@ async function deterministicReply(
       if (ctx.outcome) ctx.outcome.toldEarlierMessageLost = true;
       return replies.earlierMessageLostNo();
     }
-    const closedQuestion =
-      latest?.state === 'abandoned'
-        ? await conversationsRepo.closeRetiredDraft(tx, businessId, latest.id)
-        : false;
     /* Build 6: every pending draft is still dropped, a question's included,
      * but only a request the merchant could have confirmed is reported as
      * cancelled. A "no" after nothing but a read gets what a "no" after
@@ -2038,6 +2034,13 @@ async function deterministicReply(
           : replies.nothingToDecline();
       }
     }
+    /* A retired question is closed only once the sender's own refusal has had its answer: a bare
+     * "no" after it is about it (returned above), never about another member's funding question
+     * asked since (CodeRabbit on #437 at ccdcc8e). "cancel" still drops everything. */
+    const closedQuestion =
+      latest?.state === 'abandoned'
+        ? await conversationsRepo.closeRetiredDraft(tx, businessId, latest.id)
+        : false;
     const cancellable = past.ownRefusal
       ? (await pastRefusals(tx, businessId, ctx.from, ctx.receivedAt)).draft
       : past.draft;
@@ -5534,7 +5537,9 @@ function draftNamesSomeone(
  * "Deliver to" contact or the merchant's own header is not who bought.
  */
 const BUYER_LABEL =
-  /\b(?:bill(?:ed)?\s+to|invoice(?:d)?\s+to|sold\s+to|customer(?:\s+name)?|buyer|client|received\s+from)\s*[:\-\u2013]?\s*/giu;
+  /\b(?:(?:(?:bill(?:ed)?|invoice(?:d)?|sold)\s+to|received\s+from)\s*[:\-\u2013]?|(?:customer(?:\s+name)?|buyer|client)\s*[:\-\u2013])\s*/giu;
+/* A single-word label ("Customer", "Buyer", "Client") counts only with its colon or dash: a heading
+ * such as "Customer Support Ltd" labels nobody (CodeRabbit on #437 at ccdcc8e). */
 
 /**
  * Whether a photographed page names `name` as its buyer: the caption the merchant typed names
@@ -5552,7 +5557,11 @@ function photoBuyerNamed(
   const fold = (v: string) => v.normalize('NFKC').toLowerCase().replace(/\s+/gu, ' ').trim();
   return names.some((name) => {
     if (!name.trim()) return false;
-    if (caption && typedIn(caption, name)) return true;
+    /* An email is matched as a whole address: `typedIn` takes addresses out, so that "ada" inside
+     * one never counts as a typed name (CodeRabbit and Codex on #437 at ccdcc8e). */
+    if (caption && (name.includes('@') ? addressIn(caption, name) : typedIn(caption, name))) {
+      return true;
+    }
     const needle = fold(name);
     for (const label of page.matchAll(BUYER_LABEL)) {
       const after = fold(page.slice(label.index + label[0].length));
@@ -5562,6 +5571,15 @@ function photoBuyerNamed(
     }
     return false;
   });
+}
+
+/** Whether `text` holds the whole address `address`, ignoring case. */
+function addressIn(text: string, address: string): boolean {
+  const want = address.trim().toLowerCase();
+  return text
+    .toLowerCase()
+    .split(/[\s,;()<>]+/u)
+    .some((word) => word.replace(/[.:!?]+$/u, '') === want);
 }
 
 /** Every value this message holds for `token`: its typed facets and any provisional contact. */

@@ -53,6 +53,21 @@ async function invoiceTo(businessId: string, token: string) {
   );
 }
 
+/** The one invoice's customer: its snapshot token, and whether `customer_id` is that customer's row
+ * (CodeRabbit on #437 at ccdcc8e: the identity fields themselves, not only the counts). */
+async function invoiceOwner(businessId: string) {
+  const rows = await withBusiness(db, businessId, (tx) =>
+    tx.execute<{ token: string | null; linked: boolean }>(sql`
+      SELECT i.snapshot_json ->> 'customerToken' AS token,
+             (c.id IS NOT NULL AND c.token = i.snapshot_json ->> 'customerToken') AS linked
+        FROM invoices i
+        LEFT JOIN customers c ON c.id = i.customer_id AND c.business_id = i.business_id
+       WHERE i.business_id = ${businessId}::uuid`),
+  );
+  const row = [...rows][0]!;
+  return { customerToken: row.token, linked: row.linked };
+}
+
 describe('a record names a customer only by a token this message was issued (G-137)', () => {
   it("a payment carrying another customer's real token is not drafted and cannot be confirmed", async () => {
     const business = await seedMerchant();
@@ -186,7 +201,9 @@ describe('a record names a customer only by a token this message was issued (G-1
     const after = await footprint(business.id);
     expect(after.invoices).toBe(before.invoices + 1);
     expect(after.customers).toBe(before.customers + 1);
-    expect(await deps.gateway.findMention(business.id, mention)).not.toBeNull();
+    const named = await deps.gateway.findMention(business.id, mention);
+    expect(named).not.toBeNull();
+    expect(await invoiceOwner(business.id)).toEqual({ customerToken: named!.token, linked: true });
   });
 
   it('a new customer the merchant typed is created at the sale and confirmed', async () => {
@@ -204,6 +221,8 @@ describe('a record names a customer only by a token this message was issued (G-1
     const after = await footprint(business.id);
     expect(after.invoices).toBe(before.invoices + 1);
     expect(after.customers).toBe(before.customers + 1);
+    const named = await deps.gateway.findMention(business.id, 'tunde bakare');
+    expect(await invoiceOwner(business.id)).toEqual({ customerToken: named!.token, linked: true });
   });
 
   it('a known customer typed in the message still previews and confirms', async () => {

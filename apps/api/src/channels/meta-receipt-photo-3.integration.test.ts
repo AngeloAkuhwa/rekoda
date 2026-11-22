@@ -414,6 +414,60 @@ describe('a receipt photo whose buyer the model names', () => {
     expect(phones).toBe(0);
   });
 
+  /* A single-word label counts only with its colon or dash: a heading names nobody (CodeRabbit on
+   * #437 at ccdcc8e). */
+  it('a heading such as "Customer Support Ltd" labels nobody as the buyer', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({
+      text: 'Customer Support Ltd RECEIPT 2 wigs TOTAL 100,000',
+      confidence: 0.9,
+    });
+    stubTransport.replyWith(SALE_TO('Support Ltd'));
+
+    await post(photoPayload('2348031234567', 'wamid.PB7'));
+    await drain();
+
+    expect(stubSender.lastText).toContain('could not tell which customer');
+    expect(await customersOf(business.id)).toBe(0);
+    expect(await salesDrafts(business.id)).toBe(0);
+  });
+
+  it('"Customer: Support Ltd" labels the buyer', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({
+      text: 'RECEIPT Customer: Support Ltd 2 wigs TOTAL 100,000',
+      confidence: 0.9,
+    });
+    stubTransport.replyWith(SALE_TO('Support Ltd'));
+
+    await post(photoPayload('2348031234567', 'wamid.PB8'));
+    await drain();
+
+    expect(stubSender.lastText).not.toContain('could not tell which customer');
+    expect(await salesDrafts(business.id)).toBe(1);
+  });
+
+  /* An email the caption types names its buyer as a whole address (Codex and CodeRabbit on #437
+   * at ccdcc8e); the page names nobody. */
+  it('previews a buyer whose email the caption types', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'RECEIPT 2 wigs TOTAL 100,000', confidence: 0.9 });
+    stubTransport.replyWith({
+      ...SALE_TO('x'),
+      customer: { kind: 'token', token: 'CUSTOMER_U01' },
+    });
+
+    await post(photoPayload('2348031234567', 'wamid.PB9', { caption: 'sold to ada@example.test' }));
+    await drain();
+
+    expect(stubSender.lastText).not.toContain('could not tell which customer');
+    expect(await salesDrafts(business.id)).toBe(1);
+    expect(await customersOf(business.id)).toBe(1);
+  });
+
   it('previews a buyer the caption types, though the page does not label them', async () => {
     const business = await seedMerchant('+2348031234567');
     arrangePhoto();

@@ -382,11 +382,13 @@ export function gatePurchase(
 const CORRECTION_OPENERS =
   /^\s*(?:no+|nope|nah|actually|sorry|wait|correction|not|it(?:'| i)?s not|e no be)\b/i;
 
-/* A "not" that only says a new record's state ("sold 2 bags for 20k, not paid yet") is not a
- * correction cue: such a message is an ordinary new record, never asked about (owner ruling on
- * OD-60 A+, 22 Nov 2026: obvious new transactions are not asked about). */
+/* A "not" that only says a new record's state ("sold 2 bags for 20k, not paid yet", "not fully
+ * paid yet") is not a correction cue: such a message is an ordinary new record, never asked about
+ * (owner ruling OWN-102(2): obvious new transactions are not asked about). A "not" that negates an
+ * amount ("Bola has not paid 50k, he only paid 5k") still is one (Codex and CodeRabbit on #437 at
+ * ccdcc8e). */
 const CORRECTION_PHRASES =
-  /\b(?:not(?!\s+(?:yet|paid|delivered|collected|picked\s+up)\b)|instead of|rather than|change (?:it |the )?to|make it|should be)\b/i;
+  /\b(?:not(?!\s+(?:(?:yet|fully|completely)\s+)*(?:yet|paid|delivered|collected|picked\s+up)\b(?!\s*(?:₦|NGN|N)?\s*\d))|instead of|rather than|change (?:it |the )?to|make it|should be)\b/i;
 
 /* The openers that say on their own that the merchant is correcting ("no", "sorry", "it's not").
  * "Wait" and "actually" only hesitate: "Wait, I also sold 2 bags" is as likely a new record. */
@@ -575,6 +577,9 @@ export function correctionWordsExplained(text: string, vocabulary: Iterable<stri
     for (const w of phrase.toLowerCase().match(WORD) ?? []) known.add(w);
   }
   const explained = (word: string): boolean => {
+    /* The bare item word first: an item named "Price" or "Set" is still the bare item word, never a
+     * structure or unit word (CodeRabbit on #437 at ccdcc8e). */
+    if (known.has(word)) return false;
     if (STRUCTURE_WORDS.has(word) || UNIT_WORDS.has(word)) return true;
     for (const k of known) {
       if (k.length < 3) continue;

@@ -232,3 +232,26 @@ describe('a late failed receipt never reaches past its own reply (OD-62(o))', ()
     expect(await refusalStates(business.id)).toEqual([`+${OWNER}:superseded`]);
   });
 });
+
+/* Only what the member read closes their refusal: an answer to a question WhatsApp accepted and
+ * then reported failed was never read, so it never stands between the refusal and the next yes
+ * (CodeRabbit on #437 at ccdcc8e). The yes is about the refusal, and the sale is not booked by it. */
+describe('a question whose answer was reported failed after a refusal', () => {
+  it('leaves the refusal to the next yes, which books nothing', async () => {
+    const business = await saleAndRefusal('LQF');
+    const before = await footprint(business.id);
+
+    await say('wamid.LQF3', QUESTION, 'how much did I sell today');
+    await lateFailure();
+
+    await plain('wamid.LQF4', 'yes');
+    expect(stubSender.lastText).toBe(replies.previewBehindRefusal().text);
+    expect(await footprint(business.id)).toEqual(before);
+    const query = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ state: string; reason: string | null }>(sql`
+        SELECT state, retired_reason AS reason FROM command_drafts
+         WHERE business_id = ${business.id}::uuid AND intent = 'Query'`),
+    );
+    expect([...query]).toEqual([{ state: 'superseded', reason: 'preview_not_delivered' }]);
+  });
+});

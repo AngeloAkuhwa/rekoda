@@ -197,6 +197,8 @@ describe('a correction that names someone is never clear enough to inherit (OWN-
     ['4 Tunde not 3', ['Tunde']],
     ['make it 4 wig', ['wig']],
     ['make it 4 ankara', ['ankara']],
+    ['make it 4 Price', ['Price']],
+    ['make it 4 set', ['set']],
   ])('%j holds only the bare item word, so it is not explained', (t, items) => {
     expect(correctionWordsExplained(t, items)).toBe(false);
   });
@@ -206,6 +208,7 @@ describe('a correction that names someone is never clear enough to inherit (OWN-
     ['make it 4 wigs', ['wig']],
     ['make it 4 dresses', ['dress']],
     ['make it 4 pieces', ['Tunde']],
+    ['make it 4 sets', ['set']],
   ])('%j holds a plural or a unit, so it is explained', (t, items) => {
     expect(correctionWordsExplained(t, items)).toBe(true);
   });
@@ -218,12 +221,14 @@ describe('a "not" about a new record is not a correction cue', () => {
     'Sold 2 bags for 20k, not paid yet',
     'sold 3 wigs to Bola for 30k not yet paid',
     'Bought 5 cartons for 50k, not delivered',
+    'Sold 2 bags for 20k, not fully paid yet',
   ])('%j is a new record', (t) => {
     expect(looksLikeCorrection(t, true)).toBe(false);
   });
 
   it.each([
     'it is not paid, she paid 60k not 50k',
+    'Bola has not paid 50k, he only paid 5k',
     'no, 4 not 3',
     'Wait, I also sold 2 bags for 20k',
   ])('%j still reads like a correction', (t) => {
