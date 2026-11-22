@@ -5580,14 +5580,24 @@ function photoBuyerNamed(
     }
     const needle = fold(name);
     for (const label of page.matchAll(BUYER_LABEL)) {
-      const after = fold(page.slice(label.index + label[0].length));
+      /* The field is the first line with words after the label ("Bill to:\nBola Ige" too), never
+       * the lines below it, where an address or the items follow. */
+      const lines = page.slice(label.index + label[0].length).split(/\r?\n/u);
+      const after = fold(lines.find((line) => line.trim()) ?? '');
       /* An address is the whole address in the field, never a prefix of a longer one
        * ("sales@example.test" is not "sales@example.test.ng"; CodeRabbit on #437 at cacc734). */
       if (name.includes('@')) {
         if (addressIn(after.split(/\s/u)[0] ?? '', name)) return true;
         continue;
       }
-      if (after.startsWith(needle) && !/[\p{L}\p{N}\p{M}-]/u.test(after[needle.length] ?? '')) {
+      /* The whole name, not its first word: after it the field ends, or what follows is no more
+       * of a name (a phone, a comma, the items). "Ada" is not the buyer "Ada Obi" (CodeRabbit on
+       * #437 at aff3f63). */
+      if (
+        after.startsWith(needle) &&
+        !/[\p{L}\p{N}\p{M}-]/u.test(after[needle.length] ?? '') &&
+        !/^\s+[\p{L}\p{M}]/u.test(after.slice(needle.length))
+      ) {
         return true;
       }
     }

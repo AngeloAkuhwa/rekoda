@@ -388,6 +388,51 @@ describe('a receipt photo whose buyer the model names', () => {
     expect(await salesDrafts(business.id)).toBe(0);
   });
 
+  /* The labelled field holds the buyer's complete name: "Ada" is not "Ada Obi", so a seller
+   * called Ada is never taken for the labelled buyer (CodeRabbit on #437 at aff3f63). */
+  it('a name that only begins the labelled buyer is not the buyer', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({
+      text: 'RECEIPT Seller: Ada Buyer: Ada Obi 2 wigs TOTAL 100,000',
+      confidence: 0.9,
+    });
+    stubTransport.replyWith(SALE_TO('Ada'));
+
+    await post(photoPayload('2348031234567', 'wamid.PB9'));
+    await drain();
+
+    expect(stubSender.lastText).toContain('could not tell which customer');
+    expect(await customersOf(business.id)).toBe(0);
+    expect(await salesDrafts(business.id)).toBe(0);
+    await post(messagePayload('2348031234567', 'wamid.PB9-yes', 'yes'));
+    await drain();
+    const invoices = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ n: number }>(
+        sql`SELECT count(*)::int AS n FROM invoices WHERE business_id = ${business.id}::uuid`,
+      ),
+    ).then((r) => r[0]!.n);
+    expect(invoices).toBe(0);
+  });
+
+  /* The field is its own line: an address on the next line, or a name under its label, still
+   * names the buyer. */
+  it.each([
+    ['with the address on the next line', 'RECEIPT\nBill to: Bola Ige\nLagos Island\n2 wigs TOTAL 100,000'],
+    ['under its label', 'RECEIPT\nBill to:\nBola Ige\n2 wigs TOTAL 100,000'],
+  ])('previews the labelled buyer %s', async (_, page) => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({ text: page, confidence: 0.9 });
+    stubTransport.replyWith(SALE_TO('Bola Ige'));
+
+    await post(photoPayload('2348031234567', 'wamid.PB10'));
+    await drain();
+
+    expect(stubSender.lastText).not.toContain('could not tell which customer');
+    expect(await salesDrafts(business.id)).toBe(1);
+  });
+
   /* A phone printed on the page beside a labelled buyer (the seller's own, a delivery contact's)
    * is nobody's: never asked about as the buyer's, never created (independent review at ccdcc8e). */
   it('creates no customer from an unlabelled phone beside the labelled buyer', async () => {
