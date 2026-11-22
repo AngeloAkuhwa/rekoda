@@ -365,7 +365,9 @@ describe('a held purchase whose question failed late', () => {
  * #437 at 88258dc): it never stands between the member's refusal and their yes, so that yes never
  * books another member's newer preview. */
 describe("an undelivered clarification before another member's preview", () => {
-  it.each(['at once', 'later'])(
+  /* "after it expired": the receipt arrives once the question has lapsed (CodeRabbit on #437 at
+   * b8330cd). */
+  it.each(['at once', 'later', 'after it expired'])(
     "failed %s: the member's yes answers their refusal and books nothing",
     async (when) => {
       const business = await seedMerchant();
@@ -379,7 +381,13 @@ describe("an undelivered clarification before another member's preview", () => {
         { intent: 'Unclear', clarification: 'Which customer was that for?' },
         'sold 2 wigs',
       );
-      if (when === 'later') await lateFailure();
+      if (when === 'after it expired') {
+        await withBusiness(db, business.id, (tx) =>
+          tx.execute(sql`UPDATE command_drafts SET state = 'expired' WHERE intent = 'Unclear'
+                            AND COALESCE(command->>'refused', '') <> 'true'`),
+        );
+      }
+      if (when !== 'at once') await lateFailure();
       stubTransport.replyWith(sale({ kind: 'none' }));
       await post(messagePayload(DELEGATE, `wamid.UC3-${when}`, 'sold 3 wigs for 150k'));
       await drain();

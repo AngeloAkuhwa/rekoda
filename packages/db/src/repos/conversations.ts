@@ -1176,12 +1176,15 @@ export async function markPreviewUndelivered(
       -- An answer to a question (a read-only Query draft) WhatsApp accepted and then failed was never
       -- read either: retired the same way, it no longer stands between the member's refusal and their
       -- next yes, since only what the member read closes a refusal (CodeRabbit on #437 at ccdcc8e).
-      UPDATE command_drafts d SET state = 'superseded', retired_reason = 'preview_not_delivered',
+      -- An expired one keeps its state and carries the reason, as in the drafts update: it was never
+      -- read, so it never counts as read since a refusal (CodeRabbit on #437 at b8330cd).
+      UPDATE command_drafts d SET retired_reason = 'preview_not_delivered',
+             state = CASE WHEN d.state = 'pending' THEN 'superseded' ELSE d.state END,
              updated_at = clock_timestamp()
         FROM reply
        WHERE d.business_id = ${businessId}::uuid
          AND d.conversation_message_id = reply.request_id
-         AND d.state = 'pending'
+         AND d.state IN ('pending', 'expired')
          AND (d.intent IN ('EraseData', 'Query')
               /* An undelivered clarification question, never a refusal (CodeRabbit on #437 at
                * 88258dc). */

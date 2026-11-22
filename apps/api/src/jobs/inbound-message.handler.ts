@@ -5592,7 +5592,8 @@ function draftNamesSomeone(
  * "Deliver to" contact or the merchant's own header is not who bought.
  */
 const BUYER_LABEL =
-  /\b(?:(?:(?:bill(?:ed)?|invoice(?:d)?|sold)\s+to|received\s+from)\s*[:\-\u2013]?|(?:customer(?:\s+name)?|buyer|client)\s*[:\-\u2013])\s*/giu;
+  /\b(?:(?:(?:bill(?:ed)?|invoice(?:d)?|sold)\s+to|received\s+from)(?![\p{L}\p{N}\p{M}])\s*[:\-\u2013]?|(?:customer(?:\s+name)?|buyer|client)\s*[:\-\u2013])\s*/giu;
+/* The whole label: "Sold today" is no "Sold to" (CodeRabbit on #437 at b8330cd). */
 /* A single-word label ("Customer", "Buyer", "Client") counts only with its colon or dash: a heading
  * such as "Customer Support Ltd" labels nobody (CodeRabbit on #437 at ccdcc8e). */
 

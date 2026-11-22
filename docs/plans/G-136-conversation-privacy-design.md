@@ -403,9 +403,13 @@ business deletion or the approved run. Historical remediation is **not complete*
 `/privacy` now lists chat history, drafts and the encrypted originals separately, each "until your
 account is deleted" (the originals also until DELETE MY DATA), and says the account is deleted on the
 merchant's request or, for an unconverted trial, once `RETENTION.abandonedTrialDays` (90) days have
-passed since it ended **and** its deletion notice was delivered at least `RETENTION.noticeDays` (30)
+passed since it ended **and** its deletion notice was sent at least `RETENTION.noticeDays` (30)
 days earlier (the retention sweep and `retention_delete_business`, which removes every business-owned
-table; an undelivered notice deletes nothing). A lapsed
+table). A notice that fails to send deletes nothing. **Known risk, older than #437 and not fixed by
+it:** the sweep counts a notice as sent once Meta accepts it, and a later `failed` receipt for it
+matches nothing, so a trial whose notice was accepted and then failed is still deleted 30 days later
+(`REKODA_LAUNCH_READINESS.md`, OD-64's related defect; its own PR, before the sweep runs on real
+merchants). A lapsed
 paid account is read-only, never closed or deleted. `RETENTION.conversationDays` is removed: it had no
 trigger. `/data-deletion` separates what DELETE MY DATA erases at once from the full deletion a person
 completes. The analysis below is the history of the decision.
@@ -506,8 +510,11 @@ rekoda_settlement, rekoda_billing_operator`, `GRANT EXECUTE … TO rekoda_worker
 
 Exclusions in the predicate: `processed_at IS NULL` (unprocessed, retrying, dead before
 reconciliation); every provider but `meta` (payment events are evidence); `status.*` and events with no
-business; rows created before #437's deploy cutoff (they may hold a body Meta batched with another
-business's message, so they wait for an ownership-safe clean-up of their own).
+business; rows created before `before`, the time the last pre-#437 api and worker process stopped
+writing (the deployment cutoff in the go/no-go package above), never the deployment's start, since an old
+worker still running after it can write a body Meta batched with another business's message. Those rows
+wait for an ownership-safe clean-up of their own, and the discovery and mutation predicates both use
+`before`.
 
 **One conflict to rule on before the migration (OWN-100's "open operator exceptions").** The operator
 queue's definition of an open exception is `error IS NOT NULL AND resolved_at IS NULL`

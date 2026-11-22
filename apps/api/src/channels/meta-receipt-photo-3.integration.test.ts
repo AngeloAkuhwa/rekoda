@@ -383,6 +383,8 @@ describe('a receipt photo whose buyer the model names', () => {
     ['a name in passing', 'RECEIPT 2 wigs from Bola Ige TOTAL 100,000', 'Bola Ige'],
     /* An address is no name: the seller Ada is not the buyer "ada@…" (CodeRabbit, #437 b2703e7). */
     ['a name inside the buyer address', 'Seller: Ada\nBuyer: ada@example.test\n2 wigs', 'Ada'],
+    /* "Sold today" is no "Sold to" label (CodeRabbit on #437 at b8330cd). */
+    ['a word a label begins', 'Seller: Day\nSold today 2 wigs TOTAL 100,000', 'Day'],
   ])('a buyer named only as %s creates nobody and drafts nothing', async (_, page, mention) => {
     const business = await seedMerchant('+2348031234567');
     arrangePhoto();
@@ -434,6 +436,7 @@ describe('a receipt photo whose buyer the model names', () => {
     ['under its label', 'RECEIPT\nBill to:\nBola Ige\n2 wigs TOTAL 100,000'],
     /* The next field's label ends the name (CodeRabbit on #437 at 88258dc). */
     ['with a phone field after it', 'RECEIPT\nBill to: Bola Ige Tel: 08035551234\n2 wigs'],
+    ['after a whole "Sold to" label', 'Seller: Day\nSold to: Bola Ige\n2 wigs'],
     /* A whole address stands as the message's provisional token. */
     ['by a whole address', 'Seller: Ada\nBuyer: bola@example.test\n2 wigs', 'CUSTOMER_U01'],
   ])('previews the labelled buyer %s', async (_, page, token?: string) => {
