@@ -689,14 +689,25 @@ export function draftFigures(command: Record<string, unknown>): DraftFigures {
 
 /* A figure a correction says was wrong: after "not", "instead of" or "rather than" ("4 not 3",
  * "no, 60k not 50k", "Not paid 5k, it was 4k"), with at most one word after it. */
-const REPLACED_FIGURE =
-  /(?:\bnot\s+(?:paid\s+)?|\binstead\s+of\s+|\brather\s+than\s+)((?:₦|ngn|n)?\s*\d[\d,]*(?:\.\d+)?(?:\s*k(?![\p{L}\p{N}]))?)(?:\s*([\p{L}]+))?/giu;
-/* The figure a correction gives just before "not", "instead of" or "rather than", with its word. */
-const REPLACEMENT_FIGURE =
-  /((?:₦|ngn|n)?\s*\d[\d,]*(?:\.\d+)?(?:\s*k(?![\p{L}\p{N}]))?)(?:\s*([\p{L}]+))?,?\s+(?:not|instead\s+of|rather\s+than)\b/iu;
+/* A figure never ends on a comma: "3, amount 60" is the figure 3, then another clause. */
+const FIGURE_TEXT = String.raw`(?:₦|ngn|n)?\s*\d(?:[\d,]*\d)?(?:\.\d+)?(?:\s*k(?![\p{L}\p{N}]))?`;
+/* A figure a correction says was wrong: after "not", "instead of" or "rather than", past a word or
+ * two that only points at it ("not the 5k", "not paid 5k", "it was 60k not that 50k"), with at most
+ * one word after it. */
+const REPLACED_FIGURE = new RegExp(
+  String.raw`(?:\bnot\s+(?:(?:the|that|this|it|its|it's|was|paid)\s+){0,2}|\binstead\s+of\s+(?:the\s+)?|\brather\s+than\s+(?:the\s+)?)(${FIGURE_TEXT})(?:\s*([\p{L}]+))?`,
+  'giu',
+);
+/* Every figure in a stretch of text, with the word after it: the last one before a "not" is the
+ * figure that replaces what follows. */
+const ANY_FIGURE = new RegExp(String.raw`(${FIGURE_TEXT})(?:\s*([\p{L}]+))?`, 'giu');
+/* A "not", "instead of" or "rather than" a figure follows closely: each one must be read above, or
+ * the correction cannot be checked and is asked about. */
+const NEGATED_FIGURE = /\b(?:not|instead\s+of|rather\s+than)\b[^\d.!?]{0,12}\d/giu;
 const MONEY_WORDS = new Set(['naira', 'each', 'k']);
 const MONEY_FIELD =
   /\b(?:price|total|amount|balance|cost|rate|discount|fee|payment|paid|pay|charge)\b/iu;
+const QUANTITY_FIELD = /\b(?:quantity|qty|pieces|pcs|units|count)\b/iu;
 
 /** A figure's kind from how it is written: money (₦, NGN, "k", a decimal, "naira", "each"), a
  * quantity (a unit after it: "3 pcs", "3 cartons"), or nothing said ("3", "3 wigs", "3 cash"). */
@@ -737,17 +748,34 @@ function figureKobo(figure: string): number | null {
  */
 export function replacedFiguresFit(text: string, draft: DraftFigures): boolean {
   const lower = text.toLowerCase();
-  const replacement = REPLACEMENT_FIGURE.exec(lower);
-  const replacementKind = replacement?.[1]
-    ? figureKind(replacement[1].trim(), replacement[2])
-    : null;
-  for (const m of lower.matchAll(REPLACED_FIGURE)) {
+  const replaced = [...lower.matchAll(REPLACED_FIGURE)];
+  /* A negated figure the reading above cannot place is unchecked, so it is asked about
+   * (CodeRabbit on #437 at 4a5fd80). */
+  if (replaced.length < [...lower.matchAll(NEGATED_FIGURE)].length) return false;
+  let from = 0;
+  for (const m of replaced) {
     const figure = m[1]?.trim();
     if (!figure) continue;
-    const kind =
-      figureKind(figure, m[2]) ??
-      replacementKind ??
-      (MONEY_FIELD.test(lower) ? 'money' : draft.quantities.length > 0 ? 'quantity' : 'money');
+    /* Each figure's sense comes from its own clause: its own marker or unit, the figure it is
+     * replaced by, the field it names, never another clause's (CodeRabbit on #437 at 4a5fd80). */
+    const clause = lower.slice(from, m.index);
+    from = m.index + m[0].length;
+    const before = [...clause.matchAll(ANY_FIGURE)].at(-1);
+    const field = MONEY_FIELD.test(clause)
+      ? 'money'
+      : QUANTITY_FIELD.test(clause)
+        ? 'quantity'
+        : null;
+    const own =
+      figureKind(figure, m[2]) ?? (before?.[1] ? figureKind(before[1].trim(), before[2]) : null);
+    if (own && field && own !== field) return false;
+    let kind = own ?? field;
+    if (!kind) {
+      /* Two or more figures with nothing to say which is which: asked about. One alone is read
+       * as the draft's quantity when it has any ("4 not 3" beside 3 wigs), else its money. */
+      if (replaced.length > 1) return false;
+      kind = draft.quantities.length > 0 ? 'quantity' : 'money';
+    }
     if (kind === 'quantity') {
       const count = Number(figure.replace(/,/gu, ''));
       if (!draft.quantities.includes(count)) return false;

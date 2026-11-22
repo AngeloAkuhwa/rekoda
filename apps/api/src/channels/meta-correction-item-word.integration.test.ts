@@ -244,6 +244,22 @@ describe('a replaced figure a waiting expense does not hold', () => {
   });
 });
 
+/* A filler between "not" and the figure still names it: ₦5,000 is not in a ₦7,000 expense, so the
+ * preview stays (CodeRabbit on #437 at 4a5fd80). */
+describe('a replaced figure behind "the"', () => {
+  it('"No, it was 6k, not the 5k" beside ₦7,000 changes nothing', async () => {
+    const { business } = await seedOwner();
+    await send('fuel 7k cash', 'wamid.FT-EXP', expense(7_000));
+
+    await send('No, it was 6k, not the 5k', 'wamid.FT-FIX', expense(6_000));
+    expect(stubSender.lastText).toBe(replies.correctionFigureNotInDraft().text);
+    expect(await drafts(business.id)).toEqual(['RecordExpense:pending']);
+    await send('yes', 'wamid.FT-YES1');
+    await send('yes', 'wamid.FT-YES2');
+    expect((await books(business.id)).expenses).toEqual([700_000]);
+  });
+});
+
 /* An apology opener on the same expense with a new amount is a correction (owner disposition of
  * #437, 22 Nov 2026): one preview replaces the other, so one tank of fuel is booked once. With an
  * adding word it is asked about, and a record of another kind is never taken for it. */

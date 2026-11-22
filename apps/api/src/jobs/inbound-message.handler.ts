@@ -5627,9 +5627,7 @@ function photoBuyerNamed(
   caption: string | null,
   names: readonly string[],
 ): boolean {
-  const page =
-    caption && rawText.startsWith(`${caption}\n`) ? rawText.slice(caption.length + 1) : rawText;
-  const fold = (v: string) => v.normalize('NFKC').toLowerCase().replace(/\s+/gu, ' ').trim();
+  const fields = pageBuyerFields(rawText, caption);
   return names.some((name) => {
     if (!name.trim()) return false;
     /* An email is matched as a whole address: `typedIn` takes addresses out, so that "ada" inside
@@ -5637,37 +5635,58 @@ function photoBuyerNamed(
     if (caption && (name.includes('@') ? addressIn(caption, name) : typedIn(caption, name))) {
       return true;
     }
-    const needle = fold(name);
-    for (const label of page.matchAll(BUYER_LABEL)) {
-      /* The field is the first line with words after the label ("Bill to:\nBola Ige" too), never
-       * the lines below it, where an address or the items follow. */
-      const lines = page.slice(label.index + label[0].length).split(/\r?\n/u);
-      const after = fold(lines.find((line) => line.trim()) ?? '');
-      /* An address is the whole address in the field, never a prefix of a longer one
-       * ("sales@example.test" is not "sales@example.test.ng"; CodeRabbit on #437 at cacc734). */
-      if (name.includes('@')) {
-        if (addressIn(after.split(/\s/u)[0] ?? '', name)) return true;
-        continue;
-      }
-      /* The whole name, not its first word: after it the field ends, or what follows is no more
-       * of a name (a phone, a comma, the items). "Ada" is not the buyer "Ada Obi" (CodeRabbit on
-       * #437 at aff3f63). */
-      /* An address is no name: "Ada" never names the buyer "ada@example.test" (CodeRabbit on #437
-       * at b2703e7). */
-      if ((after.split(/\s/u)[0] ?? '').includes('@')) continue;
-      if (
-        after.startsWith(needle) &&
-        !/[\p{L}\p{N}\p{M}-]/u.test(after[needle.length] ?? '') &&
-        (!/^\s+[\p{L}\p{M}]/u.test(after.slice(needle.length)) ||
-          /* …unless it is the next field's label ("Bill to: Bola Ige Tel: …"; CodeRabbit on #437
-           * at 88258dc). */
-          NEXT_FIELD.test(after.slice(needle.length)))
-      ) {
-        return true;
-      }
-    }
-    return false;
+    /* Every labelled buyer field must name them: a page whose buyer fields name two people does
+     * not say who bought, so it is asked about (OWN-103(4); CodeRabbit on #437 at 4a5fd80). */
+    return fields.length > 0 && fields.every((field) => fieldNames(field, name));
   });
+}
+
+/** The page without the caption the merchant typed in front of it. */
+function pageOf(rawText: string, caption: string | null): string {
+  return caption && rawText.startsWith(`${caption}\n`)
+    ? rawText.slice(caption.length + 1)
+    : rawText;
+}
+
+const foldField = (v: string) => v.normalize('NFKC').toLowerCase().replace(/\s+/gu, ' ').trim();
+
+/**
+ * What each of a page's buyer labels holds: the first line with words after the label ("Bill
+ * to:\nBola Ige" too), never the lines below it, where an address or the items follow. Only a
+ * field that could name somebody counts, one that opens with a letter or holds an address: a blank
+ * "Customer: ____" or the items line after an empty label names nobody.
+ */
+function pageBuyerFields(rawText: string, caption: string | null): string[] {
+  const page = pageOf(rawText, caption);
+  const fields: string[] = [];
+  for (const label of page.matchAll(BUYER_LABEL)) {
+    const lines = page.slice(label.index + label[0].length).split(/\r?\n/u);
+    const after = foldField(lines.find((line) => line.trim()) ?? '');
+    if (/^[\p{L}]/u.test(after) || (after.split(/\s/u)[0] ?? '').includes('@')) fields.push(after);
+  }
+  return fields;
+}
+
+/** Whether one buyer field names `name`. */
+function fieldNames(after: string, name: string): boolean {
+  /* An address is the whole address in the field, never a prefix of a longer one
+   * ("sales@example.test" is not "sales@example.test.ng"; CodeRabbit on #437 at cacc734). */
+  if (name.includes('@')) return addressIn(after.split(/\s/u)[0] ?? '', name);
+  /* An address is no name: "Ada" never names the buyer "ada@example.test" (CodeRabbit on #437 at
+   * b2703e7). */
+  if ((after.split(/\s/u)[0] ?? '').includes('@')) return false;
+  const needle = foldField(name);
+  /* The whole name, not its first word: after it the field ends, or what follows is no more of a
+   * name (a phone, a comma, the items). "Ada" is not the buyer "Ada Obi" (CodeRabbit on #437 at
+   * aff3f63). */
+  return (
+    after.startsWith(needle) &&
+    !/[\p{L}\p{N}\p{M}-]/u.test(after[needle.length] ?? '') &&
+    (!/^\s+[\p{L}\p{M}]/u.test(after.slice(needle.length)) ||
+      /* …unless it is the next field's label ("Bill to: Bola Ige Tel: …"; CodeRabbit on #437
+       * at 88258dc). */
+      NEXT_FIELD.test(after.slice(needle.length)))
+  );
 }
 
 /** A field label after a buyer's name on the same line: it ends the name. */
@@ -6325,6 +6344,20 @@ async function interpretedReply(
     !photoBuyerNamed(rawText, documentCaption, facetValuesOf(tokens, command.customer.token))
   ) {
     authorisationLog.warn(`${command.intent} named a buyer the photo does not label`);
+    await refundMessage(tx, businessId, eventId, period);
+    return refusedAs(replies.customerNotRecognised());
+  }
+  /* A page that labels a buyer, read with no customer, is not an anonymous sale: the receivable
+   * would lose its owner. Only a page that labels nobody is (OWN-103(4); CodeRabbit on #437 at
+   * 4a5fd80). */
+  if (
+    fromDocument &&
+    CUSTOMER_BEARING.has(command.intent) &&
+    'customer' in command &&
+    command.customer?.kind === 'none' &&
+    pageBuyerFields(rawText, documentCaption).length > 0
+  ) {
+    authorisationLog.warn(`${command.intent} named no buyer on a page that labels one`);
     await refundMessage(tx, businessId, eventId, period);
     return refusedAs(replies.customerNotRecognised());
   }

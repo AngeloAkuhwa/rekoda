@@ -188,6 +188,47 @@ describe('a receipt photo', () => {
     expect(row).toEqual({ invoices: 1, linked: 0, customers: 0 });
   });
 
+  /* OWN-103(4): a page that labels a buyer is not an anonymous sale when the reading names nobody,
+   * and a page whose buyer fields name two people does not say who bought. Both are asked about:
+   * no customer, no sale draft (CodeRabbit on #437 at 4a5fd80). */
+  it.each([
+    [
+      'labels a buyer the reading left out',
+      'RECEIPT Buyer: Ada Obi 2 wigs TOTAL 100,000',
+      { kind: 'none' },
+    ],
+    [
+      'labels two different buyers',
+      'RECEIPT\nBuyer: Ada Obi\nBuyer: Bola Ige\n2 wigs TOTAL 100,000',
+      { kind: 'mention', mention: 'Ada Obi' },
+    ],
+  ])('a page that %s is asked about and drafts nothing', async (_, text, customer) => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({ text, confidence: 0.9 });
+    stubTransport.replyWith({
+      intent: 'RecordSale',
+      customer,
+      items: [{ name: 'wig', quantity: 2, unitPrice: 50_000 }],
+      statedTotal: 100_000,
+      reportedPayment: 0,
+      paymentMethod: 'transfer',
+      discount: null,
+      deliveryFee: null,
+      dueDescription: null,
+    });
+    await post(photoPayload('2348031234567', 'wamid.P1-BUYER'));
+    await drain();
+    expect(stubSender.lastText).toContain('could not tell which customer');
+    const [row] = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ drafts: number; customers: number }>(sql`
+        SELECT (SELECT count(*)::int FROM command_drafts
+                 WHERE business_id = ${business.id}::uuid AND intent = 'RecordSale') AS drafts,
+               (SELECT count(*)::int FROM customers WHERE business_id = ${business.id}::uuid) AS customers`),
+    );
+    expect(row).toEqual({ drafts: 0, customers: 0 });
+  });
+
   it('keeps the extracted text and NEVER the image', async () => {
     const business = await seedMerchant('+2348031234567');
     arrangePhoto(Buffer.from('JFIF-secret-photo-of-adas-shop'));

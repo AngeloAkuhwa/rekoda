@@ -308,6 +308,7 @@ describe('a replaced figure the waiting draft does not hold', () => {
   });
   const fuel = draftFigures({ description: 'fuel', amount: 5_000 });
   const priced = draftFigures({ items: [{ name: 'oil', quantity: 2, unitPrice: 4.5 }] });
+  const bought = draftFigures({ description: 'nails', amount: 50, quantity: 3 });
 
   it.each([
     ['No, 4 not 3', sale],
@@ -323,6 +324,9 @@ describe('a replaced figure the waiting draft does not hold', () => {
     ['no, 5 not 4.50', priced],
     ['make it 5', sale],
     ['no, it was Bola not Ada', sale],
+    ['No, it was 6k, not the 5k', fuel],
+    ['No, 4 pcs not 3, amount 60 not 50', bought],
+    ['amount 60 not 50', bought],
   ])('%j fits', (t, figures) => {
     expect(replacedFiguresFit(t, figures)).toBe(true);
   });
@@ -337,6 +341,12 @@ describe('a replaced figure the waiting draft does not hold', () => {
     ['no, ₦4 not ₦3', sale],
     ['6000 not 3000', fuel],
     ['no, 5 not 4.40', priced],
+    /* A filler between "not" and the figure still names it (CodeRabbit on #437 at 4a5fd80). */
+    ['No, it was 6k, not the 5k', draftFigures({ description: 'fuel', amount: 7_000 })],
+    /* Each figure is read in its own clause: "amount" makes the second one money. */
+    ['No, 4 pcs not 3, amount 60 not 3', bought],
+    /* Two bare figures with nothing to say which is which are asked about. */
+    ['No, 4 not 3, 60 not 50', bought],
   ])('%j does not fit', (t, figures) => {
     expect(replacedFiguresFit(t, figures)).toBe(false);
   });
