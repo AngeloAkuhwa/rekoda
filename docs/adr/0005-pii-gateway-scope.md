@@ -46,6 +46,12 @@ retention rules only via the documented erasure procedure.
 
 ## Amendment 1 (ACCEPTED 21 Nov 2026, owner ruling OWN-100): names in questions, and what the history keeps
 
+**Precedence (owner ruling OWN-102(5), 22 Nov 2026):** case 3 below is an explicit exception to the
+canonical spec's Appendix C.3, for the read-only unknown-name question only and to the Anthropic
+interpretation processor only. It does not extend to OpenAI, any other provider, the high-value
+document verifier, general customer extraction, logs, telemetry, any identity store or any other
+message. Appendix C.3 carries a pointer to this amendment.
+
 **Status: ACCEPTED** by the owner on 21 Nov 2026 (OWN-100, `REKODA_OWNER_DECISIONS.md`), on PR #437
 (G-135). Proposed 20 Nov 2026 after CodeRabbit raised the conflict on #437; the owner chose the narrowed
 Option A. Option C (questions create customers) is rejected, and Option B (a permanent store of unknown
