@@ -354,6 +354,7 @@ describe('a yes after a refused record', () => {
 
     // The last thing the merchant saw is the refusal: this yes saves nothing.
     await plain('wamid.R53', 'yes');
+    expect(stubSender.lastText).toContain('Nothing was saved from your last message');
     expect((await footprint(business.id)).invoices).toBe(0);
     /* Nor the diesel expense whose preview never arrived (CodeRabbit on #437 at cf96697). */
     const [spent] = await withBusiness(db, business.id, (tx) =>
