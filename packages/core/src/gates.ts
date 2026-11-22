@@ -684,6 +684,10 @@ export function draftFigures(command: Record<string, unknown>): DraftFigures {
     addMoney(command[key]);
   }
   addQuantity(command['quantity']);
+  /* A stock adjustment's preview shows its count ("Adding 3"), whichever way it moves (Codex on
+   * #437 at af169b0). */
+  const delta = command['quantityDelta'];
+  if (typeof delta === 'number') addQuantity(Math.abs(delta));
   return { moneyKobo: money, quantities };
 }
 

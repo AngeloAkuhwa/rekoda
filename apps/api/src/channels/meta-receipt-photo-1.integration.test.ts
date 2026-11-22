@@ -198,6 +198,11 @@ describe('a receipt photo', () => {
       { kind: 'none' },
     ],
     [
+      'labels a phone buyer the reading left out',
+      'RECEIPT\nBuyer: 08035551234\n2 wigs TOTAL 100,000',
+      { kind: 'none' },
+    ],
+    [
       'labels two different buyers',
       'RECEIPT\nBuyer: Ada Obi\nBuyer: Bola Ige\n2 wigs TOTAL 100,000',
       { kind: 'mention', mention: 'Ada Obi' },

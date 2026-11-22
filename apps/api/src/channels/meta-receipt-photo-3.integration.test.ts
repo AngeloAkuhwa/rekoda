@@ -439,8 +439,9 @@ describe('a receipt photo whose buyer the model names', () => {
     /* The next field's label ends the name (CodeRabbit on #437 at 88258dc). */
     ['with a phone field after it', 'RECEIPT\nBill to: Bola Ige Tel: 08035551234\n2 wigs'],
     ['after a whole "Sold to" label', 'Seller: Day\nSold to: Bola Ige\n2 wigs'],
-    /* A whole address stands as the message's provisional token. */
+    /* A whole address or a phone stands as the message's provisional token (Codex, af169b0). */
     ['by a whole address', 'Seller: Ada\nBuyer: bola@example.test\n2 wigs', 'CUSTOMER_U01'],
+    ['by a phone', 'Seller: Ada\nBuyer: 08035551234\n2 wigs', 'CUSTOMER_U01'],
   ])('previews the labelled buyer %s', async (_, page, token?: string) => {
     const business = await seedMerchant('+2348031234567');
     arrangePhoto();

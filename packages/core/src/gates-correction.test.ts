@@ -327,6 +327,9 @@ describe('a replaced figure the waiting draft does not hold', () => {
     ['No, it was 6k, not the 5k', fuel],
     ['No, 4 pcs not 3, amount 60 not 50', bought],
     ['amount 60 not 50', bought],
+    /* A stock adjustment's count is one of its figures (Codex on #437 at af169b0). */
+    ['No, 4 not 3', draftFigures({ productMention: 'wig', quantityDelta: 3 })],
+    ['No, 4 not 3', draftFigures({ productMention: 'wig', quantityDelta: -3 })],
   ])('%j fits', (t, figures) => {
     expect(replacedFiguresFit(t, figures)).toBe(true);
   });

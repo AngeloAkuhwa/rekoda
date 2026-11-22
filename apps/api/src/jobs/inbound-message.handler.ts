@@ -5653,8 +5653,8 @@ const foldField = (v: string) => v.normalize('NFKC').toLowerCase().replace(/\s+/
 /**
  * What each of a page's buyer labels holds: the first line with words after the label ("Bill
  * to:\nBola Ige" too), never the lines below it, where an address or the items follow. Only a
- * field that could name somebody counts, one that opens with a letter or holds an address: a blank
- * "Customer: ____" or the items line after an empty label names nobody.
+ * field that could name somebody counts, one that opens with a letter, an address or a phone: a
+ * blank "Customer: ____" or the items line after an empty label names nobody.
  */
 function pageBuyerFields(rawText: string, caption: string | null): string[] {
   const page = pageOf(rawText, caption);
@@ -5662,7 +5662,11 @@ function pageBuyerFields(rawText: string, caption: string | null): string[] {
   for (const label of page.matchAll(BUYER_LABEL)) {
     const lines = page.slice(label.index + label[0].length).split(/\r?\n/u);
     const after = foldField(lines.find((line) => line.trim()) ?? '');
-    if (/^[\p{L}]/u.test(after) || (after.split(/\s/u)[0] ?? '').includes('@')) fields.push(after);
+    const first = after.split(/\s/u)[0] ?? '';
+    /* A phone is a buyer too ("Buyer: 08035551234"; Codex on #437 at af169b0): ten or more digits,
+     * never a count or a price on an items line. */
+    const phone = /^\+?\d{10,15}$/u.test(first.replace(/[-().]/gu, ''));
+    if (/^[\p{L}]/u.test(after) || first.includes('@') || phone) fields.push(after);
   }
   return fields;
 }
