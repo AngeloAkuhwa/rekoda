@@ -136,8 +136,9 @@ a token not in `tokens.displays` gets the following treatment.
     issued is still refused by G-137, so no earlier token is ever whitelisted;
   - only when the message clearly corrects (`clearlyCorrects` in `@rekoda/core`: it says what replaces
     what, or sets one figure against another, "4 not 3"). An opener alone ("Wait, I also sold 2
-    bags", independent review of #437) or a bare "not" ("Sold 2 bags for 20k, not paid yet") is
-    asked about instead;
+    bags", independent review of #437) is asked about instead. A "not" that only states a new
+    record's state ("Sold 2 bags for 20k, not paid yet") is no correction cue at all: under OWN-102(2)
+    that message is an ordinary new record with its own preview, never asked about;
   - only when the draft is the newest answerable one with no refusal in front of it, the only one
     waiting in the business (`answerableDraftCount`), live at this message, previewed, of the same
     intent, the requesting member's own (`requestedBy`), with no question since (`hasReadsAfter`), and
@@ -401,8 +402,10 @@ business deletion or the approved run. Historical remediation is **not complete*
 **Decided (OWN-100, 21 Nov 2026): Option A.** No new state, migration or threshold. Applied in #437:
 `/privacy` now lists chat history, drafts and the encrypted originals separately, each "until your
 account is deleted" (the originals also until DELETE MY DATA), and says the account is deleted on the
-merchant's request or, for an unconverted trial, `RETENTION.abandonedTrialDays` (90) days after it ends
-(the retention sweep, `retention_delete_business`, which removes every business-owned table). A lapsed
+merchant's request or, for an unconverted trial, once `RETENTION.abandonedTrialDays` (90) days have
+passed since it ended **and** its deletion notice was delivered at least `RETENTION.noticeDays` (30)
+days earlier (the retention sweep and `retention_delete_business`, which removes every business-owned
+table; an undelivered notice deletes nothing). A lapsed
 paid account is read-only, never closed or deleted. `RETENTION.conversationDays` is removed: it had no
 trigger. `/data-deletion` separates what DELETE MY DATA erases at once from the full deletion a person
 completes. The analysis below is the history of the decision.
