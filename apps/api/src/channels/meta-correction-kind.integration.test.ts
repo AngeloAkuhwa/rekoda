@@ -514,6 +514,25 @@ describe('CG5: a same-kind message that is not clearly a correction (OD-60 A+)',
     expect((await books(business.id)).expenses).toEqual([500_000]);
   });
 
+  it('beside a waiting expense, "Wait, I also bought fuel for 6k, total should be 6k" replaces nothing', async () => {
+    /* A correction phrase beside an adding word is as likely a second record (CodeRabbit on #437
+     * at aff3f63): asked about, the waiting expense stays, and is the one booked. */
+    const { business } = await seedOwner();
+    await send('fuel 5k', 'wamid.AP3-EXP2', expense(5_000));
+
+    await send(
+      'Wait, I also bought fuel for 6k, total should be 6k',
+      'wamid.AP3-ALSO',
+      expense(6_000),
+    );
+    expect(stubSender.lastText).toBe(replies.correctionNotClear().text);
+    expect(await drafts(business.id)).toEqual(['RecordExpense:pending']);
+
+    await send('yes', 'wamid.AP3-ALSO-YES1');
+    await send('yes', 'wamid.AP3-ALSO-YES2');
+    expect((await books(business.id)).expenses).toEqual([500_000]);
+  });
+
   it('a clear correction of a sale that names nobody still replaces it and books once', async () => {
     const { business } = await seedOwner();
     await send('sold 3 wigs for 150k', 'wamid.AP4-SALE', NAMELESS_SALE);

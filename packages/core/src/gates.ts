@@ -410,7 +410,9 @@ export function explicitlyCorrects(text: string): boolean {
   if (!trimmed) return false;
   return (
     (EXPLICIT_OPENERS.test(trimmed) && !ADDS_A_RECORD.test(trimmed)) ||
-    CORRECTION_PHRASES.test(trimmed) ||
+    /* The same for a phrase: "Wait, I also bought fuel for 6k, total should be 6k" adds as
+     * likely as it changes (CodeRabbit on #437 at aff3f63). */
+    (CORRECTION_PHRASES.test(trimmed) && !ADDS_A_RECORD.test(trimmed)) ||
     clearlyCorrects(trimmed)
   );
 }

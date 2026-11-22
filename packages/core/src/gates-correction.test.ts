@@ -259,6 +259,10 @@ describe('an explicit correction against a hesitation', () => {
     'Actually, Bola bought 2 bags',
     'Sorry, I also sold 2 bags for 20k',
     'No, I also sold 2 bags',
+    /* A correction phrase beside an adding word is as likely a second record: asked about, and
+     * nothing is superseded (CodeRabbit on #437 at aff3f63). */
+    'Wait, I also bought fuel for 6k, total should be 6k',
+    'make it another 2 bags',
   ])('%j is only a hesitation', (t) => {
     expect(looksLikeCorrection(t, true)).toBe(true);
     expect(explicitlyCorrects(t)).toBe(false);
