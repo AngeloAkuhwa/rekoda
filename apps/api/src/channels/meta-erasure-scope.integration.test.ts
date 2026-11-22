@@ -280,3 +280,52 @@ describe('an erasure whose second ask is processed after the confirmation lapsed
     expect(confirmations).toBe(1);
   });
 });
+
+/**
+ * The second ask erases only if the first ask's prompt was on its way before the second arrived
+ * (OWN-102(7): arrival and delivery evidence; CodeRabbit on #437 at aff3f63). A prompt recorded
+ * after the second ask reached Rekoda was not what the merchant answered: the second ask is a new
+ * first ask, and nothing is erased.
+ */
+describe('an erasure ask that arrived before the first prompt was sent', () => {
+  async function seedWithContact() {
+    const user = await identity.upsertUserByPhone(db, `+${OWNER}`);
+    const business = await identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    await deps.gateway.resolveMention(business.id, 'Bola Ige');
+    return business;
+  }
+
+  it('sent twice at once, the second ask erases nothing', async () => {
+    const business = await seedWithContact();
+    const facets = await facetsOf(business.id);
+    await post(messagePayload(OWNER, 'wamid.ET1', 'DELETE MY DATA'));
+    await post(messagePayload(OWNER, 'wamid.ET2', 'DELETE MY DATA'));
+    await drain();
+    expect(stubSender.lastText).toBe(replies.confirmErasure().text);
+    expect(await facetsOf(business.id)).toBe(facets);
+  });
+
+  it('a prompt recorded after the second ask arrived authorises nothing', async () => {
+    const business = await seedWithContact();
+    const facets = await facetsOf(business.id);
+    await say('DELETE MY DATA', 'wamid.EP1');
+    expect(stubSender.lastText).toBe(replies.confirmErasure().text);
+    /* The prompt's record is put after the second ask's arrival: it was still being sent. */
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`
+        UPDATE conversation_messages SET created_at = clock_timestamp() + interval '1 minute'
+         WHERE business_id = ${business.id}::uuid AND direction = 'outbound'`);
+    } finally {
+      await close();
+    }
+
+    await say('DELETE MY DATA', 'wamid.EP2');
+    expect(stubSender.lastText).toBe(replies.confirmErasure().text);
+    expect(await facetsOf(business.id)).toBe(facets);
+  });
+});

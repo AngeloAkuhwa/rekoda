@@ -2188,7 +2188,10 @@ async function deterministicReply(
        * #437 at 56c4140). */
       const shownBefore =
         (!paired || askedBefore.some((c) => c.consequence === ERASURE_CONSEQUENCE)) &&
-        (!paired || (await conversationsRepo.draftReplyWasSent(tx, businessId, pending.id)));
+        (!paired ||
+          (await conversationsRepo.draftReplyWasSent(tx, businessId, pending.id, {
+            before: ctx.receivedAt,
+          })));
       const claim =
         paired && shownBefore
           ? await conversationsRepo.claimDraft(tx, pending.id, { now: ctx.receivedAt })

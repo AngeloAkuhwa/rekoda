@@ -732,6 +732,10 @@ export async function draftReplyWasSent(
   tx: TenantDb,
   businessId: string,
   draftId: string,
+  /* `before`: only a reply recorded by then counts, so a message that arrived while the reply was
+   * still being sent is never taken as an answer to it (OWN-102(7); CodeRabbit on #437 at
+   * aff3f63). Its record is written as the send begins, on the clock arrivals are stamped with. */
+  options: { before?: Date } = {},
 ): Promise<boolean> {
   const rows = await tx.execute<{ sent: boolean }>(sql`
     SELECT EXISTS (
@@ -743,6 +747,7 @@ export async function draftReplyWasSent(
          AND d.business_id = ${businessId}::uuid
          AND m.direction = 'outbound'
          AND m.provider_message_id IS NOT NULL
+         ${options.before ? sql`AND m.created_at <= ${options.before.toISOString()}::timestamptz` : sql``}
     ) AS sent`);
   return rows[0]?.sent === true;
 }
