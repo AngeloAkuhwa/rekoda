@@ -14,6 +14,7 @@ import {
   isSaleSource,
   looksLikeCorrection,
   clearlyCorrects,
+  explicitlyCorrects,
   correctionWordsExplained,
   orderPreview,
   orderQuestion,
@@ -5548,7 +5549,7 @@ function photoBuyerNamed(
 ): boolean {
   const page =
     caption && rawText.startsWith(`${caption}\n`) ? rawText.slice(caption.length + 1) : rawText;
-  const fold = (v: string) => v.normalize('NFKC').toLocaleLowerCase().replace(/\s+/gu, ' ').trim();
+  const fold = (v: string) => v.normalize('NFKC').toLowerCase().replace(/\s+/gu, ' ').trim();
   return names.some((name) => {
     if (!name.trim()) return false;
     if (caption && typedIn(caption, name)) return true;
@@ -5748,11 +5749,11 @@ async function correctionInheritance(
   /* Which request it changes, or whether it is a new one, is the question (OD-60). */
   if (blocked) return { kind: 'unclear', ask: blocked };
 
-  /* Only a message that is clearly a correction of this draft may replace it (OD-60 A+, owner
-   * ruling 22 Nov 2026). One that merely reads like one ("Wait, I also sold 2 bags for 20k") is
-   * asked whether it changes the waiting request or is a new record, and supersedes nothing,
-   * whatever the draft holds; the draft is left exactly as it was. */
-  if (!clearlyCorrects(input.rawText)) {
+  /* Only a message that says it is a correction may replace the draft (OD-60 A+, owner ruling
+   * OWN-102(2)): "no, it was Bola not Ada" and "No, 4 not 3" go on to the rules below. One whose only
+   * cue is a hesitation ("Wait, I also sold 2 bags for 20k") is asked whether it changes the waiting
+   * request or is a new record, and supersedes nothing, whatever the draft holds. */
+  if (!explicitlyCorrects(input.rawText)) {
     return { kind: 'unclear', ask: draftNamesSomeone(stored, target) ? 'customer' : 'correction' };
   }
 
@@ -5775,7 +5776,7 @@ async function correctionInheritance(
       ? command.documentRef
       : null;
   const eligible =
-    /* Read as a correction, but not clearly one of this draft ("Wait, I also sold 2 bags"): never
+    /* An explicit correction that is not clearly one of this draft ("No, I also sold 2 bags"): never
      * given the draft's customer. */
     clearlyCorrects(input.rawText) &&
     /* Somebody named in the correction's own words, recorded (a token) or not (a word the draft
@@ -5791,7 +5792,7 @@ async function correctionInheritance(
    * nothing the merchant corrected, and the merchant is asked for the record with its customer
    * (CodeRabbit on #437 at 1db1a0a). */
   /* Only a correction that is otherwise eligible: one that is not clearly a correction of this
-   * draft ("Wait, I also sold 2 bags") is asked about below and leaves the preview alone, so a yes
+   * draft ("No, I also sold 2 bags") is asked about below and leaves the preview alone, so a yes
    * the merchant sent before it still books what they confirmed (independent review of e40b95d). */
   if (
     eligible &&
@@ -6237,9 +6238,16 @@ async function interpretedReply(
     /* PR #77's rule as `proposeLink` and `linkAfterMention` apply it: beside a
      * name the merchant typed, only a phone can be asked about (the new name is
      * the orphan, a phone the survivor), and only when the name is new. */
+    /* On a photo, a phone or email printed on the page beside the buyer (the seller's own, a
+     * delivery contact's) is nobody's until the page labels it as the buyer's or the caption types
+     * it: never asked about, so never created (owner ruling OWN-102(6); independent review of #437
+     * at ccdcc8e). It stays a placeholder in the record's words. */
+    const besideValue = beside.length === 1 ? provisional.get(beside[0]!)?.value : undefined;
     const asked =
       besideFacet !== undefined &&
       people === 2 &&
+      (!fromDocument ||
+        (besideValue !== undefined && photoBuyerNamed(rawText, documentCaption, [besideValue]))) &&
       (customer?.kind !== 'mention' ||
         (besideFacet === 'phone' &&
           !(await deps.gateway.findMention(businessId, customer.mention))));

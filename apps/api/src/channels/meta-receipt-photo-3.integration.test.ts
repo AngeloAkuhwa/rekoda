@@ -388,6 +388,32 @@ describe('a receipt photo whose buyer the model names', () => {
     expect(await salesDrafts(business.id)).toBe(0);
   });
 
+  /* A phone printed on the page beside a labelled buyer (the seller's own, a delivery contact's)
+   * is nobody's: never asked about as the buyer's, never created (independent review at ccdcc8e). */
+  it('creates no customer from an unlabelled phone beside the labelled buyer', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({
+      text: 'RECEIPT Tel 08035551234 Bill to: Bola Ige 2 wigs TOTAL 100,000',
+      confidence: 0.9,
+    });
+    stubTransport.replyWith(SALE_TO('Bola Ige'));
+
+    await post(photoPayload('2348031234567', 'wamid.PB6'));
+    await drain();
+
+    expect(stubSender.lastText).not.toContain('could not tell which customer');
+    expect(await salesDrafts(business.id)).toBe(1);
+    expect(await customersOf(business.id)).toBe(1);
+    const phones = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ n: number }>(
+        sql`SELECT count(*)::int AS n FROM customer_identities
+             WHERE business_id = ${business.id}::uuid AND facet = 'phone'`,
+      ),
+    ).then((r) => r[0]!.n);
+    expect(phones).toBe(0);
+  });
+
   it('previews a buyer the caption types, though the page does not label them', async () => {
     const business = await seedMerchant('+2348031234567');
     arrangePhoto();

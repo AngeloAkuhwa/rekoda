@@ -388,6 +388,25 @@ const CORRECTION_OPENERS =
 const CORRECTION_PHRASES =
   /\b(?:not(?!\s+(?:yet|paid|delivered|collected|picked\s+up)\b)|instead of|rather than|change (?:it |the )?to|make it|should be)\b/i;
 
+/* The openers that say on their own that the merchant is correcting ("no", "sorry", "it's not").
+ * "Wait" and "actually" only hesitate: "Wait, I also sold 2 bags" is as likely a new record. */
+const EXPLICIT_OPENERS = /^\s*(?:no+|nope|nah|sorry|correction|not|it(?:'| i)?s not|e no be)\b/i;
+
+/**
+ * Whether a message that reads like a correction says so explicitly (OD-60 A+, owner ruling
+ * OWN-102(2), 22 Nov 2026): an explicit opener ("no, it was Bola not Ada"), a correction phrase
+ * ("4 wigs instead of 3", "make it 5") or a clear correction. A message whose only cue is a
+ * hesitation ("Wait, I also sold 2 bags for 20k") is ambiguous: it is asked whether it changes the
+ * waiting record or is another one, and changes nothing.
+ */
+export function explicitlyCorrects(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  return (
+    EXPLICIT_OPENERS.test(trimmed) || CORRECTION_PHRASES.test(trimmed) || clearlyCorrects(trimmed)
+  );
+}
+
 export function looksLikeCorrection(text: string, hasPendingDraft: boolean): boolean {
   if (!hasPendingDraft) return false;
   const trimmed = text.trim();

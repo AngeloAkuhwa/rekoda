@@ -3,7 +3,12 @@
  * Beside `gates.test.ts`, which is over the layout limit and may not grow.
  */
 import { describe, expect, it } from 'vitest';
-import { clearlyCorrects, correctionWordsExplained, looksLikeCorrection } from './gates.js';
+import {
+  clearlyCorrects,
+  correctionWordsExplained,
+  explicitlyCorrects,
+  looksLikeCorrection,
+} from './gates.js';
 
 describe('a correction clear enough to keep the draft customer (clearlyCorrects, OWN-100)', () => {
   it.each([
@@ -224,4 +229,28 @@ describe('a "not" about a new record is not a correction cue', () => {
   ])('%j still reads like a correction', (t) => {
     expect(looksLikeCorrection(t, true)).toBe(true);
   });
+});
+
+/* OD-60 A+ (owner ruling OWN-102(2)): an explicit correction goes on to the CG5 rules; a message whose
+ * only cue is a hesitation is ambiguous and asked about. */
+describe('an explicit correction against a hesitation', () => {
+  it.each([
+    'no, it was Bola not Ada',
+    'No, Ada paid 150k not 180k',
+    'sorry, 4 wigs for Ada not 3',
+    'No, 4 for Ada, not 3',
+    'correction: Bola bought it',
+    'e no be Ada, na Bola',
+    'Wait, it was 4 not 3',
+  ])('%j is explicit', (t) => {
+    expect(explicitlyCorrects(t)).toBe(true);
+  });
+
+  it.each(['Wait, I also sold 2 bags for 20k', 'wait, fuel 6k', 'Actually, Bola bought 2 bags'])(
+    '%j is only a hesitation',
+    (t) => {
+      expect(looksLikeCorrection(t, true)).toBe(true);
+      expect(explicitlyCorrects(t)).toBe(false);
+    },
+  );
 });

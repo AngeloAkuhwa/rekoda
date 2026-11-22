@@ -146,6 +146,29 @@ describe('CG5: an obvious new record beside a waiting draft (OD-60 A+)', () => {
     expect(await drafts(business.id)).toEqual(['RecordSale:pending', 'RecordExpense:pending']);
     expect(await books(business.id)).toEqual({ invoices: [], expenses: [] });
   });
+
+  it('"Sold 2 bags for 20k, not paid yet" beside Ada\'s sale is a new sale that never takes Ada', async () => {
+    const { business, ada } = await seedOwner();
+    await send('Ada bought 3 wigs for 150k', 'wamid.K1b-SALE', SALE);
+
+    await send('Sold 2 bags for 20k, not paid yet', 'wamid.K1b-NEW', {
+      ...SALE,
+      customer: { kind: 'none' },
+      items: [{ name: 'bag', quantity: 2, unitPrice: 10_000 }],
+      statedTotal: 20_000,
+    });
+    expect(stubSender.lastText).not.toContain('The same customer as before');
+    expect(await drafts(business.id)).toEqual(['RecordSale:pending', 'RecordSale:pending']);
+    const customers = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ customer: unknown }>(sql`
+        SELECT command->'customer' AS customer FROM command_drafts
+         WHERE business_id = ${business.id}::uuid AND intent = 'RecordSale' ORDER BY insertion_seq`),
+    );
+    expect([...customers].map((r) => r.customer)).toEqual([
+      { kind: 'token', token: ada.token },
+      { kind: 'none' },
+    ]);
+  });
 });
 
 describe('CG5: the steps the clarification gives work (OD-60)', () => {
