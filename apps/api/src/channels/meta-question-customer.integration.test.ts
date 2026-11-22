@@ -238,11 +238,18 @@ describe('a question that names a customer', () => {
       const { token } = await deps.gateway.resolveMention(business.id, 'Ada Obi');
       await seedTrading(business.id, token);
 
-      await ask(
-        'wamid.Q5UN',
-        askAbout({ topic, customer: null }),
-        'how much did Ada Obi buy this month',
-      );
+      /* No business figure is even read (CodeRabbit on #437 at 76a9b03). */
+      const reads = [vi.spyOn(reportsRepo, 'summaryFor'), vi.spyOn(reportsRepo, 'overviewFor')];
+      try {
+        await ask(
+          'wamid.Q5UN',
+          askAbout({ topic, customer: null }),
+          'how much did Ada Obi buy this month',
+        );
+        for (const read of reads) expect(read).not.toHaveBeenCalled();
+      } finally {
+        for (const read of reads) read.mockRestore();
+      }
       /* The gateway issued her token, so the model saw no name. */
       expect(lastModelText()).toContain(token);
       expect(lastModelText()).not.toContain('Ada Obi');
