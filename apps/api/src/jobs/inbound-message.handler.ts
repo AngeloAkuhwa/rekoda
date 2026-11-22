@@ -5756,7 +5756,9 @@ async function correctionInheritance(
   /* A correction that names its own customer keeps nothing from the draft, so the stricter
    * `clearlyCorrects` (which refuses any name, the bar for KEEPING a customer) is not its test:
    * "no, Ada paid 150k not 180k" is clearly a correction and supersedes the draft, while "Wait, I
-   * also sold 2 bags to Bola" is still asked about (`clearlyCorrectsNaming`). */
+   * also sold 2 bags to Bola" is still asked about (`clearlyCorrectsNaming`). `namesOwn` rests on
+   * the model's customer field only on purpose: a message the model read with no customer keeps
+   * the strict test, which refuses any name, so a name the model missed fails closed (OWN-102(3)). */
   const namesOwn = bearing && named !== null && named.kind !== 'none';
   if (!(namesOwn ? clearlyCorrectsNaming(input.rawText) : clearlyCorrects(input.rawText))) {
     return { kind: 'unclear', ask: draftNamesSomeone(stored, target) ? 'customer' : 'correction' };

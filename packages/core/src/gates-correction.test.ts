@@ -239,8 +239,9 @@ describe('a correction that names its own customer may supersede (clearlyCorrect
     'no, it was Bola not Ada',
     'no, Ada paid 150k not 180k',
     'sorry, 3 not 2, to tola@example.com',
-    '4 wigs for Ada, not 3',
     'No, 4 not 3',
+    'no, it was for Bola, not Ada',
+    'Sorry, Mama Ngozi paid 60k not 50k.',
   ])('%j is clearly a correction', (text) => {
     expect(clearlyCorrectsNaming(text)).toBe(true);
   });
@@ -253,6 +254,17 @@ describe('a correction that names its own customer may supersede (clearlyCorrect
     'Sold 2 bags to Bola for 20k, should be delivered tomorrow',
     'no, another sale for Bola, 2 not 3',
     'sorry, Bola also paid 20k not 30k',
+    /* Independent review of 9d5aa78: keywords in a new record never make it a correction. */
+    '2 bags to Bola for 20k, should be delivered tomorrow',
+    'Actually Bola took 2 bags for 20k, should be delivered tomorrow',
+    'No wahala, Bola collected 2 bags for 20k, make it delivery tomorrow',
+    'Actually Bola paid 20k for 2 bags, not transfer, cash',
+    'Sorry Bola, 2 bags 20k, not cash, transfer',
+    '3 wigs for Bola 150k, not 2',
+    'Actually Bola owes me 20k, not Ada',
+    '4 wigs for Ada, not 3',
+    'no, 4 for Ada, not 3 tomorrow',
+    'no, it was Bola not Ada, and 2 more for Tunde',
     'Ada paid 150k',
     'no',
     '',

@@ -451,17 +451,28 @@ export function clearlyCorrects(text: string): boolean {
 /* What a correction that names its own customer replaces: "not", "instead of", "rather than",
  * "should be", "make it", "change it to". A "not" that states a new record's state ("not paid
  * yet") is not one. */
-const REPLACING =
-  /\b(?:not(?!\s+(?:yet|paid|delivered|collected|picked\s+up)\b)|instead\s+of|rather\s+than|should\s+be|make\s+it|change\s+(?:it\s+|the\s+)?to)\b/iu;
-const STRONG_OPENER = /^\s*(?:no+|nope|nah|sorry|correction|actually|e\s+no\s+be)\b/iu;
-const OPENS_WITH_FIGURE = new RegExp(String.raw`^\s*${FIG}\b`, 'iu');
-/* Words that add a record or start another one: never a correction of the waiting one. */
-const ADDING = new RegExp(String.raw`\b${ADDING_WORD}\b`, 'iu');
-/* Verbs that state a transaction afresh ("no, I sold..."): asked about, never read as a fix. */
-const NEW_RECORD_VERB =
-  /\b(?:sold|sell|sells|selling|bought|buy|buys|buying|purchased|purchase|spent|spend|ordered)\b/iu;
+/* Who a correction names: one to three words (a name, an email or a phone), never a word that
+ * adds a record, a time or a date, or the structure of the sentence itself. */
+const NAME_WORD = String.raw`(?!(?:${ADDING_WORD}|${TIME_WORD}|not|for|to|it|was|is|paid|owes?|instead|rather|should|make|change)\b)[\p{L}\p{N}][\p{L}\p{N}\p{M}.@_+'’-]*`;
+const NAME = String.raw`${NAME_WORD}(?:\s+${NAME_WORD}){0,2}`;
+/* A named correction always opens with a correction word: a figure-first message ("3 wigs for
+ * Bola 150k, not 2") may be a new record, so it is asked about. */
+const NAMED_OPENER = String.raw`(?:(?:no+|nope|nah|sorry|actually|correction|e no be)[\s,.!:;-]+)+`;
+const CLEAR_NAMED_CORRECTION = new RegExp(
+  String.raw`^${NAMED_OPENER}(?:` +
+    /* "No, 4 for Ada, not 3", "sorry, 4 wigs for Ada not 3" */
+    String.raw`${AMOUNT}\s+(?:for|to)\s+${NAME},?\s+not\s+${AMOUNT}` +
+    /* "sorry, 3 not 2, to tola@example.com" */
+    String.raw`|${AMOUNT},?\s+not\s+${AMOUNT},?\s+(?:for|to)\s+${NAME}` +
+    /* "no, Ada paid 150k not 180k" */
+    String.raw`|${NAME}\s+paid\s+${AMOUNT},?\s+not\s+${AMOUNT}` +
+    /* "no, it was Bola not Ada": the customer replaced, nothing else */
+    String.raw`|(?:it\s+was|it'?s|it\s+is)\s+(?:for\s+|to\s+)?${NAME},?\s+not\s+(?:for\s+|to\s+)?${NAME}` +
+    String.raw`)\s*[.!]*$`,
+  'iu',
+);
 /** A correction naming its customer may carry the name, an email or a phone: still one line. */
-const MAX_NAMED_CORRECTION_LENGTH = 160;
+const MAX_NAMED_CORRECTION_LENGTH = 120;
 
 /**
  * Whether a message that names its own customer is clearly a correction of the waiting draft
@@ -470,18 +481,18 @@ const MAX_NAMED_CORRECTION_LENGTH = 160;
  * 3" may name a person or an item); a message that names a customer itself keeps nothing from
  * the draft, so the question here is only whether it changes the waiting record or is another.
  *
- * Clear: it opens with "no", "sorry", "actually" or "correction", or with the corrected figure,
- * and says what it replaces ("no, Ada paid 150k not 180k", "No, 4 for Ada, not 3", "no, it was
- * Bola not Ada"), with no word that adds a record ("also", "another", "more") and no verb that
- * states a transaction afresh ("no, I sold 2 bags to Bola"). Anything else ("Wait, I also sold 2
- * bags to Bola for 20k") is asked about and supersedes nothing.
+ * The WHOLE message must have a correction's shape, as in `clearlyCorrects`, with a slot for who:
+ * a correction word ("no", "sorry", "actually", "correction"), then one figure for another
+ * ("No, 4 for Ada, not 3", "no, Ada paid 150k not 180k", "sorry, 3 not 2, to tola@example.com")
+ * or one customer for another ("no, it was Bola not Ada"). Anything else, whatever wording it
+ * contains ("2 bags to Bola for 20k, should be delivered tomorrow", "Actually Bola paid 20k for 2
+ * bags, not transfer, cash", "3 wigs for Bola 150k, not 2"), may be another record and is asked
+ * about, superseding nothing (independent review of 9d5aa78).
  */
 export function clearlyCorrectsNaming(text: string): boolean {
   const trimmed = text.trim();
   if (!trimmed || trimmed.length > MAX_NAMED_CORRECTION_LENGTH) return false;
-  if (clearlyCorrects(trimmed)) return true;
-  if (!STRONG_OPENER.test(trimmed) && !OPENS_WITH_FIGURE.test(trimmed)) return false;
-  return REPLACING.test(trimmed) && !ADDING.test(trimmed) && !NEW_RECORD_VERB.test(trimmed);
+  return clearlyCorrects(trimmed) || CLEAR_NAMED_CORRECTION.test(trimmed);
 }
 
 /* The words a clear correction is built from, which say nothing about who or what. */
