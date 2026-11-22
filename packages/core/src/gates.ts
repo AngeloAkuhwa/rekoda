@@ -10,7 +10,13 @@
  * `RecordSale` satisfies `SaleLike` without this package depending on the wire
  * schema. Domain rules should not need to know what shape a webhook uses.
  */
-import { computeMoney, formatKobo, type MoneyBlock, type MoneyDraft } from './money.js';
+import {
+  computeMoney,
+  formatKobo,
+  nairaToKobo,
+  type MoneyBlock,
+  type MoneyDraft,
+} from './money.js';
 import { commandPurchaseReference, describePurchaseReference } from './purchase-identity.js';
 
 export interface SaleItemLike {
@@ -620,6 +626,137 @@ export function correctionWordsExplained(text: string, vocabulary: Iterable<stri
     return false;
   };
   return [...lower.matchAll(WORD)].every((m) => explained(m[0], m.index));
+}
+
+/**
+ * The figures a waiting draft holds, which a correction may say were wrong (OD-67 Option B, owner
+ * ruling OWN-103(3), 22 Nov 2026). Money is integer kobo, converted once from the contract's naira
+ * (`nairaToKobo`); quantities are counts. The two are kept apart: "4 not 3" against a sale of 3 wigs
+ * replaces a quantity, never a ₦3 price.
+ */
+export interface DraftFigures {
+  readonly moneyKobo: readonly number[];
+  readonly quantities: readonly number[];
+}
+
+export function draftFigures(command: Record<string, unknown>): DraftFigures {
+  const money: number[] = [];
+  const quantities: number[] = [];
+  const naira = (v: unknown): number | null => {
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v > 10_000_000_000) return null;
+    return nairaToKobo(v);
+  };
+  const addMoney = (v: unknown) => {
+    const k = naira(v);
+    if (k !== null) money.push(k);
+  };
+  const addQuantity = (v: unknown) => {
+    if (typeof v === 'number' && Number.isFinite(v) && v > 0) quantities.push(v);
+  };
+  const items = Array.isArray(command['items']) ? (command['items'] as unknown[]) : [];
+  let gross: number | null = 0;
+  for (const item of items) {
+    if (!item || typeof item !== 'object') continue;
+    const { quantity, unitPrice } = item as { quantity?: unknown; unitPrice?: unknown };
+    addQuantity(quantity);
+    const each = naira(unitPrice);
+    if (each === null) {
+      if (unitPrice !== undefined) gross = null;
+      continue;
+    }
+    money.push(each);
+    /* A line total, as the preview shows it, only when it is a whole number of kobo. */
+    const line = typeof quantity === 'number' ? quantity * each : NaN;
+    if (Number.isSafeInteger(line)) {
+      money.push(line);
+      if (gross !== null) gross += line;
+    } else {
+      gross = null;
+    }
+  }
+  if (gross !== null && gross > 0) {
+    money.push(gross);
+    const discount = naira(command['discount']) ?? 0;
+    const delivery = naira(command['deliveryFee']) ?? 0;
+    if (discount || delivery) money.push(gross - discount + delivery);
+  }
+  for (const key of ['statedTotal', 'reportedPayment', 'discount', 'deliveryFee', 'amount']) {
+    addMoney(command[key]);
+  }
+  addQuantity(command['quantity']);
+  return { moneyKobo: money, quantities };
+}
+
+/* A figure a correction says was wrong: after "not", "instead of" or "rather than" ("4 not 3",
+ * "no, 60k not 50k", "Not paid 5k, it was 4k"), with at most one word after it. */
+const REPLACED_FIGURE =
+  /(?:\bnot\s+(?:paid\s+)?|\binstead\s+of\s+|\brather\s+than\s+)((?:₦|ngn|n)?\s*\d[\d,]*(?:\.\d+)?(?:\s*k(?![\p{L}\p{N}]))?)(?:\s*([\p{L}]+))?/giu;
+/* The figure a correction gives just before "not", "instead of" or "rather than", with its word. */
+const REPLACEMENT_FIGURE =
+  /((?:₦|ngn|n)?\s*\d[\d,]*(?:\.\d+)?(?:\s*k(?![\p{L}\p{N}]))?)(?:\s*([\p{L}]+))?,?\s+(?:not|instead\s+of|rather\s+than)\b/iu;
+const MONEY_WORDS = new Set(['naira', 'each', 'k']);
+const MONEY_FIELD =
+  /\b(?:price|total|amount|balance|cost|rate|discount|fee|payment|paid|pay|charge)\b/iu;
+
+/** A figure's kind from how it is written: money (₦, NGN, "k", a decimal, "naira", "each"), a
+ * quantity (a unit after it: "3 pcs", "3 cartons"), or nothing said ("3", "3 wigs", "3 cash"). */
+function figureKind(figure: string, word: string | undefined): 'money' | 'quantity' | null {
+  const f = figure.toLowerCase();
+  if (/^(?:₦|ngn|n)/u.test(f) || /k$/u.test(f) || f.includes('.')) return 'money';
+  const w = word?.toLowerCase();
+  if (w && MONEY_WORDS.has(w)) return 'money';
+  if (w && UNIT_WORDS.has(w) && w !== 'naira') return 'quantity';
+  return null;
+}
+
+/** A figure as integer kobo, by integer arithmetic only: "50k" is 5,000,000; "₦4.50" is 450. */
+function figureKobo(figure: string): number | null {
+  const m = /^(?:₦|ngn|n)?\s*(\d+)(?:\.(\d+))?\s*(k)?$/u.exec(
+    figure.toLowerCase().replace(/,/gu, ''),
+  );
+  if (!m?.[1]) return null;
+  const perUnit = m[3] ? 100_000 : 100;
+  const frac = m[2] ?? '';
+  const scale = 10 ** frac.length;
+  const fracKobo = (Number(frac || '0') * perUnit) / scale;
+  if (!Number.isInteger(fracKobo)) return null;
+  const kobo = Number(m[1]) * perUnit + fracKobo;
+  return Number.isSafeInteger(kobo) ? kobo : null;
+}
+
+/**
+ * Whether every figure a correction says was wrong is one the waiting draft holds, read in its own
+ * sense (OD-67 Option B, fail closed; owner ruling OWN-103(3)). "4 not 3" beside a sale of 3 wigs
+ * fits; beside a ₦5,000 expense it does not, and is asked about, changing nothing. A figure written
+ * as money ("50k", "₦3,000", "4.50k", "60k each") is compared with the draft's money in kobo; one
+ * with a unit after it ("3 pcs") with its quantities; any other takes the sense of the figure it is
+ * replaced by, then of the field the message names ("price", "paid"), and otherwise the draft's
+ * quantities when it has any ("4 wigs not 3" beside a sale), else its money ("6000 not 5000" beside
+ * an expense). A correction that names no replaced figure ("make it
+ * 5", "no, it was Bola not Ada") has nothing to check and fits.
+ */
+export function replacedFiguresFit(text: string, draft: DraftFigures): boolean {
+  const lower = text.toLowerCase();
+  const replacement = REPLACEMENT_FIGURE.exec(lower);
+  const replacementKind = replacement?.[1]
+    ? figureKind(replacement[1].trim(), replacement[2])
+    : null;
+  for (const m of lower.matchAll(REPLACED_FIGURE)) {
+    const figure = m[1]?.trim();
+    if (!figure) continue;
+    const kind =
+      figureKind(figure, m[2]) ??
+      replacementKind ??
+      (MONEY_FIELD.test(lower) ? 'money' : draft.quantities.length > 0 ? 'quantity' : 'money');
+    if (kind === 'quantity') {
+      const count = Number(figure.replace(/,/gu, ''));
+      if (!draft.quantities.includes(count)) return false;
+    } else {
+      const kobo = figureKobo(figure);
+      if (kobo === null || !draft.moneyKobo.includes(kobo)) return false;
+    }
+  }
+  return true;
 }
 
 /* ── money coming IN against an invoice already issued ───────────────────── */

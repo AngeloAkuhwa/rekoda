@@ -227,3 +227,73 @@ describe('a seconds-only message beside a waiting expense', () => {
     expect((await drafts(business.id))[0]).toBe('RecordExpense:pending');
   });
 });
+
+/* OD-67 Option B (owner ruling OWN-103(3)): "4 not 3" says nothing about a ₦5,000 expense, so it is
+ * asked about, the shown expense stays, and only it is booked. */
+describe('a replaced figure a waiting expense does not hold', () => {
+  it('"4 not 3" changes nothing, and the expense is booked as shown', async () => {
+    const { business } = await seedOwner();
+    await send('fuel 5k cash', 'wamid.FX-EXP', expense(5_000));
+
+    await send('4 not 3', 'wamid.FX-FIX', expense(4));
+    expect(stubSender.lastText).toBe(replies.correctionFigureNotInDraft().text);
+    expect(await drafts(business.id)).toEqual(['RecordExpense:pending']);
+    await send('yes', 'wamid.FX-YES1');
+    await send('yes', 'wamid.FX-YES2');
+    expect((await books(business.id)).expenses).toEqual([500_000]);
+  });
+});
+
+/* An apology opener on the same expense with a new amount is a correction (owner disposition of
+ * #437, 22 Nov 2026): one preview replaces the other, so one tank of fuel is booked once. With an
+ * adding word it is asked about, and a record of another kind is never taken for it. */
+describe('an apology opener beside a waiting expense', () => {
+  it('"Sorry, bought fuel for 6k cash" replaces the ₦5,000 preview and books ₦6,000 once', async () => {
+    const { business } = await seedOwner();
+    await send('Bought fuel for 5k', 'wamid.AP1-EXP', expense(5_000));
+
+    await send('Sorry, bought fuel for 6k cash', 'wamid.AP1-FIX', expense(6_000));
+    expect(stubSender.lastText).toContain(replies.correctionTaken().text);
+    expect(await drafts(business.id)).toEqual([
+      'RecordExpense:superseded',
+      'RecordExpense:pending',
+    ]);
+    await send('yes', 'wamid.AP1-YES');
+    await send('yes', 'wamid.AP1-YES2');
+    expect((await books(business.id)).expenses).toEqual([600_000]);
+  });
+
+  it('"Sorry, I also bought fuel for 6k" is asked about and replaces nothing', async () => {
+    const { business } = await seedOwner();
+    await send('Bought fuel for 5k', 'wamid.AP2-EXP', expense(5_000));
+
+    await send('Sorry, I also bought fuel for 6k', 'wamid.AP2-ADD', expense(6_000));
+    expect(stubSender.lastText).toBe(replies.correctionNotClear().text);
+    expect(await drafts(business.id)).toEqual(['RecordExpense:pending']);
+  });
+
+  it('"Sorry, sold 2 bags for 20k" is another kind: asked about, the expense stays', async () => {
+    const { business } = await seedOwner();
+    await send('Bought fuel for 5k', 'wamid.AP3-EXP', expense(5_000));
+
+    await send('Sorry, sold 2 bags for 20k', 'wamid.AP3-SALE', {
+      ...SALE,
+      customer: { kind: 'none' },
+      items: [{ name: 'bag', quantity: 2, unitPrice: 10_000 }],
+      statedTotal: 20_000,
+    });
+    expect(stubSender.lastText).toBe(replies.correctionNotClear().text);
+    expect(await drafts(business.id)).toEqual(['RecordExpense:pending']);
+  });
+
+  it('a new expense with no correction cue is previewed on its own beside it', async () => {
+    const { business } = await seedOwner();
+    await send('Bought fuel for 5k', 'wamid.AP4-EXP', expense(5_000));
+
+    await send('Bought diesel for 6k', 'wamid.AP4-NEW', {
+      ...expense(6_000),
+      description: 'diesel',
+    });
+    expect(await drafts(business.id)).toEqual(['RecordExpense:pending', 'RecordExpense:pending']);
+  });
+});

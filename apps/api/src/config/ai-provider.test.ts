@@ -211,3 +211,66 @@ describe('the high-value verifier in production (OD-63(c))', () => {
     expect(() => loadConfig(env)).toThrow(/OD-63\(c\)/);
   });
 });
+
+/**
+ * The OD-59 deployment gate (owner disposition of PR #437, OWN-103(6)): an unrecorded name reaches
+ * the interpreter as plain text, so a production process starts only with the approved Anthropic
+ * interpreter on Anthropic's own host. Transcription keeps its OpenAI key.
+ */
+describe('the primary interpreter in production (OD-59 gate)', () => {
+  const PROD = {
+    ...BASE,
+    NODE_ENV: 'production',
+    REKODA_TRUSTED_PROXIES: '172.30.10.10',
+    OPERATOR_OIDC_ISSUER: 'https://issuer.example.com',
+    OPERATOR_OIDC_AUDIENCE: 'rekoda-ops',
+    OPERATOR_OIDC_JWKS_URL: 'https://issuer.example.com/jwks',
+    META_APP_SECRET: 'm'.repeat(40),
+    META_VERIFY_TOKEN: 'v'.repeat(40),
+    REKODA_TRUSTED_WEB: '172.30.10.11',
+  } as NodeJS.ProcessEnv;
+
+  it('starts on Anthropic, with an OpenAI key kept for transcription', () => {
+    const config = loadConfig({ ...PROD, ANTHROPIC_API_KEY: 'k', OPENAI_API_KEY: 'k' });
+    expect(config.aiProvider).toBe('anthropic');
+    expect(config.openaiApiKey).toBe('k');
+    expect(
+      loadConfig({ ...PROD, ANTHROPIC_API_KEY: 'k', AI_BASE_URL: 'https://api.anthropic.com/' })
+        .aiBaseUrl,
+    ).toBe('https://api.anthropic.com/');
+  });
+
+  it.each([
+    ['AI_PROVIDER=openai', { AI_PROVIDER: 'openai', OPENAI_API_KEY: 'k', AI_MODEL_DEFAULT: 'm' }],
+    ['an OpenAI key and no Anthropic key', { OPENAI_API_KEY: 'k', AI_MODEL_DEFAULT: 'm' }],
+  ])('refuses %s as the primary interpreter', (_, over) => {
+    expect(() => loadConfig({ ...PROD, ...over })).toThrow(/must be Anthropic in production/);
+  });
+
+  it.each(['https://api.groq.com/openai/v1', 'https://gateway.example.com/anthropic'])(
+    'refuses AI_BASE_URL=%s, which would redirect what the interpreter sends',
+    (url) => {
+      expect(() => loadConfig({ ...PROD, ANTHROPIC_API_KEY: 'k', AI_BASE_URL: url })).toThrow(
+        /AI_BASE_URL must be blank or exactly https:\/\/api\.anthropic\.com/,
+      );
+    },
+  );
+
+  it('keeps the specific refusal for a private host', () => {
+    expect(() =>
+      loadConfig({ ...PROD, ANTHROPIC_API_KEY: 'k', AI_BASE_URL: 'https://ollama:11434/v1' }),
+    ).toThrow(/AI_BASE_URL names ollama/);
+  });
+
+  it('leaves development and test free to try another provider', () => {
+    expect(
+      loadConfig({
+        ...BASE,
+        NODE_ENV: 'test',
+        AI_PROVIDER: 'openai',
+        OPENAI_API_KEY: 'k',
+        AI_MODEL_DEFAULT: 'm',
+      }).aiProvider,
+    ).toBe('openai');
+  });
+});

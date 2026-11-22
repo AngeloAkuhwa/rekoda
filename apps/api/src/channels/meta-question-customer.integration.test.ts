@@ -7,6 +7,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import { identity, issueRepo, reportsRepo, sql, withBusiness } from '@rekoda/db';
+import { replies } from '@rekoda/core';
 import { STORED_BODY } from '@rekoda/core/privacy';
 import { ownerDb } from '@rekoda/db/testing';
 import { buildRunner } from '../jobs/jobs.module.js';
@@ -274,6 +275,33 @@ describe('a question that names a customer', () => {
     expect(stubSender.lastText).toContain('₦150,000');
   });
 
+  /* OD-66 Option C (owner ruling OWN-103(2)): a name nobody recorded issues no token, and the model
+   * may leave the customer out, so nothing tells the question from a business one. The business's
+   * totals are read (and only they), and the reply says they are the whole business's, never hers. */
+  it.each([
+    ['an unrecorded name the model left out', 'How much did Ngozi Okeke buy this month?'],
+    ['a market', 'How much did I sell at Balogun market this month?'],
+    ['the merchant’s own shop', 'How much did my shop, Bimbo Fabrics, sell this month?'],
+  ])('a sales question naming %s says the total is the whole business’s', async (_, text) => {
+    const business = await seedMerchant('+2348031234567');
+    await seedTrading(business.id);
+    const before = await customerRows(business.id);
+    const summary = vi.spyOn(reportsRepo, 'summaryFor');
+    const perCustomer = vi.spyOn(issueRepo, 'openInvoicesForCustomer');
+    try {
+      await ask('wamid.Q5WB', askAbout({ customer: null }), text);
+      expect(summary).toHaveBeenCalledTimes(1);
+      expect(summary.mock.calls[0]?.[1]).toBe(business.id);
+      expect(perCustomer).not.toHaveBeenCalled();
+    } finally {
+      summary.mockRestore();
+      perCustomer.mockRestore();
+    }
+    expect(stubSender.lastText).toContain('₦150,000');
+    expect(stubSender.lastText).toContain(replies.WHOLE_BUSINESS_NOTE);
+    expect(await customerRows(business.id)).toEqual(before);
+  });
+
   /* Two customers named and none chosen: asked which, never "no unpaid invoice" (CodeRabbit on #437
    * at fadc878). */
   it('a balance question naming two known customers that the model left unscoped asks which', async () => {
@@ -456,6 +484,8 @@ describe('a question that names a customer', () => {
       '1 additional outstanding invoice, included in the total',
     );
     expect(stubSender.lastText).not.toContain('Ada');
+    /* One customer's balance, never labelled as the whole business's (OD-66). */
+    expect(stubSender.lastText).not.toContain(replies.WHOLE_BUSINESS_NOTE);
   });
 
   /**

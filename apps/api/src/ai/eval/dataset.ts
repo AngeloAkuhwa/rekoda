@@ -1295,6 +1295,80 @@ export const EVAL_CASES: readonly EvalCase[] = [
     }),
   },
 
+  /* ── a question's customer scope (OD-66 Option C, owner ruling OWN-103(2)) ── */
+  /* A name nobody recorded reaches the model as plain text (ADR 0005 Amendment 1): it must come
+   * back as the question's customer, never be dropped, so the answer is "no customer by that
+   * name" and never the whole business's sales. A place, the merchant's own shop or a product is
+   * nobody: those questions are the whole business's. */
+  {
+    id: 'scope-unknown-name',
+    category: 'ambiguous_customer',
+    source: 'typed',
+    covers: [],
+    input: 'How much did Ngozi Okeke buy this month?',
+    expect: query({
+      format: 'chat',
+      topic: 'sales_summary',
+      period: 'month',
+      periodText: null,
+      customerMention: 'Ngozi Okeke',
+    }),
+  },
+  {
+    id: 'scope-market',
+    category: 'query_period',
+    source: 'typed',
+    register: 'nigerian_english',
+    covers: ['period_month'],
+    input: 'How much did I sell at Balogun market this month?',
+    expect: query({
+      format: 'chat',
+      topic: 'sales_summary',
+      period: 'month',
+      periodText: null,
+      noCustomer: true,
+    }),
+  },
+  {
+    id: 'scope-own-business',
+    category: 'query_period',
+    source: 'typed',
+    covers: ['period_month'],
+    input: 'How much did my shop, Bimbo Fabrics, sell this month?',
+    expect: query({
+      format: 'chat',
+      topic: 'sales_summary',
+      period: 'month',
+      periodText: null,
+      noCustomer: true,
+    }),
+  },
+  {
+    id: 'scope-product-word',
+    category: 'query_period',
+    source: 'typed',
+    covers: ['period_month'],
+    /* "Ankara" is a fabric here, even in a book that has a customer called Ankara. */
+    input: 'How much Ankara did I sell this month?',
+    expect: query({
+      format: 'chat',
+      topic: 'sales_summary',
+      period: 'month',
+      periodText: null,
+      noCustomer: true,
+    }),
+  },
+  {
+    id: 'scope-recorded-customer-kept',
+    category: 'customer_tokens',
+    source: 'typed',
+    covers: [],
+    /* The token must stay on the question: a model that omits it widens nothing, because the
+     * handler refuses an unscoped question that was issued a customer token, but it is wrong. */
+    input: 'How much does CUSTOMER_K7Q owe me for the ankara?',
+    expect: query({ format: 'chat', topic: 'customer_balance', customerToken: 'CUSTOMER_K7Q' }),
+  },
+
   /* ── which customer? ────────────────────────────────────────────────── */
   {
     id: 'who-1',

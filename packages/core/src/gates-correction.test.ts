@@ -6,8 +6,10 @@ import { describe, expect, it } from 'vitest';
 import {
   clearlyCorrects,
   correctionWordsExplained,
+  draftFigures,
   explicitlyCorrects,
   looksLikeCorrection,
+  replacedFiguresFit,
 } from './gates.js';
 
 describe('a correction clear enough to keep the draft customer (clearlyCorrects, OWN-100)', () => {
@@ -291,5 +293,51 @@ describe('an explicit correction against a hesitation', () => {
   ])('%j is only a hesitation', (t) => {
     expect(looksLikeCorrection(t, true)).toBe(true);
     expect(explicitlyCorrects(t)).toBe(false);
+  });
+});
+
+/* OD-67 Option B (owner ruling OWN-103(3), 22 Nov 2026): a figure the correction says was wrong must
+ * be one the waiting draft holds, in its own sense, or the correction is asked about. */
+describe('a replaced figure the waiting draft does not hold', () => {
+  const sale = draftFigures({
+    items: [{ name: 'wig', quantity: 3, unitPrice: 50_000 }],
+    statedTotal: 150_000,
+    reportedPayment: 100_000,
+    discount: null,
+    deliveryFee: null,
+  });
+  const fuel = draftFigures({ description: 'fuel', amount: 5_000 });
+  const priced = draftFigures({ items: [{ name: 'oil', quantity: 2, unitPrice: 4.5 }] });
+
+  it.each([
+    ['No, 4 not 3', sale],
+    ['4 wigs instead of 3', sale],
+    ['sorry, 60k each not 50k', sale],
+    ['no, it was 200k not 150k', sale],
+    ['she paid 120k not 100k', sale],
+    ['No, 4 pcs not 3 pcs', sale],
+    ['no, 6k not 5k', fuel],
+    ['no, ₦6,000 not ₦5,000', fuel],
+    ['6000 not 5000', fuel],
+    ['Not paid 5k, it was 4k', fuel],
+    ['no, 5 not 4.50', priced],
+    ['make it 5', sale],
+    ['no, it was Bola not Ada', sale],
+  ])('%j fits', (t, figures) => {
+    expect(replacedFiguresFit(t, figures)).toBe(true);
+  });
+
+  it.each([
+    ['4 not 3', fuel],
+    ['No, 5 not 4', sale],
+    ['no, 60k not 40k', sale],
+    ['no, 6k not 3k', fuel],
+    /* A quantity is never a price: 3 is no ₦3 here, and 50k no 50 wigs. */
+    ['No, 4 pcs not 50 pcs', sale],
+    ['no, ₦4 not ₦3', sale],
+    ['6000 not 3000', fuel],
+    ['no, 5 not 4.40', priced],
+  ])('%j does not fit', (t, figures) => {
+    expect(replacedFiguresFit(t, figures)).toBe(false);
   });
 });

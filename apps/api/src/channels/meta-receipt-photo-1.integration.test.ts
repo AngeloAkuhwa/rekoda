@@ -153,6 +153,41 @@ describe('a receipt photo', () => {
     expect(stubSender.lastText).toContain('₦12,000');
   });
 
+  /* OD-69(a) Option A (owner ruling OWN-103(4), 22 Nov 2026): a page that names no buyer, read with
+   * no customer, is an anonymous sale like a typed walk-in. The preview names nobody, and the yes
+   * books an invoice that attaches and creates no customer. */
+  it('with no buyer named, previews a sale to nobody and books it with no customer', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'RECEIPT 2 wigs @ 50,000 TOTAL 100,000 PAID', confidence: 0.9 });
+    stubTransport.replyWith({
+      intent: 'RecordSale',
+      customer: { kind: 'none' },
+      items: [{ name: 'wig', quantity: 2, unitPrice: 50_000 }],
+      statedTotal: 100_000,
+      reportedPayment: 100_000,
+      paymentMethod: 'cash',
+      discount: null,
+      deliveryFee: null,
+      dueDescription: null,
+    });
+    await post(photoPayload('2348031234567', 'wamid.P1-ANON'));
+    await drain();
+    expect(stubSender.lastText).toContain('Please check this before I save it:\n\n2 × wig');
+    expect(stubSender.lastText).not.toMatch(/customer|Customer|for:/);
+
+    await post(messagePayload('2348031234567', 'wamid.P1-ANON-YES', 'yes'));
+    await drain();
+    const [row] = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ invoices: number; linked: number; customers: number }>(sql`
+        SELECT (SELECT count(*)::int FROM invoices WHERE business_id = ${business.id}::uuid) AS invoices,
+               (SELECT count(*)::int FROM invoices WHERE business_id = ${business.id}::uuid
+                  AND (customer_id IS NOT NULL OR snapshot_json::text LIKE '%CUSTOMER\_%')) AS linked,
+               (SELECT count(*)::int FROM customers WHERE business_id = ${business.id}::uuid) AS customers`),
+    );
+    expect(row).toEqual({ invoices: 1, linked: 0, customers: 0 });
+  });
+
   it('keeps the extracted text and NEVER the image', async () => {
     const business = await seedMerchant('+2348031234567');
     arrangePhoto(Buffer.from('JFIF-secret-photo-of-adas-shop'));

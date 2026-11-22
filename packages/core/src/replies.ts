@@ -1009,6 +1009,20 @@ export function optionChosen(invoiceNumber: string): Reply {
 }
 
 /**
+ * CG5 (OD-67 Option B, owner ruling OWN-103(3)): a correction that says a figure was wrong when the
+ * request waiting for a yes holds no such figure. Nothing was changed; it asks what is being
+ * corrected, with the same steps as `correctionNotClear`.
+ */
+export function correctionFigureNotInDraft(): Reply {
+  return reply(
+    'The figure you said was wrong is not in the request waiting for your yes, so I have not ' +
+      'changed anything. What are you correcting? To keep the waiting request, reply *yes* and I ' +
+      'will tell you what is still waiting. To replace it, reply *cancel*, then send the whole ' +
+      'corrected record.',
+  );
+}
+
+/**
  * CG5 (OD-60): a message read as a correction that may not be about the request waiting for a
  * yes (another kind of record, another member's request, two waiting, or something said since).
  * Nothing was changed, and the reply gives the steps that work for either thing they meant.
@@ -1876,6 +1890,18 @@ export function customerFiguresNotKept(): Reply {
       'other figures per customer yet. For a balance, ask like *how much does Ada owe me*. ' +
       'For your whole business, ask again without a name.',
   );
+}
+
+/**
+ * OD-66 Option C (owner ruling OWN-103(2), 22 Nov 2026): a total over the whole business says so,
+ * every time a question is answered with one. A name nobody recorded may reach no token, and the
+ * model may leave the customer out, so nothing deterministic can tell "how much did Ngozi buy" from
+ * a question about the business; the answer then never reads as that person's figure.
+ */
+export const WHOLE_BUSINESS_NOTE = 'This is for your whole business, not for one customer.';
+
+export function wholeBusiness(answer: Reply): Reply {
+  return reply(`${answer.text}\n\n${WHOLE_BUSINESS_NOTE}`);
 }
 
 /** Money owed OUT, to suppliers. The other side of the debtors question. */

@@ -1107,6 +1107,44 @@ function visionVerifier(env: NodeJS.ProcessEnv, isProduction: boolean): string |
 }
 
 /**
+ * The OD-59 deployment gate (owner disposition of PR #437, OWN-103(6), 22 Nov 2026). A name nobody
+ * recorded reaches the interpreter as plain text (ADR 0005 Amendment 1, OWN-102(5)), and only the
+ * approved Anthropic interpretation processor may receive it. Until OD-59's own change lands, a
+ * production process refuses to start (every deployed image, staging included, runs with
+ * NODE_ENV=production: `Dockerfile`, `docker-compose.prod.yml`):
+ *  - with OpenAI, or an OpenAI-compatible host, as the primary interpreter (`AI_PROVIDER=openai`,
+ *    or an OpenAI key with no Anthropic key, which picks OpenAI);
+ *  - with `AI_BASE_URL` naming any host but Anthropic's own, because the Anthropic transport sends
+ *    every interpretation, classification and vision call to that URL.
+ * The OpenAI transcription route (`OPENAI_API_KEY` beside an Anthropic primary) is untouched, and
+ * the high-value verifier is refused separately (`visionVerifier`, OD-63(c)). Nothing secret is in
+ * the message.
+ */
+function approvedInterpreter(
+  env: NodeJS.ProcessEnv,
+  provider: 'anthropic' | 'openai',
+  isProduction: boolean,
+): void {
+  if (!isProduction) return;
+  if (provider === 'openai') {
+    throw new ConfigError(
+      'The primary interpreter must be Anthropic in production until OD-59 lands: ' +
+        'set ANTHROPIC_API_KEY (and AI_PROVIDER=anthropic or leave it unset). OPENAI_API_KEY may ' +
+        'stay for voice transcription.',
+    );
+  }
+  const raw = env['AI_BASE_URL']?.trim();
+  /* A private or local host keeps its own, more specific refusal (deploy smoke pins it). */
+  if (raw) publicInProduction('AI_BASE_URL', raw, isProduction);
+  if (raw && raw.replace(/\/+$/u, '') !== ANTHROPIC_API_ORIGIN) {
+    throw new ConfigError(
+      `AI_BASE_URL must be blank or exactly ${ANTHROPIC_API_ORIGIN} in production ` +
+        'until OD-59 lands: the interpreter may send unrecorded names only to Anthropic.',
+    );
+  }
+}
+
+/**
  * The operator plane's identity provider, or a refusal to run without one.
  *
  * Provider-neutral on purpose: issuer, audience and key set are deployment
@@ -1264,6 +1302,8 @@ function optionalHexKey(env: NodeJS.ProcessEnv, key: string): string {
  * is the one non-production state that carries no name.
  */
 const NON_PRODUCTION_ENVS = new Set(['development', 'test']);
+/** Anthropic's own API origin: the only AI_BASE_URL a production process may name (OD-59). */
+const ANTHROPIC_API_ORIGIN = 'https://api.anthropic.com';
 /**
  * A command bus rollout flag (OD-4, approved by the owner 8 Oct 2026).
  *
@@ -1390,6 +1430,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   if (requested === 'openai' && !env['OPENAI_API_KEY']) {
     throw new ConfigError('AI_PROVIDER=openai but OPENAI_API_KEY is not set');
   }
+  approvedInterpreter(env, aiProvider, isProduction);
 
   /* A deployment that can send WhatsApp but has no approved authentication
    * template can take sign-ups and deliver no sign-in codes, and the failure

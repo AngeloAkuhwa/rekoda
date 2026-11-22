@@ -52,6 +52,8 @@ interpretation processor only. It does not extend to OpenAI, any other provider,
 document verifier, general customer extraction, logs, telemetry, any identity store or any other
 message. Appendix C.3 carries a pointer to this amendment.
 
+**Processors (owner ruling OWN-103(5), 22 Nov 2026):** For a read-only question (`Query`) naming a customer nobody has recorded, the approved Anthropic document classifier may process text read from a photographed document as needed to classify it, and the approved Anthropic interpretation processor may interpret the question, within ADR 0005 Amendment 1's limits; this authorises no OpenAI call (the high-value document verifier included), no other provider, no logging of the name, no wider storage of personal data and no reuse for an unrelated purpose.
+
 **Status: ACCEPTED** by the owner on 21 Nov 2026 (OWN-100, `REKODA_OWNER_DECISIONS.md`), on PR #437
 (G-135). Proposed 20 Nov 2026 after CodeRabbit raised the conflict on #437; the owner chose the narrowed
 Option A. Option C (questions create customers) is rejected, and Option B (a permanent store of unknown

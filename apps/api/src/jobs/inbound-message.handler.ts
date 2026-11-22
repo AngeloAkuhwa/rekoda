@@ -15,7 +15,9 @@ import {
   isSaleSource,
   looksLikeCorrection,
   clearlyCorrects,
+  draftFigures,
   explicitlyCorrects,
+  replacedFiguresFit,
   correctionWordsExplained,
   orderPreview,
   orderQuestion,
@@ -2289,14 +2291,16 @@ async function deterministicReply(
        * work queue, and a merchant standing in a shop needs to know who to
        * call before they need the total. */
       const now = new Date();
-      return replies.debtorList(
-        debtors.rows.map((r) => ({
-          invoiceNumber: r.invoiceNumber,
-          balanceDueK: r.balanceDueK,
-          daysOverdue: daysOverdue(r.dueDate, r.balanceDueK, now),
-        })),
-        debtors.totalK,
-        debtors.count,
+      return replies.wholeBusiness(
+        replies.debtorList(
+          debtors.rows.map((r) => ({
+            invoiceNumber: r.invoiceNumber,
+            balanceDueK: r.balanceDueK,
+            daysOverdue: daysOverdue(r.dueDate, r.balanceDueK, now),
+          })),
+          debtors.totalK,
+          debtors.count,
+        ),
       );
     }
     case 'payment_details':
@@ -2327,7 +2331,7 @@ async function deterministicReply(
     case 'records': {
       // The same SQL the dashboard overview runs — totals only, no customer.
       const overview = await reportsRepo.overviewFor(tx, businessId);
-      return replies.recordsSummary(overview);
+      return replies.wholeBusiness(replies.recordsSummary(overview));
     }
     case 'stock': {
       /* Free and deterministic, because a merchant checks stock several times
@@ -3883,14 +3887,16 @@ async function answerQuery(
       const debtors = await exactOrRefused(() => reportsRepo.debtorsFor(tx, businessId, 8));
       if (!debtors) return { reply: replies.balanceNotStated(), continuation: subject(null) };
       return {
-        reply: replies.debtorList(
-          debtors.rows.map((r) => ({
-            invoiceNumber: r.invoiceNumber,
-            balanceDueK: r.balanceDueK,
-            daysOverdue: daysOverdue(r.dueDate, r.balanceDueK, now),
-          })),
-          debtors.totalK,
-          debtors.count,
+        reply: replies.wholeBusiness(
+          replies.debtorList(
+            debtors.rows.map((r) => ({
+              invoiceNumber: r.invoiceNumber,
+              balanceDueK: r.balanceDueK,
+              daysOverdue: daysOverdue(r.dueDate, r.balanceDueK, now),
+            })),
+            debtors.totalK,
+            debtors.count,
+          ),
         ),
         continuation: subject(null),
       };
@@ -3921,13 +3927,16 @@ async function answerQuery(
 
     case 'supplier_balances': {
       const overview = await reportsRepo.overviewFor(tx, businessId);
-      return { reply: replies.suppliersAnswer(overview.youOweK), continuation: subject(null) };
+      return {
+        reply: replies.wholeBusiness(replies.suppliersAnswer(overview.youOweK)),
+        continuation: subject(null),
+      };
     }
 
     case 'unreconciled': {
       const overview = await reportsRepo.overviewFor(tx, businessId);
       return {
-        reply: replies.unreconciledAnswer(overview.exceptionsOpen),
+        reply: replies.wholeBusiness(replies.unreconciledAnswer(overview.exceptionsOpen)),
         continuation: subject(null),
       };
     }
@@ -3947,9 +3956,12 @@ async function answerPeriodQuery(
 ): Promise<Reply> {
   const period = resolvePeriod(name, now);
   const summary = await reportsRepo.summaryFor(tx, businessId, period.from, period.to);
-  return topic === 'sales_summary'
-    ? replies.salesAnswer({ label: period.label, ...summary })
-    : replies.expensesAnswer({ label: period.label, ...summary });
+  /* The whole business's figures, and the reply says so (OD-66 Option C, OWN-103(2)). */
+  return replies.wholeBusiness(
+    topic === 'sales_summary'
+      ? replies.salesAnswer({ label: period.label, ...summary })
+      : replies.expensesAnswer({ label: period.label, ...summary }),
+  );
 }
 
 /**
@@ -5720,7 +5732,7 @@ type Inherited =
   /** A correction that supersedes the waiting draft but cannot keep its customer yet: asked. */
   | { readonly kind: 'withdraw' }
   /** Read as a correction, but which draft it changes, or how, is unclear: asked about. */
-  | { readonly kind: 'unclear'; readonly ask: 'customer' | CorrectionBlock }
+  | { readonly kind: 'unclear'; readonly ask: 'customer' | 'figure' | CorrectionBlock }
   | {
       readonly kind: 'inherit';
       readonly customer: { readonly token: string; readonly customerId: string } | null;
@@ -5865,6 +5877,13 @@ async function correctionInheritance(
    * request or is a new record, and supersedes nothing, whatever the draft holds. */
   if (!explicitlyCorrects(input.rawText)) {
     return { kind: 'unclear', ask: draftNamesSomeone(stored, target) ? 'customer' : 'correction' };
+  }
+
+  /* A figure the correction says was wrong must be one the draft holds, read as money or as a
+   * quantity (OD-67 Option B, fail closed; owner ruling OWN-103(3)): "4 not 3" beside a ₦5,000
+   * expense says nothing about it, so it is asked about and changes nothing, whatever kind. */
+  if (!replacedFiguresFit(input.rawText, draftFigures(stored))) {
+    return { kind: 'unclear', ask: 'figure' };
   }
 
   /* A customer the correction names, by a name or by any token, is its own: a different one
@@ -6244,7 +6263,9 @@ async function interpretedReply(
             ? replies.correctionNotClearSeveral()
             : carried.ask === 'another'
               ? replies.correctionForAnotherMember()
-              : replies.correctionNotClear(),
+              : carried.ask === 'figure'
+                ? replies.correctionFigureNotInDraft()
+                : replies.correctionNotClear(),
       );
     }
     if (carried.kind === 'withdraw') {

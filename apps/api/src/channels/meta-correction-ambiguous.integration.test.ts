@@ -425,3 +425,75 @@ describe('CG5: a payment correction keeps its invoice reference on the replaceme
     expect(draft?.customer).toEqual({ kind: 'token', token: ada.token });
   });
 });
+
+/* OD-67 Option B (owner ruling OWN-103(3), 22 Nov 2026): a correction saying a figure was wrong that
+ * the waiting draft does not hold is asked about; the draft, its customer and the books are kept. */
+describe('CG5: a replaced figure the waiting draft does not hold (OD-67)', () => {
+  const invoices = (businessId: string) =>
+    withBusiness(db, businessId, (tx) =>
+      tx.execute<{ customer_id: string | null; total: string }>(
+        sql`SELECT customer_id, total_k::text AS total FROM invoices
+             WHERE business_id = ${businessId}::uuid`,
+      ),
+    ).then((rows) => [...rows]);
+
+  it('"No, 5 not 4" beside Ada\'s 3 wigs changes nothing, and the yes books her sale once', async () => {
+    const { business, ada } = await seedOwner();
+    stubTransport.replyWith(SALE);
+    await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.F1-SALE');
+    const before = await saleDraft(business.id);
+
+    stubTransport.replyWith({
+      ...FOUR,
+      items: [{ name: 'wig', quantity: 5, unitPrice: 50_000 }],
+      statedTotal: 250_000,
+    });
+    await send('No, 5 not 4', 'wamid.F1-FIX');
+    expect(stubSender.lastText).toBe(replies.correctionFigureNotInDraft().text);
+    await expectAdaUntouched(business.id, ada.token, before);
+    expect(await invoices(business.id)).toEqual([]);
+
+    /* The first yes answers the question and books nothing; the next books Ada's sale as shown. */
+    await send('yes', 'wamid.F1-YES');
+    expect(await invoices(business.id)).toEqual([]);
+    await send('yes', 'wamid.F1-YES2');
+    expect(await invoices(business.id)).toEqual([{ customer_id: ada.id, total: '15000000' }]);
+  });
+
+  it('"no, 60k not 40k" beside a 50k-a-wig sale changes nothing', async () => {
+    const { business, ada } = await seedOwner();
+    stubTransport.replyWith(SALE);
+    await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.F2-SALE');
+    const before = await saleDraft(business.id);
+
+    stubTransport.replyWith({
+      ...FOUR,
+      items: [{ name: 'wig', quantity: 3, unitPrice: 60_000 }],
+      statedTotal: 180_000,
+    });
+    await send('no, 60k not 40k', 'wamid.F2-FIX');
+    expect(stubSender.lastText).toBe(replies.correctionFigureNotInDraft().text);
+    await expectAdaUntouched(business.id, ada.token, before);
+  });
+
+  it('a replaced figure the draft holds still corrects it and keeps Ada, booked once', async () => {
+    const { business, ada } = await seedOwner();
+    stubTransport.replyWith(SALE);
+    await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.F3-SALE');
+
+    stubTransport.replyWith({
+      ...FOUR,
+      items: [{ name: 'wig', quantity: 3, unitPrice: 60_000 }],
+      statedTotal: 180_000,
+    });
+    await send('no, ₦60,000 each not ₦50,000', 'wamid.F3-FIX');
+    expect(stubSender.lastText).toContain('The same customer as before');
+    const rows = await sales(business.id);
+    expect(rows.map((r) => r.state)).toEqual(['superseded', 'pending']);
+    expect(rows[1]?.customer).toEqual({ kind: 'token', token: ada.token });
+
+    await send('yes', 'wamid.F3-YES');
+    await send('yes', 'wamid.F3-YES2');
+    expect(await invoices(business.id)).toEqual([{ customer_id: ada.id, total: '18000000' }]);
+  });
+});
