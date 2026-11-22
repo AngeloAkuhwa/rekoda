@@ -14,6 +14,7 @@ import {
   isSaleSource,
   looksLikeCorrection,
   clearlyCorrects,
+  clearlyCorrectsNaming,
   correctionWordsExplained,
   orderPreview,
   orderQuestion,
@@ -5752,13 +5753,18 @@ async function correctionInheritance(
    * ruling 22 Nov 2026). One that merely reads like one ("Wait, I also sold 2 bags for 20k") is
    * asked whether it changes the waiting request or is a new record, and supersedes nothing,
    * whatever the draft holds; the draft is left exactly as it was. */
-  if (!clearlyCorrects(input.rawText)) {
+  /* A correction that names its own customer keeps nothing from the draft, so the stricter
+   * `clearlyCorrects` (which refuses any name, the bar for KEEPING a customer) is not its test:
+   * "no, Ada paid 150k not 180k" is clearly a correction and supersedes the draft, while "Wait, I
+   * also sold 2 bags to Bola" is still asked about (`clearlyCorrectsNaming`). */
+  const namesOwn = bearing && named !== null && named.kind !== 'none';
+  if (!(namesOwn ? clearlyCorrectsNaming(input.rawText) : clearlyCorrects(input.rawText))) {
     return { kind: 'unclear', ask: draftNamesSomeone(stored, target) ? 'customer' : 'correction' };
   }
 
   /* A customer the correction names, by a name or by any token, is its own: a different one
    * is never overridden, and an unissued token is the G-137 guard's to refuse. */
-  if (!bearing || (named && named.kind !== 'none')) return { kind: 'supersede' };
+  if (!bearing || namesOwn) return { kind: 'supersede' };
 
   const customerId = token ? await customerIdFor(tx, businessId, token) : null;
   /* The draft named a customer this business no longer holds by that token (merged since): asked

@@ -406,3 +406,26 @@ describe('CG5: a payment correction keeps its invoice reference on the replaceme
     expect(draft?.customer).toEqual({ kind: 'token', token: ada.token });
   });
 });
+
+describe('CG5: an obvious new record is not asked about (OWN-102(2))', () => {
+  it('"Sold 2 bags for 20k, not paid yet" is an ordinary new record, never Ada’s', async () => {
+    const { business, ada } = await seedOwner();
+    stubTransport.replyWith(SALE);
+    await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.AN-SALE');
+    stubTransport.replyWith({
+      ...FOUR,
+      items: [{ name: 'bag', quantity: 2, unitPrice: 10_000 }],
+      statedTotal: 20_000,
+      reportedPayment: 0,
+    });
+    await send('Sold 2 bags for 20k, not paid yet', 'wamid.AN-NEW');
+    /* "not paid yet" states the new sale and corrects nothing: the ordinary new-record preview,
+     * and Ada's preview stays exactly as it was. */
+    expect(stubSender.lastText).not.toContain('I could not tell which customer');
+    expect(stubSender.lastText).toContain('Please check this before I save it');
+    const rows = await sales(business.id);
+    expect(rows.map((r) => r.state)).toEqual(['pending', 'pending']);
+    expect(rows[0]?.customer).toEqual({ kind: 'token', token: ada.token });
+    expect(rows[1]?.customer).toEqual({ kind: 'none' });
+  });
+});

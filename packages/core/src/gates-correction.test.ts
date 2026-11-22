@@ -3,7 +3,12 @@
  * Beside `gates.test.ts`, which is over the layout limit and may not grow.
  */
 import { describe, expect, it } from 'vitest';
-import { clearlyCorrects, correctionWordsExplained, looksLikeCorrection } from './gates.js';
+import {
+  clearlyCorrects,
+  clearlyCorrectsNaming,
+  correctionWordsExplained,
+  looksLikeCorrection,
+} from './gates.js';
 
 describe('a correction clear enough to keep the draft customer (clearlyCorrects, OWN-100)', () => {
   it.each([
@@ -223,5 +228,36 @@ describe('a "not" about a new record is not a correction cue', () => {
     'Wait, I also sold 2 bags for 20k',
   ])('%j still reads like a correction', (t) => {
     expect(looksLikeCorrection(t, true)).toBe(true);
+  });
+});
+
+describe('a correction that names its own customer may supersede (clearlyCorrectsNaming, OWN-102(2))', () => {
+  /* It keeps nothing from the draft, so a name in it never makes it unclear. */
+  it.each([
+    'No, 4 for Ada, not 3',
+    'sorry, 4 wigs for Ada not 3',
+    'no, it was Bola not Ada',
+    'no, Ada paid 150k not 180k',
+    'sorry, 3 not 2, to tola@example.com',
+    '4 wigs for Ada, not 3',
+    'No, 4 not 3',
+  ])('%j is clearly a correction', (text) => {
+    expect(clearlyCorrectsNaming(text)).toBe(true);
+  });
+
+  /* Ambiguous or new: asked about, or a new record; never a silent replacement. */
+  it.each([
+    'Wait, I also sold 2 bags to Bola for 20k',
+    'no, I sold 2 bags to Bola, not 3',
+    'Bola bought 2 bags for 20k, not paid yet',
+    'Sold 2 bags to Bola for 20k, should be delivered tomorrow',
+    'no, another sale for Bola, 2 not 3',
+    'sorry, Bola also paid 20k not 30k',
+    'Ada paid 150k',
+    'no',
+    '',
+    `no, Ada paid 150k not 180k ${'x'.repeat(160)}`,
+  ])('%j is not', (text) => {
+    expect(clearlyCorrectsNaming(text)).toBe(false);
   });
 });

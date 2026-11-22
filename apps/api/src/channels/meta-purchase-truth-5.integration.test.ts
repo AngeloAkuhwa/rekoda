@@ -59,20 +59,21 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
       expect(await purchases(business.id)).toBe(1);
     });
 
-    it('a replacing preview whose own send fails gives back the undelivered draft (final-head review of eb0ad6d)', async () => {
+    it('a replacing preview whose own send fails restores nothing it replaced (OD-63(b), OWN-102(4))', async () => {
       const business = await seedMerchant();
       stubSender.failWith();
       await say('wamid.U6-buy', MILO, 'I bought 10 cartons of Milo for 100k cash');
       stubSender.failWith();
       await say('wamid.U6-again', MILO, 'I bought 10 cartons of Milo for 100k cash');
-      /* The resend reached nobody, so what it replaced comes back and the
-       * resend is withdrawn: one draft remains, and the merchant was shown
-       * neither, so no "yes" books it (G-20, owner ruling). */
-      expect(await purchaseStates(business.id)).toEqual(['pending', 'superseded']);
+      /* The resend reached nobody, so it is withdrawn, and what it replaced
+       * stays superseded: error recovery never makes a superseded purchase
+       * confirmable again, so only a fresh preview the merchant is shown can
+       * be booked (OD-63(b) Option B, extending OWN-101(2)). */
+      expect(await purchaseStates(business.id)).toEqual(['superseded', 'superseded']);
       await reply('wamid.U6-yes-1', 'yes');
       await reply('wamid.U6-yes-2', 'yes');
       expect(await purchases(business.id)).toBe(0);
-      expect(await purchaseStates(business.id)).toEqual(['pending', 'superseded']);
+      expect(await purchaseStates(business.id)).toEqual(['superseded', 'superseded']);
     });
 
     it('a purchase held back for an arithmetic question is no undelivered copy (final-head review of 77e9da8)', async () => {

@@ -350,7 +350,6 @@ describe('CG5: a correction keeps the customer of the draft it corrects', () => 
   });
 
   it.each([
-    'Sold 2 bags for 20k, not paid yet',
     /* No replacement figure, a time, or a whole new sale (CodeRabbit at c712b1e; owner at 49f2586). */
     'Sold 2 bags for 20k, not paid yet; should be delivered tomorrow',
     'Sold 2 bags for 20k, make it 5pm delivery.',

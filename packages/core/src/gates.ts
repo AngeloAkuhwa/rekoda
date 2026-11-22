@@ -448,6 +448,42 @@ export function clearlyCorrects(text: string): boolean {
   return CLEAR_CORRECTION.test(trimmed);
 }
 
+/* What a correction that names its own customer replaces: "not", "instead of", "rather than",
+ * "should be", "make it", "change it to". A "not" that states a new record's state ("not paid
+ * yet") is not one. */
+const REPLACING =
+  /\b(?:not(?!\s+(?:yet|paid|delivered|collected|picked\s+up)\b)|instead\s+of|rather\s+than|should\s+be|make\s+it|change\s+(?:it\s+|the\s+)?to)\b/iu;
+const STRONG_OPENER = /^\s*(?:no+|nope|nah|sorry|correction|actually|e\s+no\s+be)\b/iu;
+const OPENS_WITH_FIGURE = new RegExp(String.raw`^\s*${FIG}\b`, 'iu');
+/* Words that add a record or start another one: never a correction of the waiting one. */
+const ADDING = new RegExp(String.raw`\b${ADDING_WORD}\b`, 'iu');
+/* Verbs that state a transaction afresh ("no, I sold..."): asked about, never read as a fix. */
+const NEW_RECORD_VERB =
+  /\b(?:sold|sell|sells|selling|bought|buy|buys|buying|purchased|purchase|spent|spend|ordered)\b/iu;
+/** A correction naming its customer may carry the name, an email or a phone: still one line. */
+const MAX_NAMED_CORRECTION_LENGTH = 160;
+
+/**
+ * Whether a message that names its own customer is clearly a correction of the waiting draft
+ * (OD-60 A+, owner ruling OWN-102(2)), so it may supersede that draft. `clearlyCorrects` is the
+ * stricter bar for KEEPING the draft's customer and refuses any name by design ("4 for Ada, not
+ * 3" may name a person or an item); a message that names a customer itself keeps nothing from
+ * the draft, so the question here is only whether it changes the waiting record or is another.
+ *
+ * Clear: it opens with "no", "sorry", "actually" or "correction", or with the corrected figure,
+ * and says what it replaces ("no, Ada paid 150k not 180k", "No, 4 for Ada, not 3", "no, it was
+ * Bola not Ada"), with no word that adds a record ("also", "another", "more") and no verb that
+ * states a transaction afresh ("no, I sold 2 bags to Bola"). Anything else ("Wait, I also sold 2
+ * bags to Bola for 20k") is asked about and supersedes nothing.
+ */
+export function clearlyCorrectsNaming(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed || trimmed.length > MAX_NAMED_CORRECTION_LENGTH) return false;
+  if (clearlyCorrects(trimmed)) return true;
+  if (!STRONG_OPENER.test(trimmed) && !OPENS_WITH_FIGURE.test(trimmed)) return false;
+  return REPLACING.test(trimmed) && !ADDING.test(trimmed) && !NEW_RECORD_VERB.test(trimmed);
+}
+
 /* The words a clear correction is built from, which say nothing about who or what. */
 const STRUCTURE_WORDS = new Set([
   'no',
