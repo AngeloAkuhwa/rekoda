@@ -63,9 +63,8 @@ async function send(text: string, wamid: string, from = OWNER) {
 
 const sales = (businessId: string) =>
   withBusiness(db, businessId, (tx) =>
-    tx.execute<{ state: string; customer: unknown; items: unknown; total: unknown }>(
-      sql`SELECT state, command->'customer' AS customer, command->'items' AS items,
-                 command->'statedTotal' AS total FROM command_drafts
+    tx.execute<{ state: string; customer: unknown }>(
+      sql`SELECT state, command->'customer' AS customer FROM command_drafts
            WHERE business_id = ${businessId}::uuid AND intent = 'RecordSale'
            ORDER BY insertion_seq`,
     ),
@@ -98,14 +97,27 @@ async function expectAdaWithdrawn(businessId: string) {
   expect(rows.map((r) => r.state)).toEqual(['superseded']);
 }
 
-/** Ada's preview is waiting, untouched, and still names her. */
-async function expectAdaUntouched(businessId: string, adaToken: string) {
+/** The waiting sale's id and whole command, taken before the correction is sent. */
+const saleDraft = (businessId: string) =>
+  withBusiness(db, businessId, (tx) =>
+    tx.execute<{ id: string; command: unknown }>(
+      sql`SELECT id, command FROM command_drafts
+           WHERE business_id = ${businessId}::uuid AND intent = 'RecordSale' ORDER BY insertion_seq`,
+    ),
+  ).then((rows) => [...rows]);
+
+/** Ada's preview is waiting, untouched, and still names her: the same draft holding the same
+ * command, so no field it would book changed (CodeRabbit on #437 at 88258dc). */
+async function expectAdaUntouched(
+  businessId: string,
+  adaToken: string,
+  before: { id: string; command: unknown }[],
+) {
   const rows = await sales(businessId);
   expect(rows.map((r) => r.state)).toEqual(['pending']);
   expect(rows[0]?.customer).toEqual({ kind: 'token', token: adaToken });
-  /* Its figures too: a changed quantity, price or total would book other than shown (CodeRabbit
-   * on #437 at 88258dc). */
-  expect([rows[0]?.items, rows[0]?.total]).toEqual([SALE.items, SALE.statedTotal]);
+  expect(before).toHaveLength(1);
+  expect(await saleDraft(businessId)).toEqual(before);
 }
 
 describe('CG5: a correction sent while an earlier message is still live', () => {
@@ -208,10 +220,11 @@ describe('CG5: a correction mixed with another instruction, or about no field of
     const { business, ada } = await seedOwner();
     stubTransport.replyWith(SALE);
     await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.M-SALE');
+    const before = await saleDraft(business.id);
     stubTransport.replyWith(FOUR);
     await send(text, 'wamid.M-FIX');
     expect(stubSender.lastText).toContain('I could not tell which customer');
-    await expectAdaUntouched(business.id, ada.token);
+    await expectAdaUntouched(business.id, ada.token, before);
   });
 });
 
@@ -270,11 +283,12 @@ describe('CG5: a correction that names somebody, read by the model as naming nob
     await knownCustomer(business.id, 'Bola', 'CUSTOMER_9B1');
     stubTransport.replyWith(SALE);
     await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.N-SALE');
+    const before = await saleDraft(business.id);
     stubTransport.replyWith(FOUR);
     await send(text, 'wamid.N-FIX');
     expect(stubSender.lastText).toContain('I could not tell which customer');
     expect(stubSender.lastText).not.toContain('The same customer as before');
-    await expectAdaUntouched(business.id, ada.token);
+    await expectAdaUntouched(business.id, ada.token, before);
   });
 });
 
@@ -285,10 +299,11 @@ describe("CG5: a name in the waiting draft's free text never explains a correcti
     const { business, ada } = await seedOwner();
     stubTransport.replyWith({ ...SALE, dueDescription: 'when Tunde comes' });
     await send('Ada bought 3 wigs for 150k, paid 100k, balance when Tunde comes', 'wamid.V-SALE');
+    const before = await saleDraft(business.id);
     stubTransport.replyWith(FOUR);
     await send('make it 5 Tunde', 'wamid.V-FIX');
     expect(stubSender.lastText).toContain('I could not tell which customer');
-    await expectAdaUntouched(business.id, ada.token);
+    await expectAdaUntouched(business.id, ada.token, before);
   });
 });
 
