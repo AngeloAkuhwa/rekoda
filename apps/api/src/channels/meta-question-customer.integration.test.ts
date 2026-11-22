@@ -251,12 +251,16 @@ describe('a question that names a customer', () => {
     },
   );
 
-  it('a sales question that names nobody is still answered with the business total', async () => {
+  /* A bank account number is tokenised too, but names no customer (independent review of 81d0b03). */
+  it.each([
+    ['names nobody', 'how much did I sell this month'],
+    ['carries only an account number', 'how much did I sell this month into account 0123456789'],
+  ])('a sales question that %s is still answered with the business total', async (_, text) => {
     const business = await seedMerchant('+2348031234567');
     const { token } = await deps.gateway.resolveMention(business.id, 'Ada Obi');
     await seedTrading(business.id, token);
 
-    await ask('wamid.Q5BW', askAbout({ customer: null }), 'how much did I sell this month');
+    await ask('wamid.Q5BW', askAbout({ customer: null }), text);
 
     expect(stubSender.lastText).not.toContain('do not keep sales');
     expect(stubSender.lastText).toContain('₦150,000');

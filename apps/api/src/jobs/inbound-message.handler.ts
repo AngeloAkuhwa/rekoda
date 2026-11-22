@@ -6536,7 +6536,9 @@ async function interpretedReply(
     command.intent === 'Query' &&
     (command.topic === 'sales_summary' || command.topic === 'expenses_summary') &&
     (command.customer?.kind ?? 'none') === 'none' &&
-    tokens.displays.size > 0;
+    /* A customer token, recorded or provisional: an `ACCOUNT_n` names nobody (independent review
+     * of #437 at 81d0b03). */
+    [...tokens.displays.keys()].some((t) => t.startsWith('CUSTOMER_'));
   const acknowledged =
     nameNotKnown && command.intent === 'Query'
       ? { reply: replies.customerNotKnown(), linkAsked: false, continuation: NO_PERIOD_TO_RESUME }
