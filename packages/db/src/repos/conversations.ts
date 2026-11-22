@@ -1212,7 +1212,10 @@ export async function markPreviewUndelivered(
        WHERE d.business_id = ${businessId}::uuid
          AND d.conversation_message_id = reply.request_id
          AND d.state = 'superseded'
-         AND d.intent = 'Query'
+         AND (d.intent = 'Query'
+              /* A retired clarification question too, never a refusal (CodeRabbit on #437 at
+               * 503acf3). */
+              OR (d.intent = 'Unclear' AND COALESCE(d.command->>'refused', '') <> 'true'))
       RETURNING d.id
     ), continuations AS (
       UPDATE conversation_continuations c

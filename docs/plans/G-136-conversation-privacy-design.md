@@ -699,8 +699,11 @@ webhook (§1.2), or any time limit on the encrypted originals (R3 is not approve
     the preview (OWN-74). A message sharing the preview's or the correction's `created_at` counts as
     between them (`hasInboundBetween` is inclusive and excludes the two ends by id;
     `preview-delivery.integration.test.ts`).
-14. **The replaced figure is not checked against the draft (MINOR, recorded).** "4 not 3" or "she paid
-    60k not 50k" counts as clear even when the waiting draft shows neither 3 nor 50k, so a nameless
-    message about another transaction, written exactly in correction form, can still keep the draft's
-    customer. Every other CG5 gate applies, the preview says "The same customer as before", and it needs
-    its own "yes". A follow-up could require the replaced figure to equal one of the draft's figures.
+14. **The replaced figure is not checked against the draft (OPEN OWNER DECISION OD-67,
+    `REKODA_LAUNCH_READINESS.md`).** "4 not 3" or "she paid 60k not 50k" counts as clear even when the
+    waiting draft shows neither 3 nor 50k, so a nameless message about another transaction, written
+    exactly in correction form, can still keep the draft's customer. Every other CG5 gate applies, the
+    preview says "The same customer as before", and it needs its own "yes", which is today the only
+    check before the sale is booked. Whether a figure the draft lacks makes the correction unclear is
+    the owner's to rule; nothing in `correctionInheritance` or `clearlyCorrects` changes until then.
+    If it is ruled unclear, the handler asks the merchant and leaves the draft unchanged.

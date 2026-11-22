@@ -229,7 +229,9 @@ describe("answering a refusal keeps another member's question", () => {
  * that would save nothing (CodeRabbit on #437 at 0e12742).
  */
 describe("a questioned yes finds the sender's refusal behind another member's preview", () => {
-  it('is answered as the plain yes would be, and changes nothing', async () => {
+  /* Behind 51 of them too: the doubt's scan has no bound the plain yes lacks (CodeRabbit on #437
+   * at 503acf3). */
+  it.each([1, 51])('behind %i: answered as the plain yes would be, changing nothing', async (n) => {
     const business = await seedMerchant();
     const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
     await identity.addMembership(db, business.id, delegate.id, 'delegate');
@@ -238,6 +240,27 @@ describe("a questioned yes finds the sender's refusal behind another member's pr
     stubTransport.replyWith(sale({ kind: 'none' }));
     await post(messagePayload(DELEGATE, 'wamid.RY2', 'sold 2 wigs for 100k'));
     await drain();
+    await withBusiness(db, business.id, (tx) =>
+      tx.execute(sql`
+        WITH src AS (
+          SELECT d.*, m.conversation_id, m.direction, m.kind AS message_kind
+            FROM command_drafts d JOIN conversation_messages m ON m.id = d.conversation_message_id
+           WHERE d.business_id = ${business.id}::uuid AND d.requested_by = ${delegate.id}::uuid
+             AND d.intent = 'RecordSale'
+        ), copies AS (
+          INSERT INTO conversation_messages
+                 (business_id, conversation_id, direction, kind, body, provider_message_id)
+          SELECT s.business_id, s.conversation_id, s.direction, s.message_kind, '[sale]',
+                 'wamid.RYC-' || g
+            FROM src s, generate_series(1, ${n - 1}::int) g
+          RETURNING id, provider_message_id
+        )
+        INSERT INTO command_drafts (business_id, conversation_message_id, intent, command, model,
+                                    previewed, requested_by, expires_at, created_at)
+        SELECT s.business_id, c.id, s.intent, s.command, s.model, true, s.requested_by,
+               s.expires_at, s.created_at
+          FROM src s, copies c`),
+    );
     const before = await footprint(business.id);
 
     await plain('wamid.RY3', 'na so?');

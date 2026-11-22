@@ -365,9 +365,9 @@ describe('a held purchase whose question failed late', () => {
  * #437 at 88258dc): it never stands between the member's refusal and their yes, so that yes never
  * books another member's newer preview. */
 describe("an undelivered clarification before another member's preview", () => {
-  /* "after it expired": the receipt arrives once the question has lapsed (CodeRabbit on #437 at
-   * b8330cd). */
-  it.each(['at once', 'later', 'after it expired'])(
+  /* "after it expired" or "superseded": the receipt arrives once the question has lapsed or been
+   * retired (CodeRabbit on #437 at b8330cd and 503acf3). */
+  it.each(['at once', 'later', 'after it expired', 'after it was superseded'])(
     "failed %s: the member's yes answers their refusal and books nothing",
     async (when) => {
       const business = await seedMerchant();
@@ -381,9 +381,10 @@ describe("an undelivered clarification before another member's preview", () => {
         { intent: 'Unclear', clarification: 'Which customer was that for?' },
         'sold 2 wigs',
       );
-      if (when === 'after it expired') {
+      if (when.startsWith('after')) {
+        const state = when === 'after it expired' ? 'expired' : 'superseded';
         await withBusiness(db, business.id, (tx) =>
-          tx.execute(sql`UPDATE command_drafts SET state = 'expired' WHERE intent = 'Unclear'
+          tx.execute(sql`UPDATE command_drafts SET state = ${state} WHERE intent = 'Unclear'
                             AND COALESCE(command->>'refused', '') <> 'true'`),
         );
       }

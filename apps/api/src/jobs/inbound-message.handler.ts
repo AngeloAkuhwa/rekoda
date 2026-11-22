@@ -4736,7 +4736,9 @@ async function unsureReply(
   let pending = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
     asOf: receivedAt,
   });
-  while (pending && lookedPast.length < 50) {
+  /* No bound the plain yes's scan lacks: each pass looks past one more draft, so it ends, and it
+   * reaches the refusal `pastRefusals` reaches (CodeRabbit on #437 at 503acf3). */
+  while (pending) {
     if (conversationsRepo.isRefusalDraft(pending)) {
       if (
         doubting !== null &&
