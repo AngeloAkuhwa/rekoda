@@ -360,3 +360,33 @@ describe('a held purchase whose question failed late', () => {
     expect(await refusalStates(business.id)).toEqual([`+${DELEGATE}:superseded`]);
   });
 });
+
+/* A clarification question whose send failed, at once or later, was never read either (CodeRabbit on
+ * #437 at 88258dc): it never stands between the member's refusal and their yes, so that yes never
+ * books another member's newer preview. */
+describe("an undelivered clarification before another member's preview", () => {
+  it.each(['at once', 'later'])(
+    "failed %s: the member's yes answers their refusal and books nothing",
+    async (when) => {
+      const business = await seedMerchant();
+      const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+      await identity.addMembership(db, business.id, delegate.id, 'delegate');
+      await post(mediaMessage(`wamid.UC1-${when}`, STICKER, OWNER));
+      await drain();
+      if (when === 'at once') stubSender.failWith();
+      await say(
+        `wamid.UC2-${when}`,
+        { intent: 'Unclear', clarification: 'Which customer was that for?' },
+        'sold 2 wigs',
+      );
+      if (when === 'later') await lateFailure();
+      stubTransport.replyWith(sale({ kind: 'none' }));
+      await post(messagePayload(DELEGATE, `wamid.UC3-${when}`, 'sold 3 wigs for 150k'));
+      await drain();
+      const before = await footprint(business.id);
+
+      await plain(`wamid.UC4-${when}`, 'yes');
+      expect(await footprint(business.id)).toEqual(before);
+    },
+  );
+});

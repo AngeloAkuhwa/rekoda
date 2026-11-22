@@ -5638,7 +5638,10 @@ function photoBuyerNamed(
       if (
         after.startsWith(needle) &&
         !/[\p{L}\p{N}\p{M}-]/u.test(after[needle.length] ?? '') &&
-        !/^\s+[\p{L}\p{M}]/u.test(after.slice(needle.length))
+        (!/^\s+[\p{L}\p{M}]/u.test(after.slice(needle.length)) ||
+          /* …unless it is the next field's label ("Bill to: Bola Ige Tel: …"; CodeRabbit on #437
+           * at 88258dc). */
+          NEXT_FIELD.test(after.slice(needle.length)))
       ) {
         return true;
       }
@@ -5646,6 +5649,10 @@ function photoBuyerNamed(
     return false;
   });
 }
+
+/** A field label after a buyer's name on the same line: it ends the name. */
+const NEXT_FIELD =
+  /^\s+(?:tel|telephone|phone|mobile|whatsapp|email|e-mail|address|addr|date|invoice|inv|receipt|ref)\b\.?\s*[:#-]/iu;
 
 /** Whether `text` holds the whole address `address`, ignoring case. */
 function addressIn(text: string, address: string): boolean {
@@ -6532,13 +6539,30 @@ async function interpretedReply(
    * business's figures: the model leaving `customer` empty is no proof the merchant named nobody
    * (OWN-102(3)). Only a balance is kept per customer, so this is told as that is (G-135; CodeRabbit
    * on #437 at b2703e7). A question that names nobody keeps the business-wide answer. */
+  /* "Who owes me, Ada?" read as the debtors list with no customer: the one recorded customer this
+   * message was issued is the one asked about, as when the model returns her token, never widened to
+   * every debtor; one nobody recorded is unknown (CodeRabbit on #437 at 88258dc). Several are asked
+   * about below. */
+  const issuedCustomers = [...tokens.displays.keys()].filter((t) => t.startsWith('CUSTOMER_'));
+  if (
+    command.intent === 'Query' &&
+    command.topic === 'debtors' &&
+    (command.customer?.kind ?? 'none') === 'none' &&
+    issuedCustomers.length === 1
+  ) {
+    const only = issuedCustomers[0]!;
+    if (tokens.provisional?.has(only)) nameNotKnown = true;
+    else command = { ...command, customer: { kind: 'token', token: only } };
+  }
   const namedButUnscoped =
     command.intent === 'Query' &&
-    (command.topic === 'sales_summary' || command.topic === 'expenses_summary') &&
+    (command.topic === 'sales_summary' ||
+      command.topic === 'expenses_summary' ||
+      command.topic === 'debtors') &&
     (command.customer?.kind ?? 'none') === 'none' &&
     /* A customer token, recorded or provisional: an `ACCOUNT_n` names nobody (independent review
      * of #437 at 81d0b03). */
-    [...tokens.displays.keys()].some((t) => t.startsWith('CUSTOMER_'));
+    issuedCustomers.length > 0;
   const acknowledged =
     nameNotKnown && command.intent === 'Query'
       ? { reply: replies.customerNotKnown(), linkAsked: false, continuation: NO_PERIOD_TO_RESUME }

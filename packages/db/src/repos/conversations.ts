@@ -1113,7 +1113,10 @@ export async function markDraftUnseen(
      WHERE business_id = ${businessId}::uuid
        AND conversation_message_id = ${conversationMessageId}::uuid
        AND state = 'pending'
-       AND intent = 'Query'`);
+       AND (intent = 'Query'
+            /* A clarification question too, never a refusal: the refusal is still the member's
+             * live request (CodeRabbit on #437 at 88258dc). */
+            OR (intent = 'Unclear' AND COALESCE(command->>'refused', '') <> 'true'))`);
 }
 
 /**
@@ -1179,7 +1182,10 @@ export async function markPreviewUndelivered(
        WHERE d.business_id = ${businessId}::uuid
          AND d.conversation_message_id = reply.request_id
          AND d.state = 'pending'
-         AND d.intent IN ('EraseData', 'Query')
+         AND (d.intent IN ('EraseData', 'Query')
+              /* An undelivered clarification question, never a refusal (CodeRabbit on #437 at
+               * 88258dc). */
+              OR (d.intent = 'Unclear' AND COALESCE(d.command->>'refused', '') <> 'true'))
       RETURNING d.id
     ), held_asks AS (
       -- A held purchase whose identity question WhatsApp accepted and then failed was asked

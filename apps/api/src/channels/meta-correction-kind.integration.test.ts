@@ -455,9 +455,9 @@ describe('CG5: a correction with no live draft to change is a new request', () =
 });
 
 /**
- * OD-63(a), evidence for the owner's ruling: an item named like a person explains a correction's
- * free word, so only an UNRECORDED person with an item's name can still inherit. A recorded
- * customer with that name is tokenised before the model reads the correction, so it names
+ * OD-63(a): an unrecorded person named like an item could once inherit; since OWN-102(3) the bare
+ * item word is asked about and only a plural or unit keeps the customer (`meta-correction-item-word`).
+ * A recorded customer with that name is tokenised before the model reads the correction, so it names
  * somebody and keeps nobody.
  */
 describe('CG5: a recorded customer named like the waiting sale’s item (OD-63(a))', () => {

@@ -321,37 +321,46 @@ describe('a question that names a customer', () => {
     expect(stubSender.lastText).not.toContain('₦150,000');
   });
 
-  it('a debtors question naming a known customer is answered as their balance', async () => {
-    const business = await seedMerchant('+2348031234567');
-    const { token, customerId } = await deps.gateway.resolveMention(business.id, 'Ada Obi');
-    /* Ada's invoice is linked to her customer row and its snapshot carries a token she no longer
-     * holds, so it is found only through `invoices.customer_id`; Bola's stays a legacy invoice
-     * known only by its snapshot token (CodeRabbit on #437 at b497318). */
-    const adas = await seedTrading(business.id, 'CUSTOMER_OLD1', 5_000_000, customerId);
-    /* Another customer owes a different amount, so Ada's answer cannot be the business's
-     * (CodeRabbit on #437 at ebeeadb): ₦150,000 is hers, ₦60,000 Bola's, ₦210,000 both. */
-    const bola = await deps.gateway.resolveMention(business.id, 'Bola Ige');
-    const bolas = await seedTrading(business.id, bola.token, 2_000_000);
-    const rowsBefore = await customerRows(business.id);
-    /* The fixture is what it claims: Ada's invoice is linked to her row, Bola's is not. */
-    expect(await invoiceCustomerId(business.id, adas.invoiceId)).toBe(customerId);
-    expect(await invoiceCustomerId(business.id, bolas.invoiceId)).toBeNull();
+  /* The model leaving the customer out proves nothing (OWN-102(3)): the one recorded customer this
+   * message was issued is the one asked about, never widened to every debtor (CodeRabbit on #437 at
+   * 88258dc). */
+  it.each([
+    ['with', true],
+    ['without', false],
+  ])(
+    "a debtors question naming a known customer, %s the model's token, is answered as their balance",
+    async (_, scoped) => {
+      const business = await seedMerchant('+2348031234567');
+      const { token, customerId } = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+      /* Ada's invoice is linked to her customer row and its snapshot carries a token she no longer
+       * holds, so it is found only through `invoices.customer_id`; Bola's stays a legacy invoice
+       * known only by its snapshot token (CodeRabbit on #437 at b497318). */
+      const adas = await seedTrading(business.id, 'CUSTOMER_OLD1', 5_000_000, customerId);
+      /* Another customer owes a different amount, so Ada's answer cannot be the business's
+       * (CodeRabbit on #437 at ebeeadb): ₦150,000 is hers, ₦60,000 Bola's, ₦210,000 both. */
+      const bola = await deps.gateway.resolveMention(business.id, 'Bola Ige');
+      const bolas = await seedTrading(business.id, bola.token, 2_000_000);
+      const rowsBefore = await customerRows(business.id);
+      /* The fixture is what it claims: Ada's invoice is linked to her row, Bola's is not. */
+      expect(await invoiceCustomerId(business.id, adas.invoiceId)).toBe(customerId);
+      expect(await invoiceCustomerId(business.id, bolas.invoiceId)).toBeNull();
 
-    await ask(
-      'wamid.Q5D',
-      askAbout({ topic: 'debtors', customer: { kind: 'token', token } }),
-      'who owes me, Ada Obi?',
-    );
+      await ask(
+        'wamid.Q5D',
+        askAbout({ topic: 'debtors', customer: scoped ? { kind: 'token', token } : null }),
+        'who owes me, Ada Obi?',
+      );
 
-    expect(stubSender.lastText).toContain('₦150,000');
-    expect(stubSender.lastText).not.toContain('₦60,000');
-    expect(stubSender.lastText).not.toContain('₦210,000');
-    expect(stubSender.lastText?.match(/INV-/g) ?? []).toHaveLength(1);
-    expect(stubSender.lastText).toContain(adas.invoiceNumber);
-    expect(stubSender.lastText).not.toContain(bolas.invoiceNumber);
-    expect(stubSender.lastText).not.toContain('Ada');
-    expect(await customerRows(business.id)).toEqual(rowsBefore);
-  });
+      expect(stubSender.lastText).toContain('₦150,000');
+      expect(stubSender.lastText).not.toContain('₦60,000');
+      expect(stubSender.lastText).not.toContain('₦210,000');
+      expect(stubSender.lastText?.match(/INV-/g) ?? []).toHaveLength(1);
+      expect(stubSender.lastText).toContain(adas.invoiceNumber);
+      expect(stubSender.lastText).not.toContain(bolas.invoiceNumber);
+      expect(stubSender.lastText).not.toContain('Ada');
+      expect(await customerRows(business.id)).toEqual(rowsBefore);
+    },
+  );
 
   /* A legacy invoice known only by its snapshot token is still the customer's (the fallback in
    * `openInvoicesForCustomer`), and never another customer's linked invoice. */

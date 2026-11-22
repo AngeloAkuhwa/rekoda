@@ -63,8 +63,9 @@ async function send(text: string, wamid: string, from = OWNER) {
 
 const sales = (businessId: string) =>
   withBusiness(db, businessId, (tx) =>
-    tx.execute<{ state: string; customer: unknown }>(
-      sql`SELECT state, command->'customer' AS customer FROM command_drafts
+    tx.execute<{ state: string; customer: unknown; items: unknown; total: unknown }>(
+      sql`SELECT state, command->'customer' AS customer, command->'items' AS items,
+                 command->'statedTotal' AS total FROM command_drafts
            WHERE business_id = ${businessId}::uuid AND intent = 'RecordSale'
            ORDER BY insertion_seq`,
     ),
@@ -102,6 +103,9 @@ async function expectAdaUntouched(businessId: string, adaToken: string) {
   const rows = await sales(businessId);
   expect(rows.map((r) => r.state)).toEqual(['pending']);
   expect(rows[0]?.customer).toEqual({ kind: 'token', token: adaToken });
+  /* Its figures too: a changed quantity, price or total would book other than shown (CodeRabbit
+   * on #437 at 88258dc). */
+  expect([rows[0]?.items, rows[0]?.total]).toEqual([SALE.items, SALE.statedTotal]);
 }
 
 describe('CG5: a correction sent while an earlier message is still live', () => {

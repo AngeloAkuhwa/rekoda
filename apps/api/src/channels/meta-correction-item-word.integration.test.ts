@@ -126,6 +126,8 @@ describe('CG5: an item word in a correction (OD-63(a) Option B)', () => {
     expect(await drafts(business.id)).toEqual(['RecordSale:pending']);
 
     await send('yes', 'wamid.TB1-YES1');
+    /* The first yes answers the refusal and books nothing (CodeRabbit on #437 at 88258dc). */
+    expect((await books(business.id)).invoices).toEqual([]);
     await send('yes', 'wamid.TB1-YES2');
     expect(await books(business.id)).toEqual({
       invoices: [{ customer_id: ada.id, total_k: 15_000_000 }],
@@ -145,6 +147,8 @@ describe('CG5: an item word in a correction (OD-63(a) Option B)', () => {
     });
     expect(stubSender.lastText).toBe(replies.correctionCustomerNotClear().text);
     await send('yes', 'wamid.TB2-YES1');
+    /* The first yes answers the refusal and books nothing (CodeRabbit on #437 at 88258dc). */
+    expect((await books(business.id)).invoices).toEqual([]);
     await send('yes', 'wamid.TB2-YES2');
     expect((await books(business.id)).invoices).toEqual([
       { customer_id: ada.id, total_k: 15_000_000 },
@@ -182,6 +186,8 @@ describe('CG5: an item word in a correction (OD-63(a) Option B)', () => {
     });
     expect(stubSender.lastText).toContain('could not tell which customer');
     await send('yes', 'wamid.TB4-YES1');
+    /* The first yes answers the refusal and books nothing (CodeRabbit on #437 at 88258dc). */
+    expect((await books(business.id)).invoices).toEqual([]);
     await send('yes', 'wamid.TB4-YES2');
     expect((await books(business.id)).invoices).toEqual([
       { customer_id: ada.id, total_k: 15_000_000 },
