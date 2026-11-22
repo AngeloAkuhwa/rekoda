@@ -147,34 +147,46 @@ describe('a record names a customer only by a token this message was issued (G-1
   });
 
   /* A removed contact separates the words around it: "Ada" and "Obi" on either side of an email
-   * were never typed together as "Ada Obi" (CodeRabbit on #437 at b497318). */
-  it('a name joined across a removed email is not typed', async () => {
+   * or a link were never typed together as "Ada Obi" (CodeRabbit on #437 at b497318). */
+  it.each([
+    ['email', 'wamid.T2split-e', 'Ada ada@example.test Obi bought 3 wigs for 30k'],
+    ['link', 'wamid.T2split-u', 'Ada https://example.test/x Obi bought 3 wigs for 30k'],
+  ])('a name joined across a removed %s is not typed', async (_, wamid, text) => {
     const business = await seedMerchant();
     const before = await footprint(business.id);
 
-    await say(
-      'wamid.T2split',
-      sale({ kind: 'mention', mention: 'Ada Obi' }),
-      'Ada ada@example.test Obi bought 3 wigs for 30k',
-    );
+    await say(wamid, sale({ kind: 'mention', mention: 'Ada Obi' }), text);
 
     expect(stubSender.lastText).toContain('could not tell which customer');
     expect(await footprint(business.id)).toEqual(before);
     expect(await deps.gateway.findMention(business.id, 'Ada Obi')).toBeNull();
-    await plain('wamid.T2split-yes', 'yes');
+    await plain(`${wamid}-yes`, 'yes');
     expect(await footprint(business.id)).toEqual(before);
   });
 
-  it('a name typed whole beside an email is still the name typed', async () => {
+  /* Whole words, ignoring case, spacing and composition, are still the name typed, beside a
+   * contact or not; the sale confirms with exactly one new customer and one invoice. */
+  it.each([
+    [
+      'typed whole beside an email',
+      'wamid.T2whole-e',
+      'Ada Obi ada@example.test bought 2 wigs for 100k',
+    ],
+    ['in another case and spacing', 'wamid.T2whole-c', 'sold  ADA   obi 2 wigs for 100k'],
+    ['in decomposed form', 'wamid.T2whole-n', 'sold Ade\u0301 Obi 2 wigs for 100k'],
+  ])('a name %s is the name typed', async (_, wamid, text) => {
     const business = await seedMerchant();
+    const before = await footprint(business.id);
+    const mention = wamid.endsWith('-n') ? 'Ad\u00e9 Obi' : 'Ada Obi';
 
-    await say(
-      'wamid.T2whole',
-      sale({ kind: 'mention', mention: 'Ada Obi' }),
-      'Ada Obi ada@example.test bought 3 wigs for 30k',
-    );
-
+    await say(wamid, sale({ kind: 'mention', mention }), text);
     expect(stubSender.lastText).not.toContain('could not tell which customer');
+    await plain(`${wamid}-yes`, 'yes');
+
+    const after = await footprint(business.id);
+    expect(after.invoices).toBe(before.invoices + 1);
+    expect(after.customers).toBe(before.customers + 1);
+    expect(await deps.gateway.findMention(business.id, mention)).not.toBeNull();
   });
 
   it('a new customer the merchant typed is created at the sale and confirmed', async () => {

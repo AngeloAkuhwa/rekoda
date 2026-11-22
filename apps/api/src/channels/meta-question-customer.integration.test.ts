@@ -93,6 +93,17 @@ describe('a question that names a customer', () => {
       return row!;
     });
 
+  /** The customer row an invoice is linked to, or null for a snapshot-only invoice. */
+  const invoiceCustomerId = async (businessId: string, invoiceId: string) => {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ customer_id: string | null }>(
+        sql`SELECT customer_id FROM invoices
+             WHERE business_id = ${businessId}::uuid AND id = ${invoiceId}::uuid`,
+      ),
+    );
+    return [...rows][0]!.customer_id;
+  };
+
   /** The stored copy of one inbound message, as the conversation history keeps it. */
   const storedBody = async (businessId: string, wamid: string) => {
     const rows = await withBusiness(db, businessId, (tx) =>
@@ -281,7 +292,11 @@ describe('a question that names a customer', () => {
     /* Another customer owes a different amount, so Ada's answer cannot be the business's
      * (CodeRabbit on #437 at ebeeadb): ₦150,000 is hers, ₦60,000 Bola's, ₦210,000 both. */
     const bola = await deps.gateway.resolveMention(business.id, 'Bola Ige');
-    await seedTrading(business.id, bola.token, 2_000_000);
+    const bolas = await seedTrading(business.id, bola.token, 2_000_000);
+    const rowsBefore = await customerRows(business.id);
+    /* The fixture is what it claims: Ada's invoice is linked to her row, Bola's is not. */
+    expect(await invoiceCustomerId(business.id, adas.invoiceId)).toBe(customerId);
+    expect(await invoiceCustomerId(business.id, bolas.invoiceId)).toBeNull();
 
     await ask(
       'wamid.Q5D',
@@ -294,7 +309,35 @@ describe('a question that names a customer', () => {
     expect(stubSender.lastText).not.toContain('₦210,000');
     expect(stubSender.lastText?.match(/INV-/g) ?? []).toHaveLength(1);
     expect(stubSender.lastText).toContain(adas.invoiceNumber);
+    expect(stubSender.lastText).not.toContain(bolas.invoiceNumber);
     expect(stubSender.lastText).not.toContain('Ada');
+    expect(await customerRows(business.id)).toEqual(rowsBefore);
+  });
+
+  /* A legacy invoice known only by its snapshot token is still the customer's (the fallback in
+   * `openInvoicesForCustomer`), and never another customer's linked invoice. */
+  it('a debtors question about a customer whose invoice is snapshot-only lists that invoice', async () => {
+    const business = await seedMerchant('+2348031234567');
+    const ada = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+    await seedTrading(business.id, 'CUSTOMER_OLD1', 5_000_000, ada.customerId);
+    const bola = await deps.gateway.resolveMention(business.id, 'Bola Ige');
+    const bolas = await seedTrading(business.id, bola.token, 2_000_000);
+    expect(await invoiceCustomerId(business.id, bolas.invoiceId)).toBeNull();
+    const rowsBefore = await customerRows(business.id);
+
+    await ask(
+      'wamid.Q5DL',
+      askAbout({ topic: 'debtors', customer: { kind: 'token', token: bola.token } }),
+      'who owes me, Bola Ige?',
+    );
+
+    expect(stubSender.lastText).toContain('₦60,000');
+    expect(stubSender.lastText).not.toContain('₦150,000');
+    expect(stubSender.lastText).not.toContain('₦210,000');
+    expect(stubSender.lastText?.match(/INV-/g) ?? []).toHaveLength(1);
+    expect(stubSender.lastText).toContain(bolas.invoiceNumber);
+    expect(stubSender.lastText).not.toContain('Bola');
+    expect(await customerRows(business.id)).toEqual(rowsBefore);
   });
 
   /**
