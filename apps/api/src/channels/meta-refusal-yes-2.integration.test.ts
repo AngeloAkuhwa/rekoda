@@ -366,3 +366,40 @@ describe("an unseen preview never hides the sender's refusal", () => {
     expect((await footprint(business.id)).invoices).toBe(before.invoices + 1);
   });
 });
+
+/**
+ * The owner's first DELETE MY DATA discards what was waiting, but never another member's refusal:
+ * it is theirs to answer, so the delegate's next yes is about it and never confirms the owner's
+ * newer preview, which the owner still can (CodeRabbit on #437 at aff3f63).
+ */
+describe("an erasure ask keeps another member's refusal", () => {
+  it("so the delegate's yes books nothing and the owner's yes books the sale", async () => {
+    const business = await seedMerchant();
+    const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+    await identity.addMembership(db, business.id, delegate.id, 'delegate');
+    await post(mediaMessage('wamid.RE1', STICKER, DELEGATE));
+    await drain();
+    await plain('wamid.RE2', 'delete my data');
+    expect(stubSender.lastText).toContain('Reply *DELETE MY DATA* again');
+    const refusalState = async () =>
+      [
+        ...(await withBusiness(db, business.id, (tx) =>
+          tx.execute<{ state: string }>(
+            sql`SELECT state FROM command_drafts
+                 WHERE business_id = ${business.id}::uuid AND command->>'refused' = 'true'
+                   AND requested_by = ${delegate.id}::uuid`,
+          ),
+        )),
+      ].map((r) => r.state);
+    expect(await refusalState()).toEqual(['pending']);
+
+    await say('wamid.RE3', sale({ kind: 'none' }), 'sold 2 wigs for 100k');
+    const before = await footprint(business.id);
+    await post(messagePayload(DELEGATE, 'wamid.RE4', 'yes'));
+    await drain();
+    expect(await footprint(business.id)).toEqual(before);
+
+    await plain('wamid.RE5', 'yes');
+    expect((await footprint(business.id)).invoices).toBe(before.invoices + 1);
+  });
+});

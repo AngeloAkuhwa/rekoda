@@ -2240,10 +2240,12 @@ async function deterministicReply(
         return replies.erasureDone(run.result.erased, deps.config.webUrl);
       }
       /* A first ask asked again under the current consequence is not a preview the merchant
-       * loses: it is not counted as discarded. */
+       * loses: it is not counted as discarded. Another member's refusal is left theirs to answer,
+       * as a bare "no" and a correction leave it (CodeRabbit on #437 at aff3f63). */
       const discarded =
         (await conversationsRepo.supersedePendingDrafts(tx, businessId, {
           asOf: ctx.receivedAt,
+          skipRefusalsNotBy: await actorOf(tx, businessId, ctx.from),
         })) - (paired && !shownBefore ? 1 : 0);
       const parked = await conversationsRepo.recordDraft(tx, {
         businessId,
