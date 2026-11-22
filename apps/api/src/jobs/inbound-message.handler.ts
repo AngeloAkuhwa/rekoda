@@ -454,7 +454,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
      * two would drift until one of them lost a conversation gate.
      */
     let spoken: { transcript: Transcript; messageId: string } | null = null;
-    let read: { text: string; messageId: string } | null = null;
+    let read: { text: string; messageId: string; caption: string | null } | null = null;
     if (isVoiceNote(inbound)) {
       const heard = await transcribeVoiceNote(
         deps,
@@ -812,6 +812,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
             read !== null,
             outcome,
             jobId,
+            read?.caption ?? null,
           );
 
     if (answer) {
@@ -994,12 +995,8 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
           if (outcome.rebuiltFrom) {
             await conversationsRepo.undoRebuild(tx, businessId, outcome.rebuiltFrom, message.id);
           }
-          await conversationsRepo.undoReplacement(
-            tx,
-            businessId,
-            message.id,
-            outcome.replacedRebuilds,
-          );
+          /* Withdraws the replacement only: what it replaced stays superseded (OD-63(b)). */
+          await conversationsRepo.undoReplacement(tx, businessId, message.id);
         }
         if (outcome.rebuiltFrom) {
           await conversationsRepo.undoRebuild(tx, businessId, outcome.rebuiltFrom, message.id);
@@ -1286,7 +1283,11 @@ async function readReceiptPhoto(
   receivedAt: Date,
   /** The stored event, where the page's unit is recorded. */
   eventId: string,
-): Promise<{ text: string; messageId: string } | RefusedReading | typeof ALREADY_ANSWERED> {
+): Promise<
+  | { text: string; messageId: string; caption: string | null }
+  | RefusedReading
+  | typeof ALREADY_ANSWERED
+> {
   const recorded = await conversationsRepo.recordInbound(
     tx,
     {
@@ -1530,7 +1531,7 @@ async function readReceiptPhoto(
    * reaches the interpreter as the instruction it is. */
   const caption = inbound.caption?.trim();
   const text = caption ? `${caption}\n${extracted.text}` : extracted.text;
-  return { text, messageId: recorded.id };
+  return { text, messageId: recorded.id, caption: caption || null };
 }
 
 /**
@@ -5517,6 +5518,58 @@ function typedWithin(hay: string, needle: string): boolean {
   }
 }
 
+/** Whether a waiting draft names a customer or an invoice, so its clarification says it is kept. */
+function draftNamesSomeone(
+  stored: Record<string, unknown>,
+  target: conversationsRepo.DraftRow,
+): boolean {
+  if (customerTokenOf(stored) !== null) return true;
+  const ref = stored['documentRef'];
+  return target.intent === 'RecordPayment' && typeof ref === 'string' && ref.length > 0;
+}
+
+/**
+ * The labels a page puts in front of its buyer. Never a seller, supplier or delivery label: a
+ * "Deliver to" contact or the merchant's own header is not who bought.
+ */
+const BUYER_LABEL =
+  /\b(?:bill(?:ed)?\s+to|invoice(?:d)?\s+to|sold\s+to|customer(?:\s+name)?|buyer|client|received\s+from)\s*[:\-\u2013]?\s*/giu;
+
+/**
+ * Whether a photographed page names `name` as its buyer: the caption the merchant typed names
+ * them, or `name` opens the words right after one of the page's buyer labels ("Bill to: Bola Ige").
+ * Any other name on the page (its header, the merchant's own business name, a supplier, a
+ * delivery contact) is not the buyer, so the record is asked about (owner ruling 22 Nov 2026).
+ */
+function photoBuyerNamed(
+  rawText: string,
+  caption: string | null,
+  names: readonly string[],
+): boolean {
+  const page =
+    caption && rawText.startsWith(`${caption}\n`) ? rawText.slice(caption.length + 1) : rawText;
+  const fold = (v: string) => v.normalize('NFKC').toLocaleLowerCase().replace(/\s+/gu, ' ').trim();
+  return names.some((name) => {
+    if (!name.trim()) return false;
+    if (caption && typedIn(caption, name)) return true;
+    const needle = fold(name);
+    for (const label of page.matchAll(BUYER_LABEL)) {
+      const after = fold(page.slice(label.index + label[0].length));
+      if (after.startsWith(needle) && !/[\p{L}\p{N}\p{M}]/u.test(after[needle.length] ?? '')) {
+        return true;
+      }
+    }
+    return false;
+  });
+}
+
+/** Every value this message holds for `token`: its typed facets and any provisional contact. */
+function facetValuesOf(tokens: LiveTokens, token: string): string[] {
+  const values = (tokens.facets.get(token) ?? []).map((f) => f.value);
+  const provisional = tokens.provisional?.get(token);
+  return provisional ? [...values, provisional.value] : values;
+}
+
 function customerTokenOf(command: Record<string, unknown>): string | null {
   const customer = command['customer'] as { kind?: string; token?: string } | undefined;
   return customer?.kind === 'token' ? (customer.token ?? null) : null;
@@ -5695,6 +5748,14 @@ async function correctionInheritance(
   /* Which request it changes, or whether it is a new one, is the question (OD-60). */
   if (blocked) return { kind: 'unclear', ask: blocked };
 
+  /* Only a message that is clearly a correction of this draft may replace it (OD-60 A+, owner
+   * ruling 22 Nov 2026). One that merely reads like one ("Wait, I also sold 2 bags for 20k") is
+   * asked whether it changes the waiting request or is a new record, and supersedes nothing,
+   * whatever the draft holds; the draft is left exactly as it was. */
+  if (!clearlyCorrects(input.rawText)) {
+    return { kind: 'unclear', ask: draftNamesSomeone(stored, target) ? 'customer' : 'correction' };
+  }
+
   /* A customer the correction names, by a name or by any token, is its own: a different one
    * is never overridden, and an unissued token is the G-137 guard's to refuse. */
   if (!bearing || (named && named.kind !== 'none')) return { kind: 'supersede' };
@@ -5795,6 +5856,8 @@ async function interpretedReply(
   outcome?: RebuildOutcome,
   /** This message's own job, for the CG5 check that no earlier message is still live. */
   jobId: string | null = null,
+  /** A photo's caption, the only words of a photo the merchant typed; null for any other. */
+  documentCaption: string | null = null,
 ): Promise<Reply> {
   /**
    * The MONTHLY meter (docs/metering-v1.md), checked before the model is
@@ -6119,6 +6182,20 @@ async function interpretedReply(
     await refundMessage(tx, businessId, eventId, period);
     return refusedAs(replies.customerNotRecognised());
   }
+  /* A recorded customer, or a phone or email, found anywhere on a photographed page is issued a
+   * token, but being on the page does not make them the buyer: only one the caption types or the
+   * page labels as the buyer is (owner ruling 22 Nov 2026 on photo-extracted customer names). */
+  if (
+    fromDocument &&
+    command.intent !== 'Query' &&
+    'customer' in command &&
+    command.customer?.kind === 'token' &&
+    !photoBuyerNamed(rawText, documentCaption, facetValuesOf(tokens, command.customer.token))
+  ) {
+    authorisationLog.warn(`${command.intent} named a buyer the photo does not label`);
+    await refundMessage(tx, businessId, eventId, period);
+    return refusedAs(replies.customerNotRecognised());
+  }
   /**
    * Which of this message's provisional phones and emails become customers
    * follows what the record MEANS, never where the model put the token (owner
@@ -6263,6 +6340,14 @@ async function interpretedReply(
      * the model read the message; a new one they typed keeps the vault path (ADR 0005 case 4). A
      * photo's words are its caption and the page's extracted text, so a buyer the model names
      * that the receipt never shows is refused the same way (CodeRabbit on #437 at 56c4140). */
+    /* On a photo, the page names many people (the seller, the merchant, a supplier, a delivery
+     * contact): a buyer is one the caption types or the page labels as the buyer, never any name
+     * on it, recorded or not (owner ruling 22 Nov 2026 on photo-extracted customer names). */
+    if (fromDocument && !photoBuyerNamed(rawText, documentCaption, [mention])) {
+      authorisationLog.warn(`${command.intent} named a buyer the photo does not label`);
+      await refundMessage(tx, businessId, eventId, period);
+      return refusedAs(replies.customerNotRecognised());
+    }
     if (!typedIn(rawText, mention)) {
       const recorded = await deps.gateway.findMention(businessId, mention);
       /* Unless this message was issued that recorded customer's token, by a phone or an email of

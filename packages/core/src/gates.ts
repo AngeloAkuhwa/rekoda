@@ -382,8 +382,11 @@ export function gatePurchase(
 const CORRECTION_OPENERS =
   /^\s*(?:no+|nope|nah|actually|sorry|wait|correction|not|it(?:'| i)?s not|e no be)\b/i;
 
+/* A "not" that only says a new record's state ("sold 2 bags for 20k, not paid yet") is not a
+ * correction cue: such a message is an ordinary new record, never asked about (owner ruling on
+ * OD-60 A+, 22 Nov 2026: obvious new transactions are not asked about). */
 const CORRECTION_PHRASES =
-  /\b(?:not|instead of|rather than|change (?:it |the )?to|make it|should be)\b/i;
+  /\b(?:not(?!\s+(?:yet|paid|delivered|collected|picked\s+up)\b)|instead of|rather than|change (?:it |the )?to|make it|should be)\b/i;
 
 export function looksLikeCorrection(text: string, hasPendingDraft: boolean): boolean {
   if (!hasPendingDraft) return false;
@@ -538,9 +541,14 @@ const WORD = /\p{L}+/gu;
  * Whether every word of a clear correction is explained by the draft it corrects (CG5, OWN-100:
  * "the correction names no other customer"). A figure may carry one word, and nothing in the
  * grammar tells "make it 5 wigs" from "make it 5 Tunde": the word must be one of the structure
- * words, a unit, or a word of the waiting draft itself (`vocabulary`, its items and products, no
- * names), matched with or without a plural ending. Any other word may be a person, so the
- * correction is asked about and inherits nobody (independent review of #437 at ebeeadb).
+ * words, a unit, or a plural form of a word of the waiting draft itself (`vocabulary`, its items
+ * and products, no names): "wigs" for "wig". Any other word may be a person, so the correction is
+ * asked about and inherits nobody (independent review of #437 at ebeeadb).
+ *
+ * The bare item word itself never explains a correction (OD-63(a) Option B, owner ruling 22 Nov
+ * 2026): an item may be named like a person ("Tunde"), and nothing in "4 Tunde not 3" tells the
+ * item from somebody else, so it is asked about. The cost is accepted: "make it 4 ankara" for an
+ * ankara sale is asked about once.
  */
 export function correctionWordsExplained(text: string, vocabulary: Iterable<string>): boolean {
   const known = new Set<string>();
@@ -548,11 +556,10 @@ export function correctionWordsExplained(text: string, vocabulary: Iterable<stri
     for (const w of phrase.toLowerCase().match(WORD) ?? []) known.add(w);
   }
   const explained = (word: string): boolean => {
-    if (STRUCTURE_WORDS.has(word) || UNIT_WORDS.has(word) || known.has(word)) return true;
+    if (STRUCTURE_WORDS.has(word) || UNIT_WORDS.has(word)) return true;
     for (const k of known) {
       if (k.length < 3) continue;
-      if (word === `${k}s` || word === `${k}es` || k === `${word}s` || k === `${word}es`)
-        return true;
+      if (word === `${k}s` || word === `${k}es`) return true;
     }
     return false;
   };

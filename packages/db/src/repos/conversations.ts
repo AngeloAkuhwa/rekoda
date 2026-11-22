@@ -1943,33 +1943,29 @@ export async function withdrawPreviewAndRestore(
 }
 
 /**
- * Undo a same-member replacement whose preview never reached the merchant
- * (G-68, Codex review): the new draft is superseded, so no yes confirms a
- * preview nobody saw, and every preview it replaced (a rebuild, or since
- * G-81 any of that member's own waiting purchase previews of the same
- * total) is pending again, so the preview the merchant DID see is the one
- * a yes confirms. Conditional
- * on each draft's state, so it undoes only what this message did.
+ * Withdraw a same-member replacement whose preview never reached the merchant
+ * (G-68): the new draft is superseded, so no yes confirms a preview nobody saw.
+ *
+ * The previews it replaced (a funding-answer rebuild, or since G-81 any of
+ * that member's own waiting purchase previews of the same total) STAY
+ * superseded (OD-63(b) Option B, owner ruling 22 Nov 2026, extending OWN-101(2)
+ * to purchases): error recovery never makes a superseded purchase confirmable
+ * again, so a send-time failure and a later failed receipt
+ * (`markPreviewUndelivered`) leave the same state, and only a fresh preview the
+ * merchant is shown can be confirmed. A funding question an undone rebuild
+ * answered is reopened separately (`undoRebuild`): a question, never a
+ * confirmable purchase. Conditional on `pending`, so a retry changes nothing.
  */
 export async function undoReplacement(
   tx: TenantDb,
   businessId: string,
   messageId: string,
-  replacedIds: readonly string[],
 ): Promise<void> {
   await tx.execute(sql`
     UPDATE command_drafts SET state = 'superseded', updated_at = clock_timestamp()
      WHERE business_id = ${businessId}::uuid
        AND conversation_message_id = ${messageId}::uuid
        AND state = 'pending'`);
-  for (const id of replacedIds) {
-    await tx.execute(sql`
-      UPDATE command_drafts SET state = 'pending', updated_at = clock_timestamp()
-       WHERE business_id = ${businessId}::uuid
-         AND id = ${id}::uuid
-         AND state = 'superseded'
-         AND intent = 'RecordPurchase'`);
-  }
 }
 
 /**

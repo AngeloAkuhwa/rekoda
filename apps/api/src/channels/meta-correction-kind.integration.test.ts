@@ -110,25 +110,41 @@ const books = (businessId: string) =>
   }));
 
 describe('CG5: a correction read as another kind of record (OD-60)', () => {
-  it.each([
-    ['an unrelated expense with a bare "not"', 'Bought fuel 5k, not paid yet'],
-    ['"No, 4 not 3" read as an expense', 'No, 4 not 3'],
-  ])('%s never replaces the waiting sale', async (_, text) => {
-    const { business, ada } = await seedOwner();
-    await send('Ada bought 3 wigs for 150k', 'wamid.K1-SALE', SALE);
+  it.each([['"No, 4 not 3" read as an expense', 'No, 4 not 3']])(
+    '%s never replaces the waiting sale',
+    async (_, text) => {
+      const { business, ada } = await seedOwner();
+      await send('Ada bought 3 wigs for 150k', 'wamid.K1-SALE', SALE);
 
-    await send(text, 'wamid.K1-FIX', expense(5_000));
-    expect(stubSender.lastText).toBe(replies.correctionNotClear().text);
-    expect(await drafts(business.id)).toEqual(['RecordSale:pending']);
+      await send(text, 'wamid.K1-FIX', expense(5_000));
+      expect(stubSender.lastText).toBe(replies.correctionNotClear().text);
+      expect(await drafts(business.id)).toEqual(['RecordSale:pending']);
 
-    /* The yes after the question is about it; the next one saves Ada's sale, and nothing else. */
-    await send('yes', 'wamid.K1-YES1');
-    expect(stubSender.lastText).toBe(replies.previewBehindRefusal().text);
-    await send('yes', 'wamid.K1-YES2');
-    expect(await books(business.id)).toEqual({
-      invoices: [{ customer_id: ada.id, total_k: 15_000_000 }],
-      expenses: [],
-    });
+      /* The yes after the question is about it; the next one saves Ada's sale, and nothing else. */
+      await send('yes', 'wamid.K1-YES1');
+      expect(stubSender.lastText).toBe(replies.previewBehindRefusal().text);
+      await send('yes', 'wamid.K1-YES2');
+      expect(await books(business.id)).toEqual({
+        invoices: [{ customer_id: ada.id, total_k: 15_000_000 }],
+        expenses: [],
+      });
+    },
+  );
+});
+
+/* OD-60 A+ (owner ruling 22 Nov 2026): a "not" that only says a new record is unpaid is no
+ * correction cue. The expense is an ordinary new record with its own preview, never asked about,
+ * and the waiting sale is left exactly as it was. */
+describe('CG5: an obvious new record beside a waiting draft (OD-60 A+)', () => {
+  it('"Bought fuel 5k, not paid yet" is previewed on its own and the sale still waits', async () => {
+    const { business } = await seedOwner();
+    await send('Ada bought 3 wigs for 150k', 'wamid.K1n-SALE', SALE);
+
+    await send('Bought fuel 5k, not paid yet', 'wamid.K1n-NEW', expense(5_000));
+    expect(stubSender.lastText).not.toBe(replies.correctionNotClear().text);
+    expect(stubSender.lastText).not.toContain(replies.correctionTaken().text);
+    expect(await drafts(business.id)).toEqual(['RecordSale:pending', 'RecordExpense:pending']);
+    expect(await books(business.id)).toEqual({ invoices: [], expenses: [] });
   });
 });
 
@@ -409,5 +425,189 @@ describe('CG5: a recorded customer named like the waiting sale’s item (OD-63(a
          WHERE business_id = ${business.id}::uuid AND intent = 'RecordSale' AND state = 'pending'`),
     );
     expect([...sale].map((r) => r.customer)).toEqual([{ kind: 'token', token: ada.token }]);
+  });
+});
+
+/**
+ * OD-60 A+ (owner ruling 22 Nov 2026): only a message that is clearly a correction of the waiting
+ * draft may replace it. A same-kind message that merely reads like one ("Wait, I also sold 2 bags
+ * for 20k") is asked whether it changes the waiting request or is a new record, supersedes and
+ * confirms nothing, and never takes the draft's customer, whether or not the draft has one.
+ */
+describe('CG5: a same-kind message that is not clearly a correction (OD-60 A+)', () => {
+  const NAMELESS_SALE = { ...SALE, customer: { kind: 'none' } };
+  const BAGS = {
+    ...SALE,
+    customer: { kind: 'none' },
+    items: [{ name: 'bag', quantity: 2, unitPrice: 10_000 }],
+    statedTotal: 20_000,
+  };
+
+  it('beside a sale that names nobody, is asked about and the sale is booked as shown', async () => {
+    const { business } = await seedOwner();
+    await send('sold 3 wigs for 150k', 'wamid.AP1-SALE', NAMELESS_SALE);
+
+    await send('Wait, I also sold 2 bags for 20k', 'wamid.AP1-MORE', BAGS);
+    expect(stubSender.lastText).toBe(replies.correctionNotClear().text);
+    expect(await drafts(business.id)).toEqual(['RecordSale:pending']);
+
+    await send('yes', 'wamid.AP1-YES1');
+    expect(stubSender.lastText).toBe(replies.previewBehindRefusal().text);
+    await send('yes', 'wamid.AP1-YES2');
+    expect(await books(business.id)).toEqual({
+      invoices: [{ customer_id: null, total_k: 15_000_000 }],
+      expenses: [],
+    });
+  });
+
+  it("beside Ada's sale, is asked about, never inherits Ada, and her sale is booked as shown", async () => {
+    const { business, ada } = await seedOwner();
+    await send('Ada bought 3 wigs for 150k', 'wamid.AP2-SALE', SALE);
+
+    await send('Wait, I also sold 2 bags for 20k', 'wamid.AP2-MORE', BAGS);
+    expect(stubSender.lastText).toBe(replies.correctionCustomerNotClear().text);
+    expect(await drafts(business.id)).toEqual(['RecordSale:pending']);
+
+    await send('yes', 'wamid.AP2-YES1');
+    await send('yes', 'wamid.AP2-YES2');
+    expect(await books(business.id)).toEqual({
+      invoices: [{ customer_id: ada.id, total_k: 15_000_000 }],
+      expenses: [],
+    });
+  });
+
+  it('beside a waiting expense, a same-kind "wait, fuel 6k" is asked about and replaces nothing', async () => {
+    const { business } = await seedOwner();
+    await send('fuel 5k', 'wamid.AP3-EXP', expense(5_000));
+
+    await send('wait, fuel 6k', 'wamid.AP3-MORE', expense(6_000));
+    expect(stubSender.lastText).toBe(replies.correctionNotClear().text);
+    expect(await drafts(business.id)).toEqual(['RecordExpense:pending']);
+
+    await send('yes', 'wamid.AP3-YES1');
+    await send('yes', 'wamid.AP3-YES2');
+    expect((await books(business.id)).expenses).toEqual([500_000]);
+  });
+
+  it('a clear correction of a sale that names nobody still replaces it and books once', async () => {
+    const { business } = await seedOwner();
+    await send('sold 3 wigs for 150k', 'wamid.AP4-SALE', NAMELESS_SALE);
+
+    await send('No, 4 not 3', 'wamid.AP4-FIX', {
+      ...NAMELESS_SALE,
+      items: [{ name: 'wig', quantity: 4, unitPrice: 50_000 }],
+      statedTotal: 200_000,
+    });
+    expect(stubSender.lastText).toContain(replies.correctionTaken().text);
+    expect(await drafts(business.id)).toEqual(['RecordSale:superseded', 'RecordSale:pending']);
+    await send('yes', 'wamid.AP4-YES');
+    await send('yes', 'wamid.AP4-YES2');
+    expect(await books(business.id)).toEqual({
+      invoices: [{ customer_id: null, total_k: 20_000_000 }],
+      expenses: [],
+    });
+  });
+
+  it('while an earlier yes retries, it leaves the nameless sale, so that yes books it once', async () => {
+    const { business } = await seedOwner();
+    await send('sold 3 wigs for 150k', 'wamid.AP5-SALE', NAMELESS_SALE);
+    await queueOnly('wamid.AP5-YES', 'yes');
+    await failOnceAndBackOff(business.id);
+
+    await send('Wait, I also sold 2 bags for 20k', 'wamid.AP5-MORE', BAGS);
+    expect(stubSender.lastText).toBe(replies.correctionNotClear().text);
+    expect(await drafts(business.id)).toEqual(['RecordSale:pending']);
+    await bringDue(business.id);
+    await run();
+    expect((await books(business.id)).invoices).toEqual([
+      { customer_id: null, total_k: 15_000_000 },
+    ]);
+  });
+});
+
+/**
+ * OD-63(a) Option B (owner ruling 22 Nov 2026): the bare item word never explains a correction,
+ * because an item may be named like a person nobody recorded. "4 Tunde not 3" for a Tunde item is
+ * asked about and never keeps Ada; a plural ("make it 4 wigs") still does. Every confirmed invoice's
+ * own customer is checked.
+ */
+describe('CG5: an item word in a correction (OD-63(a) Option B)', () => {
+  const TUNDE_ITEM = { ...SALE, items: [{ name: 'Tunde', quantity: 3, unitPrice: 50_000 }] };
+
+  it('"4 Tunde not 3" with nobody recorded as Tunde is asked about; Ada keeps only her sale', async () => {
+    const { business, ada } = await seedOwner();
+    await send('Ada bought 3 Tunde for 150k', 'wamid.TB1-SALE', TUNDE_ITEM);
+
+    await send('4 Tunde not 3', 'wamid.TB1-FIX', {
+      ...TUNDE_ITEM,
+      customer: { kind: 'none' },
+      items: [{ name: 'Tunde', quantity: 4, unitPrice: 50_000 }],
+      statedTotal: 200_000,
+    });
+    expect(stubSender.lastText).toBe(replies.correctionCustomerNotClear().text);
+    expect(stubSender.lastText).not.toContain('The same customer as before');
+    expect(await drafts(business.id)).toEqual(['RecordSale:pending']);
+
+    await send('yes', 'wamid.TB1-YES1');
+    await send('yes', 'wamid.TB1-YES2');
+    expect(await books(business.id)).toEqual({
+      invoices: [{ customer_id: ada.id, total_k: 15_000_000 }],
+      expenses: [],
+    });
+  });
+
+  it('"make it 4 wig" names only the bare item word, so it is asked about', async () => {
+    const { business, ada } = await seedOwner();
+    await send('Ada bought 3 wigs for 150k', 'wamid.TB2-SALE', SALE);
+
+    await send('make it 4 wig', 'wamid.TB2-FIX', {
+      ...SALE,
+      customer: { kind: 'none' },
+      items: [{ name: 'wig', quantity: 4, unitPrice: 50_000 }],
+      statedTotal: 200_000,
+    });
+    expect(stubSender.lastText).toBe(replies.correctionCustomerNotClear().text);
+    await send('yes', 'wamid.TB2-YES1');
+    await send('yes', 'wamid.TB2-YES2');
+    expect((await books(business.id)).invoices).toEqual([
+      { customer_id: ada.id, total_k: 15_000_000 },
+    ]);
+  });
+
+  it('"make it 4 wigs" keeps Ada, and the corrected invoice is hers', async () => {
+    const { business, ada } = await seedOwner();
+    await send('Ada bought 3 wigs for 150k', 'wamid.TB3-SALE', SALE);
+
+    await send('make it 4 wigs', 'wamid.TB3-FIX', {
+      ...SALE,
+      customer: { kind: 'none' },
+      items: [{ name: 'wig', quantity: 4, unitPrice: 50_000 }],
+      statedTotal: 200_000,
+    });
+    expect(stubSender.lastText).toContain('The same customer as before');
+    await send('yes', 'wamid.TB3-YES');
+    await send('yes', 'wamid.TB3-YES2');
+    expect((await books(business.id)).invoices).toEqual([
+      { customer_id: ada.id, total_k: 20_000_000 },
+    ]);
+  });
+
+  it("a correction carrying another customer's token is refused and books nothing new", async () => {
+    const { business, ada } = await seedOwner();
+    await knownCustomer(business.id, 'Bola', 'CUSTOMER_9BL');
+    await send('Ada bought 3 wigs for 150k', 'wamid.TB4-SALE', SALE);
+
+    await send('make it 4 wigs', 'wamid.TB4-FIX', {
+      ...SALE,
+      customer: { kind: 'token', token: 'CUSTOMER_9BL' },
+      items: [{ name: 'wig', quantity: 4, unitPrice: 50_000 }],
+      statedTotal: 200_000,
+    });
+    expect(stubSender.lastText).toContain('could not tell which customer');
+    await send('yes', 'wamid.TB4-YES1');
+    await send('yes', 'wamid.TB4-YES2');
+    expect((await books(business.id)).invoices).toEqual([
+      { customer_id: ada.id, total_k: 15_000_000 },
+    ]);
   });
 });

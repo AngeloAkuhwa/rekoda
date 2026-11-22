@@ -186,4 +186,42 @@ describe('a correction that names someone is never clear enough to inherit (OWN-
       expect(correctionWordsExplained(t, WIGS)).toBe(false);
     },
   );
+  /* OD-63(a) Option B (owner ruling 22 Nov 2026): the bare item word never explains a correction,
+   * since an item may be named like a person; its plural form still does. */
+  it.each([
+    ['4 Tunde not 3', ['Tunde']],
+    ['make it 4 wig', ['wig']],
+    ['make it 4 ankara', ['ankara']],
+  ])('%j holds only the bare item word, so it is not explained', (t, items) => {
+    expect(correctionWordsExplained(t, items)).toBe(false);
+  });
+
+  it.each([
+    ['4 Tundes not 3', ['Tunde']],
+    ['make it 4 wigs', ['wig']],
+    ['make it 4 dresses', ['dress']],
+    ['make it 4 pieces', ['Tunde']],
+  ])('%j holds a plural or a unit, so it is explained', (t, items) => {
+    expect(correctionWordsExplained(t, items)).toBe(true);
+  });
+});
+
+/* OD-60 A+ (owner ruling 22 Nov 2026): a "not" that only states a new record's payment or delivery
+ * is no correction cue, so an obvious new sale is not asked about. */
+describe('a "not" about a new record is not a correction cue', () => {
+  it.each([
+    'Sold 2 bags for 20k, not paid yet',
+    'sold 3 wigs to Bola for 30k not yet paid',
+    'Bought 5 cartons for 50k, not delivered',
+  ])('%j is a new record', (t) => {
+    expect(looksLikeCorrection(t, true)).toBe(false);
+  });
+
+  it.each([
+    'it is not paid, she paid 60k not 50k',
+    'no, 4 not 3',
+    'Wait, I also sold 2 bags for 20k',
+  ])('%j still reads like a correction', (t) => {
+    expect(looksLikeCorrection(t, true)).toBe(true);
+  });
 });

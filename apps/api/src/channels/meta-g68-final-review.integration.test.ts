@@ -20,6 +20,7 @@ import {
   workerDb,
   knownCustomer,
 } from './meta-webhook.fixtures.js';
+import { lastWamid, receipt } from './meta-preview-expiry.fixtures.js';
 
 useMetaWebhookHarness();
 
@@ -258,7 +259,10 @@ describe('G-68 final review 2: one-shot rebuild, strict erasure pair, answer win
       expect(await written(business.id)).toMatchObject({ purchases: 2 });
     });
 
-    it('a replacement whose send fails gives back the preview the merchant saw (Codex review)', async () => {
+    /* OD-63(b) Option B (owner ruling 22 Nov 2026): a failed replacement never makes the preview
+     * it replaced confirmable again. Nothing is booked or stocked until a fresh preview is shown
+     * and confirmed, and then exactly once. */
+    it('a replacement whose send fails leaves nothing confirmable until a fresh preview', async () => {
       const business = await seedMerchant();
       await say('wamid.F2c-f-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
       await reply('wamid.F2c-f-bank', 'bank');
@@ -269,13 +273,52 @@ describe('G-68 final review 2: one-shot rebuild, strict erasure pair, answer win
         { ...POS_PURCHASE, paymentMethod: 'cash' },
         'I bought 10 cartons for 180k, paid cash',
       );
-      /* Nobody saw the replacement: it is superseded, the Bank preview is
-       * pending again, and a yes books THAT one, once. */
-      expect(await purchaseStates(business.id)).toEqual(['superseded', 'pending', 'superseded']);
+      /* Nobody saw the replacement: it is superseded, and so is the Bank preview it replaced. */
+      expect(await purchaseStates(business.id)).toEqual(['superseded', 'superseded', 'superseded']);
       await reply('wamid.F2c-f-yes-1', 'yes');
       await reply('wamid.F2c-f-yes-2', 'yes');
-      expect(await written(business.id)).toMatchObject({ purchases: 1 });
-      expect(await purchaseStates(business.id)).toEqual(['superseded', 'confirmed', 'superseded']);
+      expect(await written(business.id)).toMatchObject({ purchases: 0, arrivals: 0, postings: 0 });
+      expect(await purchaseStates(business.id)).toEqual(['superseded', 'superseded', 'superseded']);
+
+      /* A fresh preview the merchant is shown is the only way on, and it books once. */
+      await say(
+        'wamid.F2c-f-fresh',
+        { ...POS_PURCHASE, paymentMethod: 'cash' },
+        'I bought 10 cartons for 180k, paid cash',
+      );
+      expect(stubSender.lastText).toContain('Paid in full by cash');
+      await reply('wamid.F2c-f-yes-3', 'yes');
+      await reply('wamid.F2c-f-yes-4', 'yes');
+      expect(await written(business.id)).toMatchObject({ purchases: 1, arrivals: 1 });
+      expect(await purchaseStates(business.id)).toEqual([
+        'superseded',
+        'superseded',
+        'superseded',
+        'confirmed',
+      ]);
+    });
+
+    /* The same rule for a replacement WhatsApp accepted and later reported failed, its receipt
+     * delivered twice: the two failure paths now leave the same state (OD-63(b)). */
+    it('a replacement reported failed after it was accepted, twice, leaves nothing confirmable', async () => {
+      const business = await seedMerchant();
+      await say('wamid.F2c-l-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
+      await reply('wamid.F2c-l-bank', 'bank');
+      await say(
+        'wamid.F2c-l-resend',
+        { ...POS_PURCHASE, paymentMethod: 'cash' },
+        'I bought 10 cartons for 180k, paid cash',
+      );
+      const sent = lastWamid();
+      await receipt(OWNER, sent, 'failed');
+      await drain();
+      await receipt(OWNER, sent, 'failed');
+      await drain();
+
+      expect(await purchaseStates(business.id)).toEqual(['superseded', 'superseded', 'superseded']);
+      await reply('wamid.F2c-l-yes-1', 'yes');
+      await reply('wamid.F2c-l-yes-2', 'yes');
+      expect(await written(business.id)).toMatchObject({ purchases: 0, arrivals: 0, postings: 0 });
     });
 
     it('a resend whose preview fails to send gives the question back; "cash" then rebuilds once (Codex review)', async () => {

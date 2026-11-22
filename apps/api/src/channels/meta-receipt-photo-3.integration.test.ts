@@ -10,6 +10,7 @@ import { conversationsRepo, createDb, identity, sql, withBusiness } from '@rekod
 import { replies } from '@rekoda/core';
 import {
   db,
+  knownCustomer,
   messagePayload,
   photoPayload,
   post,
@@ -364,5 +365,56 @@ describe('a receipt photo whose buyer the model names', () => {
 
     expect(stubSender.lastText).not.toContain('could not tell which customer');
     expect(await salesDrafts(business.id)).toBe(1);
+  });
+
+  /* Owner ruling 22 Nov 2026 (photo-extracted customer names): a name on the page is not the buyer
+   * unless the page labels it as the buyer or the caption types it. The merchant's own header, a
+   * delivery contact and a name in passing are asked about: nobody is created, nothing drafted. */
+  it.each([
+    ['the merchant’s own header', 'ADA FASHION RECEIPT 2 wigs TOTAL 100,000', 'Ada Fashion'],
+    ['a delivery contact', 'RECEIPT Deliver to: Bola Ige 2 wigs TOTAL 100,000', 'Bola Ige'],
+    ['a name in passing', 'RECEIPT 2 wigs from Bola Ige TOTAL 100,000', 'Bola Ige'],
+  ])('a buyer named only as %s creates nobody and drafts nothing', async (_, page, mention) => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({ text: page, confidence: 0.9 });
+    stubTransport.replyWith(SALE_TO(mention));
+
+    await post(photoPayload('2348031234567', 'wamid.PB3'));
+    await drain();
+
+    expect(stubSender.lastText).toContain('could not tell which customer');
+    expect(await customersOf(business.id)).toBe(0);
+    expect(await salesDrafts(business.id)).toBe(0);
+  });
+
+  it('previews a buyer the caption types, though the page does not label them', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'RECEIPT 2 wigs TOTAL 100,000', confidence: 0.9 });
+    stubTransport.replyWith(SALE_TO('Bola Ige'));
+
+    await post(photoPayload('2348031234567', 'wamid.PB4', { caption: 'sold to Bola Ige' }));
+    await drain();
+
+    expect(stubSender.lastText).not.toContain('could not tell which customer');
+    expect(await salesDrafts(business.id)).toBe(1);
+  });
+
+  it.each([
+    ['in the page header', 'ADA OBI STORES RECEIPT 2 wigs TOTAL 100,000', 0],
+    ['under the buyer label', 'RECEIPT Customer: Ada Obi 2 wigs TOTAL 100,000', 1],
+  ])('a recorded customer named %s is the buyer only when labelled', async (_, page, drafted) => {
+    const business = await seedMerchant('+2348031234567');
+    const ada = await knownCustomer(business.id, 'Ada Obi', 'CUSTOMER_7K2');
+    arrangePhoto();
+    stubOcr.answerWith({ text: page, confidence: 0.9 });
+    stubTransport.replyWith({ ...SALE_TO('x'), customer: { kind: 'token', token: ada.token } });
+
+    await post(photoPayload('2348031234567', 'wamid.PB5'));
+    await drain();
+
+    expect(await salesDrafts(business.id)).toBe(drafted);
+    if (drafted === 0) expect(stubSender.lastText).toContain('could not tell which customer');
   });
 });
