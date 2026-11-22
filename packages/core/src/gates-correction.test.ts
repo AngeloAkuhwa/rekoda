@@ -327,6 +327,16 @@ describe('a replaced figure the waiting draft does not hold', () => {
     ['No, it was 6k, not the 5k', fuel],
     ['No, 4 pcs not 3, amount 60 not 50', bought],
     ['amount 60 not 50', bought],
+    /* The total as the preview rounds it (CodeRabbit on #437 at d80426e). */
+    [
+      'No, total should be ₦16.38 not ₦15.38',
+      draftFigures({ items: [{ name: 'rice', quantity: 1.5, unitPrice: 10.25 }] }),
+    ],
+    ['no, 6k not 5k', draftFigures({ description: 'fuel', amount: 5_000 })],
+    [
+      'No, 2 kg not 1.5 kg',
+      draftFigures({ items: [{ name: 'rice', quantity: 1.5, unitPrice: 1.5 }] }),
+    ],
     /* A stock adjustment's count is one of its figures (Codex on #437 at af169b0). */
     ['No, 4 not 3', draftFigures({ productMention: 'wig', quantityDelta: 3 })],
     ['No, 4 not 3', draftFigures({ productMention: 'wig', quantityDelta: -3 })],
@@ -350,6 +360,12 @@ describe('a replaced figure the waiting draft does not hold', () => {
     ['No, 4 pcs not 3, amount 60 not 3', bought],
     /* Two bare figures with nothing to say which is which are asked about. */
     ['No, 4 not 3, 60 not 50', bought],
+    /* "1.5m" is ₦1.5 million, never ₦1.50; "1.5 kg" a weight, never ₦1.50 (CodeRabbit, d80426e). */
+    ['No, it was 1.6m not 1.5m', draftFigures({ description: 'fuel', amount: 1.5 })],
+    [
+      'No, 2 kg not 1.5 kg',
+      draftFigures({ items: [{ name: 'rice', quantity: 3, unitPrice: 1.5 }] }),
+    ],
   ])('%j does not fit', (t, figures) => {
     expect(replacedFiguresFit(t, figures)).toBe(false);
   });

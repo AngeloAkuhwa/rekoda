@@ -5663,9 +5663,12 @@ function pageBuyerFields(rawText: string, caption: string | null): string[] {
     const lines = page.slice(label.index + label[0].length).split(/\r?\n/u);
     const after = foldField(lines.find((line) => line.trim()) ?? '');
     const first = after.split(/\s/u)[0] ?? '';
-    /* A phone is a buyer too ("Buyer: 08035551234"; Codex on #437 at af169b0): ten or more digits,
-     * never a count or a price on an items line. */
-    const phone = /^\+?\d{10,15}$/u.test(first.replace(/[-().]/gu, ''));
+    /* A phone is a buyer too ("Buyer: 08035551234", "Buyer: 0803 555 1234"; Codex and CodeRabbit
+     * on #437 at af169b0 and d80426e): the whole leading run of digits and separators holds 10 to
+     * 15 digits, which a count or a price on an items line never does. */
+    const run = /^\+?[\d\s\-().]+/u.exec(after)?.[0] ?? '';
+    const digits = run.replace(/\D/gu, '').length;
+    const phone = digits >= 10 && digits <= 15;
     if (/^[\p{L}]/u.test(after) || first.includes('@') || phone) fields.push(after);
   }
   return fields;

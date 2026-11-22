@@ -237,6 +237,17 @@ describe('a yes after a refused record', () => {
     await post(messagePayload(DELEGATE, 'wamid.R32', 'yes'));
     await drain();
     expect((await footprint(business.id)).invoices).toBe(1);
+    /* The delegate's yes confirmed the delegate's own sale, never the owner's (CodeRabbit on #437 at
+     * d80426e). */
+    const states = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ wamid: string; state: string }>(
+        sql`SELECT m.provider_message_id AS wamid, d.state FROM command_drafts d
+              JOIN conversation_messages m ON m.id = d.conversation_message_id
+             WHERE d.business_id = ${business.id}::uuid AND d.intent = 'RecordSale'
+             ORDER BY m.provider_message_id`,
+      ),
+    ).then((r) => [...r].map((x) => `${x.wamid}:${x.state}`));
+    expect(states).toEqual(['wamid.R29:pending', 'wamid.R30:confirmed']);
 
     /* The owner's yes is still about the owner's refusal, never the owner's older sale. */
     await plain('wamid.R33', 'yes');

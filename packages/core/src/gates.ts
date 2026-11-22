@@ -665,8 +665,13 @@ export function draftFigures(command: Record<string, unknown>): DraftFigures {
       continue;
     }
     money.push(each);
-    /* A line total, as the preview shows it, only when it is a whole number of kobo. */
-    const line = typeof quantity === 'number' ? quantity * each : NaN;
+    /* A line total as the preview shows it: rounded to the kobo the same way (`itemLine`), so a
+     * fractional line ("1.5 kg at ₦10.25") is the ₦15.38 the merchant saw (CodeRabbit on #437 at
+     * d80426e). */
+    const line =
+      typeof quantity === 'number' && typeof unitPrice === 'number'
+        ? Math.round(quantity * unitPrice * 100)
+        : NaN;
     if (Number.isSafeInteger(line)) {
       money.push(line);
       if (gross !== null) gross += line;
@@ -694,7 +699,8 @@ export function draftFigures(command: Record<string, unknown>): DraftFigures {
 /* A figure a correction says was wrong: after "not", "instead of" or "rather than" ("4 not 3",
  * "no, 60k not 50k", "Not paid 5k, it was 4k"), with at most one word after it. */
 /* A figure never ends on a comma: "3, amount 60" is the figure 3, then another clause. */
-const FIGURE_TEXT = String.raw`(?:₦|ngn|n)?\s*\d(?:[\d,]*\d)?(?:\.\d+)?(?:\s*k(?![\p{L}\p{N}]))?`;
+/* A figure keeps its thousands or millions suffix ("5k", "1.5m"; CodeRabbit on #437 at d80426e). */
+const FIGURE_TEXT = String.raw`(?:₦|ngn|n)?\s*\d(?:[\d,]*\d)?(?:\.\d+)?(?:\s*[km](?![\p{L}\p{N}]))?`;
 /* A figure a correction says was wrong: after "not", "instead of" or "rather than", past a word or
  * two that only points at it ("not the 5k", "not paid 5k", "it was 60k not that 50k"), with at most
  * one word after it. */
@@ -713,24 +719,28 @@ const MONEY_FIELD =
   /\b(?:price|total|amount|balance|cost|rate|discount|fee|payment|paid|pay|charge)\b/iu;
 const QUANTITY_FIELD = /\b(?:quantity|qty|pieces|pcs|units|count)\b/iu;
 
-/** A figure's kind from how it is written: money (₦, NGN, "k", a decimal, "naira", "each"), a
- * quantity (a unit after it: "3 pcs", "3 cartons"), or nothing said ("3", "3 wigs", "3 cash"). */
+/** A figure's kind from how it is written: money (₦, NGN, "k", "m", "naira", "each", else a
+ * decimal), a quantity (a unit after it: "3 pcs", "1.5 kg"), or nothing said ("3", "3 wigs"). A
+ * unit wins over a decimal point: "1.5 kg" is a weight, never ₦1.50 (CodeRabbit on #437 at
+ * d80426e). */
 function figureKind(figure: string, word: string | undefined): 'money' | 'quantity' | null {
   const f = figure.toLowerCase();
-  if (/^(?:₦|ngn|n)/u.test(f) || /k$/u.test(f) || f.includes('.')) return 'money';
+  if (/^(?:₦|ngn|n)/u.test(f) || /[km]$/u.test(f)) return 'money';
   const w = word?.toLowerCase();
   if (w && MONEY_WORDS.has(w)) return 'money';
   if (w && UNIT_WORDS.has(w) && w !== 'naira') return 'quantity';
+  if (f.includes('.')) return 'money';
   return null;
 }
 
-/** A figure as integer kobo, by integer arithmetic only: "50k" is 5,000,000; "₦4.50" is 450. */
+/** A figure as integer kobo, by integer arithmetic only: "50k" is 5,000,000; "1.5m" is
+ * 150,000,000; "₦4.50" is 450. */
 function figureKobo(figure: string): number | null {
-  const m = /^(?:₦|ngn|n)?\s*(\d+)(?:\.(\d+))?\s*(k)?$/u.exec(
+  const m = /^(?:₦|ngn|n)?\s*(\d+)(?:\.(\d+))?\s*([km])?$/u.exec(
     figure.toLowerCase().replace(/,/gu, ''),
   );
   if (!m?.[1]) return null;
-  const perUnit = m[3] ? 100_000 : 100;
+  const perUnit = m[3] === 'm' ? 100_000_000 : m[3] === 'k' ? 100_000 : 100;
   const frac = m[2] ?? '';
   const scale = 10 ** frac.length;
   const fracKobo = (Number(frac || '0') * perUnit) / scale;

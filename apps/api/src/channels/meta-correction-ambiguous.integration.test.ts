@@ -413,16 +413,23 @@ describe('CG5: a payment correction keeps its invoice reference on the replaceme
       documentRef: null,
     });
     await send('no, 60k not 50k', 'wamid.D-FIX');
-    const [draft] = await withBusiness(db, business.id, (tx) =>
-      tx.execute<{ ref: string | null; customer: unknown }>(
-        sql`SELECT command->>'documentRef' AS ref, command->'customer' AS customer
+    /* The correction replaced the payment: the ₦50,000 draft is superseded and the pending one is
+     * the ₦60,000 replacement (CodeRabbit on #437 at d80426e). */
+    const rows = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ state: string; amount: string; ref: string | null; customer: unknown }>(
+        sql`SELECT state, command->>'amount' AS amount, command->>'documentRef' AS ref,
+                   command->'customer' AS customer
               FROM command_drafts
              WHERE business_id = ${business.id}::uuid AND intent = 'RecordPayment'
-               AND state = 'pending'`,
+             ORDER BY insertion_seq`,
       ),
-    );
-    expect(draft?.ref).toBe(invoice!.invoice_number);
-    expect(draft?.customer).toEqual({ kind: 'token', token: ada.token });
+    ).then((r) => [...r]);
+    expect(rows.map((r) => [r.state, r.amount])).toEqual([
+      ['superseded', '50000'],
+      ['pending', '60000'],
+    ]);
+    expect(rows[1]?.ref).toBe(invoice!.invoice_number);
+    expect(rows[1]?.customer).toEqual({ kind: 'token', token: ada.token });
   });
 });
 
