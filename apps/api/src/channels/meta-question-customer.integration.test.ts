@@ -51,16 +51,18 @@ describe('a question that names a customer', () => {
     while (worked) worked = await runner.runOnce();
   }
 
-  /** One ₦150,000 invoice to `customerToken`, nothing paid. */
+  /** One ₦150,000 invoice to `customerToken`, nothing paid. With `customerId` the invoice is
+   * linked to the customer row; without it, a legacy invoice known only by its snapshot token. */
   async function seedTrading(
     businessId: string,
     customerToken = 'CUSTOMER_7K2',
     unitPriceK = 5_000_000,
+    customerId: string | null = null,
   ) {
-    await withBusiness(db, businessId, (tx) =>
+    return withBusiness(db, businessId, (tx) =>
       issueRepo.issueSale(tx, {
         businessId,
-        customerId: null,
+        customerId,
         customerToken,
         items: [{ name: 'wig', quantity: 3, unitPriceK }],
         subtotalK: 3 * unitPriceK,
@@ -271,8 +273,11 @@ describe('a question that names a customer', () => {
 
   it('a debtors question naming a known customer is answered as their balance', async () => {
     const business = await seedMerchant('+2348031234567');
-    const { token } = await deps.gateway.resolveMention(business.id, 'Ada Obi');
-    await seedTrading(business.id, token);
+    const { token, customerId } = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+    /* Ada's invoice is linked to her customer row and its snapshot carries a token she no longer
+     * holds, so it is found only through `invoices.customer_id`; Bola's stays a legacy invoice
+     * known only by its snapshot token (CodeRabbit on #437 at b497318). */
+    const adas = await seedTrading(business.id, 'CUSTOMER_OLD1', 5_000_000, customerId);
     /* Another customer owes a different amount, so Ada's answer cannot be the business's
      * (CodeRabbit on #437 at ebeeadb): ₦150,000 is hers, ₦60,000 Bola's, ₦210,000 both. */
     const bola = await deps.gateway.resolveMention(business.id, 'Bola Ige');
@@ -288,6 +293,7 @@ describe('a question that names a customer', () => {
     expect(stubSender.lastText).not.toContain('₦60,000');
     expect(stubSender.lastText).not.toContain('₦210,000');
     expect(stubSender.lastText?.match(/INV-/g) ?? []).toHaveLength(1);
+    expect(stubSender.lastText).toContain(adas.invoiceNumber);
     expect(stubSender.lastText).not.toContain('Ada');
   });
 

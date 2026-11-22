@@ -146,6 +146,37 @@ describe('a record names a customer only by a token this message was issued (G-1
     expect(await deps.gateway.findMention(business.id, 'Ada')).toBeNull();
   });
 
+  /* A removed contact separates the words around it: "Ada" and "Obi" on either side of an email
+   * were never typed together as "Ada Obi" (CodeRabbit on #437 at b497318). */
+  it('a name joined across a removed email is not typed', async () => {
+    const business = await seedMerchant();
+    const before = await footprint(business.id);
+
+    await say(
+      'wamid.T2split',
+      sale({ kind: 'mention', mention: 'Ada Obi' }),
+      'Ada ada@example.test Obi bought 3 wigs for 30k',
+    );
+
+    expect(stubSender.lastText).toContain('could not tell which customer');
+    expect(await footprint(business.id)).toEqual(before);
+    expect(await deps.gateway.findMention(business.id, 'Ada Obi')).toBeNull();
+    await plain('wamid.T2split-yes', 'yes');
+    expect(await footprint(business.id)).toEqual(before);
+  });
+
+  it('a name typed whole beside an email is still the name typed', async () => {
+    const business = await seedMerchant();
+
+    await say(
+      'wamid.T2whole',
+      sale({ kind: 'mention', mention: 'Ada Obi' }),
+      'Ada Obi ada@example.test bought 3 wigs for 30k',
+    );
+
+    expect(stubSender.lastText).not.toContain('could not tell which customer');
+  });
+
   it('a new customer the merchant typed is created at the sale and confirmed', async () => {
     const business = await seedMerchant();
     const before = await footprint(business.id);

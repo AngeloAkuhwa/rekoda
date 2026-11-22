@@ -5494,8 +5494,17 @@ function typedIn(text: string, name: string): boolean {
   const needle = fold(name);
   if (!needle) return false;
   /* A contact is not a name the merchant typed: an email (its local part included) and a link
-   * are taken out first, so "ada@example.com" never counts as typing "Ada" (CodeRabbit on #437). */
-  const hay = fold(text.replace(/\S+@\S+|https?:\/\/\S+/gu, ' '));
+   * are taken out first, so "ada@example.com" never counts as typing "Ada" (CodeRabbit on #437).
+   * A removed contact also separates the words either side of it: each segment is searched on
+   * its own, so "Ada ada@example.test Obi" never counts as typing "Ada Obi" (CodeRabbit on #437
+   * at b497318). */
+  return text
+    .split(/\S+@\S+|https?:\/\/\S+/gu)
+    .some((segment) => typedWithin(fold(segment), needle));
+}
+
+/** Whether the folded `needle` occurs in the folded `hay` as whole words. */
+function typedWithin(hay: string, needle: string): boolean {
   let from = 0;
   for (;;) {
     const at = hay.indexOf(needle, from);
