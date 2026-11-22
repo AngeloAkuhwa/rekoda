@@ -2153,17 +2153,34 @@ async function deterministicReply(
        * narrower one (before the erasure reached stored chat copies) is no agreement to this: this
        * ask becomes a new first ask below, shown and recorded under the current consequence, and
        * nothing is erased (CodeRabbit on #437 at 3d66867). */
+      /* The current consequence must have been RECORDED for this first ask, lapsed or not
+       * (CodeRabbit on #437 at 56c4140). A first ask with no record (parked before recording was
+       * mandatory) or with only an older one, open or lapsed, showed nothing the merchant agreed
+       * to, so it is never read as agreement: this ask becomes a new first ask. A record of the
+       * current consequence that lapsed inside the draft's window still counts, and the claim
+       * below opens a fresh one recording the same consequence. */
       const askedBefore = paired
         ? (await riskRepo.openConfirmationsFor(tx, businessId, ctx.receivedAt)).filter(
             (c) => c.command === 'EraseData' && c.subject === `draft:${pending.id}`,
           )
         : [];
+      const recordedNow =
+        paired &&
+        (
+          await riskRepo.unclaimedConfirmationsForSubject(
+            tx,
+            businessId,
+            'EraseData',
+            `draft:${pending.id}`,
+          )
+        ).some((c) => c.consequence === ERASURE_CONSEQUENCE);
       /* And the first ask's prompt must have reached WhatsApp: a prompt whose send failed showed
        * the merchant nothing, so this ask is a new first ask (CodeRabbit on #437 at 58dd68b). */
       const shownBefore =
         (askedBefore.length === 0 ||
           askedBefore.some((c) => c.consequence === ERASURE_CONSEQUENCE)) &&
-        (!paired || (await conversationsRepo.draftReplyWasSent(tx, businessId, pending.id)));
+        (!paired ||
+          (recordedNow && (await conversationsRepo.draftReplyWasSent(tx, businessId, pending.id))));
       const claim =
         paired && shownBefore
           ? await conversationsRepo.claimDraft(tx, pending.id, { now: ctx.receivedAt })
@@ -5498,9 +5515,13 @@ function typedIn(text: string, name: string): boolean {
   for (;;) {
     const at = hay.indexOf(needle, from);
     if (at < 0) return false;
-    const before = at === 0 ? '' : hay[at - 1]!;
-    const after = hay[at + needle.length] ?? '';
-    if (!/[\p{L}\p{N}]/u.test(before) && !/[\p{L}\p{N}]/u.test(after)) return true;
+    /* Whole words only, judged by code point, never by UTF-16 unit: a letter, number or combining
+     * mark on either side joins the match to a longer word. A mark NFKC could not compose stays
+     * after its letter, so "Ada" followed by one is another name (CodeRabbit on #437 at
+     * 56c4140). */
+    const joinedBefore = /[\p{L}\p{N}\p{M}]$/u.test(hay.slice(0, at));
+    const joinedAfter = /^[\p{L}\p{N}\p{M}]/u.test(hay.slice(at + needle.length));
+    if (!joinedBefore && !joinedAfter) return true;
     from = at + 1;
   }
 }
@@ -5511,7 +5532,8 @@ function customerTokenOf(command: Record<string, unknown>): string | null {
 }
 
 /**
- * What a correction carries over from the draft it corrects (CG5, owner ruling 21 Nov 2026).
+ * What a correction carries over from the draft it corrects (CG5; the customer inheritance is
+ * OWN-100, owner ruling 21 Nov 2026).
  *
  * The model reads a correction from its own words and never sees an earlier turn, so "No, 4
  * not 3" names nobody. The customer comes from the TRUSTED pending draft, never from a token
@@ -5519,7 +5541,8 @@ function customerTokenOf(command: Record<string, unknown>): string | null {
  * after this, so no earlier token is ever whitelisted.
  *
  * Every record read as a correction of a live waiting draft first passes `correctionMayChange`
- * (OD-60): one draft waiting, of the same kind, the member's own, nothing in front of it or since
+ * (OD-60, PROVISIONAL: Option A is implemented and the owner's ruling is not yet recorded in
+ * `REKODA_OWNER_DECISIONS.md`, so it is not approved product behaviour): one draft waiting, of the same kind, the member's own, nothing in front of it or since
  * its preview. Failing it, the correction is `unclear`: asked about,
  * superseding nothing. Passing it, the correction supersedes the draft. Only a sale, a payment or
  * an order the model read with no customer at all also keeps the draft's customer, and then the
@@ -5629,6 +5652,9 @@ async function correctionInheritance(
    * reading the model could not make (`Unclear`) or a question is answered and leaves the preview
    * as it was (independent review of #437, OWN-100). */
   if (input.fromDocument || command.intent === 'Unclear' || command.intent === 'Query') return none;
+  /* Words that are no correction need no draft read: checked first, so an ordinary record runs no
+   * draft query while the business lock is held (CodeRabbit on #437 at 56c4140). */
+  if (!looksLikeCorrection(input.rawText, true)) return none;
 
   const except: string[] = [];
   let refusalInFront = false;
@@ -5649,7 +5675,6 @@ async function correctionInheritance(
   if (!target || !target.expiresAt || target.expiresAt.getTime() <= receivedAt.getTime()) {
     return none;
   }
-  if (!looksLikeCorrection(input.rawText, true)) return none;
 
   const stored = (target.command ?? {}) as Record<string, unknown>;
   const bearing = CUSTOMER_BEARING.has(command.intent);
@@ -6212,11 +6237,11 @@ async function interpretedReply(
     const found = await deps.gateway.findMention(businessId, mention);
     /* Only a name the merchant typed, or a customer this message was issued, is the one asked
      * about: a recorded name the model wrote is unknown here, never answered with that customer's
-     * balance (CodeRabbit on #437 at 3d66867; the record path's rule, G-137). */
+     * balance (CodeRabbit on #437 at 3d66867; the record path's rule, G-137). A photo's words are
+     * its caption and the page's text, both in `rawText`, so a name on neither is the model's too
+     * (CodeRabbit on #437 at 56c4140). */
     const known =
-      found && (fromDocument || typedIn(rawText, mention) || tokens.displays.has(found.token))
-        ? found
-        : null;
+      found && (typedIn(rawText, mention) || tokens.displays.has(found.token)) ? found : null;
     if (known) deps.gateway.noteMention(tokens, known.token, mention);
     /* Answered through the ordinary path, not by returning here: a question
      * leaves its read-only Query draft, which is what stops a later "yes"
@@ -6246,8 +6271,9 @@ async function interpretedReply(
      * unissued token, and whether or not the vault holds that name (G-137; OD-62(n), CodeRabbit
      * on #437 at ebeeadb and 58dd68b). A recorded name the merchant typed was tokenised before
      * the model read the message; a new one they typed keeps the vault path (ADR 0005 case 4). A
-     * photo's names are on the page, never in these words, and are left to the preview. */
-    if (!fromDocument && !typedIn(rawText, mention)) {
+     * photo's words are its caption and the page's text, both in `rawText`: a name on neither is
+     * the model's, never the receipt's (CodeRabbit on #437 at 56c4140). */
+    if (!typedIn(rawText, mention)) {
       const recorded = await deps.gateway.findMention(businessId, mention);
       /* Unless this message was issued that recorded customer's token, by a phone or an email of
        * theirs ("sold 3 wigs to 0803…" composes with their name, G-60). */

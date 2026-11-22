@@ -228,3 +228,49 @@ export async function openConfirmationsFor(
     expiresAt: new Date(row.expires_at),
   }));
 }
+
+/**
+ * Every unclaimed confirmation recorded for one command and subject, lapsed or not (CodeRabbit on
+ * #437 at 56c4140).
+ *
+ * For the question "was this consequence ever shown and recorded for this subject?", which an
+ * expiry does not change: a two-message erasure whose first ask recorded the current consequence
+ * still proceeds after that record lapsed inside the draft's window, and one that recorded none,
+ * or only an older consequence, is asked again. Whether the act may run NOW is the claim's
+ * question, never this one's.
+ */
+export async function unclaimedConfirmationsForSubject(
+  tx: TenantDb,
+  businessId: string,
+  command: string,
+  subject: string,
+): Promise<ConfirmationRow[]> {
+  const rows = await tx.execute<{
+    id: string;
+    command: string;
+    subject: string | null;
+    actor: string;
+    ingress: string;
+    consequence: string;
+    reason: string;
+    expires_at: Date;
+  }>(sql`
+    SELECT id, command, subject, actor, ingress, consequence, reason, expires_at
+    FROM pending_confirmations
+    WHERE business_id = ${businessId}::uuid
+      AND command = ${command}::text
+      AND subject = ${subject}::text
+      AND claimed_at IS NULL
+    ORDER BY created_at DESC
+  `);
+  return [...rows].map((row) => ({
+    id: row.id,
+    command: row.command,
+    subject: row.subject,
+    actor: row.actor,
+    ingress: row.ingress,
+    consequence: row.consequence,
+    reason: row.reason,
+    expiresAt: new Date(row.expires_at),
+  }));
+}

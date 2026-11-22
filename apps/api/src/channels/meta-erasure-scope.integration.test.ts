@@ -168,3 +168,90 @@ describe('an erasure whose second ask is processed after the first confirmation 
     expect(claimed).toBe(0);
   });
 });
+
+/* The first ask must have RECORDED the consequence that runs now (CodeRabbit on #437 at 56c4140).
+ * A pending first ask with no confirmation row (one parked before recording was mandatory), or
+ * one whose older, narrower record lapsed before the second ask arrived, showed nothing the
+ * merchant agreed to: the next exact phrase is a new first ask and erases nothing. A record of
+ * the current consequence that lapsed inside the draft's window still erases, as before. */
+describe('an erasure whose first ask recorded no current consequence', () => {
+  async function setUp() {
+    const user = await identity.upsertUserByPhone(db, `+${OWNER}`);
+    const business = await identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    const claimed = () =>
+      withBusiness(db, business.id, (tx) =>
+        tx.execute<{ n: number }>(
+          sql`SELECT count(*)::int AS n FROM pending_confirmations
+               WHERE business_id = ${business.id}::uuid AND command = 'EraseData'
+                 AND claimed_at IS NOT NULL`,
+        ),
+      ).then((r) => r[0]?.n);
+    const asOwner = async (
+      run: (ownerDb: ReturnType<typeof createDb>['db']) => Promise<unknown>,
+    ) => {
+      const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+      try {
+        await run(ownerDb);
+      } finally {
+        await close();
+      }
+    };
+    return { business, claimed, asOwner };
+  }
+
+  it('erases nothing when the first ask has no confirmation row', async () => {
+    const { business, claimed, asOwner } = await setUp();
+    await say('DELETE MY DATA', 'wamid.N1');
+    expect(stubSender.lastText).toBe(replies.confirmErasure().text);
+    await asOwner((ownerDb) =>
+      ownerDb.execute(sql`
+        DELETE FROM pending_confirmations
+         WHERE business_id = ${business.id}::uuid AND command = 'EraseData'`),
+    );
+
+    await say('DELETE MY DATA', 'wamid.N2');
+    expect(stubSender.lastText).toBe(replies.confirmErasure().text);
+    expect(await claimed()).toBe(0);
+
+    await say('DELETE MY DATA', 'wamid.N3');
+    expect(stubSender.lastText).not.toBe(replies.confirmErasure().text);
+    expect(await claimed()).toBe(1);
+  });
+
+  it('erases nothing when an older consequence lapsed before the second ask arrived', async () => {
+    const { business, claimed, asOwner } = await setUp();
+    await say('DELETE MY DATA', 'wamid.L1');
+    await asOwner((ownerDb) =>
+      ownerDb.execute(sql`
+        UPDATE pending_confirmations
+           SET consequence = 'Every customer contact detail for this business will be permanently deleted.',
+               expires_at = created_at + interval '1 millisecond'
+         WHERE business_id = ${business.id}::uuid AND command = 'EraseData'`),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    await say('DELETE MY DATA', 'wamid.L2');
+    expect(stubSender.lastText).toBe(replies.confirmErasure().text);
+    expect(await claimed()).toBe(0);
+  });
+
+  it('still erases when the current consequence lapsed inside the draft window', async () => {
+    const { business, claimed, asOwner } = await setUp();
+    await say('DELETE MY DATA', 'wamid.C1');
+    await asOwner((ownerDb) =>
+      ownerDb.execute(sql`
+        UPDATE pending_confirmations
+           SET expires_at = created_at + interval '1 millisecond'
+         WHERE business_id = ${business.id}::uuid AND command = 'EraseData'`),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    await say('DELETE MY DATA', 'wamid.C2');
+    expect(stubSender.lastText).not.toBe(replies.confirmErasure().text);
+    expect(await claimed()).toBe(1);
+  });
+});

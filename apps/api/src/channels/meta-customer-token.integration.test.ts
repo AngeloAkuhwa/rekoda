@@ -327,3 +327,30 @@ describe('a phone or email nobody recorded creates no customer until a record ne
     expect(await plaintextIn(business.id, ['8039998888', 'CUSTOMER_U'])).toEqual([]);
   });
 });
+
+/* A combining mark is part of the word it follows: "Ada" followed by a mark with no precomposed
+ * form is another name, so the model's "Ada" was never typed and a recorded Ada is not put on the
+ * record (CodeRabbit on #437 at 56c4140). */
+describe('a typed name followed by a combining mark', () => {
+  it('is not the recorded name without the mark', async () => {
+    const business = await seedMerchant();
+    const ada = await deps.gateway.resolveMention(business.id, 'Ada');
+    await invoiceTo(business.id, ada.token);
+    const before = await footprint(business.id);
+
+    await say('wamid.T-mark', payment({ kind: 'mention', mention: 'Ada' }), 'Ada͆ paid 20k');
+
+    expect(stubSender.lastText).toContain('could not tell which customer');
+    expect(await footprint(business.id)).toEqual(before);
+  });
+
+  it('a name followed by punctuation is still typed', async () => {
+    const business = await seedMerchant();
+    const ada = await deps.gateway.resolveMention(business.id, 'Ada');
+    await invoiceTo(business.id, ada.token);
+
+    await say('wamid.T-punct', payment({ kind: 'mention', mention: 'Ada' }), 'Ada, paid 20k');
+
+    expect(stubSender.lastText).not.toContain('could not tell which customer');
+  });
+});
