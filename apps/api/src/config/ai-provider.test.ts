@@ -147,6 +147,7 @@ describe('the role ensemble (docs/ai-model-strategy.md)', () => {
   it('lets any role be re-pointed by env without touching code', () => {
     const config = loadConfig({
       ...BASE,
+      NODE_ENV: 'test',
       ANTHROPIC_API_KEY: 'k',
       AI_MODEL_CLASSIFIER: 'claude-sonnet-latest',
       AI_MODEL_TRANSCRIBER: 'whisper-1',
@@ -185,10 +186,28 @@ describe('the high-value verifier in production (OD-63(c))', () => {
     ).toThrow(/OD-63\(c\)/);
   });
 
-  it('is still allowed outside production, for development and tests', () => {
+  it.each(['development', 'test'])('is still allowed when NODE_ENV is %s', (nodeEnv) => {
     expect(
-      loadConfig({ ...BASE, ANTHROPIC_API_KEY: 'k', AI_MODEL_VISION_VERIFIER: 'gpt-test-verifier' })
-        .aiModelVisionVerifier,
+      loadConfig({
+        ...BASE,
+        NODE_ENV: nodeEnv,
+        ANTHROPIC_API_KEY: 'k',
+        AI_MODEL_VISION_VERIFIER: 'gpt-test-verifier',
+      }).aiModelVisionVerifier,
     ).toBe('gpt-test-verifier');
+  });
+
+  /* An unset or empty NODE_ENV is development for the other hardening rules, but it names no
+   * environment: a process started from a checkout against real data would send names nobody
+   * recorded to OpenAI. The verifier needs development or test said explicitly (CodeRabbit on #437
+   * at 4d9fa80). */
+  it.each([undefined, ''])('is refused when NODE_ENV is %j', (nodeEnv) => {
+    const env: Record<string, string> = {
+      ...BASE,
+      ANTHROPIC_API_KEY: 'k',
+      AI_MODEL_VISION_VERIFIER: 'gpt-test-verifier',
+    };
+    if (nodeEnv !== undefined) env['NODE_ENV'] = nodeEnv;
+    expect(() => loadConfig(env)).toThrow(/OD-63\(c\)/);
   });
 });

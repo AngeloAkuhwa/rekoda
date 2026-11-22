@@ -1094,7 +1094,10 @@ function fxMode(env: NodeJS.ProcessEnv, isProduction: boolean): FxMode {
  */
 function visionVerifier(env: NodeJS.ProcessEnv, isProduction: boolean): string | null {
   const model = env['AI_MODEL_VISION_VERIFIER'] || null;
-  if (model && isProduction) {
+  /* Allowed only where development or test is said explicitly: an unset NODE_ENV names no
+   * environment, so a process started from a checkout against real data is refused too
+   * (CodeRabbit on #437 at 4d9fa80). */
+  if (model && (isProduction || !NON_PRODUCTION_ENVS.has(env['NODE_ENV'] ?? ''))) {
     throw new ConfigError(
       'AI_MODEL_VISION_VERIFIER is refused in production until the owner rules on OD-63(c): ' +
         'the verifier would send names nobody recorded to OpenAI. Unset it to start.',
