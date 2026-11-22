@@ -255,3 +255,30 @@ describe('a question whose answer was reported failed after a refusal', () => {
     expect([...query]).toEqual([{ state: 'superseded', reason: 'preview_not_delivered' }]);
   });
 });
+
+/* The same, when the answer's send fails outright (Codex on #437 at cacc734): the question was never
+ * read, so it is retired as undelivered and never stands between the refusal and the next yes. Before
+ * the fix the failed-send path only marked previews unseen, which a never-previewed Query already is,
+ * so the next yes closed the refusal as stale; if that answer failed too, the repeated yes booked the
+ * older sale. */
+describe('a question whose answer failed to send after a refusal', () => {
+  it('is retired as undelivered, and two failed yeses book nothing', async () => {
+    const business = await saleAndRefusal('LQS');
+    const before = await footprint(business.id);
+
+    stubSender.failWith();
+    await say('wamid.LQS3', QUESTION, 'how much did I sell today');
+    const query = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ state: string; reason: string | null }>(sql`
+        SELECT state, retired_reason AS reason FROM command_drafts
+         WHERE business_id = ${business.id}::uuid AND intent = 'Query'`),
+    );
+    expect([...query]).toEqual([{ state: 'superseded', reason: 'preview_not_delivered' }]);
+
+    stubSender.failWith();
+    await plain('wamid.LQS4', 'yes');
+    await plain('wamid.LQS5', 'yes');
+    expect(stubSender.lastText).toBe(replies.previewBehindRefusal().text);
+    expect(await footprint(business.id)).toEqual(before);
+  });
+});

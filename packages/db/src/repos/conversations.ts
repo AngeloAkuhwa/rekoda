@@ -1070,6 +1070,18 @@ export async function markDraftUnseen(
      WHERE business_id = ${businessId}::uuid
        AND conversation_message_id = ${conversationMessageId}::uuid
        AND previewed`);
+  /* An answer to a question (a read-only Query draft, never previewed) whose send failed was never
+   * read: it is retired exactly as a late `failed` receipt retires it (`markPreviewUndelivered`), so
+   * it never stands between the member's refusal and their next yes (Codex on #437 at cacc734).
+   * A first DELETE MY DATA ask is not retired here: its pairing already refuses a prompt that was
+   * never sent (`draftReplyWasSent`). */
+  await tx.execute(sql`
+    UPDATE command_drafts SET state = 'superseded', retired_reason = 'preview_not_delivered',
+           updated_at = clock_timestamp()
+     WHERE business_id = ${businessId}::uuid
+       AND conversation_message_id = ${conversationMessageId}::uuid
+       AND state = 'pending'
+       AND intent = 'Query'`);
 }
 
 /**
