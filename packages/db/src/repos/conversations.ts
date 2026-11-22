@@ -1152,6 +1152,18 @@ export async function markPreviewUndelivered(
          AND d.state = 'pending'
          AND d.intent IN ('EraseData', 'Query')
       RETURNING d.id
+    ), held_asks AS (
+      -- A held purchase whose identity question WhatsApp accepted and then failed was asked
+      -- nobody: withdrawn exactly as withdrawHeld does when the question's send fails at once
+      -- (OWN-102(4)), so it never closes its member's refusal (hasDraftsAfterBy) and is never
+      -- answered (CodeRabbit on #437 at aff3f63).
+      UPDATE command_drafts d SET state = 'superseded', withdrawn = true,
+             retired_reason = 'preview_not_delivered', updated_at = clock_timestamp()
+        FROM reply
+       WHERE d.business_id = ${businessId}::uuid
+         AND d.conversation_message_id = reply.request_id
+         AND d.state = 'held'
+      RETURNING d.id
     ), lost_reads AS (
       -- A question answer that failed after its Query was already retired (by the member's
       -- answer to their refusal) keeps the record that it was never read, so the refusal's own
@@ -1200,7 +1212,8 @@ export async function markPreviewUndelivered(
          AND q.id::text IN (SELECT jsonb_array_elements_text(a.reads) FROM answered a)
       RETURNING q.id
     )
-    SELECT ((SELECT count(*) FROM drafts) + (SELECT count(*) FROM asks))::text AS drafts,
+    SELECT ((SELECT count(*) FROM drafts) + (SELECT count(*) FROM asks)
+            + (SELECT count(*) FROM held_asks))::text AS drafts,
            (SELECT count(*) FROM continuations)::text AS continuations,
            ((SELECT count(*) FROM refusals) + (SELECT count(*) FROM reads))::text AS reopened`);
   const row = [...rows][0];

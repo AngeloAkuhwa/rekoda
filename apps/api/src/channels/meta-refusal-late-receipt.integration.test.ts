@@ -15,6 +15,7 @@ import {
   messagePayload,
   post,
   stubSender,
+  stubTransport,
   useMetaWebhookHarness,
 } from './meta-webhook.fixtures.js';
 import { drain } from './meta-voice-note.fixtures.js';
@@ -311,3 +312,51 @@ async function queryStates(businessId: string): Promise<string[]> {
   );
   return [...rows].map((r) => `${r.state}:${r.reason ?? ''}`);
 }
+
+/**
+ * A held purchase's identity question that WhatsApp accepted and then reported failed asked
+ * nobody: the held purchase is withdrawn, as it is when the question's send fails at once
+ * (OWN-102(4)), so it is not something its member read since their refusal. The member's next yes
+ * is about their refusal, never another member's newer preview (CodeRabbit on #437 at aff3f63).
+ */
+describe('a held purchase whose question failed late', () => {
+  const RICE = {
+    intent: 'RecordPurchase',
+    supplierMention: 'Emeka',
+    description: '5 bags of rice',
+    amount: 50_000,
+    reportedPayment: 50_000,
+    paymentMethod: 'cash',
+    productMention: 'bags of rice',
+    quantity: 5,
+  };
+
+  it("is withdrawn, and the member's yes answers their refusal and books nothing", async () => {
+    const business = await seedMerchant();
+    const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+    await identity.addMembership(db, business.id, delegate.id, 'delegate');
+    await say('wamid.HL1', RICE, 'bought 5 bags rice 50k cash');
+    await post(mediaMessage('wamid.HL2', STICKER, DELEGATE));
+    await drain();
+    stubTransport.replyWith(RICE);
+    await post(messagePayload(DELEGATE, 'wamid.HL3', 'bought 5 bags rice 50k cash'));
+    await drain();
+    expect(stubSender.lastText).toContain('Is this the same purchase?');
+    await receipt(DELEGATE, lastWamid(), 'failed');
+    await drain();
+    const held = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ state: string; withdrawn: boolean }>(sql`
+        SELECT state, withdrawn FROM command_drafts
+         WHERE business_id = ${business.id}::uuid AND intent = 'RecordPurchase'
+           AND requested_by = ${delegate.id}::uuid`),
+    );
+    expect([...held]).toEqual([{ state: 'superseded', withdrawn: true }]);
+
+    await say('wamid.HL4', sale({ kind: 'none' }), 'sold 2 wigs for 100k');
+    const before = await footprint(business.id);
+    await post(messagePayload(DELEGATE, 'wamid.HL5', 'yes'));
+    await drain();
+    expect(await footprint(business.id)).toEqual(before);
+    expect(await refusalStates(business.id)).toEqual([`+${DELEGATE}:superseded`]);
+  });
+});
