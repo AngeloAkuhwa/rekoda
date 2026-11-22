@@ -135,18 +135,27 @@ describe('a preview has a time limit (G-23)', () => {
 
     const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
     try {
-      /* The yes's answer fails to be recorded once, so its job is retried. */
+      /* The yes's answer fails to be recorded once, so its job is retried.
+       * Stored bodies are placeholders (G-136), so the answer is found by what
+       * it replies to: the inbound row of the yes, by its provider id. */
       await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS g23_ptr_once`);
       await ownerDb.execute(sql`
         CREATE OR REPLACE FUNCTION g23_fail_ptr_once() RETURNS trigger
           SECURITY DEFINER AS $$
         BEGIN
-          IF nextval('g23_ptr_once') = 1 THEN RAISE EXCEPTION 'g23: answer fails once'; END IF;
+          IF EXISTS (
+            SELECT 1 FROM conversation_messages m
+             WHERE m.id = NEW.reply_to_message_id
+               AND m.business_id = NEW.business_id
+               AND m.provider_message_id = 'wamid.G23-q2-yes'
+          ) AND nextval('g23_ptr_once') = 1 THEN
+            RAISE EXCEPTION 'g23: answer fails once';
+          END IF;
           RETURN NEW;
         END $$ LANGUAGE plpgsql`);
       await ownerDb.execute(sql`
         CREATE TRIGGER g23_fail_ptr_once BEFORE INSERT ON conversation_messages
-          FOR EACH ROW WHEN (NEW.direction = 'outbound' AND NEW.body LIKE 'I sent you a preview%')
+          FOR EACH ROW WHEN (NEW.direction = 'outbound' AND NEW.reply_to_message_id IS NOT NULL)
           EXECUTE FUNCTION g23_fail_ptr_once()`);
 
       /* The correction reaches Rekoda first, the yes after; both queue, and
@@ -162,6 +171,15 @@ describe('a preview has a time limit (G-23)', () => {
       await drain();
       await runRetriesNow(ownerDb, business.id);
       await drain();
+      /* The injected failure happened, and the yes's answer was then recorded:
+       * the sequence was drawn once for the failure and once for the retry. A
+       * trigger that never matches would leave it undrawn and the test would
+       * pass without retrying anything. */
+      const drawn = await ownerDb.execute<{ last_value: string; is_called: boolean }>(
+        sql`SELECT last_value, is_called FROM g23_ptr_once`,
+      );
+      expect(drawn[0]?.is_called).toBe(true);
+      expect(Number(drawn[0]?.last_value)).toBe(2);
     } finally {
       await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g23_fail_ptr_once ON conversation_messages`);
       await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g23_fail_ptr_once()`);
