@@ -300,3 +300,69 @@ describe('a junk page whose refusal fails to record', () => {
     expect([...drafts].map((d) => conversationsRepo.isRefusalDraft(d))).toEqual([true]);
   });
 });
+
+/* G-137 on a photographed page (CodeRabbit on #437 at 56c4140): a buyer the model names that is
+ * nowhere on the page or in the caption is the model's, not the receipt's. It creates nobody and
+ * drafts nothing, exactly as an untyped name in a text message. A buyer the page does name is
+ * previewed as before. */
+describe('a receipt photo whose buyer the model names', () => {
+  const SALE_TO = (mention: string) => ({
+    intent: 'RecordSale',
+    customer: { kind: 'mention', mention },
+    items: [{ name: 'wig', quantity: 2, unitPrice: 50_000 }],
+    statedTotal: 100_000,
+    reportedPayment: 0,
+    paymentMethod: 'transfer',
+    discount: null,
+    deliveryFee: null,
+    dueDescription: null,
+  });
+  const customersOf = (businessId: string) =>
+    withBusiness(db, businessId, (tx) =>
+      tx.execute<{ n: number }>(
+        sql`SELECT count(*)::int AS n FROM customers WHERE business_id = ${businessId}::uuid`,
+      ),
+    ).then((r) => r[0]!.n);
+  const salesDrafts = (businessId: string) =>
+    withBusiness(db, businessId, (tx) =>
+      tx.execute<{ n: number }>(
+        sql`SELECT count(*)::int AS n FROM command_drafts
+             WHERE business_id = ${businessId}::uuid AND intent = 'RecordSale'`,
+      ),
+    ).then((r) => r[0]!.n);
+
+  it('creates nobody and drafts nothing when the page names no buyer', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'RECEIPT 2 wigs TOTAL 100,000', confidence: 0.9 });
+    stubTransport.replyWith(SALE_TO('Bola Ige'));
+
+    await post(photoPayload('2348031234567', 'wamid.PB1'));
+    await drain();
+
+    expect(stubSender.lastText).toContain('could not tell which customer');
+    expect(await customersOf(business.id)).toBe(0);
+    expect(await salesDrafts(business.id)).toBe(0);
+    await post(messagePayload('2348031234567', 'wamid.PB1-yes', 'yes'));
+    await drain();
+    const invoices = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ n: number }>(
+        sql`SELECT count(*)::int AS n FROM invoices WHERE business_id = ${business.id}::uuid`,
+      ),
+    ).then((r) => r[0]!.n);
+    expect(invoices).toBe(0);
+  });
+
+  it('previews the buyer the page names', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'RECEIPT Bill to: Bola Ige 2 wigs TOTAL 100,000', confidence: 0.9 });
+    stubTransport.replyWith(SALE_TO('Bola Ige'));
+
+    await post(photoPayload('2348031234567', 'wamid.PB2'));
+    await drain();
+
+    expect(stubSender.lastText).not.toContain('could not tell which customer');
+    expect(await salesDrafts(business.id)).toBe(1);
+  });
+});

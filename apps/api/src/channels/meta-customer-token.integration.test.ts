@@ -133,6 +133,19 @@ describe('a record names a customer only by a token this message was issued (G-1
     expect(await footprint(business.id)).toEqual(before);
   });
 
+  /* A combining mark continues a word: a name the merchant typed with one ("Ada" and U+0331,
+   * which has no precomposed form) is not the shorter name (CodeRabbit on #437 at 56c4140). */
+  it('a name the merchant typed with a trailing combining mark is not the shorter name', async () => {
+    const business = await seedMerchant();
+    const before = await footprint(business.id);
+
+    await say('wamid.T2cm', payment({ kind: 'mention', mention: 'Ada' }), 'Ada\u0331 paid 20k');
+
+    expect(stubSender.lastText).toContain('could not tell which customer');
+    expect(await footprint(business.id)).toEqual(before);
+    expect(await deps.gateway.findMention(business.id, 'Ada')).toBeNull();
+  });
+
   it('a new customer the merchant typed is created at the sale and confirmed', async () => {
     const business = await seedMerchant();
     const before = await footprint(business.id);

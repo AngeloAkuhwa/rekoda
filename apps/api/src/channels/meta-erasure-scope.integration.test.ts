@@ -168,3 +168,44 @@ describe('an erasure whose second ask is processed after the first confirmation 
     expect(claimed).toBe(0);
   });
 });
+
+/* A first ask with no recorded consequence at all (one parked before recording became mandatory,
+ * or whose record is gone) showed the merchant nothing this system can prove: the next exact
+ * phrase is asked again and recorded, and erases nothing (CodeRabbit on #437 at 56c4140). */
+describe('an erasure whose first ask has no recorded consequence', () => {
+  it('is asked again before anything is erased', async () => {
+    const user = await identity.upsertUserByPhone(db, `+${OWNER}`);
+    const business = await identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    await say('DELETE MY DATA', 'wamid.L1');
+    expect(stubSender.lastText).toBe(replies.confirmErasure().text);
+
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`
+        DELETE FROM pending_confirmations
+         WHERE business_id = ${business.id}::uuid AND command = 'EraseData'`);
+    } finally {
+      await close();
+    }
+    const claimed = () =>
+      withBusiness(db, business.id, (tx) =>
+        tx.execute<{ n: number }>(
+          sql`SELECT count(*)::int AS n FROM pending_confirmations
+               WHERE business_id = ${business.id}::uuid AND command = 'EraseData'
+                 AND claimed_at IS NOT NULL`,
+        ),
+      ).then((r) => r[0]?.n);
+
+    await say('DELETE MY DATA', 'wamid.L2');
+    expect(stubSender.lastText).toBe(replies.confirmErasure().text);
+    expect(await claimed()).toBe(0);
+
+    await say('DELETE MY DATA', 'wamid.L3');
+    expect(stubSender.lastText).not.toBe(replies.confirmErasure().text);
+    expect(await claimed()).toBe(1);
+  });
+});

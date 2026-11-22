@@ -2160,9 +2160,11 @@ async function deterministicReply(
         : [];
       /* And the first ask's prompt must have reached WhatsApp: a prompt whose send failed showed
        * the merchant nothing, so this ask is a new first ask (CodeRabbit on #437 at 58dd68b). */
+      /* A first ask with no recorded consequence proves nothing was shown: one parked before the
+       * recording became mandatory, or whose record is gone, is a new first ask too (CodeRabbit on
+       * #437 at 56c4140). */
       const shownBefore =
-        (askedBefore.length === 0 ||
-          askedBefore.some((c) => c.consequence === ERASURE_CONSEQUENCE)) &&
+        (!paired || askedBefore.some((c) => c.consequence === ERASURE_CONSEQUENCE)) &&
         (!paired || (await conversationsRepo.draftReplyWasSent(tx, businessId, pending.id)));
       const claim =
         paired && shownBefore
@@ -5500,7 +5502,8 @@ function typedIn(text: string, name: string): boolean {
     if (at < 0) return false;
     const before = at === 0 ? '' : hay[at - 1]!;
     const after = hay[at + needle.length] ?? '';
-    if (!/[\p{L}\p{N}]/u.test(before) && !/[\p{L}\p{N}]/u.test(after)) return true;
+    /* A combining mark continues the word it follows (CodeRabbit on #437 at 56c4140). */
+    if (!/[\p{L}\p{N}\p{M}]/u.test(before) && !/[\p{L}\p{N}\p{M}]/u.test(after)) return true;
     from = at + 1;
   }
 }
@@ -5511,7 +5514,10 @@ function customerTokenOf(command: Record<string, unknown>): string | null {
 }
 
 /**
- * What a correction carries over from the draft it corrects (CG5, owner ruling 21 Nov 2026).
+ * What a correction carries over from the draft it corrects (CG5). Customer inheritance is
+ * OWN-100 (owner ruling 21 Nov 2026); the `correctionMayChange` eligibility gate is OD-60 Option
+ * A, implemented provisionally while that ruling is still to be recorded (CodeRabbit on #437 at
+ * 56c4140).
  *
  * The model reads a correction from its own words and never sees an earlier turn, so "No, 4
  * not 3" names nobody. The customer comes from the TRUSTED pending draft, never from a token
@@ -5629,6 +5635,9 @@ async function correctionInheritance(
    * reading the model could not make (`Unclear`) or a question is answered and leaves the preview
    * as it was (independent review of #437, OWN-100). */
   if (input.fromDocument || command.intent === 'Unclear' || command.intent === 'Query') return none;
+  /* Wording first: it needs no draft, so an ordinary record skips the draft scan below while the
+   * business lock is held (CodeRabbit on #437 at 56c4140). */
+  if (!looksLikeCorrection(input.rawText, true)) return none;
 
   const except: string[] = [];
   let refusalInFront = false;
@@ -5649,7 +5658,6 @@ async function correctionInheritance(
   if (!target || !target.expiresAt || target.expiresAt.getTime() <= receivedAt.getTime()) {
     return none;
   }
-  if (!looksLikeCorrection(input.rawText, true)) return none;
 
   const stored = (target.command ?? {}) as Record<string, unknown>;
   const bearing = CUSTOMER_BEARING.has(command.intent);
@@ -6214,9 +6222,7 @@ async function interpretedReply(
      * about: a recorded name the model wrote is unknown here, never answered with that customer's
      * balance (CodeRabbit on #437 at 3d66867; the record path's rule, G-137). */
     const known =
-      found && (fromDocument || typedIn(rawText, mention) || tokens.displays.has(found.token))
-        ? found
-        : null;
+      found && (typedIn(rawText, mention) || tokens.displays.has(found.token)) ? found : null;
     if (known) deps.gateway.noteMention(tokens, known.token, mention);
     /* Answered through the ordinary path, not by returning here: a question
      * leaves its read-only Query draft, which is what stops a later "yes"
@@ -6246,8 +6252,9 @@ async function interpretedReply(
      * unissued token, and whether or not the vault holds that name (G-137; OD-62(n), CodeRabbit
      * on #437 at ebeeadb and 58dd68b). A recorded name the merchant typed was tokenised before
      * the model read the message; a new one they typed keeps the vault path (ADR 0005 case 4). A
-     * photo's names are on the page, never in these words, and are left to the preview. */
-    if (!fromDocument && !typedIn(rawText, mention)) {
+     * photo's words are its caption and the page's extracted text, so a buyer the model names
+     * that the receipt never shows is refused the same way (CodeRabbit on #437 at 56c4140). */
+    if (!typedIn(rawText, mention)) {
       const recorded = await deps.gateway.findMention(businessId, mention);
       /* Unless this message was issued that recorded customer's token, by a phone or an email of
        * theirs ("sold 3 wigs to 0803…" composes with their name, G-60). */
