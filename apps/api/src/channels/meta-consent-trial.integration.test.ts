@@ -284,7 +284,9 @@ describe('consent (STOP/START) and erasure, as facts not sentences', () => {
 
     /* One more than the test seeds: seedMerchant records Ada (G-137), and erasure takes her name too. */
     expect(stubSender.lastText).toContain('deleted (2 records)');
-    expect(stubSender.lastText).toContain('Your conversation history and account can be deleted too');
+    expect(stubSender.lastText).toContain(
+      'Your conversation history and account can be deleted too',
+    );
     // No scheme, no www, and no bare `name.tld` a phone would still link.
     expect(stubSender.lastText).not.toMatch(/:\/\/|www\.|[a-z0-9-]\.[a-z]{2,}/i);
     const left = await withBusiness(db, business.id, (tx) =>

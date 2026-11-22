@@ -274,6 +274,23 @@ describe('a question that names a customer', () => {
     expect(stubSender.lastText).toContain('₦150,000');
   });
 
+  /* Two customers named and none chosen: asked which, never "no unpaid invoice" (CodeRabbit on #437
+   * at fadc878). */
+  it('a balance question naming two known customers that the model left unscoped asks which', async () => {
+    const business = await seedMerchant('+2348031234567');
+    const ada = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+    const bola = await deps.gateway.resolveMention(business.id, 'Bola Ige');
+    await seedTrading(business.id, ada.token);
+    await seedTrading(business.id, bola.token, 2_000_000);
+
+    await ask(
+      'wamid.Q5TW',
+      askAbout({ topic: 'customer_balance', customer: null }),
+      'how much do Ada Obi and Bola Ige owe me',
+    );
+    expect(stubSender.lastText).toContain('I can tell you what one customer owes you');
+  });
+
   /**
    * A short follow-up must not resume the refused question into the business's totals
    * (independent review of #437): "last month" after "how much did Ada buy this month"
