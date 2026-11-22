@@ -510,6 +510,7 @@ Additions, all in core:
 - **Previous period zero, current positive:** "₦X this period; nothing was recorded in the comparison period, so there is no percentage."
 - **Current zero:** for a money metric, "{Metric} {window} comes to ₦0." (sales today: "Sales so far today come to ₦0."); for a count, "{window}: 0 {unit}." ("This month: 0 sales."). It states the computed figure in the metric's own unit, never that nothing was recorded: a sale and its void in the same period net to zero while both postings exist (CodeRabbit on #437 at `96b1b52` and `3d66867`). It names the metric compared and never a different one: an expenses comparison at zero while sales exist speaks of expenses, never of sales. This is not "you sold nothing": the books only hold what was recorded.
 - **Both zero:** for money, "{Metric} come to ₦0 in both periods."; for a count, "0 {unit} in both periods."
+- **A percentage metric (collection rate) at zero in either period: OPEN, owner to rule.** The rules above cover money and counts only; how "50% then 0%" or a 0% rate is shown, and in which unit, is not decided, and no template is assumed (CodeRabbit on #437 at `cf96697`).
 - The metric label and the window come from the deterministic command, never from the model, and each label is a fixed core string. Tests: one per metric, including an expenses comparison at zero while sales were recorded (CodeRabbit on #437 at `ebeeadb`).
 
 ### 6.4 Missing data versus recorded zero

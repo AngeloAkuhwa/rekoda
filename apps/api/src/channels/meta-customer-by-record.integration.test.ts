@@ -318,6 +318,17 @@ describe('customer creation follows the record, not the token (owner review of #
       conversationsRepo.pendingDraftToAnswer(tx, business.id, { asOf: new Date() }),
     );
     expect(JSON.stringify(draft?.command ?? {})).not.toContain('CUSTOMER_U');
+    /* The draft exists and names the customer the phone became (CodeRabbit on #437 at cf96697). */
+    const [made] = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ token: string }>(
+        sql`SELECT token FROM customers WHERE business_id = ${business.id}::uuid`,
+      ),
+    );
+    expect(draft?.intent).toBe('RecordPayment');
+    expect((draft?.command as { customer?: unknown }).customer).toEqual({
+      kind: 'token',
+      token: made!.token,
+    });
   });
 
   it('an invoice to an unknown email is issued to the customer that email became', async () => {

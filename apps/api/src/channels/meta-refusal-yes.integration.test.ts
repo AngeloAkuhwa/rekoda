@@ -355,6 +355,14 @@ describe('a yes after a refused record', () => {
     // The last thing the merchant saw is the refusal: this yes saves nothing.
     await plain('wamid.R53', 'yes');
     expect((await footprint(business.id)).invoices).toBe(0);
+    /* Nor the diesel expense whose preview never arrived (CodeRabbit on #437 at cf96697). */
+    const [spent] = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ expenses: number; confirmed: number }>(sql`
+        SELECT (SELECT count(*)::int FROM expenses WHERE business_id = ${business.id}::uuid) AS expenses,
+               (SELECT count(*)::int FROM command_drafts WHERE business_id = ${business.id}::uuid
+                  AND intent = 'RecordExpense' AND state = 'confirmed') AS confirmed`),
+    );
+    expect(spent).toEqual({ expenses: 0, confirmed: 0 });
   });
   /* CodeRabbit on #437 at 3799977: the same receipt arriving after the preview's window closed. The
    * expired preview was never read either, so the refusal is still the last thing the owner saw,

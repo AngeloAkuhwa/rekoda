@@ -1185,6 +1185,8 @@ export async function markPreviewUndelivered(
        WHERE d.business_id = ${businessId}::uuid
          AND d.conversation_message_id = reply.request_id
          AND d.state IN ('pending', 'expired')
+         -- A repeated receipt changes nothing (CodeRabbit on #437 at cf96697).
+         AND d.retired_reason IS DISTINCT FROM 'preview_not_delivered'
          AND (d.intent IN ('EraseData', 'Query')
               /* An undelivered clarification question, never a refusal (CodeRabbit on #437 at
                * 88258dc). */
@@ -1205,17 +1207,18 @@ export async function markPreviewUndelivered(
     ), lost_reads AS (
       -- A question answer that failed after its Query was already retired (by the member's
       -- answer to their refusal) keeps the record that it was never read, so the refusal's own
-      -- later failure never puts it back to pending (CodeRabbit on #437 at cacc734).
+      -- later failure never puts it back to pending (CodeRabbit on #437 at cacc734). So does any
+      -- draft already superseded when its preview's receipt failed: a clarification (503acf3) or a
+      -- record superseded by another member's request (cf96697). Never a refusal, and a repeated
+      -- receipt changes nothing.
       UPDATE command_drafts d SET retired_reason = 'preview_not_delivered',
              updated_at = clock_timestamp()
         FROM reply
        WHERE d.business_id = ${businessId}::uuid
          AND d.conversation_message_id = reply.request_id
          AND d.state = 'superseded'
-         AND (d.intent = 'Query'
-              /* A retired clarification question too, never a refusal (CodeRabbit on #437 at
-               * 503acf3). */
-              OR (d.intent = 'Unclear' AND COALESCE(d.command->>'refused', '') <> 'true'))
+         AND d.retired_reason IS DISTINCT FROM 'preview_not_delivered'
+         AND NOT (d.intent = 'Unclear' AND COALESCE(d.command->>'refused', '') = 'true')
       RETURNING d.id
     ), continuations AS (
       UPDATE conversation_continuations c
@@ -2632,7 +2635,7 @@ const META_TYPES = [
 const anchored = (labels: readonly string[]) => '^\\[(?:' + labels.join('|') + ')\\]$';
 const INBOUND_STRUCTURAL_BODY = anchored([
   ...DETERMINISTIC_KINDS,
-  'number:[0-9]+',
+  'number:[0-9]{1,2}',
   ...META_TYPES.map((t) => `${t} message`),
   'text message',
   'voice note',

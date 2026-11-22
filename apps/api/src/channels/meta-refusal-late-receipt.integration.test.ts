@@ -399,3 +399,33 @@ describe("an undelivered clarification before another member's preview", () => {
     },
   );
 });
+
+/* A preview superseded before WhatsApp reported it failed was never read either (CodeRabbit on #437
+ * at cf96697): it never makes the member's refusal stale, so their yes never books another member's
+ * preview. */
+describe('a superseded preview reported failed after a refusal', () => {
+  it("leaves the refusal to the member's yes, which books nothing", async () => {
+    const business = await seedMerchant();
+    const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+    await identity.addMembership(db, business.id, delegate.id, 'delegate');
+    await post(mediaMessage('wamid.SP1', STICKER, OWNER));
+    await drain();
+    await say('wamid.SP2', sale({ kind: 'none' }), 'sold 2 wigs for 100k');
+    const shown = lastWamid();
+    const owner = await identity.upsertUserByPhone(db, `+${OWNER}`);
+    await withBusiness(db, business.id, (tx) =>
+      tx.execute(sql`UPDATE command_drafts SET state = 'superseded'
+                      WHERE business_id = ${business.id}::uuid AND intent = 'RecordSale'
+                        AND requested_by = ${owner.id}::uuid`),
+    );
+    stubTransport.replyWith(sale({ kind: 'none' }));
+    await post(messagePayload(DELEGATE, 'wamid.SP3', 'sold 3 wigs for 150k'));
+    await drain();
+    await receipt(OWNER, shown, 'failed');
+    await drain();
+    const before = await footprint(business.id);
+
+    await plain('wamid.SP4', 'yes');
+    expect(await footprint(business.id)).toEqual(before);
+  });
+});

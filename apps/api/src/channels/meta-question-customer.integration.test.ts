@@ -230,7 +230,8 @@ describe('a question that names a customer', () => {
   /* The model leaving the customer out of a sales question the merchant asked about one customer
    * proves nothing (OWN-102(3)): the business's totals are never the answer (CodeRabbit on #437 at
    * b2703e7). A question that names nobody keeps them. */
-  it.each([['sales_summary'], ['expenses_summary']])(
+  /* Payables too: "how much do I owe Ada" (CodeRabbit on #437 at cf96697). */
+  it.each([['sales_summary'], ['expenses_summary'], ['supplier_balances']])(
     'a %s question naming a known customer that the model left unscoped gets no business total',
     async (topic) => {
       const business = await seedMerchant('+2348031234567');

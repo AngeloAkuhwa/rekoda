@@ -235,6 +235,7 @@ describe('what counts as a label the product writes (owner review of #437)', () 
     const kept: Array<['inbound' | 'outbound', string]> = [
       ['inbound', '[text message]'],
       ['inbound', '[number:2]'],
+      ['inbound', '[number:12]'],
       ['inbound', '[image message]'],
       ['inbound', '[message withheld: it held a protected detail]'],
       ['outbound', '[reply]'],
@@ -253,6 +254,8 @@ describe('what counts as a label the product writes (owner review of #437)', () 
       ['inbound', ' [text message]'],
       ['inbound', '[text message]\nBola Ige'],
       ['inbound', '[number:2a]'],
+      /* The router writes one or two digits; a longer run is someone's number (CodeRabbit, cf96697). */
+      ['inbound', '[number:1234567890]'],
       ['inbound', '[]'],
       ['outbound', '[template Ada Obi]'],
       /* Shaped like a template label, which proves nothing about who wrote it. */

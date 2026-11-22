@@ -20,6 +20,9 @@ describe('a correction clear enough to keep the draft customer (clearlyCorrects,
     'it was 60k not 50k',
     'the price should be 60k',
     'make it 5',
+    /* Not a time: a thousands figure and a unit that starts like "s"/"sec" (CodeRabbit, cf96697). */
+    'make it 6k',
+    'make it 5 sets',
     'make it ₦60,000',
     /* N for naira, as merchants type it (independent review of 4536d82). */
     'the price should be N60,000',
@@ -135,6 +138,9 @@ describe('a correction clear enough to keep the draft customer (clearlyCorrects,
     'should be 2 times',
     'make it 4.30',
     'should be 2.30',
+    /* Seconds are a time too (CodeRabbit on #437 at cf96697). */
+    'make it 5 seconds',
+    'should be 30 secs',
     'Bola bought 2 shoes for 30k, should be 2',
     '   ',
   ])('%j does not', (text) => {

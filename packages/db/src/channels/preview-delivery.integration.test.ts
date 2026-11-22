@@ -275,6 +275,28 @@ describe('an unseen preview can never be confirmed (G-20, owner ruling)', () => 
     expect(await claim(businessId, sent.draftId)).toEqual({ outcome: 'claimed' });
   });
 
+  /* A repeated receipt for a question already marked changes nothing (CodeRabbit, #437 cf96697). */
+  it.each(['expired', 'superseded'])(
+    'a repeated receipt leaves a %s question as it was',
+    async (st) => {
+      const businessId = await seedBusiness();
+      const sent = await previewed(businessId);
+      const stamp = () =>
+        withBusiness(app, businessId, (tx) =>
+          tx.execute<{ at: string }>(sql`SELECT updated_at::text AS at FROM command_drafts
+                                        WHERE id = ${sent.draftId}::uuid`),
+        ).then((r) => [...r][0]!.at);
+      await withBusiness(app, businessId, (tx) =>
+        tx.execute(sql`UPDATE command_drafts SET previewed = false, intent = 'Query', state = ${st},
+                             command = '{"intent":"Query"}'::jsonb WHERE id = ${sent.draftId}::uuid`),
+      );
+      await undelivered(businessId, sent.wamid);
+      const first = await stamp();
+      expect(await undelivered(businessId, sent.wamid)).toBe(0);
+      expect(await stamp()).toBe(first);
+    },
+  );
+
   it('a draft that is no financial preview (an erasure ask) is still claimed', async () => {
     const businessId = await seedBusiness();
     const sent = await previewed(businessId);

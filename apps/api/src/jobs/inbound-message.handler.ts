@@ -6557,11 +6557,11 @@ async function interpretedReply(
     if (tokens.provisional?.has(only)) nameNotKnown = true;
     else command = { ...command, customer: { kind: 'token', token: only } };
   }
+  /* Every topic but a customer's own balance, as `acknowledge` refuses a customer token on any
+   * other topic: payables ("how much do I owe Ada") included (CodeRabbit on #437 at cf96697). */
   const namedButUnscoped =
     command.intent === 'Query' &&
-    (command.topic === 'sales_summary' ||
-      command.topic === 'expenses_summary' ||
-      command.topic === 'debtors') &&
+    command.topic !== 'customer_balance' &&
     (command.customer?.kind ?? 'none') === 'none' &&
     /* A customer token, recorded or provisional: an `ACCOUNT_n` names nobody (independent review
      * of #437 at 81d0b03). */
