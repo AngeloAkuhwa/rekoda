@@ -167,7 +167,9 @@ class OracleTransport implements ModelTransport {
         return reply({
           intent: 'Query',
           topic: checks.topic ?? 'sales_summary',
-          customer: checks.customerToken ? customer : null,
+          /* A question names its customer by token or, for a name nobody recorded, by mention
+           * (OD-66 eval case `scope-unknown-name`). */
+          customer: checks.customerToken || checks.customerMention ? customer : null,
           period: checks.period ?? null,
           periodText: checks.periodText ?? null,
           format: checks.format ?? 'chat',
