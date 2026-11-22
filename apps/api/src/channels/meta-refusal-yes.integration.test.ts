@@ -315,6 +315,9 @@ describe('a yes after a refused record', () => {
     });
     await post(messagePayload(DELEGATE, 'wamid.R72', 'transport 5k cash'));
     await drain();
+    /* The delegate was shown the preview, so the branch is really exercised (CodeRabbit on #437 at
+     * 9c587bd). */
+    expect(stubSender.lastText).toContain('Please check this before I save it');
     await setPlanForTest(db, {
       businessId: business.id,
       plan: 'trial',
@@ -326,6 +329,14 @@ describe('a yes after a refused record', () => {
     expect(stubSender.lastText).not.toBe(replies.previewWaitingForAnotherMember().text);
     expect(stubSender.lastText).not.toContain('Ask them to reply');
     expect((await footprint(business.id)).invoices).toBe(0);
+    expect(stubSender.lastText).toContain('Your free trial has ended');
+    const [spent] = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ expenses: number; confirmed: number }>(sql`
+        SELECT (SELECT count(*)::int FROM expenses WHERE business_id = ${business.id}::uuid) AS expenses,
+               (SELECT count(*)::int FROM command_drafts WHERE business_id = ${business.id}::uuid
+                  AND intent = 'RecordExpense' AND state = 'confirmed') AS confirmed`),
+    );
+    expect(spent).toEqual({ expenses: 0, confirmed: 0 });
   });
 
   it('a newer preview that was never delivered does not close the refusal before it', async () => {

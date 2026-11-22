@@ -5593,9 +5593,14 @@ function draftNamesSomeone(
  * The labels a page puts in front of its buyer. Never a seller, supplier or delivery label: a
  * "Deliver to" contact or the merchant's own header is not who bought.
  */
-const BUYER_LABEL =
-  /\b(?:(?:(?:bill(?:ed)?|invoice(?:d)?|sold)\s+to|received\s+from)(?![\p{L}\p{N}\p{M}])\s*[:\-\u2013]?|(?:customer(?:\s+name)?|buyer|client)\s*[:\-\u2013])\s*/giu;
-/* The whole label: "Sold today" is no "Sold to" (CodeRabbit on #437 at b8330cd). */
+/* A prepositional label ("Sold to", "Bill to") is a field only at the start of a line, or followed
+ * by its colon or dash: "Not sold to Ada" inside a sentence labels nobody (CodeRabbit on #437 at
+ * 9c587bd). The whole label: "Sold today" is no "Sold to" (CodeRabbit on #437 at b8330cd). */
+const PREP_LABEL = String.raw`(?:(?:bill(?:ed)?|invoice(?:d)?|sold)\s+to|received\s+from)(?![\p{L}\p{N}\p{M}])`;
+const BUYER_LABEL = new RegExp(
+  String.raw`(?:(?:^|\n)[^\S\n]*${PREP_LABEL}[^\S\n]*[:\-\u2013]?|\b${PREP_LABEL}[^\S\n]*[:\-\u2013]|\b(?:customer(?:\s+name)?|buyer|client)\s*[:\-\u2013])\s*`,
+  'giu',
+);
 /* A single-word label ("Customer", "Buyer", "Client") counts only with its colon or dash: a heading
  * such as "Customer Support Ltd" labels nobody (CodeRabbit on #437 at ccdcc8e). */
 
@@ -6549,7 +6554,8 @@ async function interpretedReply(
   const issuedCustomers = [...tokens.displays.keys()].filter((t) => t.startsWith('CUSTOMER_'));
   if (
     command.intent === 'Query' &&
-    command.topic === 'debtors' &&
+    /* A balance question too, never answered "no unpaid invoice" (CodeRabbit on #437 at 9c587bd). */
+    (command.topic === 'debtors' || command.topic === 'customer_balance') &&
     (command.customer?.kind ?? 'none') === 'none' &&
     issuedCustomers.length === 1
   ) {

@@ -332,12 +332,14 @@ describe('a question that names a customer', () => {
   /* The model leaving the customer out proves nothing (OWN-102(3)): the one recorded customer this
    * message was issued is the one asked about, never widened to every debtor (CodeRabbit on #437 at
    * 88258dc). */
+  /* A balance question too, never "no unpaid invoice" (CodeRabbit on #437 at 9c587bd). */
   it.each([
-    ['with', true],
-    ['without', false],
+    ['debtors', 'with', true],
+    ['debtors', 'without', false],
+    ['customer_balance', 'without', false],
   ])(
-    "a debtors question naming a known customer, %s the model's token, is answered as their balance",
-    async (_, scoped) => {
+    "a %s question naming a known customer, %s the model's token, is answered as their balance",
+    async (topic, _, scoped) => {
       const business = await seedMerchant('+2348031234567');
       const { token, customerId } = await deps.gateway.resolveMention(business.id, 'Ada Obi');
       /* Ada's invoice is linked to her customer row and its snapshot carries a token she no longer
@@ -355,7 +357,7 @@ describe('a question that names a customer', () => {
 
       await ask(
         'wamid.Q5D',
-        askAbout({ topic: 'debtors', customer: scoped ? { kind: 'token', token } : null }),
+        askAbout({ topic, customer: scoped ? { kind: 'token', token } : null }),
         'who owes me, Ada Obi?',
       );
 

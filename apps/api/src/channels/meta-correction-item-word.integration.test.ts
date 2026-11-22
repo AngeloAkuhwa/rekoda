@@ -173,6 +173,26 @@ describe('CG5: an item word in a correction (OD-63(a) Option B)', () => {
     ]);
   });
 
+  /* "to" in "ready to wear" is grammar in the correction, not the item word (CodeRabbit, #437 9c587bd). */
+  it('"change the price to 60k" for a ready to wear sale keeps Ada', async () => {
+    const { business, ada } = await seedOwner();
+    const RTW = { ...SALE, items: [{ name: 'ready to wear', quantity: 3, unitPrice: 50_000 }] };
+    await send('Ada bought 3 ready to wear for 150k', 'wamid.TB5-SALE', RTW);
+
+    await send('change the price to 60k', 'wamid.TB5-FIX', {
+      ...RTW,
+      customer: { kind: 'none' },
+      items: [{ name: 'ready to wear', quantity: 3, unitPrice: 60_000 }],
+      statedTotal: 180_000,
+    });
+    expect(stubSender.lastText).toContain('The same customer as before');
+    await send('yes', 'wamid.TB5-YES');
+    await send('yes', 'wamid.TB5-YES2');
+    expect((await books(business.id)).invoices).toEqual([
+      { customer_id: ada.id, total_k: 18_000_000 },
+    ]);
+  });
+
   it("a correction carrying another customer's token is refused and books nothing new", async () => {
     const { business, ada } = await seedOwner();
     await knownCustomer(business.id, 'Bola', 'CUSTOMER_9BL');

@@ -385,6 +385,8 @@ describe('a receipt photo whose buyer the model names', () => {
     ['a name inside the buyer address', 'Seller: Ada\nBuyer: ada@example.test\n2 wigs', 'Ada'],
     /* "Sold today" is no "Sold to" label (CodeRabbit on #437 at b8330cd). */
     ['a word a label begins', 'Seller: Day\nSold today 2 wigs TOTAL 100,000', 'Day'],
+    /* A label's words inside a sentence are no field (CodeRabbit on #437 at 9c587bd). */
+    ['a label inside a sentence', 'Seller: Ada\nNot sold to Ada\n2 wigs TOTAL 100,000', 'Ada'],
   ])('a buyer named only as %s creates nobody and drafts nothing', async (_, page, mention) => {
     const business = await seedMerchant('+2348031234567');
     arrangePhoto();

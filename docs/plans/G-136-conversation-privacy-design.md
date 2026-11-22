@@ -539,7 +539,7 @@ sweep, for events with no business), so erasing a finished one never blocks a re
 
 ```sql
 CREATE OR REPLACE FUNCTION public.businesses_with_finished_message_payloads(
-  p_finished_before timestamptz, p_created_after timestamptz, p_limit integer)
+  p_finished_before timestamptz, p_created_after timestamptz, p_after_business uuid, p_limit integer)
 RETURNS TABLE (business_id uuid)
 LANGUAGE plpgsql STABLE SECURITY DEFINER
 SET search_path = pg_catalog, public, pg_temp
@@ -557,11 +557,16 @@ BEGIN
      AND e.created_at >= p_created_after
      AND NOT (e.error IS NOT NULL AND e.resolved_at IS NULL)   -- Option A; drop for Option B
      AND e.payload <> '{"erased": true}'::jsonb
+     -- Keyset cursor: each sweep starts after the last business the previous one reached, so a
+     -- business whose pass keeps failing never holds back the ones after it (CodeRabbit on #437 at
+     -- 9c587bd). NULL starts from the beginning; a page shorter than p_limit wraps the cursor.
+     AND (p_after_business IS NULL OR e.business_id > p_after_business)
+   ORDER BY e.business_id
    LIMIT p_limit;
 END $$;
-REVOKE ALL ON FUNCTION public.businesses_with_finished_message_payloads(timestamptz, timestamptz, integer)
+REVOKE ALL ON FUNCTION public.businesses_with_finished_message_payloads(timestamptz, timestamptz, uuid, integer)
   FROM PUBLIC, rekoda_app, rekoda_settlement, rekoda_billing_operator;
-GRANT EXECUTE ON FUNCTION public.businesses_with_finished_message_payloads(timestamptz, timestamptz, integer)
+GRANT EXECUTE ON FUNCTION public.businesses_with_finished_message_payloads(timestamptz, timestamptz, uuid, integer)
   TO rekoda_worker;
 ```
 

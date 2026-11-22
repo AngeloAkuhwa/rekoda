@@ -103,7 +103,7 @@ describe('links into the web app', () => {
   it('still says what was deleted, and that the rest can go too, with no link', () => {
     const text = replies.erasureDone(2, null).text;
     expect(text).toContain('deleted (2 records)');
-    expect(text).toContain('Your conversations and account can be deleted too');
+    expect(text).toContain('Your conversation history and account can be deleted too');
     // The page by the title it carries on the website and in its footer.
     expect(text).toContain('"Delete my data" page');
   });

@@ -598,10 +598,16 @@ export function correctionWordsExplained(text: string, vocabulary: Iterable<stri
   for (const phrase of vocabulary) {
     for (const w of phrase.toLowerCase().match(WORD) ?? []) known.add(w);
   }
-  const explained = (word: string): boolean => {
-    /* The bare item word first: an item named "Price" or "Set" is still the bare item word, never a
-     * structure or unit word (CodeRabbit on #437 at ccdcc8e). */
-    if (known.has(word)) return false;
+  const lower = text.toLowerCase();
+  /* Where a word stands right after a figure ("4 Price"), it is the free item-word position. */
+  const afterFigure = new Set<number>();
+  for (const m of lower.matchAll(/\d[\d,.]*\s*(?=\p{L})/gu)) afterFigure.add(m.index + m[0].length);
+  const explained = (word: string, at: number): boolean => {
+    /* The bare item word in the item-word position: an item named "Price" or "Set" is still the
+     * bare item word there, never a structure or unit word (CodeRabbit on #437 at ccdcc8e). A
+     * grammatical word elsewhere ("change the price to 60k" for "ready to wear") is the grammar
+     * (CodeRabbit on #437 at 9c587bd). */
+    if (known.has(word) && (afterFigure.has(at) || !STRUCTURE_WORDS.has(word))) return false;
     if (STRUCTURE_WORDS.has(word) || UNIT_WORDS.has(word)) return true;
     for (const k of known) {
       if (k.length < 3) continue;
@@ -609,7 +615,7 @@ export function correctionWordsExplained(text: string, vocabulary: Iterable<stri
     }
     return false;
   };
-  return (text.toLowerCase().match(WORD) ?? []).every(explained);
+  return [...lower.matchAll(WORD)].every((m) => explained(m[0], m.index));
 }
 
 /* ── money coming IN against an invoice already issued ───────────────────── */

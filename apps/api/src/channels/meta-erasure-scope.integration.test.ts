@@ -80,6 +80,8 @@ describe('an erasure asked under an older consequence', () => {
     await say('DELETE MY DATA', 'wamid.E3');
     expect(stubSender.lastText).not.toBe(replies.confirmErasure().text);
     expect(stubSender.lastText).toMatch(/^Done\. Your customers' saved details are deleted/);
+    /* And says the stored chat copies went too (CodeRabbit on #437 at 9c587bd). */
+    expect(stubSender.lastText).toContain('stored copies of your chat messages');
     expect(await claimed()).toBe(1);
     expect(await facetsOf(business.id)).toBe(0);
   });

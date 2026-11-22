@@ -215,6 +215,9 @@ describe('a correction that names someone is never clear enough to inherit (OWN-
     ['make it 4 dresses', ['dress']],
     ['make it 4 pieces', ['Tunde']],
     ['make it 4 sets', ['set']],
+    /* A grammatical word an item's name holds is still grammar outside the item-word position
+     * (CodeRabbit on #437 at 9c587bd). */
+    ['change the price to 60k', ['ready to wear']],
   ])('%j holds a plural or a unit, so it is explained', (t, items) => {
     expect(correctionWordsExplained(t, items)).toBe(true);
   });
