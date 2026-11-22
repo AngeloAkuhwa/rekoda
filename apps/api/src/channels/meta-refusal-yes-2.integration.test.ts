@@ -403,3 +403,51 @@ describe("an erasure ask keeps another member's refusal", () => {
     expect((await footprint(business.id)).invoices).toBe(before.invoices + 1);
   });
 });
+
+/**
+ * The owner's refusal is answered before another member's retired funding question is asked
+ * again: the owner's yes (or "na so?") after their own refusal is about that refusal, never an
+ * opening of the delegate's question for the owner (CodeRabbit on #437 at aff3f63).
+ */
+describe("a yes after one's own refusal never re-asks another member's funding question", () => {
+  const POS_PURCHASE = {
+    intent: 'RecordPurchase',
+    supplierMention: 'Emeka',
+    description: '10 cartons',
+    amount: 180_000,
+    reportedPayment: 180_000,
+    paymentMethod: 'pos',
+    productMention: 'cartons',
+    quantity: 10,
+  };
+  const POS_QUESTION = 'did it come from your bank account or from physical cash?';
+
+  it.each(['yes', 'na so?'])('the owner\'s "%s" answers their refusal', async (answer) => {
+    const business = await seedMerchant();
+    const owner = await identity.upsertUserByPhone(db, `+${OWNER}`);
+    const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+    await identity.addMembership(db, business.id, delegate.id, 'delegate');
+    await post(mediaMessage(`wamid.RF1-${answer}`, STICKER, OWNER));
+    await drain();
+    stubTransport.replyWith(POS_PURCHASE);
+    await post(
+      messagePayload(DELEGATE, `wamid.RF2-${answer}`, 'I bought 10 cartons for 180k, paid by POS'),
+    );
+    await drain();
+    expect(stubSender.lastText).toContain(POS_QUESTION);
+    const before = await footprint(business.id);
+
+    await plain(`wamid.RF3-${answer}`, answer);
+    expect(stubSender.lastText).not.toContain(POS_QUESTION);
+    expect(await footprint(business.id)).toEqual(before);
+    /* No funding answer was opened for the owner: their "cash" would be about nothing. */
+    const open = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ n: number }>(
+        sql`SELECT count(*)::int AS n FROM conversation_continuations
+             WHERE business_id = ${business.id}::uuid AND user_id = ${owner.id}::uuid
+               AND state = 'open'`,
+      ),
+    ).then((r) => r[0]!.n);
+    expect(open).toBe(0);
+  });
+});

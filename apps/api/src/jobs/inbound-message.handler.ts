@@ -2865,8 +2865,13 @@ async function confirmPendingDraft(
     });
   }
   /* `abandoned` is only ever a retired purchase question; a draft the
-   * merchant cancelled is `superseded` and is never asked again. */
-  if (latest?.state === 'abandoned') {
+   * merchant cancelled is `superseded` and is never asked again. Another member's question waits
+   * behind the sender's own standing refusal: that refusal is what this yes is about, and it is
+   * answered below (CodeRabbit on #437 at aff3f63). */
+  if (
+    latest?.state === 'abandoned' &&
+    !(await ownRefusalBehindAnothers(tx, businessId, latest, answering, sender))
+  ) {
     const reasked = await reaskRetiredQuestion(tx, businessId, latest, sender);
     if (reasked) return reasked;
     /* Never fall through to an older preview behind the question, even if
@@ -4701,7 +4706,10 @@ async function unsureReply(
       skipRefusalsNotBy: doubting,
     });
   }
-  if (latest?.state === 'abandoned') {
+  if (
+    latest?.state === 'abandoned' &&
+    !(await ownRefusalBehindAnothers(tx, businessId, latest, doubting, sender))
+  ) {
     return (
       (await reaskRetiredQuestion(tx, businessId, latest, sender)) ?? replies.nothingToConfirm()
     );
@@ -4752,6 +4760,22 @@ async function unsureReply(
     return replies.previewBehindQuestion();
   }
   return replies.plainYesNeeded();
+}
+
+/**
+ * Whether `retired` is another member's question with the sender's own refusal standing behind it,
+ * so a yes or a doubt is about that refusal and never re-asks their question for the sender
+ * (CodeRabbit on #437 at aff3f63).
+ */
+async function ownRefusalBehindAnothers(
+  tx: TenantDb,
+  businessId: string,
+  retired: { requestedBy: string | null },
+  sender: string | null,
+  at: { from: string; receivedAt: Date },
+): Promise<boolean> {
+  if (!sender || retired.requestedBy === null || retired.requestedBy === sender) return false;
+  return (await pastRefusals(tx, businessId, at.from, at.receivedAt)).ownRefusal !== null;
 }
 
 /**
