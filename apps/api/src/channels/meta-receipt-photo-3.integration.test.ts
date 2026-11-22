@@ -418,7 +418,10 @@ describe('a receipt photo whose buyer the model names', () => {
   /* The field is its own line: an address on the next line, or a name under its label, still
    * names the buyer. */
   it.each([
-    ['with the address on the next line', 'RECEIPT\nBill to: Bola Ige\nLagos Island\n2 wigs TOTAL 100,000'],
+    [
+      'with the address on the next line',
+      'RECEIPT\nBill to: Bola Ige\nLagos Island\n2 wigs TOTAL 100,000',
+    ],
     ['under its label', 'RECEIPT\nBill to:\nBola Ige\n2 wigs TOTAL 100,000'],
   ])('previews the labelled buyer %s', async (_, page) => {
     const business = await seedMerchant('+2348031234567');

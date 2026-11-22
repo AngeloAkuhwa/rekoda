@@ -30,8 +30,13 @@ documents, no self-hosted media sidecars).
   transcriber and discarded (ADR 0032).
 - Customer identities are AES-256-GCM ciphertext in the vault; no
   provider receives vault plaintext. Model prompts carry meaningless
-  tokens in place of supported identifiers, never the identities
-  themselves.
+  tokens in place of supported identifiers (recorded customers, phones
+  and emails). Two exceptions, both in the rows above: a customer name
+  nobody recorded, in a read-only question, reaches Anthropic as typed
+  (ADR 0005 Amendment 1 case 3, OWN-102(5)); and the high-value
+  verifier's text can hold such a name for OpenAI, so production
+  refuses to start with the verifier configured until OD-63(c) is
+  ruled.
 - No analytics or advertising processors exist at launch. Adding any
   provider to production means adding a row here in the same PR.
 

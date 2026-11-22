@@ -338,6 +338,8 @@ Recommendation: add **two** intents to `StructuredBusinessCommand` (`packages/co
 - `InvoiceQuery` asks for **records**: find, retrieve, summarise or aggregate invoices.
 - `Analyse` asks for **business figures**: metrics over periods, comparisons, series, breakdowns, rankings and report output.
 
+**Privacy boundary (not settled; CodeRabbit on #437 at `aff3f63`).** ADR 0005 Amendment 1's unknown-name exception covers only the read-only `Query` (case 3, OWN-102(5)); it does **not** cover `InvoiceQuery` or `Analyse`, and this proposal does not present them as covered. The interpreter sees the message before the intent is known, so a message naming an unrecorded customer would reach the model whichever intent it returns. Before either intent is implemented, the owner rules whether such a name may reach the interpretation model for them; if not, the design must keep it out before interpretation (for example by withholding the name until a recorded customer is resolved), without weakening the existing gateway safeguards. Recorded as an open question for the implementation PR.
+
 They are separate because they have different filters and different sources (invoice rows versus ledger windows). Merging them into one intent would put about 25 optional fields into every call. Five or more intents would multiply union branches.
 
 **Compatibility with `Query`:**
