@@ -309,17 +309,44 @@ describe('an erasure ask that arrived before the first prompt was sent', () => {
     expect(await facetsOf(business.id)).toBe(facets);
   });
 
-  it('a prompt recorded after the second ask arrived authorises nothing', async () => {
+  /* The second ask reaches Rekoda while the first prompt is still being sent: WhatsApp had not yet
+   * accepted it, so the merchant could not have read it (CodeRabbit on #437 at 4d9fa80). */
+  it('arriving while the first prompt is in flight, it erases nothing', async () => {
+    const business = await seedWithContact();
+    const facets = await facetsOf(business.id);
+    const send = stubSender.send.bind(stubSender);
+    let injected = false;
+    stubSender.send = async (message) => {
+      if (!injected && message.text.includes('Reply *DELETE MY DATA* again')) {
+        injected = true;
+        await post(messagePayload(OWNER, 'wamid.EF2', 'DELETE MY DATA'));
+      }
+      return send(message);
+    };
+    try {
+      await post(messagePayload(OWNER, 'wamid.EF1', 'DELETE MY DATA'));
+      await drain();
+    } finally {
+      stubSender.send = send;
+    }
+    expect(injected).toBe(true);
+    expect(stubSender.lastText).toBe(replies.confirmErasure().text);
+    expect(await facetsOf(business.id)).toBe(facets);
+  });
+
+  it('a prompt WhatsApp accepted after the second ask arrived authorises nothing', async () => {
     const business = await seedWithContact();
     const facets = await facetsOf(business.id);
     await say('DELETE MY DATA', 'wamid.EP1');
     expect(stubSender.lastText).toBe(replies.confirmErasure().text);
-    /* The prompt's record is put after the second ask's arrival: it was still being sent. */
+    /* WhatsApp's acceptance of the prompt is put after the second ask's arrival. */
     const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
     try {
       await ownerDb.execute(sql`
-        UPDATE conversation_messages SET created_at = clock_timestamp() + interval '1 minute'
-         WHERE business_id = ${business.id}::uuid AND direction = 'outbound'`);
+        UPDATE command_drafts
+           SET command = command || jsonb_build_object(
+                 'promptSentAt', clock_timestamp() + interval '1 minute')
+         WHERE business_id = ${business.id}::uuid AND intent = 'EraseData'`);
     } finally {
       await close();
     }

@@ -557,6 +557,19 @@ export async function markOutboundSent(
     .update(conversationMessages)
     .set({ providerMessageId })
     .where(eq(conversationMessages.id, id));
+  /* The moment WhatsApp accepted a first DELETE MY DATA prompt, kept on its draft: a second ask
+   * that arrived before it was answering nothing the merchant could have read, however late it is
+   * processed (OWN-102(7); CodeRabbit on #437 at 4d9fa80). Only a pending erasure draft, in the
+   * reply's own business. */
+  await tx.execute(sql`
+    UPDATE command_drafts d
+       SET command = d.command || jsonb_build_object('promptSentAt', clock_timestamp())
+      FROM conversation_messages m
+     WHERE m.id = ${id}::uuid
+       AND d.business_id = m.business_id
+       AND d.conversation_message_id = m.reply_to_message_id
+       AND d.intent = 'EraseData'
+       AND d.state = 'pending'`);
 }
 
 /** The draft this business is waiting to confirm, if there is one. */
@@ -732,9 +745,10 @@ export async function draftReplyWasSent(
   tx: TenantDb,
   businessId: string,
   draftId: string,
-  /* `before`: only a reply recorded by then counts, so a message that arrived while the reply was
-   * still being sent is never taken as an answer to it (OWN-102(7); CodeRabbit on #437 at
-   * aff3f63). Its record is written as the send begins, on the clock arrivals are stamped with. */
+  /* `before`: only a reply WhatsApp had accepted by then counts (`promptSentAt`, stamped by
+   * `markOutboundSent` on the database clock arrivals are stamped with), so a message that arrived
+   * while the reply was still being sent is never taken as an answer to it (OWN-102(7); CodeRabbit
+   * on #437 at aff3f63 and 4d9fa80). A draft with no stamp proves nothing was shown. */
   options: { before?: Date } = {},
 ): Promise<boolean> {
   const rows = await tx.execute<{ sent: boolean }>(sql`
@@ -747,7 +761,11 @@ export async function draftReplyWasSent(
          AND d.business_id = ${businessId}::uuid
          AND m.direction = 'outbound'
          AND m.provider_message_id IS NOT NULL
-         ${options.before ? sql`AND m.created_at <= ${options.before.toISOString()}::timestamptz` : sql``}
+         ${
+           options.before
+             ? sql`AND (d.command ->> 'promptSentAt')::timestamptz <= ${options.before.toISOString()}::timestamptz`
+             : sql``
+         }
     ) AS sent`);
   return rows[0]?.sent === true;
 }
