@@ -205,6 +205,10 @@ describe('a correction that names someone is never clear enough to inherit (OWN-
     ['make it 4 ankara', ['ankara']],
     ['make it 4 Price', ['Price']],
     ['make it 4 set', ['set']],
+    /* A figure's thousands suffix is part of the figure (Codex on #437 at 5bbe9b8). */
+    ['make it 4k Price', ['Price']],
+    ['make it 4 k Price', ['Price']],
+    ['make it ₦4,000k Set', ['Set']],
   ])('%j holds only the bare item word, so it is not explained', (t, items) => {
     expect(correctionWordsExplained(t, items)).toBe(false);
   });
@@ -215,6 +219,7 @@ describe('a correction that names someone is never clear enough to inherit (OWN-
     ['make it 4 dresses', ['dress']],
     ['make it 4 pieces', ['Tunde']],
     ['make it 4 sets', ['set']],
+    ['make it 4 kits', ['kit']],
     /* A grammatical word an item's name holds is still grammar outside the item-word position
      * (CodeRabbit on #437 at 9c587bd). */
     ['change the price to 60k', ['ready to wear']],

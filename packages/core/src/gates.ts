@@ -599,9 +599,13 @@ export function correctionWordsExplained(text: string, vocabulary: Iterable<stri
     for (const w of phrase.toLowerCase().match(WORD) ?? []) known.add(w);
   }
   const lower = text.toLowerCase();
-  /* Where a word stands right after a figure ("4 Price"), it is the free item-word position. */
+  /* Where a word stands right after a figure ("4 Price"), it is the free item-word position. The
+   * figure includes its thousands suffix ("4k Price"), never the first letter of a word ("4 kits")
+   * (Codex on #437 at 5bbe9b8). */
   const afterFigure = new Set<number>();
-  for (const m of lower.matchAll(/\d[\d,.]*\s*(?=\p{L})/gu)) afterFigure.add(m.index + m[0].length);
+  for (const m of lower.matchAll(/\d[\d,.]*(?:\s*k(?![\p{L}\p{N}]))?\s*(?=\p{L})/gu)) {
+    afterFigure.add(m.index + m[0].length);
+  }
   const explained = (word: string, at: number): boolean => {
     /* The bare item word in the item-word position: an item named "Price" or "Set" is still the
      * bare item word there, never a structure or unit word (CodeRabbit on #437 at ccdcc8e). A
