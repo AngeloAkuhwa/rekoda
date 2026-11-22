@@ -1228,6 +1228,9 @@ async function pastRefusals(
   businessId: string,
   from: string,
   asOf: Date,
+  /* `readOnly`: a scan that answers a doubt ("yes?") changes nothing, so the sender's stale refusal
+   * is looked past, not closed (CodeRabbit on #437 at b2703e7). */
+  options: { readOnly?: boolean } = {},
 ): Promise<{
   draft: conversationsRepo.DraftRow | null;
   ownRefusal: conversationsRepo.DraftRow | null;
@@ -1266,7 +1269,8 @@ async function pastRefusals(
     ) {
       return { draft: first ?? draft, ownRefusal: draft, except };
     }
-    if (mine) await conversationsRepo.closeRefusalDraft(tx, businessId, draft.id);
+    if (mine && !options.readOnly)
+      await conversationsRepo.closeRefusalDraft(tx, businessId, draft.id);
     else except.push(draft.id);
   }
 }
@@ -4711,7 +4715,7 @@ async function unsureReply(
   }
   if (
     latest?.state === 'abandoned' &&
-    !(await ownRefusalBehindAnothers(tx, businessId, latest, doubting, sender))
+    !(await ownRefusalBehindAnothers(tx, businessId, latest, doubting, sender, { readOnly: true }))
   ) {
     return (
       (await reaskRetiredQuestion(tx, businessId, latest, sender)) ?? replies.nothingToConfirm()
@@ -4747,7 +4751,12 @@ async function unsureReply(
       if (pending.requestedBy === doubting && first === null) break;
     } else {
       first ??= pending;
-      if (doubting === null || pending.requestedBy === doubting) break;
+      /* The sender's own record whose preview never reached them hides no refusal of theirs, as in
+       * `pastRefusals`: the scan goes on, so this answers as a plain yes would (CodeRabbit on #437
+       * at b2703e7). */
+      const ownUnseen =
+        doubting !== null && pending.requestedBy === doubting && unseenRecord(pending);
+      if (!ownUnseen && (doubting === null || pending.requestedBy === doubting)) break;
     }
     lookedPast.push(pending.id);
     pending = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
@@ -4776,9 +4785,10 @@ async function ownRefusalBehindAnothers(
   retired: { requestedBy: string | null },
   sender: string | null,
   at: { from: string; receivedAt: Date },
+  options: { readOnly?: boolean } = {},
 ): Promise<boolean> {
   if (!sender || retired.requestedBy === null || retired.requestedBy === sender) return false;
-  return (await pastRefusals(tx, businessId, at.from, at.receivedAt)).ownRefusal !== null;
+  return (await pastRefusals(tx, businessId, at.from, at.receivedAt, options)).ownRefusal !== null;
 }
 
 /**
@@ -5622,6 +5632,9 @@ function photoBuyerNamed(
       /* The whole name, not its first word: after it the field ends, or what follows is no more
        * of a name (a phone, a comma, the items). "Ada" is not the buyer "Ada Obi" (CodeRabbit on
        * #437 at aff3f63). */
+      /* An address is no name: "Ada" never names the buyer "ada@example.test" (CodeRabbit on #437
+       * at b2703e7). */
+      if ((after.split(/\s/u)[0] ?? '').includes('@')) continue;
       if (
         after.startsWith(needle) &&
         !/[\p{L}\p{N}\p{M}-]/u.test(after[needle.length] ?? '') &&
@@ -6515,24 +6528,39 @@ async function interpretedReply(
    * through `acknowledge` would read the business's own figures only to throw
    * them away, and a failure of that read would leave no reply (CodeRabbit on
    * #437). The answer is the one set just below. */
+  /* A period total asked by a message that names a customer is never answered with the whole
+   * business's figures: the model leaving `customer` empty is no proof the merchant named nobody
+   * (OWN-102(3)). Only a balance is kept per customer, so this is told as that is (G-135; CodeRabbit
+   * on #437 at b2703e7). A question that names nobody keeps the business-wide answer. */
+  const namedButUnscoped =
+    command.intent === 'Query' &&
+    (command.topic === 'sales_summary' || command.topic === 'expenses_summary') &&
+    (command.customer?.kind ?? 'none') === 'none' &&
+    tokens.displays.size > 0;
   const acknowledged =
     nameNotKnown && command.intent === 'Query'
       ? { reply: replies.customerNotKnown(), linkAsked: false, continuation: NO_PERIOD_TO_RESUME }
-      : await acknowledge(
-          tx,
-          businessId,
-          /* The preview names the supplier the stored draft will carry, never a token or placeholder
-           * the stored draft drops (CodeRabbit on #437 at 0e12742). */
-          command.intent === 'RecordPurchase'
-            ? ({
-                ...command,
-                supplierMention: supplierNameOf(command, tokens.displays.keys()) || null,
-              } as StructuredBusinessCommand)
-            : command,
-          correcting,
-          link,
-          receivedAt,
-        );
+      : namedButUnscoped
+        ? {
+            reply: replies.customerFiguresNotKept(),
+            linkAsked: false,
+            continuation: NO_PERIOD_TO_RESUME,
+          }
+        : await acknowledge(
+            tx,
+            businessId,
+            /* The preview names the supplier the stored draft will carry, never a token or placeholder
+             * the stored draft drops (CodeRabbit on #437 at 0e12742). */
+            command.intent === 'RecordPurchase'
+              ? ({
+                  ...command,
+                  supplierMention: supplierNameOf(command, tokens.displays.keys()) || null,
+                } as StructuredBusinessCommand)
+              : command,
+            correcting,
+            link,
+            receivedAt,
+          );
   /* A balance question about a name the books do not hold is answered honestly above, never
    * "they owe nothing" (G-135), and never with a subject a later "last month" could resume into
    * the business's totals (independent review of #437). */

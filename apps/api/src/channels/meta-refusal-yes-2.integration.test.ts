@@ -451,3 +451,95 @@ describe("a yes after one's own refusal never re-asks another member's funding q
     expect(open).toBe(0);
   });
 });
+
+/** The state of the sender's refusal drafts, oldest first. */
+const refusalStates = async (businessId: string, userId: string) =>
+  [
+    ...(await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ state: string }>(
+        sql`SELECT state FROM command_drafts
+             WHERE business_id = ${businessId}::uuid AND command->>'refused' = 'true'
+               AND requested_by = ${userId}::uuid ORDER BY insertion_seq`,
+      ),
+    )),
+  ].map((r) => r.state);
+
+/**
+ * The sender's own record whose preview never reached them hides no refusal of theirs, in a
+ * questioned yes as in a plain one (CodeRabbit on #437 at b2703e7): behind another member's preview,
+ * "na so?" answers as the plain yes does, never by inviting a yes that cannot save the sender's
+ * own record.
+ */
+describe("a questioned yes looks past the sender's own unseen record", () => {
+  it('to their refusal, as the plain yes does, and changes nothing', async () => {
+    const business = await seedMerchant();
+    const owner = await identity.upsertUserByPhone(db, `+${OWNER}`);
+    const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+    await identity.addMembership(db, business.id, delegate.id, 'delegate');
+    await post(mediaMessage('wamid.RQ1', STICKER, OWNER));
+    await drain();
+    await say('wamid.RQ2', sale({ kind: 'none' }), 'sold 2 wigs for 100k');
+    /* The owner's record is still waiting, but its preview never reached them. */
+    await withBusiness(db, business.id, (tx) =>
+      tx.execute(sql`
+        UPDATE command_drafts SET previewed = false
+         WHERE business_id = ${business.id}::uuid AND intent = 'RecordSale'
+           AND requested_by = ${owner.id}::uuid`),
+    );
+    stubTransport.replyWith(sale({ kind: 'none' }));
+    await post(messagePayload(DELEGATE, 'wamid.RQ3', 'sold 3 wigs for 150k'));
+    await drain();
+    const before = await footprint(business.id);
+
+    await plain('wamid.RQ4', 'na so?');
+    expect(stubSender.lastText).toBe(replies.previewWaitingForAnotherMember().text);
+    expect(await refusalStates(business.id, owner.id)).toEqual(['pending']);
+    expect(await footprint(business.id)).toEqual(before);
+
+    await plain('wamid.RQ5', 'yes');
+    expect(stubSender.lastText).toBe(replies.previewWaitingForAnotherMember().text);
+    expect((await footprint(business.id)).invoices).toBe(before.invoices);
+  });
+});
+
+/**
+ * A questioned yes changes nothing (CodeRabbit on #437 at b2703e7): the scan that decides whether
+ * the sender's own refusal stands behind another member's retired question looks past a stale
+ * refusal of theirs and never closes it.
+ */
+describe("a questioned yes before another member's funding question", () => {
+  it("leaves the sender's stale refusal as it was", async () => {
+    const business = await seedMerchant();
+    const owner = await identity.upsertUserByPhone(db, `+${OWNER}`);
+    const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+    await identity.addMembership(db, business.id, delegate.id, 'delegate');
+    await post(mediaMessage('wamid.RS1', STICKER, OWNER));
+    await drain();
+    /* A preview the owner was shown since, no longer waiting: their refusal is stale. */
+    await say('wamid.RS2', sale({ kind: 'none' }), 'sold 2 wigs for 100k');
+    await withBusiness(db, business.id, (tx) =>
+      tx.execute(sql`
+        UPDATE command_drafts SET state = 'superseded'
+         WHERE business_id = ${business.id}::uuid AND intent = 'RecordSale'
+           AND requested_by = ${owner.id}::uuid`),
+    );
+    stubTransport.replyWith({
+      intent: 'RecordPurchase',
+      supplierMention: 'Emeka',
+      description: '10 cartons',
+      amount: 180_000,
+      reportedPayment: 180_000,
+      paymentMethod: 'pos',
+      productMention: 'cartons',
+      quantity: 10,
+    });
+    await post(messagePayload(DELEGATE, 'wamid.RS3', 'I bought 10 cartons for 180k, paid by POS'));
+    await drain();
+    expect(await refusalStates(business.id, owner.id)).toEqual(['pending']);
+    const before = await footprint(business.id);
+
+    await plain('wamid.RS4', 'yes?');
+    expect(await refusalStates(business.id, owner.id)).toEqual(['pending']);
+    expect(await footprint(business.id)).toEqual(before);
+  });
+});

@@ -227,6 +227,41 @@ describe('a question that names a customer', () => {
     expect(stubSender.lastText).not.toContain('₦150,000');
   });
 
+  /* The model leaving the customer out of a sales question the merchant asked about one customer
+   * proves nothing (OWN-102(3)): the business's totals are never the answer (CodeRabbit on #437 at
+   * b2703e7). A question that names nobody keeps them. */
+  it.each([['sales_summary'], ['expenses_summary']])(
+    'a %s question naming a known customer that the model left unscoped gets no business total',
+    async (topic) => {
+      const business = await seedMerchant('+2348031234567');
+      const { token } = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+      await seedTrading(business.id, token);
+
+      await ask(
+        'wamid.Q5UN',
+        askAbout({ topic, customer: null }),
+        'how much did Ada Obi buy this month',
+      );
+      /* The gateway issued her token, so the model saw no name. */
+      expect(lastModelText()).toContain(token);
+      expect(lastModelText()).not.toContain('Ada Obi');
+
+      expect(stubSender.lastText).toContain('do not keep sales, spending or other figures');
+      expect(stubSender.lastText).not.toContain('₦150,000');
+    },
+  );
+
+  it('a sales question that names nobody is still answered with the business total', async () => {
+    const business = await seedMerchant('+2348031234567');
+    const { token } = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+    await seedTrading(business.id, token);
+
+    await ask('wamid.Q5BW', askAbout({ customer: null }), 'how much did I sell this month');
+
+    expect(stubSender.lastText).not.toContain('do not keep sales');
+    expect(stubSender.lastText).toContain('₦150,000');
+  });
+
   /**
    * A short follow-up must not resume the refused question into the business's totals
    * (independent review of #437): "last month" after "how much did Ada buy this month"

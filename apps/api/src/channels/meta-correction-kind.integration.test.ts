@@ -171,6 +171,36 @@ describe('CG5: an obvious new record beside a waiting draft (OD-60 A+)', () => {
   });
 });
 
+describe('CG5: a new record opening "not paid yet" or saying "should be" (CodeRabbit, b2703e7)', () => {
+  it.each([['Not paid yet, bought fuel 5k'], ["It's not paid yet, bought fuel 5k"]])(
+    '%j beside a waiting expense is previewed on its own',
+    async (text) => {
+      const { business } = await seedOwner();
+      await send('fuel 6k', 'wamid.NP-EXP', expense(6_000));
+      await send(text, 'wamid.NP-NEW', expense(5_000));
+      expect(stubSender.lastText).not.toBe(replies.correctionNotClear().text);
+      expect(await drafts(business.id)).toEqual(['RecordExpense:pending', 'RecordExpense:pending']);
+    },
+  );
+
+  it('a nameless sale keeps its shown preview, and the yes books exactly it', async () => {
+    const { business } = await seedOwner();
+    const nameless = { ...SALE, customer: { kind: 'none' } };
+    await send('sold 3 wigs', 'wamid.SB-SALE', nameless);
+    await send('Sold 2 bags for 20k, total should be 20k', 'wamid.SB-NEW', {
+      ...nameless,
+      items: [{ name: 'bag', quantity: 2, unitPrice: 10_000 }],
+      statedTotal: 20_000,
+    });
+    expect(stubSender.lastText).toBe(replies.correctionNotClear().text);
+    expect(await drafts(business.id)).toEqual(['RecordSale:pending']);
+    for (const n of [1, 2]) await send('yes', `wamid.SB-YES${n}`);
+    expect((await books(business.id)).invoices).toEqual([
+      { customer_id: null, total_k: 15_000_000 },
+    ]);
+  });
+});
+
 describe('CG5: the steps the clarification gives work (OD-60)', () => {
   it('"cancel", then the whole corrected sale, books only the corrected sale', async () => {
     const { business, ada } = await seedOwner();

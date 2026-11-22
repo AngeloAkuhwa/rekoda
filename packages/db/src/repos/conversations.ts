@@ -748,7 +748,12 @@ export async function draftReplyWasSent(
   /* `before`: only a reply WhatsApp had accepted by then counts (`promptSentAt`, stamped by
    * `markOutboundSent` on the database clock arrivals are stamped with), so a message that arrived
    * while the reply was still being sent is never taken as an answer to it (OWN-102(7); CodeRabbit
-   * on #437 at aff3f63 and 4d9fa80). A draft with no stamp proves nothing was shown. */
+   * on #437 at aff3f63 and 4d9fa80). A draft with no stamp proves nothing was shown.
+   * A reply WhatsApp has reported `failed` showed nothing either, whether or not its
+   * `delivery.status` job has run yet. A receipt queued before the answer already holds the answer
+   * back (`hasEarlierLiveJob`); one that arrives after it but before it runs is not waited for, so
+   * the stored failure (its job is queued with it) counts here at once, pending, done or dead
+   * (CodeRabbit on #437 at b2703e7). */
   options: { before?: Date } = {},
 ): Promise<boolean> {
   const rows = await tx.execute<{ sent: boolean }>(sql`
@@ -761,6 +766,12 @@ export async function draftReplyWasSent(
          AND d.business_id = ${businessId}::uuid
          AND m.direction = 'outbound'
          AND m.provider_message_id IS NOT NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM jobs j
+            WHERE j.business_id = m.business_id
+              AND j.kind = 'delivery.status'
+              AND j.payload->>'outboundMessageId' = m.provider_message_id
+         )
          ${
            options.before
              ? sql`AND (d.command ->> 'promptSentAt')::timestamptz <= ${options.before.toISOString()}::timestamptz`

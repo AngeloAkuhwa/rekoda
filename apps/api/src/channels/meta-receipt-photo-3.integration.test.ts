@@ -216,7 +216,17 @@ describe('a receipt photo', () => {
     await post(messagePayload(phone, `${wamid}-YES`, 'yes'));
     await drain();
     expect(stubSender.lastText).not.toContain('Saved');
-    expect({ ...(await g57Footprint(business.id)), drafts: left.drafts }).toEqual(left);
+    /* The yes may consume the refusal, so the draft count may fall, but it creates nothing: every
+     * draft still there is a refusal, and nothing else moved (CodeRabbit on #437 at b2703e7). */
+    const after = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ intent: string; command: unknown }>(
+        sql`SELECT intent, command FROM command_drafts WHERE business_id = ${business.id}::uuid`,
+      ),
+    );
+    expect([...after].every((d) => conversationsRepo.isRefusalDraft(d))).toBe(true);
+    const footprint = await g57Footprint(business.id);
+    expect({ ...footprint, drafts: left.drafts }).toEqual(left);
+    expect(footprint.drafts).toBe(after.length);
     return { left, reply };
   }
 
@@ -374,6 +384,8 @@ describe('a receipt photo whose buyer the model names', () => {
     ['the merchant’s own header', 'ADA FASHION RECEIPT 2 wigs TOTAL 100,000', 'Ada Fashion'],
     ['a delivery contact', 'RECEIPT Deliver to: Bola Ige 2 wigs TOTAL 100,000', 'Bola Ige'],
     ['a name in passing', 'RECEIPT 2 wigs from Bola Ige TOTAL 100,000', 'Bola Ige'],
+    /* An address is no name: the seller Ada is not the buyer "ada@…" (CodeRabbit, #437 b2703e7). */
+    ['a name inside the buyer address', 'Seller: Ada\nBuyer: ada@example.test\n2 wigs', 'Ada'],
   ])('a buyer named only as %s creates nobody and drafts nothing', async (_, page, mention) => {
     const business = await seedMerchant('+2348031234567');
     arrangePhoto();
@@ -413,6 +425,24 @@ describe('a receipt photo whose buyer the model names', () => {
       ),
     ).then((r) => r[0]!.n);
     expect(invoices).toBe(0);
+  });
+
+  /* A labelled whole address still names the buyer; it stands as the message's provisional token. */
+  it('a labelled whole address still names the buyer', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({
+      text: 'RECEIPT Seller: Ada\nBuyer: bola@example.test\n2 wigs TOTAL 100,000',
+      confidence: 0.9,
+    });
+    stubTransport.replyWith({
+      ...SALE_TO('x'),
+      customer: { kind: 'token', token: 'CUSTOMER_U01' },
+    });
+    await post(photoPayload('2348031234567', 'wamid.PB-EMV'));
+    await drain();
+    expect(stubSender.lastText).not.toContain('could not tell which customer');
+    expect(await salesDrafts(business.id)).toBe(1);
   });
 
   /* The field is its own line: an address on the next line, or a name under its label, still

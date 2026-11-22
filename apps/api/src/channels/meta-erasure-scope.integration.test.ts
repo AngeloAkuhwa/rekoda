@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import { replies } from '@rekoda/core';
 import { createDb, identity, sql, withBusiness } from '@rekoda/db';
+import { ownerDb } from '@rekoda/db/testing';
 import {
   db,
   deps,
@@ -147,6 +148,51 @@ describe('an erasure whose first prompt failed after WhatsApp accepted it', () =
     await say('DELETE MY DATA', 'wamid.F3');
     expect(stubSender.lastText).not.toBe(replies.confirmErasure().text);
     expect(await claimed()).toBe(1);
+  });
+});
+
+/* A failure receipt for the first prompt stored before the second ask is processed counts at once
+ * (CodeRabbit on #437 at b2703e7). One queued BEFORE the ask already holds the ask back
+ * (`hasEarlierLiveJob`); one that arrives after the ask but before it runs is not waited for, and
+ * still erases nothing: an irreversible erasure is never run on a prompt WhatsApp says failed. */
+describe('an erasure whose first prompt is reported failed while the second ask waits', () => {
+  it('erases nothing, and the next ask is a new first ask', async () => {
+    const user = await identity.upsertUserByPhone(db, `+${OWNER}`);
+    const business = await identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    await deps.gateway.resolveMention(business.id, 'Bola Ige');
+    const before = await facetsOf(business.id);
+    expect(before).toBeGreaterThan(0);
+    const claimed = () =>
+      withBusiness(db, business.id, (tx) =>
+        tx.execute<{ n: number }>(
+          sql`SELECT count(*)::int AS n FROM pending_confirmations
+               WHERE business_id = ${business.id}::uuid AND command = 'EraseData'
+                 AND claimed_at IS NOT NULL`,
+        ),
+      ).then((r) => r[0]?.n);
+
+    await say('DELETE MY DATA', 'wamid.FP1');
+    expect(stubSender.lastText).toBe(replies.confirmErasure().text);
+    const prompt = lastWamid();
+    /* The second ask is queued, then the receipt for the first prompt: its job comes after the ask's,
+     * so the ask is not held back by it. */
+    await post(messagePayload(OWNER, 'wamid.FP2', 'DELETE MY DATA'));
+    await receipt(OWNER, prompt, 'failed');
+    const queued = await withBusiness(ownerDb(), business.id, (tx) =>
+      tx.execute<{ kind: string }>(sql`
+        SELECT kind FROM jobs WHERE business_id = ${business.id}::uuid AND state = 'pending'
+         ORDER BY created_at, id`),
+    );
+    expect([...queued].map((j) => j.kind)).toEqual(['inbound.message', 'delivery.status']);
+    await drain();
+
+    expect(await claimed()).toBe(0);
+    expect(await facetsOf(business.id)).toBe(before);
+    expect(stubSender.lastText).toBe(replies.confirmErasure().text);
   });
 });
 

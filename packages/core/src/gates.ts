@@ -379,20 +379,34 @@ export function gatePurchase(
  * is `false`, because treating a new sale as a correction destroys a record
  * that was never previewed.
  */
-const CORRECTION_OPENERS =
-  /^\s*(?:no+|nope|nah|actually|sorry|wait|correction|not|it(?:'| i)?s not|e no be)\b/i;
+/* After a "not": the words that only state a new record's state ("not paid yet", "not fully paid
+ * yet", "not delivered"), unless a figure follows ("not paid 50k" negates an amount). Shared by the
+ * phrase and both opener patterns, so an opening "Not paid yet, bought fuel 5k" is a new record as
+ * the same words later in the message are (CodeRabbit on #437 at b2703e7). */
+const NOT_A_STATE =
+  '(?!\\s+(?:(?:yet|fully|completely)\\s+)*(?:yet|paid|delivered|collected|picked\\s+up)\\b(?!\\s+(?:paid|delivered|collected|picked)\\b)(?!\\s*(?:₦|NGN|N)?\\s*\\d))';
+
+const CORRECTION_OPENERS = new RegExp(
+  `^\\s*(?:no+|nope|nah|actually|sorry|wait|correction|not${NOT_A_STATE}|it(?:'| i)?s not${NOT_A_STATE}|e no be)\\b`,
+  'i',
+);
 
 /* A "not" that only says a new record's state ("sold 2 bags for 20k, not paid yet", "not fully
  * paid yet") is not a correction cue: such a message is an ordinary new record, never asked about
  * (owner ruling OWN-102(2): obvious new transactions are not asked about). A "not" that negates an
  * amount ("Bola has not paid 50k, he only paid 5k") still is one (Codex and CodeRabbit on #437 at
  * ccdcc8e). */
-const CORRECTION_PHRASES =
-  /\b(?:not(?!\s+(?:(?:yet|fully|completely)\s+)*(?:yet|paid|delivered|collected|picked\s+up)\b(?!\s+(?:paid|delivered|collected|picked)\b)(?!\s*(?:₦|NGN|N)?\s*\d))|instead of|rather than|change (?:it |the )?to|make it|should be)\b/i;
+const CORRECTION_PHRASES = new RegExp(
+  `\\b(?:not${NOT_A_STATE}|instead of|rather than|change (?:it |the )?to|make it|should be)\\b`,
+  'i',
+);
 
 /* The openers that say on their own that the merchant is correcting ("no", "sorry", "it's not").
  * "Wait" and "actually" only hesitate: "Wait, I also sold 2 bags" is as likely a new record. */
-const EXPLICIT_OPENERS = /^\s*(?:no+|nope|nah|sorry|correction|not|it(?:'| i)?s not|e no be)\b/i;
+const EXPLICIT_OPENERS = new RegExp(
+  `^\\s*(?:no+|nope|nah|sorry|correction|not${NOT_A_STATE}|it(?:'| i)?s not${NOT_A_STATE}|e no be)\\b`,
+  'i',
+);
 /* Words that add a record rather than change one: after any opener ("Sorry, I also sold 2 bags"),
  * the message is as likely a new record, so the opener alone is no evidence (CodeRabbit on #437 at
  * cacc734). */
@@ -408,12 +422,12 @@ const ADDS_A_RECORD = /\b(?:also|another|more|extra|too|again|additional|plus)\b
 export function explicitlyCorrects(text: string): boolean {
   const trimmed = text.trim();
   if (!trimmed) return false;
+  /* A correction phrase alone says nothing explicit: "Sold 2 bags for 20k, total should be 20k" is
+   * as likely a new sale as a change, and "Wait, I also bought fuel for 6k, total should be 6k" adds
+   * (CodeRabbit on #437 at aff3f63 and b2703e7). Only a whole-message correction
+   * (`clearlyCorrects`: "make it 5", "4 wigs instead of 3") or an explicit opener counts. */
   return (
-    (EXPLICIT_OPENERS.test(trimmed) && !ADDS_A_RECORD.test(trimmed)) ||
-    /* The same for a phrase: "Wait, I also bought fuel for 6k, total should be 6k" adds as
-     * likely as it changes (CodeRabbit on #437 at aff3f63). */
-    (CORRECTION_PHRASES.test(trimmed) && !ADDS_A_RECORD.test(trimmed)) ||
-    clearlyCorrects(trimmed)
+    (EXPLICIT_OPENERS.test(trimmed) && !ADDS_A_RECORD.test(trimmed)) || clearlyCorrects(trimmed)
   );
 }
 

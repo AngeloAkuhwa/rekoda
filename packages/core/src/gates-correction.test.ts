@@ -223,6 +223,10 @@ describe('a "not" about a new record is not a correction cue', () => {
     'Bought 5 cartons for 50k, not delivered',
     'Sold 2 bags for 20k, not fully paid yet',
     'Sold 2 bags for 20k, not yet paid',
+    /* The same state words opening the message (CodeRabbit on #437 at b2703e7). */
+    'Not paid yet, bought fuel 5k',
+    "It's not paid yet, bought fuel 5k",
+    'it is not delivered yet, bought 5 cartons for 50k',
   ])('%j is a new record', (t) => {
     expect(looksLikeCorrection(t, true)).toBe(false);
   });
@@ -249,6 +253,10 @@ describe('an explicit correction against a hesitation', () => {
     'correction: Bola bought it',
     'e no be Ada, na Bola',
     'Wait, it was 4 not 3',
+    'Not paid 5k, it was 4k',
+    'not Bola, Ada',
+    '4 wigs instead of 3',
+    'make it 5',
   ])('%j is explicit', (t) => {
     expect(explicitlyCorrects(t)).toBe(true);
   });
@@ -263,6 +271,9 @@ describe('an explicit correction against a hesitation', () => {
      * nothing is superseded (CodeRabbit on #437 at aff3f63). */
     'Wait, I also bought fuel for 6k, total should be 6k',
     'make it another 2 bags',
+    /* A correction phrase inside a whole new record is no explicit correction (CodeRabbit on #437
+     * at b2703e7). */
+    'Sold 2 bags for 20k, total should be 20k',
   ])('%j is only a hesitation', (t) => {
     expect(looksLikeCorrection(t, true)).toBe(true);
     expect(explicitlyCorrects(t)).toBe(false);
