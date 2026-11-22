@@ -2251,11 +2251,21 @@ async function deterministicReply(
       /* A first ask asked again under the current consequence is not a preview the merchant
        * loses: it is not counted as discarded. Another member's refusal is left theirs to answer,
        * as a bare "no" and a correction leave it (CodeRabbit on #437 at aff3f63). */
+      const asker = await actorOf(tx, businessId, ctx.from);
+      /* The owner's own refusal goes with what was waiting, but only once the prompt is shown: a
+       * prompt whose send fails puts it back, as an undelivered answer to a refusal does
+       * (`closedByAnswer`; CodeRabbit on #437 at 4a5fd80). */
+      const ownRefusals = await conversationsRepo.pendingRefusalIdsBy(tx, businessId, asker, {
+        asOf: ctx.receivedAt,
+      });
       const discarded =
         (await conversationsRepo.supersedePendingDrafts(tx, businessId, {
           asOf: ctx.receivedAt,
-          skipRefusalsNotBy: await actorOf(tx, businessId, ctx.from),
+          skipRefusalsNotBy: asker,
         })) - (paired && !shownBefore ? 1 : 0);
+      if (ctx.outcome && ownRefusals.length) {
+        (ctx.outcome.closedByAnswer ??= []).push(...ownRefusals);
+      }
       const parked = await conversationsRepo.recordDraft(tx, {
         businessId,
         conversationMessageId: ctx.messageId,

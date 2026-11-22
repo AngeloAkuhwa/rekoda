@@ -1114,6 +1114,10 @@ export async function markDraftUnseen(
        AND conversation_message_id = ${conversationMessageId}::uuid
        AND state = 'pending'
        AND (intent = 'Query'
+            /* An erasure prompt that failed to send showed nothing: it is no first ask a second
+             * one pairs with, and no read since a refusal, as a late failed receipt retires it
+             * (CodeRabbit on #437 at 4a5fd80). */
+            OR intent = 'EraseData'
             /* A clarification question too, never a refusal: the refusal is still the member's
              * live request (CodeRabbit on #437 at 88258dc). */
             OR (intent = 'Unclear' AND COALESCE(command->>'refused', '') <> 'true'))`);
@@ -1506,6 +1510,34 @@ export async function supersedePendingDrafts(
     )
     .returning({ id: commandDrafts.id });
   return updated.length;
+}
+
+/**
+ * The ids of the member's own refusals still pending and seen as of `asOf`: what an erasure ask is
+ * about to supersede, so a prompt that never reached the member can put them back
+ * (`reopenClosedDrafts`; CodeRabbit on #437 at 4a5fd80).
+ */
+export async function pendingRefusalIdsBy(
+  tx: TenantDb,
+  businessId: string,
+  memberId: string | null,
+  options: { asOf?: Date } = {},
+): Promise<string[]> {
+  if (!memberId) return [];
+  const rows = await tx
+    .select({ id: commandDrafts.id })
+    .from(commandDrafts)
+    .where(
+      and(
+        eq(commandDrafts.businessId, businessId),
+        eq(commandDrafts.state, 'pending'),
+        eq(commandDrafts.intent, 'Unclear'),
+        sql`COALESCE(${commandDrafts.command} ->> 'refused', '') = 'true'`,
+        eq(commandDrafts.requestedBy, memberId),
+        seenBy(options.asOf),
+      ),
+    );
+  return rows.map((r) => r.id);
 }
 
 /** Not a refusal another member (or nobody) recorded: NULL-safe, see `latestDraftToAnswer`. */

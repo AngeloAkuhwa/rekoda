@@ -18,6 +18,14 @@ import {
 import { stubSender } from './meta-webhook.fixtures.js';
 import { drain } from './meta-voice-note.fixtures.js';
 import { lastWamid, receipt } from './meta-preview-expiry.fixtures.js';
+import { mediaMessage } from './meta-continuations.fixtures.js';
+import {
+  footprint,
+  plain,
+  sale,
+  say as sayWith,
+  seedMerchant,
+} from './meta-customer-token.fixtures.js';
 
 useMetaWebhookHarness();
 
@@ -401,6 +409,70 @@ describe('an erasure ask that arrived before the first prompt was sent', () => {
 
     await say('DELETE MY DATA', 'wamid.EP2');
     expect(stubSender.lastText).toBe(replies.confirmErasure().text);
+    expect(await facetsOf(business.id)).toBe(facets);
+  });
+});
+
+/**
+ * A first erasure prompt whose send failed showed the owner nothing: their own refusal is still the
+ * request a yes is about, and the unshown prompt is no later read and no pending first ask. A later
+ * DELETE MY DATA opens a new prompt (CodeRabbit on #437 at 4a5fd80).
+ */
+describe("an erasure prompt whose send failed keeps the owner's refusal", () => {
+  it('the yes answers the refusal, books nothing, and a later ask opens a new prompt', async () => {
+    const business = await seedMerchant();
+    const ada = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+    await sayWith(
+      'wamid.EF1',
+      sale({ kind: 'token', token: ada.token }),
+      'sold Ada Obi 2 wigs for 100k',
+    );
+    await post(
+      mediaMessage(
+        'wamid.EF2',
+        { type: 'sticker', sticker: { id: 'sticker-1', mime_type: 'image/webp' } },
+        OWNER,
+      ),
+    );
+    await drain();
+    const states = async (where: ReturnType<typeof sql>) =>
+      [
+        ...(await withBusiness(db, business.id, (tx) =>
+          tx.execute<{ state: string }>(
+            sql`SELECT state FROM command_drafts
+                 WHERE business_id = ${business.id}::uuid AND ${where} ORDER BY created_at`,
+          ),
+        )),
+      ].map((r) => r.state);
+    const refusal = sql`command->>'refused' = 'true'`;
+    const prompt = sql`intent = 'EraseData'`;
+    expect(await states(refusal)).toEqual(['pending']);
+    const facets = await facetsOf(business.id);
+    const before = await footprint(business.id);
+
+    stubSender.failWith();
+    await plain('wamid.EF3', 'DELETE MY DATA');
+    expect(await states(refusal)).toEqual(['pending']);
+    expect(await states(prompt)).toEqual(['superseded']);
+
+    /* The yes is about the refusal and closes it. The sale the ask discarded stays discarded (an
+     * unseen replacement makes nothing confirmable again, OWN-102(4)), so nothing is booked and
+     * the reply says nothing is waiting, never a word about the unshown prompt. */
+    await plain('wamid.EF4', 'yes');
+    expect(stubSender.lastText).toBe(replies.nothingToConfirm().text);
+    const answered = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ answered: string | null }>(
+        sql`SELECT command->>'answeredBy' AS answered FROM command_drafts
+             WHERE business_id = ${business.id}::uuid AND command->>'refused' = 'true'`,
+      ),
+    );
+    expect([...answered].map((r) => r.answered !== null)).toEqual([true]);
+    /* The one draft more is the retired prompt; no customer, invoice or payment. */
+    expect(await footprint(business.id)).toEqual({ ...before, drafts: before.drafts + 1 });
+
+    await plain('wamid.EF5', 'DELETE MY DATA');
+    expect(stubSender.lastText).toContain('Reply *DELETE MY DATA* again');
+    expect(await states(prompt)).toEqual(['superseded', 'pending']);
     expect(await facetsOf(business.id)).toBe(facets);
   });
 });
