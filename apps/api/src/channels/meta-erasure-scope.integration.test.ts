@@ -6,7 +6,14 @@
 import { describe, expect, it } from 'vitest';
 import { replies } from '@rekoda/core';
 import { createDb, identity, sql, withBusiness } from '@rekoda/db';
-import { db, messagePayload, post, urls, useMetaWebhookHarness } from './meta-webhook.fixtures.js';
+import {
+  db,
+  deps,
+  messagePayload,
+  post,
+  urls,
+  useMetaWebhookHarness,
+} from './meta-webhook.fixtures.js';
 import { stubSender } from './meta-webhook.fixtures.js';
 import { drain } from './meta-voice-note.fixtures.js';
 import { lastWamid, receipt } from './meta-preview-expiry.fixtures.js';
@@ -14,6 +21,15 @@ import { lastWamid, receipt } from './meta-preview-expiry.fixtures.js';
 useMetaWebhookHarness();
 
 const OWNER = '2348031234567';
+
+/** How many vaulted customer details the business holds: what an erasure deletes. */
+const facetsOf = (businessId: string) =>
+  withBusiness(db, businessId, (tx) =>
+    tx.execute<{ n: number }>(
+      sql`SELECT count(*)::int AS n FROM customer_identities
+           WHERE business_id = ${businessId}::uuid`,
+    ),
+  ).then((r) => r[0]!.n);
 
 async function say(text: string, wamid: string) {
   await post(messagePayload(OWNER, wamid, text));
@@ -28,6 +44,9 @@ describe('an erasure asked under an older consequence', () => {
       businessType: null,
       ownerUserId: user.id,
     });
+    await deps.gateway.resolveMention(business.id, 'Bola Ige');
+    const facets = await facetsOf(business.id);
+    expect(facets).toBeGreaterThan(0);
     await say('DELETE MY DATA', 'wamid.E1');
     expect(stubSender.lastText).toBe(replies.confirmErasure().text);
 
@@ -54,9 +73,14 @@ describe('an erasure asked under an older consequence', () => {
       ).then((r) => r[0]?.n);
     expect(await claimed()).toBe(0);
 
+    /* The second ask erased nothing. */
+    expect(await facetsOf(business.id)).toBe(facets);
+
     await say('DELETE MY DATA', 'wamid.E3');
     expect(stubSender.lastText).not.toBe(replies.confirmErasure().text);
+    expect(stubSender.lastText).toMatch(/^Done\. Your customers' saved details are deleted/);
     expect(await claimed()).toBe(1);
+    expect(await facetsOf(business.id)).toBe(0);
   });
 });
 
@@ -180,6 +204,9 @@ describe('an erasure whose first ask has no recorded consequence', () => {
       businessType: null,
       ownerUserId: user.id,
     });
+    await deps.gateway.resolveMention(business.id, 'Bola Ige');
+    const facets = await facetsOf(business.id);
+    expect(facets).toBeGreaterThan(0);
     await say('DELETE MY DATA', 'wamid.L1');
     expect(stubSender.lastText).toBe(replies.confirmErasure().text);
 
@@ -204,8 +231,13 @@ describe('an erasure whose first ask has no recorded consequence', () => {
     expect(stubSender.lastText).toBe(replies.confirmErasure().text);
     expect(await claimed()).toBe(0);
 
+    /* The second ask erased nothing. */
+    expect(await facetsOf(business.id)).toBe(facets);
+
     await say('DELETE MY DATA', 'wamid.L3');
     expect(stubSender.lastText).not.toBe(replies.confirmErasure().text);
+    expect(stubSender.lastText).toMatch(/^Done\. Your customers' saved details are deleted/);
     expect(await claimed()).toBe(1);
+    expect(await facetsOf(business.id)).toBe(0);
   });
 });
