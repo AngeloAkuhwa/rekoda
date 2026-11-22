@@ -194,3 +194,16 @@ describe('CG5: an item word in a correction (OD-63(a) Option B)', () => {
     ]);
   });
 });
+
+/* A figure in seconds is a time, never a correction of the waiting expense (CodeRabbit on #437 at
+ * cf96697): the preview stays, and nothing is booked. */
+describe('a seconds-only message beside a waiting expense', () => {
+  it('never replaces the shown preview', async () => {
+    const { business } = await seedOwner();
+    await send('fuel 6k', 'wamid.SEC-EXP', expense(6_000));
+
+    await send('make it 5 seconds', 'wamid.SEC-FIX', expense(5_000));
+    expect(stubSender.lastText).not.toContain(replies.correctionTaken().text);
+    expect((await drafts(business.id))[0]).toBe('RecordExpense:pending');
+  });
+});
