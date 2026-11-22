@@ -1070,6 +1070,16 @@ export async function markDraftUnseen(
      WHERE business_id = ${businessId}::uuid
        AND conversation_message_id = ${conversationMessageId}::uuid
        AND previewed`);
+  /* An answer to a question that failed to send was never read: retired as a late failed receipt
+   * retires it (`markPreviewUndelivered`), so it never stands between the member's refusal and
+   * their next yes (Codex on #437 at cacc734). */
+  await tx.execute(sql`
+    UPDATE command_drafts SET state = 'superseded', retired_reason = 'preview_not_delivered',
+           updated_at = clock_timestamp()
+     WHERE business_id = ${businessId}::uuid
+       AND conversation_message_id = ${conversationMessageId}::uuid
+       AND state = 'pending'
+       AND intent = 'Query'`);
 }
 
 /**
@@ -1137,6 +1147,18 @@ export async function markPreviewUndelivered(
          AND d.state = 'pending'
          AND d.intent IN ('EraseData', 'Query')
       RETURNING d.id
+    ), lost_reads AS (
+      -- A question answer that failed after its Query was already retired (by the member's
+      -- answer to their refusal) keeps the record that it was never read, so the refusal's own
+      -- later failure never puts it back to pending (CodeRabbit on #437 at cacc734).
+      UPDATE command_drafts d SET retired_reason = 'preview_not_delivered',
+             updated_at = clock_timestamp()
+        FROM reply
+       WHERE d.business_id = ${businessId}::uuid
+         AND d.conversation_message_id = reply.request_id
+         AND d.state = 'superseded'
+         AND d.intent = 'Query'
+      RETURNING d.id
     ), continuations AS (
       UPDATE conversation_continuations c
          SET state = 'superseded', updated_at = clock_timestamp()
@@ -1169,6 +1191,7 @@ export async function markPreviewUndelivered(
        WHERE q.business_id = ${businessId}::uuid
          AND q.state = 'superseded'
          AND q.intent = 'Query'
+         AND q.retired_reason IS DISTINCT FROM 'preview_not_delivered'
          AND q.id::text IN (SELECT jsonb_array_elements_text(a.reads) FROM answered a)
       RETURNING q.id
     )

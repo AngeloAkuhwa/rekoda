@@ -255,3 +255,59 @@ describe('a question whose answer was reported failed after a refusal', () => {
     expect([...query]).toEqual([{ state: 'superseded', reason: 'preview_not_delivered' }]);
   });
 });
+
+/* The same for an answer whose send failed outright (Codex on #437 at cacc734): never read, so it
+ * never stands between the refusal and the next yes. */
+describe('a question whose answer failed to send after a refusal', () => {
+  it('leaves the refusal to the next yes, which books nothing', async () => {
+    const business = await saleAndRefusal('LQS');
+    const before = await footprint(business.id);
+
+    stubSender.failWith();
+    await say('wamid.LQS3', QUESTION, 'how much did I sell today');
+
+    await plain('wamid.LQS4', 'yes');
+    expect(stubSender.lastText).toBe(replies.previewBehindRefusal().text);
+    expect(await footprint(business.id)).toEqual(before);
+    expect(await queryStates(business.id)).toEqual(['superseded:preview_not_delivered']);
+  });
+});
+
+/* A question answer reported failed is never put back to pending by the refusal's own later
+ * failure, whichever receipt arrives first (CodeRabbit on #437 at cacc734). */
+describe('a failed question answer and a failed refusal answer, in either order', () => {
+  it.each(['question first', 'refusal first'])('%s: the question stays retired', async (order) => {
+    const business = await seedMerchant();
+    const ada = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+    const tag = order === 'question first' ? 'LO1' : 'LO2';
+    await say(
+      `wamid.${tag}a`,
+      sale({ kind: 'token', token: ada.token }),
+      'sold Ada Obi 2 wigs for 100k',
+    );
+    await say(`wamid.${tag}b`, QUESTION, 'how much did I sell today');
+    const questionAnswer = lastWamid();
+    await post(mediaMessage(`wamid.${tag}c`, STICKER, OWNER));
+    await drain();
+    await plain(`wamid.${tag}d`, 'yes');
+    expect(stubSender.lastText).toBe(replies.previewBehindRefusal().text);
+    const refusalAnswer = lastWamid();
+
+    for (const wamid of order === 'question first'
+      ? [questionAnswer, refusalAnswer]
+      : [refusalAnswer, questionAnswer]) {
+      await receipt(OWNER, wamid, 'failed');
+      await drain();
+    }
+    expect(await queryStates(business.id)).toEqual(['superseded:preview_not_delivered']);
+  });
+});
+
+async function queryStates(businessId: string): Promise<string[]> {
+  const rows = await withBusiness(db, businessId, (tx) =>
+    tx.execute<{ state: string; reason: string | null }>(sql`
+      SELECT state, retired_reason AS reason FROM command_drafts
+       WHERE business_id = ${businessId}::uuid AND intent = 'Query' ORDER BY insertion_seq`),
+  );
+  return [...rows].map((r) => `${r.state}:${r.reason ?? ''}`);
+}

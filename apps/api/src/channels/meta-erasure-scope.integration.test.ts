@@ -241,3 +241,42 @@ describe('an erasure whose first ask has no recorded consequence', () => {
     expect(await facetsOf(business.id)).toBe(0);
   });
 });
+
+/* OWN-102(7): the second ask is judged at its arrival. One that arrived while the first ask's
+ * confirmation stood erases under THAT confirmation, however late the worker runs it, and no fresh
+ * confirmation is ever opened in its place (CodeRabbit on #437 at cacc734). */
+describe('an erasure whose second ask is processed after the confirmation lapsed', () => {
+  it('erases under the confirmation that stood at arrival, and opens no other', async () => {
+    const user = await identity.upsertUserByPhone(db, `+${OWNER}`);
+    const business = await identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    await deps.gateway.resolveMention(business.id, 'Bola Ige');
+    await say('DELETE MY DATA', 'wamid.LA1');
+    expect(stubSender.lastText).toBe(replies.confirmErasure().text);
+
+    await post(messagePayload(OWNER, 'wamid.LA2', 'DELETE MY DATA'));
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`
+        UPDATE pending_confirmations SET expires_at = clock_timestamp()
+         WHERE business_id = ${business.id}::uuid AND command = 'EraseData'`);
+    } finally {
+      await close();
+    }
+    await new Promise((r) => setTimeout(r, 30));
+    await drain();
+
+    expect(stubSender.lastText).toMatch(/^Done\. Your customers' saved details are deleted/);
+    expect(await facetsOf(business.id)).toBe(0);
+    const confirmations = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ n: number }>(
+        sql`SELECT count(*)::int AS n FROM pending_confirmations
+             WHERE business_id = ${business.id}::uuid AND command = 'EraseData'`,
+      ),
+    ).then((r) => r[0]!.n);
+    expect(confirmations).toBe(1);
+  });
+});

@@ -1,3 +1,4 @@
+import { normaliseFacet } from '@rekoda/core/vault';
 import { Logger } from '@nestjs/common';
 import {
   gateExpense,
@@ -1244,6 +1245,14 @@ async function pastRefusals(
     if (!draft) return { draft: first, ownRefusal: null, except };
     if (!conversationsRepo.isRefusalDraft(draft)) {
       first ??= draft;
+      /* The sender's own request stops the scan only if they read it: one whose preview never
+       * reached them is no answer to their refusal (the rule `hasDraftsAfterBy` applies), so the
+       * scan goes on to that refusal and another member's newer preview is never booked by this
+       * sender's yes (CodeRabbit on #437 at cacc734). */
+      if (actor !== null && draft.requestedBy === actor && unseenRecord(draft)) {
+        except.push(draft.id);
+        continue;
+      }
       if (actor === null || draft.requestedBy === actor) {
         return { draft: first, ownRefusal: null, except };
       }
@@ -1260,6 +1269,15 @@ async function pastRefusals(
     if (mine) await conversationsRepo.closeRefusalDraft(tx, businessId, draft.id);
     else except.push(draft.id);
   }
+}
+
+/** A record's preview the member never read (`hasDraftsAfterBy`'s rule): not previewed, not held. */
+function unseenRecord(draft: conversationsRepo.DraftRow): boolean {
+  return (
+    !['Query', 'Unclear', 'EraseData'].includes(draft.intent) &&
+    draft.previewed !== true &&
+    draft.state !== 'held'
+  );
 }
 
 /** What DELETE MY DATA erases, as recorded with the merchant's two asks (Appendix D). */
@@ -2191,23 +2209,18 @@ async function deterministicReply(
          * now recording the same consequence and claimed in the same
          * transaction: the two-message mechanism already did the waiting. */
         const subject = `draft:${pending.id}`;
-        const open = (await riskRepo.openConfirmationsFor(tx, businessId)).find(
+        /* Judged at this message's arrival, as `askedBefore` was (OWN-102(7); CodeRabbit on #437 at
+         * cacc734). A confirmation that lapsed by then authorises nothing, and none is opened in its
+         * place: nothing is erased, and the merchant may ask again. */
+        const confirmation = (
+          await riskRepo.openConfirmationsFor(tx, businessId, ctx.receivedAt)
+        ).find(
           (c) =>
             c.command === 'EraseData' &&
             c.subject === subject &&
             c.consequence === ERASURE_CONSEQUENCE,
         );
-        const confirmation =
-          open ??
-          (await deps.commandBus.riskPolicy.ask(tx, {
-            businessId,
-            command: 'EraseData',
-            subject,
-            actor: 'system',
-            ingress: 'CHAT',
-            consequence: ERASURE_CONSEQUENCE,
-            reason: 'merchant asked by exact phrase, twice',
-          }));
+        if (!confirmation) return replies.erasureKept();
         const run = await deps.commandBus.run(
           tx,
           {
@@ -2219,6 +2232,7 @@ async function deterministicReply(
             actor: 'system',
             ingress: 'CHAT',
             memberPhone: ctx.from,
+            now: ctx.receivedAt,
           },
           () => eraseDataWork(tx, { businessId, sourceType: 'chat' }),
         );
@@ -5517,7 +5531,9 @@ function typedWithin(hay: string, needle: string): boolean {
     const before = at === 0 ? '' : hay[at - 1]!;
     const after = hay[at + needle.length] ?? '';
     /* A combining mark continues the word it follows (CodeRabbit on #437 at 56c4140). */
-    if (!/[\p{L}\p{N}\p{M}]/u.test(before) && !/[\p{L}\p{N}\p{M}]/u.test(after)) return true;
+    /* A hyphen joins a name ("Ada-Bola" is one name, as the gateway reads it), so a fragment of it
+     * is no name typed (CodeRabbit on #437 at cacc734). */
+    if (!/[\p{L}\p{N}\p{M}-]/u.test(before) && !/[\p{L}\p{N}\p{M}-]/u.test(after)) return true;
     from = at + 1;
   }
 }
@@ -5565,7 +5581,13 @@ function photoBuyerNamed(
     const needle = fold(name);
     for (const label of page.matchAll(BUYER_LABEL)) {
       const after = fold(page.slice(label.index + label[0].length));
-      if (after.startsWith(needle) && !/[\p{L}\p{N}\p{M}]/u.test(after[needle.length] ?? '')) {
+      /* An address is the whole address in the field, never a prefix of a longer one
+       * ("sales@example.test" is not "sales@example.test.ng"; CodeRabbit on #437 at cacc734). */
+      if (name.includes('@')) {
+        if (addressIn(after.split(/\s/u)[0] ?? '', name)) return true;
+        continue;
+      }
+      if (after.startsWith(needle) && !/[\p{L}\p{N}\p{M}-]/u.test(after[needle.length] ?? '')) {
         return true;
       }
     }
@@ -5680,6 +5702,9 @@ async function correctionMayChange(
   if (input.actorId === null || target.requestedBy !== input.actorId) return 'another';
   const may =
     !input.refusalInFront &&
+    /* A live draft the merchant was shown (OWN-102(1)): a preview that never reached them is no
+     * request they can be correcting (CodeRabbit on #437 at cacc734). */
+    target.previewed === true &&
     target.intent === input.command.intent &&
     !(await conversationsRepo.hasReadsAfter(tx, businessId, target.id, { asOf: receivedAt })) &&
     /* A refusal or a question since the preview, in any state: a "yes" that closed or retired it
@@ -6748,7 +6773,11 @@ function supplierNameOf(command: StructuredBusinessCommand, displays: Iterable<s
     .trim();
   /* What is left of "[phone], [email]" is punctuation, which names nobody: no "From:" line and no
    * supplier row (CodeRabbit on #437 at ce75a9e). A name keeps its own punctuation. */
-  return /[\p{L}\p{N}]/u.test(name) ? name : '';
+  /* And only a name the supplier lookup accepts, so the preview never shows a supplier the record
+   * would drop ("From: K"; CodeRabbit on #437 at cacc734). */
+  return /[\p{L}\p{N}]/u.test(name) && normaliseFacet('supplier_name', name).length >= 2
+    ? name
+    : '';
 }
 
 async function acknowledge(

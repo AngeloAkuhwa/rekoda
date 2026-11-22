@@ -222,6 +222,7 @@ describe('a "not" about a new record is not a correction cue', () => {
     'sold 3 wigs to Bola for 30k not yet paid',
     'Bought 5 cartons for 50k, not delivered',
     'Sold 2 bags for 20k, not fully paid yet',
+    'Sold 2 bags for 20k, not yet paid',
   ])('%j is a new record', (t) => {
     expect(looksLikeCorrection(t, true)).toBe(false);
   });
@@ -229,6 +230,7 @@ describe('a "not" about a new record is not a correction cue', () => {
   it.each([
     'it is not paid, she paid 60k not 50k',
     'Bola has not paid 50k, he only paid 5k',
+    'Bola has not yet paid 50k, he only paid 5k',
     'no, 4 not 3',
     'Wait, I also sold 2 bags for 20k',
   ])('%j still reads like a correction', (t) => {
@@ -251,11 +253,14 @@ describe('an explicit correction against a hesitation', () => {
     expect(explicitlyCorrects(t)).toBe(true);
   });
 
-  it.each(['Wait, I also sold 2 bags for 20k', 'wait, fuel 6k', 'Actually, Bola bought 2 bags'])(
-    '%j is only a hesitation',
-    (t) => {
-      expect(looksLikeCorrection(t, true)).toBe(true);
-      expect(explicitlyCorrects(t)).toBe(false);
-    },
-  );
+  it.each([
+    'Wait, I also sold 2 bags for 20k',
+    'wait, fuel 6k',
+    'Actually, Bola bought 2 bags',
+    'Sorry, I also sold 2 bags for 20k',
+    'No, I also sold 2 bags',
+  ])('%j is only a hesitation', (t) => {
+    expect(looksLikeCorrection(t, true)).toBe(true);
+    expect(explicitlyCorrects(t)).toBe(false);
+  });
 });

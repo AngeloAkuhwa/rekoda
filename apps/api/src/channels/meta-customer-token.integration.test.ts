@@ -206,6 +206,24 @@ describe('a record names a customer only by a token this message was issued (G-1
     expect(await invoiceOwner(business.id)).toEqual({ customerToken: named!.token, linked: true });
   });
 
+  /* A hyphen joins a name: "Ada" in "Ada-Bola" is no name typed, so the recorded Ada is never
+   * given a sale to Ada-Bola (CodeRabbit on #437 at cacc734). */
+  it('a fragment of a hyphenated name is not typed', async () => {
+    const business = await seedMerchant();
+    const ada = await deps.gateway.resolveMention(business.id, 'Ada');
+    await invoiceTo(business.id, ada.token);
+    const before = await footprint(business.id);
+
+    await say(
+      'wamid.T2hy',
+      sale({ kind: 'mention', mention: 'Ada' }),
+      'sold to Ada-Bola 2 wigs for 100k',
+    );
+
+    expect(stubSender.lastText).toContain('could not tell which customer');
+    expect(await footprint(business.id)).toEqual(before);
+  });
+
   it('a new customer the merchant typed is created at the sale and confirmed', async () => {
     const business = await seedMerchant();
     const before = await footprint(business.id);

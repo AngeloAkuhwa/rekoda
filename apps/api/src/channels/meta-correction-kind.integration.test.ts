@@ -408,17 +408,19 @@ describe('CG5: a correction with no live draft to change is a new request', () =
     expect((await books(business.id)).expenses).toEqual([600_000]);
   });
 
-  it('a preview whose send failed is replaced, and only the correction can be booked', async () => {
+  /* OWN-102(1): a correction changes only a draft the merchant was shown. A preview whose send
+   * failed was never shown, so the correction is asked about and replaces nothing; the unseen
+   * preview stays unconfirmable (G-20), and nothing is booked (CodeRabbit on #437 at cacc734). */
+  it('a correction of a preview whose send failed is asked about and books nothing', async () => {
     const { business } = await seedOwner();
     stubSender.failWith();
     await send('fuel 5k cash', 'wamid.K10-EXP', expense(5_000));
     await send('no, 6k not 5k', 'wamid.K10-FIX', expense(6_000));
-    expect(await drafts(business.id)).toEqual([
-      'RecordExpense:superseded',
-      'RecordExpense:pending',
-    ]);
+    expect(stubSender.lastText).toBe(replies.correctionNotClear().text);
+    expect(await drafts(business.id)).toEqual(['RecordExpense:pending']);
     await send('yes', 'wamid.K10-YES');
-    expect((await books(business.id)).expenses).toEqual([600_000]);
+    await send('yes', 'wamid.K10-YES2');
+    expect((await books(business.id)).expenses).toEqual([]);
   });
 });
 

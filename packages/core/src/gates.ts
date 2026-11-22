@@ -388,11 +388,15 @@ const CORRECTION_OPENERS =
  * amount ("Bola has not paid 50k, he only paid 5k") still is one (Codex and CodeRabbit on #437 at
  * ccdcc8e). */
 const CORRECTION_PHRASES =
-  /\b(?:not(?!\s+(?:(?:yet|fully|completely)\s+)*(?:yet|paid|delivered|collected|picked\s+up)\b(?!\s*(?:₦|NGN|N)?\s*\d))|instead of|rather than|change (?:it |the )?to|make it|should be)\b/i;
+  /\b(?:not(?!\s+(?:(?:yet|fully|completely)\s+)*(?:yet|paid|delivered|collected|picked\s+up)\b(?!\s+(?:paid|delivered|collected|picked)\b)(?!\s*(?:₦|NGN|N)?\s*\d))|instead of|rather than|change (?:it |the )?to|make it|should be)\b/i;
 
 /* The openers that say on their own that the merchant is correcting ("no", "sorry", "it's not").
  * "Wait" and "actually" only hesitate: "Wait, I also sold 2 bags" is as likely a new record. */
 const EXPLICIT_OPENERS = /^\s*(?:no+|nope|nah|sorry|correction|not|it(?:'| i)?s not|e no be)\b/i;
+/* Words that add a record rather than change one: after any opener ("Sorry, I also sold 2 bags"),
+ * the message is as likely a new record, so the opener alone is no evidence (CodeRabbit on #437 at
+ * cacc734). */
+const ADDS_A_RECORD = /\b(?:also|another|more|extra|too|again|additional|plus)\b/i;
 
 /**
  * Whether a message that reads like a correction says so explicitly (OD-60 A+, owner ruling
@@ -405,7 +409,9 @@ export function explicitlyCorrects(text: string): boolean {
   const trimmed = text.trim();
   if (!trimmed) return false;
   return (
-    EXPLICIT_OPENERS.test(trimmed) || CORRECTION_PHRASES.test(trimmed) || clearlyCorrects(trimmed)
+    (EXPLICIT_OPENERS.test(trimmed) && !ADDS_A_RECORD.test(trimmed)) ||
+    CORRECTION_PHRASES.test(trimmed) ||
+    clearlyCorrects(trimmed)
   );
 }
 

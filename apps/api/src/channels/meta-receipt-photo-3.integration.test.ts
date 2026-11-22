@@ -468,6 +468,28 @@ describe('a receipt photo whose buyer the model names', () => {
     expect(await customersOf(business.id)).toBe(1);
   });
 
+  /* An address in a buyer field is the whole address: the seller's "sales@example.test" printed
+   * elsewhere is not the buyer "sales@example.test.ng" (CodeRabbit on #437 at cacc734). */
+  it('a seller address that prefixes the labelled buyer address is not the buyer', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({
+      text: 'RECEIPT Buyer: sales@example.test.ng Seller sales@example.test 2 wigs TOTAL 100,000',
+      confidence: 0.9,
+    });
+    stubTransport.replyWith({
+      ...SALE_TO('x'),
+      customer: { kind: 'token', token: 'CUSTOMER_U02' },
+    });
+
+    await post(photoPayload('2348031234567', 'wamid.PB10'));
+    await drain();
+
+    expect(stubSender.lastText).toContain('could not tell which customer');
+    expect(await customersOf(business.id)).toBe(0);
+    expect(await salesDrafts(business.id)).toBe(0);
+  });
+
   it('previews a buyer the caption types, though the page does not label them', async () => {
     const business = await seedMerchant('+2348031234567');
     arrangePhoto();

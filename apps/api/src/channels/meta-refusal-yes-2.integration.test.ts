@@ -336,3 +336,33 @@ describe("a purchase question keeps another member's refusal", () => {
     expect(await footprint(business.id)).toEqual(before);
   });
 });
+
+/**
+ * The owner's own preview that never reached them is no answer to their refusal (the rule
+ * `hasDraftsAfterBy` applies), so it never stops the scan short of that refusal: the owner's yes is
+ * about the refusal and books nothing, never the delegate's newer preview; the delegate still
+ * confirms their own (CodeRabbit on #437 at cacc734).
+ */
+describe("an unseen preview never hides the sender's refusal", () => {
+  it("so the owner's yes never books the delegate's preview", async () => {
+    const business = await seedMerchant();
+    const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+    await identity.addMembership(db, business.id, delegate.id, 'delegate');
+    const ada = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+    await post(mediaMessage('wamid.RU1', STICKER, OWNER));
+    await drain();
+    stubSender.failWith();
+    await say('wamid.RU2', sale({ kind: 'none' }), 'sold 2 wigs for 100k');
+    stubTransport.replyWith(sale({ kind: 'token', token: ada.token }));
+    await post(messagePayload(DELEGATE, 'wamid.RU3', 'sold Ada Obi 2 wigs for 100k'));
+    await drain();
+    const before = await footprint(business.id);
+
+    await plain('wamid.RU4', 'yes');
+    expect(await footprint(business.id)).toEqual(before);
+
+    await post(messagePayload(DELEGATE, 'wamid.RU5', 'yes'));
+    await drain();
+    expect((await footprint(business.id)).invoices).toBe(before.invoices + 1);
+  });
+});

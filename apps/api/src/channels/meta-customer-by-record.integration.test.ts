@@ -114,6 +114,30 @@ describe('customer creation follows the record, not the token (owner review of #
     expect(await purchasesOf(business.id)).toEqual([{ amount_k: '4000000', supplier_id: null }]);
   });
 
+  /* A name the supplier lookup would drop (one letter) is never shown either: the preview says
+   * only what the record keeps (CodeRabbit on #437 at cacc734). */
+  it('a supplier left as one letter is not shown and not stored', async () => {
+    const business = await seedMerchant();
+    await say(
+      'wamid.S8k',
+      {
+        intent: 'RecordPurchase',
+        supplierMention: 'K CUSTOMER_U01',
+        description: 'cement',
+        amount: 40_000,
+        reportedPayment: 40_000,
+        paymentMethod: 'cash',
+        productMention: null,
+        quantity: null,
+        supplierReference: null,
+      },
+      'bought cement from K 08039998888 for 40k cash',
+    );
+    expect(stubSender.lastText).not.toContain('From:');
+    await plain('wamid.S8k-yes', 'yes');
+    expect(await purchasesOf(business.id)).toEqual([{ amount_k: '4000000', supplier_id: null }]);
+  });
+
   it('suppliers known only by phone are never merged into one supplier called [phone]', async () => {
     const business = await seedMerchant();
     /* A different amount each time, so the same-purchase question (G-81) never stands in for a save. */
