@@ -1,10 +1,8 @@
 /**
- * Migration safety for the whole of PR B (0193 to 0246): an UPGRADE of the database `main` leaves
- * behind, which is what the staging deploy actually applies.
+ * Migration safety from the 0192 staging baseline through the current journal (0247).
  *
- * `upgrade-od51.integration.test.ts` starts from 0212, the last PR B migration before OWN-91. `main`
- * itself stops at 0192, so the staging database will take 0193 to 0246 in one stopped window. This
- * suite migrates a scratch database to 0192, seeds it as that release would have left it (a paying
+ * `upgrade-od51.integration.test.ts` starts from 0212, the last PR B migration before OWN-91.
+ * This suite migrates a scratch database to 0192 and seeds it as that release would have left it (a paying
  * business, a settled plan charge, a credited pack, an open pack checkout, a consumed meter, a
  * Paystack event, a settlement job and a general job still queued), then migrates forward. The
  * rules it holds:
@@ -165,15 +163,15 @@ afterAll(async () => {
   }
 });
 
-describe('upgrading the database main leaves (0192) through 0246', () => {
+describe('upgrading the database main leaves (0192) through 0247', () => {
   it('starts at 0192 with the release seeded', () => {
     expect(pending[0]).toBe('0193_charge_provider_times');
-    expect(pending.at(-1)).toBe('0246_refund_refuses_a_pack_credited_before_0193');
+    expect(pending.at(-1)).toBe('0247_held_purchase_question_message');
     expect(before.charges).toHaveLength(3);
     expect(before.charges[0]).not.toHaveProperty('provider_paid_at');
   });
 
-  it('applies 0193 to 0246 in order and rewrites no column the old release wrote', async () => {
+  it('applies 0193 to 0247 in order and rewrites no column the old release wrote', async () => {
     const applied = await applyMigrations(scratchUrl(urls.owner));
     expect(applied).toEqual(pending);
 
