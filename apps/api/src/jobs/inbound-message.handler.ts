@@ -5620,7 +5620,7 @@ function draftNamesSomeone(
  * 9c587bd). The whole label: "Sold today" is no "Sold to" (CodeRabbit on #437 at b8330cd). */
 const PREP_LABEL = String.raw`(?:(?:bill(?:ed)?|invoice(?:d)?|sold)\s+to|received\s+from)(?![\p{L}\p{N}\p{M}])`;
 const BUYER_LABEL = new RegExp(
-  String.raw`(?:(?:^|\n)[^\S\n]*${PREP_LABEL}[^\S\n]*[:\-\u2013]?|\b${PREP_LABEL}[^\S\n]*[:\-\u2013]|\b(?:customer(?:\s+name)?|buyer|client)\s*[:\-\u2013])\s*`,
+  String.raw`(?:(?:^|\n)[^\S\n]*${PREP_LABEL}[^\S\n]*[:\-\u2013]?|\b${PREP_LABEL}[^\S\n]*[:\-\u2013]|\b(?:customer(?:\s+name)?|buyer|client)\s*[:\-\u2013])[^\S\r\n]*`,
   'giu',
 );
 /* A single-word label ("Customer", "Buyer", "Client") counts only with its colon or dash: a heading
@@ -5665,11 +5665,14 @@ function pageOf(rawText: string, caption: string | null): string {
 
 const foldField = (v: string) => v.normalize('NFKC').toLowerCase().replace(/\s+/gu, ' ').trim();
 
+/* A section or column heading just below an empty field is not its value. */
+const RECEIPT_HEADING =
+  /^(?:(?:(?:#|no\.?)\s+)?(?:items?|description|product)\s+(?:qty|quantity|unit|price|amount)\b|(?:(?:line )?items?|subtotal|total)\s*(?::|$|(?=\d))|(?:buyer|client|customer(?: name)?|(?:bill(?:ed)?|invoice(?:d)?|sold) to|received from|receipt|invoice|seller|supplier|merchant|date|payment)\s*[:#\-\u2013])/u;
+
 /**
  * What each of a page's buyer labels holds: the first line with words after the label ("Bill
- * to:\nBola Ige" too), never the lines below it, where an address or the items follow. Only a
- * field that could name somebody counts, one that opens with a letter, an address or a phone: a
- * blank "Customer: ____" or the items line after an empty label names nobody.
+ * to:\nBola Ige" too). A heading on a following line belongs to a new receipt section.
+ * A field can name a buyer by name, address or phone.
  */
 function pageBuyerFields(rawText: string, caption: string | null): string[] {
   const page = pageOf(rawText, caption);
@@ -5677,6 +5680,7 @@ function pageBuyerFields(rawText: string, caption: string | null): string[] {
   for (const label of page.matchAll(BUYER_LABEL)) {
     const lines = page.slice(label.index + label[0].length).split(/\r?\n/u);
     const after = foldField(lines.find((line) => line.trim()) ?? '');
+    if (!lines[0]?.trim() && RECEIPT_HEADING.test(after)) continue;
     const first = after.split(/\s/u)[0] ?? '';
     const phone = leadingPhoneDigits(after).length >= 10;
     if (/^[\p{L}]/u.test(after) || first.includes('@') || phone) fields.push(after);
@@ -6410,9 +6414,13 @@ async function interpretedReply(
    * reads "[customer]" (`neutraliseTokens`): it may be another real
    * customer's, and must never resolve to them later.
    */
+  const customer = 'customer' in command ? command.customer : null;
+  /* Count identities before any provisional contact is materialised or dropped. A third
+   * contact still rules out a link even if the record will never need that contact. */
+  const people =
+    referenced.length + (tokens.provisional?.size ?? 0) + (customer?.kind === 'mention' ? 1 : 0);
   if (command.intent !== 'Query' && command.intent !== 'Unclear') {
     const provisional = tokens.provisional ?? new Map();
-    const customer = 'customer' in command ? command.customer : null;
     const bearing = CUSTOMER_BEARING.has(command.intent) && customer && customer.kind !== 'none';
     const own =
       bearing && customer.kind === 'token' && provisional.has(customer.token)
@@ -6422,8 +6430,6 @@ async function interpretedReply(
     const beside = bearing
       ? [...provisional.keys()].filter((t) => t !== own && !inWords.has(t))
       : [];
-    const people =
-      referenced.length + (own ? 1 : 0) + (customer?.kind === 'mention' ? 1 : 0) + beside.length;
     const besideFacet = beside.length === 1 ? provisional.get(beside[0]!)?.facet : undefined;
     /* PR #77's rule as `proposeLink` and `linkAfterMention` apply it: beside a
      * name the merchant typed, only a phone can be asked about (the new name is
@@ -6455,7 +6461,7 @@ async function interpretedReply(
       );
       referenced = [...referenced, ...fresh];
       recordCustomer = made.resolved[0];
-      if (!asked) link ??= deps.gateway.linkFor(referenced);
+      if (!asked && people === 2) link ??= deps.gateway.linkFor(referenced);
       command = withTokensReplaced(command, made.replaced);
     } else if (customer?.kind === 'token') {
       recordCustomer = referenced.find((r) => r.token === customer.token);
@@ -6574,7 +6580,7 @@ async function interpretedReply(
       pendingBeside = null;
       tokens.provisional?.clear();
     }
-    link ??= await deps.gateway.linkAfterMention(businessId, referenced, named);
+    if (people === 2) link ??= await deps.gateway.linkAfterMention(businessId, referenced, named);
     /* Composed with whatever the merchant typed for the same customer, so a
      * phone and the name the model resolved read as one person (G-60). */
     deps.gateway.noteMention(tokens, named.token, mention);

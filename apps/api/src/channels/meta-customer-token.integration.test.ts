@@ -333,6 +333,30 @@ describe('a phone or email nobody recorded creates no customer until a record ne
     expect([...snapshot][0]?.token).toBe(customer?.token);
   });
 
+  it('a third contact cannot merge a new phone buyer into a recorded customer', async () => {
+    const business = await seedMerchant();
+    const ada = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+    await say(
+      'wamid.P4-three',
+      sale({ kind: 'token', token: 'CUSTOMER_U01' }),
+      'Sold 2 wigs to 08039998888 for 100k; Ada Obi will collect; send details to dispatch@example.test',
+    );
+
+    const draft = await withBusiness(db, business.id, (tx) =>
+      conversationsRepo.pendingDraftToAnswer(tx, business.id, { asOf: new Date() }),
+    );
+    const token = (draft?.command as { customer?: { token?: string } } | undefined)?.customer
+      ?.token;
+    expect(token).toMatch(/^CUSTOMER_/);
+    expect(token).not.toBe(ada.token);
+    expect(draft?.identityLink).toBeNull();
+    expect(await identitiesOf(business.id)).toEqual(['phone']);
+
+    await plain('wamid.P4-three-yes', 'yes');
+    expect(await footprint(business.id)).toMatchObject({ customers: 2, invoices: 1 });
+    expect(await invoiceOwner(business.id)).toEqual({ customerToken: token, linked: true });
+  });
+
   it('an unknown phone asked about and then sold to becomes one customer, at the sale', async () => {
     const business = await seedMerchant();
 
