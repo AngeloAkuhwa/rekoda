@@ -842,6 +842,10 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
        * proposal goes, so a yes to what the merchant read never joins two
        * customers (G-60, Codex on #271). */
       if (sent.delivered) {
+        const heldId = outcome.heldQuestion ?? outcome.refusedHeld?.draftId;
+        if (heldId) {
+          await conversationsRepo.setHeldQuestionMessage(tx, businessId, heldId, message.id);
+        }
         const proposal = identityLinkOf(
           await conversationsRepo.draftIdentityLink(tx, businessId, message.id),
         );
@@ -1070,6 +1074,8 @@ type RebuildOutcome = {
    * draft. A draft a yes was refused for is put back as a preview if its
    * question is never delivered (`unholdRefusedPurchase`), not withdrawn. */
   heldDrafts?: string[];
+  /** The held purchase whose latest question changes if WhatsApp accepts this reply. */
+  heldQuestion?: string;
   /** The held purchase this message's "separate" answer closed (G-81). */
   separatedFrom?: { heldId: string; expiresAt: Date };
   /** The held purchase this message asked about again, and what it was (G-81). */
@@ -4403,6 +4409,7 @@ async function reaskPurchaseIdentity(
       expiresAt: held.expiresAt,
     });
   }
+  if (sender.outcome) sender.outcome.heldQuestion = heldId;
   return replies.purchaseIdentityReask({
     ...options,
     kind: spendKindOf(held.command) ?? 'purchase',
@@ -4531,7 +4538,10 @@ async function answerPurchaseIdentity(
       verdict.asked.map((r) => r.self),
     );
     if (!again) return identityClosedReply(tx, businessId);
-    if (message.outcome) message.outcome.reaskedHeld = { heldId, previous: again.previous };
+    if (message.outcome) {
+      message.outcome.heldQuestion = heldId;
+      message.outcome.reaskedHeld = { heldId, previous: again.previous };
+    }
     await continuationsRepo.openContinuation(tx, {
       businessId,
       userId: actorId,
@@ -5628,17 +5638,22 @@ function photoBuyerNamed(
   names: readonly string[],
 ): boolean {
   const fields = pageBuyerFields(rawText, caption);
-  return names.some((name) => {
-    if (!name.trim()) return false;
-    /* An email is matched as a whole address: `typedIn` takes addresses out, so that "ada" inside
-     * one never counts as a typed name (CodeRabbit and Codex on #437 at ccdcc8e). */
-    if (caption && (name.includes('@') ? addressIn(caption, name) : typedIn(caption, name))) {
-      return true;
-    }
-    /* Every labelled buyer field must name them: a page whose buyer fields name two people does
-     * not say who bought, so it is asked about (OWN-103(4); CodeRabbit on #437 at 4a5fd80). */
-    return fields.length > 0 && fields.every((field) => fieldNames(field, name));
-  });
+  /* A caption can name the buyer directly. An email must match as a whole address. */
+  if (
+    caption &&
+    names.some(
+      (name) =>
+        name.trim() && (name.includes('@') ? addressIn(caption, name) : typedIn(caption, name)),
+    )
+  ) {
+    return true;
+  }
+  /* Every field must name the buyer. Recorded names and contacts can be different facets of
+   * the same issued token, while a field belonging to somebody else is contradictory. */
+  return (
+    fields.length > 0 &&
+    fields.every((field) => names.some((name) => name.trim() && fieldNames(field, name)))
+  );
 }
 
 /** The page without the caption the merchant typed in front of it. */
@@ -5663,15 +5678,15 @@ function pageBuyerFields(rawText: string, caption: string | null): string[] {
     const lines = page.slice(label.index + label[0].length).split(/\r?\n/u);
     const after = foldField(lines.find((line) => line.trim()) ?? '');
     const first = after.split(/\s/u)[0] ?? '';
-    /* A phone is a buyer too ("Buyer: 08035551234", "Buyer: 0803 555 1234"; Codex and CodeRabbit
-     * on #437 at af169b0 and d80426e): the whole leading run of digits and separators holds 10 to
-     * 15 digits, which a count or a price on an items line never does. */
-    const run = /^\+?[\d\s\-().]+/u.exec(after)?.[0] ?? '';
-    const digits = run.replace(/\D/gu, '').length;
-    const phone = digits >= 10 && digits <= 15;
+    const phone = leadingPhoneDigits(after).length >= 10;
     if (/^[\p{L}]/u.test(after) || first.includes('@') || phone) fields.push(after);
   }
   return fields;
+}
+
+/** Read the whole leading phone run, including any extra digits after separators. */
+function leadingPhoneDigits(text: string): string {
+  return (/^\+?[\d\s\-().]+/u.exec(text)?.[0] ?? '').replace(/\D/gu, '');
 }
 
 /** Whether one buyer field names `name`. */
@@ -5683,6 +5698,10 @@ function fieldNames(after: string, name: string): boolean {
    * b2703e7). */
   if ((after.split(/\s/u)[0] ?? '').includes('@')) return false;
   const needle = foldField(name);
+  if (/^\+?[\d\s\-().]+$/u.test(needle)) {
+    const digits = leadingPhoneDigits(needle);
+    return digits.length >= 10 && digits.length <= 15 && leadingPhoneDigits(after) === digits;
+  }
   /* The whole name, not its first word: after it the field ends, or what follows is no more of a
    * name (a phone, a comma, the items). "Ada" is not the buyer "Ada Obi" (CodeRabbit on #437 at
    * aff3f63). */

@@ -7,7 +7,9 @@
  */
 import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../config.js';
-import { BASE } from './env.fixtures.js';
+import { BASE as UNLABELLED } from './env.fixtures.js';
+
+const BASE = { ...UNLABELLED, NODE_ENV: 'test' };
 
 describe('picking a provider', () => {
   it('follows an explicit choice', () => {
@@ -202,8 +204,8 @@ describe('the high-value verifier in production (OD-63(c))', () => {
    * recorded to OpenAI. The verifier needs development or test said explicitly (CodeRabbit on #437
    * at 4d9fa80). */
   it.each([undefined, ''])('is refused when NODE_ENV is %j', (nodeEnv) => {
-    const env: Record<string, string> = {
-      ...BASE,
+    const env: NodeJS.ProcessEnv = {
+      ...UNLABELLED,
       ANTHROPIC_API_KEY: 'k',
       AI_MODEL_VISION_VERIFIER: 'gpt-test-verifier',
     };
@@ -244,7 +246,9 @@ describe('the primary interpreter in production (OD-59 gate)', () => {
     ['AI_PROVIDER=openai', { AI_PROVIDER: 'openai', OPENAI_API_KEY: 'k', AI_MODEL_DEFAULT: 'm' }],
     ['an OpenAI key and no Anthropic key', { OPENAI_API_KEY: 'k', AI_MODEL_DEFAULT: 'm' }],
   ])('refuses %s as the primary interpreter', (_, over) => {
-    expect(() => loadConfig({ ...PROD, ...over })).toThrow(/must be Anthropic in production/);
+    expect(() => loadConfig({ ...PROD, ...over })).toThrow(
+      /must be Anthropic outside explicit development or test/,
+    );
   });
 
   it.each(['https://api.groq.com/openai/v1', 'https://gateway.example.com/anthropic'])(
@@ -262,11 +266,27 @@ describe('the primary interpreter in production (OD-59 gate)', () => {
     ).toThrow(/AI_BASE_URL names ollama/);
   });
 
-  it('leaves development and test free to try another provider', () => {
+  it.each([undefined, ''])('holds an unlabelled process to Anthropic (NODE_ENV=%j)', (NODE_ENV) => {
+    const env = { ...UNLABELLED, NODE_ENV };
+    const openai = { OPENAI_API_KEY: 'k', AI_MODEL_DEFAULT: 'm' };
+    expect(() => loadConfig({ ...env, ...openai })).toThrow(/must be Anthropic/);
+    expect(() => loadConfig({ ...env, ...openai, AI_PROVIDER: 'openai' })).toThrow(
+      /must be Anthropic/,
+    );
+    expect(() =>
+      loadConfig({ ...env, AI_BASE_URL: 'https://gateway.example.com/anthropic' }),
+    ).toThrow(/AI_BASE_URL must be blank or exactly/);
+    expect(
+      loadConfig({ ...env, AI_BASE_URL: 'https://api.anthropic.com', ANTHROPIC_API_KEY: 'k' })
+        .aiProvider,
+    ).toBe('anthropic');
+  });
+
+  it.each(['development', 'test'])('lets %s try another provider', (NODE_ENV) => {
     expect(
       loadConfig({
         ...BASE,
-        NODE_ENV: 'test',
+        NODE_ENV,
         AI_PROVIDER: 'openai',
         OPENAI_API_KEY: 'k',
         AI_MODEL_DEFAULT: 'm',

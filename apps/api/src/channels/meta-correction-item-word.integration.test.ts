@@ -313,3 +313,40 @@ describe('an apology opener beside a waiting expense', () => {
     expect(await drafts(business.id)).toEqual(['RecordExpense:pending', 'RecordExpense:pending']);
   });
 });
+
+it('a decimal million price correction replaces the earlier sale preview exactly once', async () => {
+  const { business, ada } = await seedOwner();
+  await send('Ada bought 3 wigs at 50k each', 'wamid.CM-sale', SALE);
+  await send('change the price to 1.6m', 'wamid.CM-change', {
+    ...SALE,
+    customer: { kind: 'none' },
+    items: [{ name: 'wig', quantity: 3, unitPrice: 1_600_000 }],
+    statedTotal: 4_800_000,
+  });
+  expect(await drafts(business.id)).toEqual(['RecordSale:superseded', 'RecordSale:pending']);
+  await send('yes', 'wamid.CM-yes');
+  await send('yes', 'wamid.CM-yes-again');
+  expect((await books(business.id)).invoices).toEqual([
+    { customer_id: ada.id, total_k: 480_000_000 },
+  ]);
+});
+
+it('corrects the whole stock count shown for a fractional purchase quantity', async () => {
+  const { business } = await seedOwner();
+  const original = { ...purchase(50_000), productMention: 'ankara fabric', quantity: 3.5 };
+  await send('bought 3.5 pcs of ankara fabric for 50k cash', 'wamid.CQ-buy', original);
+  expect(stubSender.lastText).toContain('Adding to stock: 3 ankara fabric');
+
+  await send('No, 4 pcs not 3', 'wamid.CQ-correct', { ...original, quantity: 4 });
+  expect(stubSender.lastText).toContain('Adding to stock: 4 ankara fabric');
+  expect(await drafts(business.id)).toEqual([
+    'RecordPurchase:superseded',
+    'RecordPurchase:pending',
+  ]);
+  await send('yes', 'wamid.CQ-confirm');
+  await send('yes', 'wamid.CQ-repeat');
+  expect(await drafts(business.id)).toEqual([
+    'RecordPurchase:superseded',
+    'RecordPurchase:confirmed',
+  ]);
+});

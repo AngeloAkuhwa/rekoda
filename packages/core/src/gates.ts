@@ -464,8 +464,8 @@ export function looksLikeCorrection(text: string, hasPendingDraft: boolean): boo
  * not clearly a correction and is asked about: listing new-sale wordings can never be complete, so
  * the shape of a correction is allowed and everything else is refused.
  */
-/* A decimal figure needs a currency sign or "k" ("60.5k", "₦4.50"): a bare "4.30" is a time. */
-const FIG = String.raw`(?:(?:₦|NGN|N)\s*\d[\d,]*(?:\.\d+)?(?:\s*k)?|\d[\d,]*\.\d+\s*k|\d[\d,]*(?:\s*k)?)`;
+/* A decimal needs a currency sign or a k/m suffix. A bare "4.30" is a time. */
+const FIG = String.raw`(?:(?:₦|NGN|N)\s*\d[\d,]*(?:\.\d+)?(?:\s*[km](?![a-z0-9]))?|\d[\d,]*\.\d+\s*[km](?![a-z0-9])|\d[\d,]*(?:\s*[km](?![a-z0-9]))?)`;
 const TIME_WORD = String.raw`(?:am|pm|o'?clock|h|hrs?|hours?|mins?|minutes?|s|secs?|seconds?|days?|weeks?|months?|years?|st|nd|rd|th|today|tomorrow|tonight|noon|midnight|morning|evening|night|jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december|mon|monday|tue|tues|tuesday|wed|wednesday|thu|thur|thurs|thursday|fri|friday|sat|saturday|sun|sunday)`;
 /* A figure, then at most one word that is not a time or a date ("4 wigs", "4pcs", "60k each"). */
 /* Words that add to the draft or start another one ("5 more", "5 also", "another") never fill it,
@@ -606,13 +606,16 @@ export function correctionWordsExplained(text: string, vocabulary: Iterable<stri
   }
   const lower = text.toLowerCase();
   /* Where a word stands right after a figure ("4 Price"), it is the free item-word position. The
-   * figure includes its thousands suffix ("4k Price"), never the first letter of a word ("4 kits")
-   * (Codex on #437 at 5bbe9b8). */
+   * figure includes its currency suffix ("4k Price", "1.6m Price"), and leaves whole item words
+   * such as "kits" and "mugs" to the vocabulary check. */
   const afterFigure = new Set<number>();
-  for (const m of lower.matchAll(/\d[\d,.]*(?:\s*k(?![\p{L}\p{N}]))?\s*(?=\p{L})/gu)) {
+  const suffixes = new Set<number>();
+  for (const m of lower.matchAll(/\d[\d,.]*(?:\s*([km])(?![\p{L}\p{N}]))?\s*/gu)) {
     afterFigure.add(m.index + m[0].length);
+    if (m[1]) suffixes.add(m.index + m[0].trimEnd().length - 1);
   }
   const explained = (word: string, at: number): boolean => {
+    if (suffixes.has(at)) return true;
     /* The bare item word in the item-word position: an item named "Price" or "Set" is still the
      * bare item word there, never a structure or unit word (CodeRabbit on #437 at ccdcc8e). A
      * grammatical word elsewhere ("change the price to 60k" for "ready to wear") is the grammar
@@ -688,7 +691,15 @@ export function draftFigures(command: Record<string, unknown>): DraftFigures {
   for (const key of ['statedTotal', 'reportedPayment', 'discount', 'deliveryFee', 'amount']) {
     addMoney(command[key]);
   }
-  addQuantity(command['quantity']);
+  const quantity = command['quantity'];
+  if (command['intent'] === 'RecordPurchase') {
+    const productMention = command['productMention'];
+    if (typeof productMention === 'string' && typeof quantity === 'number') {
+      addQuantity(stockArrival(productMention, quantity)?.quantity);
+    }
+  } else {
+    addQuantity(quantity);
+  }
   /* A stock adjustment's preview shows its count ("Adding 3"), whichever way it moves (Codex on
    * #437 at af169b0). */
   const delta = command['quantityDelta'];
@@ -989,8 +1000,15 @@ export function gateStockChange(change: StockChangeLike, onHand: number): StockG
 export function purchaseArrival(
   purchase: PurchaseLike,
 ): { productMention: string; quantity: number } | null {
-  const name = purchase.productMention?.trim();
-  const quantity = Math.trunc(purchase.quantity ?? 0);
+  return stockArrival(purchase.productMention, purchase.quantity);
+}
+
+function stockArrival(
+  productMention: string | null | undefined,
+  count: number | null | undefined,
+): { productMention: string; quantity: number } | null {
+  const name = productMention?.trim();
+  const quantity = Math.trunc(count ?? 0);
   if (!name || quantity <= 0) return null;
   return { productMention: name, quantity };
 }

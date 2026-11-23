@@ -20,6 +20,7 @@ import {
   RACE,
   seedMerchant,
   addDelegate,
+  drain,
   say,
   reply,
   purchaseStates,
@@ -27,6 +28,8 @@ import {
   purchases,
   bookMilo,
 } from './meta-purchase-truth.fixtures.js';
+
+import { lastWamid, receipt } from './meta-preview-expiry.fixtures.js';
 
 useMetaWebhookHarness();
 
@@ -254,6 +257,57 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
       ];
       expect(row!.ref).toBeNull();
     });
+
+    it.each([
+      ['initial', false],
+      ['current', false],
+      ['initial', true],
+      ['current', true],
+    ] as const)(
+      'handles a late failure of the %s identity question (new match: %s)',
+      async (failed, newMatch) => {
+        const business = await seedMerchant();
+        const delegate = await addDelegate(business.id);
+        await bookMilo(business.id, 'late-reask');
+        await say('wamid.LR-first', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+        expect(stubSender.lastText).toContain(QUESTION);
+        const initial = lastWamid();
+
+        if (newMatch) {
+          await say('wamid.LR-new', MILO, 'I bought 10 cartons of Milo for 100k cash');
+          await reply('wamid.LR-new-separate', 'separate');
+          await reply('wamid.LR-new-yes', 'yes');
+          await reply('wamid.LR-reask', 'separate', DELEGATE);
+          expect(stubSender.lastText).toContain(QUESTION);
+        } else {
+          await reply('wamid.LR-no', 'no', DELEGATE);
+          expect(stubSender.lastText).toContain(REASK);
+        }
+        const current = lastWamid();
+        expect(current).not.toBe(initial);
+
+        const failedWamid = failed === 'initial' ? initial : current;
+        await receipt(DELEGATE, failedWamid, 'failed');
+        await receipt(DELEGATE, failedWamid, 'failed');
+        await drain();
+        const questions = await withBusiness(db, business.id, (tx) =>
+          tx.execute<{ state: string }>(sql`
+            SELECT state FROM conversation_continuations
+             WHERE business_id = ${business.id}::uuid AND user_id = ${delegate}::uuid
+               AND expects = 'purchase_identity'
+             ORDER BY insertion_seq DESC LIMIT 1`),
+        );
+        expect(questions[0]?.state).toBe(failed === 'initial' ? 'open' : 'superseded');
+        await reply('wamid.LR-same', 'same', DELEGATE);
+        if (failed === 'initial') {
+          expect(stubSender.lastText).toContain(SAME_DONE);
+        } else {
+          expect(stubSender.lastText).not.toContain(SAME_DONE);
+          expect(await purchaseStates(business.id)).toContain('superseded');
+        }
+        expect(await purchases(business.id)).toBe(newMatch ? 2 : 1);
+      },
+    );
 
     it('the re-ask after a no never offers cancel', async () => {
       const business = await seedMerchant();

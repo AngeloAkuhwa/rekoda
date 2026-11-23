@@ -543,6 +543,8 @@ export const commandDrafts = pgTable(
      * (0158, Codex review of 30a5c8f): a "separate" sent before it is
      * asked again. Null until a re-ask. */
     reaskedAt: timestamp('reasked_at', { withTimezone: true }),
+    /** Inbound message answered by the latest accepted identity question (0247). */
+    heldQuestionMessageId: uuid('held_question_message_id'),
   },
   (t) => [
     // One draft per message — a job that runs twice must not give the merchant

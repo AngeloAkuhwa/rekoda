@@ -135,8 +135,9 @@ a token not in `tokens.displays` gets the following treatment.
     customer (by name or by an issued token) is its own; one carrying a token this message was not
     issued is still refused by G-137, so no earlier token is ever whitelisted;
   - only when the message clearly corrects (`clearlyCorrects` in `@rekoda/core`: it says what replaces
-    what, or sets one figure against another, "4 not 3"). An opener alone ("Wait, I also sold 2
-    bags", independent review of #437) is asked about instead. A "not" that only states a new
+    what, or sets one figure against another, "4 not 3"). The separate explicit-opener rule lets
+    "Sorry, bought fuel for 6k cash" replace the same fuel expense preview under OWN-103. An opener
+    with an adding word ("Wait, I also sold 2 bags") is asked about instead. A "not" that only states a new
     record's state ("Sold 2 bags for 20k, not paid yet") is no correction cue at all: under OWN-102(2)
     that message is an ordinary new record with its own preview, never asked about;
   - only when the draft is the newest answerable one with no refusal in front of it, the only one
@@ -593,10 +594,11 @@ details and points to the page for "your conversations and account". Nothing on 
 
 The amendment in `docs/adr/0005-pii-gateway-scope.md` is ACCEPTED (OWN-100, 21 Nov 2026). The wording
 below replaced the `/ai-privacy` paragraph "The first time you mention a new customer by name…" in #437.
-As applied, two sentences were added after a claim check: the unknown name in a question goes only to
-the bookkeeping model, and the chat history records a document Rekoda sends by its number and amount;
-the last paragraph also says the originals are not yet deleted on a fixed schedule (R3 is not built)
-and that text from before this change can remain until DELETE MY DATA or account deletion (R1 not run).
+As applied, the bookkeeping model reads the unknown name in a question. For a photographed question,
+the name can first reach the Anthropic document classifier. The chat history records a document Rekoda
+sends by its number and amount. The last paragraph also says the originals are not yet deleted on a
+fixed schedule (R3 is not built) and that text from before this change can remain until DELETE MY DATA
+or account deletion (R1 not run).
 
 > **Customers you have recorded.** Their names, phone numbers and email addresses are replaced with a
 > token before anything is sent to the AI model, in questions and in records alike.
@@ -679,10 +681,12 @@ webhook (§1.2), or any time limit on the encrypted originals (R3 is not approve
     message must be a short correction and nothing else: an optional opener ("no", "sorry", "wait"),
     then "should be", "make it" or "change it to" a figure, one figure "instead of" or "rather than"
     another, or one figure "not" another ("4 not 3", "it was 60k not 50k", "she paid 60k not 50k"). A
-    figure may carry ₦, N or NGN, commas, a decimal point and "k", and at most one word after it that is
-    not a time, a date, an adding word ("more", "also", "another") or a count of records or people ("2
+    figure may carry ₦, N or NGN, commas, a decimal point and a "k" or "m" suffix. At most one word
+    may follow it, excluding a time, a date, an adding word ("more", "also", "another") or a count of records or people ("2
     sales", "2 customers"), and a bare decimal ("4.30") is a time; the field named before "should be"
-    comes from a closed list (price, total, quantity, balance and the like), never "the other". Anything
+    comes from a closed list (price, total, quantity, balance and the like), never "the other".
+    Separately, the approved apology opener can replace the same preview ("Sorry, bought fuel for
+    6k cash"). An apology with an adding word is asked about. Anything
     else is asked about, whatever wording it contains, so a new sale in any phrasing ("Sold 5 bags, 10k
     each, total should be 50k", "Sold 3 wigs @30k, make it 4") never keeps the waiting draft's customer.
     Messages longer than 80 characters are never a clear correction. Fixed RED first after the owner's

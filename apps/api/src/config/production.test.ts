@@ -148,7 +148,7 @@ describe('AI_BASE_URL', () => {
   it('production refuses a public https host that is not Anthropic', () => {
     for (const url of ['https://api.groq.com/openai/v1', 'https://8.8.8.8/v1']) {
       expect(() => loadConfig({ ...PROD, AI_BASE_URL: url })).toThrow(
-        /AI_BASE_URL must be blank or exactly https:\/\/api\.anthropic\.com in production/,
+        /AI_BASE_URL must be blank or exactly https:\/\/api\.anthropic\.com outside explicit development or test/,
       );
     }
     expect(loadConfig({ ...PROD, AI_BASE_URL: 'https://api.anthropic.com' }).aiBaseUrl).toBe(

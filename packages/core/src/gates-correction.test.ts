@@ -46,6 +46,7 @@ describe('a correction clear enough to keep the draft customer (clearlyCorrects,
     'total should be 50k',
     'Price should be 60k each',
     'change the price to 60k',
+    'change the price to 1.6m',
     'the delivery fee should be 2k',
     /* Item names that begin like a month or a day are items. */
     'make it 5 sunglasses',
@@ -368,5 +369,26 @@ describe('a replaced figure the waiting draft does not hold', () => {
     ],
   ])('%j does not fit', (t, figures) => {
     expect(replacedFiguresFit(t, figures)).toBe(false);
+  });
+});
+
+describe('corrections use displayed figures', () => {
+  it('recognises a decimal million suffix in the inheritance check', () => {
+    expect(correctionWordsExplained('change the price to 1.6m', ['wig'])).toBe(true);
+    expect(correctionWordsExplained('1.6m Price not 1.5m', ['Price'])).toBe(false);
+  });
+
+  it('uses the stock arrival quantity for purchases and the original quantity for sales', () => {
+    const purchase = draftFigures({
+      intent: 'RecordPurchase',
+      productMention: 'wig',
+      quantity: 3.5,
+      amount: 50_000,
+    });
+    expect(replacedFiguresFit('No, 4 pcs not 3', purchase)).toBe(true);
+    expect(purchase.quantities).toEqual([3]);
+
+    const sale = draftFigures({ intent: 'RecordSale', items: [{ quantity: 3.5, unitPrice: 50 }] });
+    expect(sale.quantities).toEqual([3.5]);
   });
 });
