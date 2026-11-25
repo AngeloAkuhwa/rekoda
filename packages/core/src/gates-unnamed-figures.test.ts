@@ -204,6 +204,43 @@ describe('unnamedFiguresChanged', () => {
       ).toBe(true);
     });
 
+    /* Codex on #437 at 63cf5fb and e9b1cb4: a line added or dropped, priced or not, and a stock
+     * adjustment's delta are counts the correction must name. */
+    it('checks the quantities of added and dropped lines and of a stock delta', () => {
+      const text = 'No, price 60k not 50k, 2 caps at 10k';
+      const wigs = { name: 'wig', quantity: 3, unitPrice: 60_000 };
+      const caps = (quantity: number) => ({ name: 'cap', quantity, unitPrice: 10_000 });
+      expect(unnamedFiguresChanged(text, sale, { ...sale, items: [wigs, caps(999)] })).toBe(true);
+      expect(unnamedFiguresChanged(text, sale, { ...sale, items: [wigs, caps(2)] })).toBe(false);
+      const order = {
+        intent: 'RecordOrder',
+        items: [
+          { name: 'wig', quantity: 3 },
+          { name: 'comb', quantity: 2 },
+        ],
+      };
+      const fourWigs = { name: 'wig', quantity: 4 };
+      expect(unnamedFiguresChanged('No, 4 not 3', order, { ...order, items: [fourWigs] })).toBe(
+        true,
+      );
+      expect(
+        unnamedFiguresChanged('No, 4 not 3', order, {
+          ...order,
+          items: [fourWigs, { name: 'comb', quantity: 2 }],
+        }),
+      ).toBe(false);
+      const stock = { intent: 'AdjustInventory', productMention: 'wig', quantityDelta: 3 };
+      for (const [delta, asked] of [
+        [999, true],
+        [-4, true],
+        [4, false],
+      ] as const) {
+        expect(
+          unnamedFiguresChanged('No, 4 not 3', stock, { ...stock, quantityDelta: delta }),
+        ).toBe(asked);
+      }
+    });
+
     it('checks the price of a line the reading adds', () => {
       expect(
         unnamedFiguresChanged('No, 4 not 3', sale, {
