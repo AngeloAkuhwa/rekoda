@@ -7,6 +7,7 @@ import {
   clearlyCorrects,
   correctionWordsExplained,
   draftFigures,
+  unnamedFiguresChanged,
   explicitlyCorrects,
   looksLikeCorrection,
   replacedFiguresFit,
@@ -543,5 +544,37 @@ describe('a sale preview shows only these aggregates', () => {
     expect(over.moneyKobo).toContain(1_500_000);
     const exact = draftFigures({ ...LINES, statedTotal: 30_000, reportedPayment: 30_000 });
     expect(exact.moneyKobo).not.toContain(1_500_000);
+  });
+});
+
+/* OD-76 Option A (owner ruling OWN-107): a correction may change only the figures it names. */
+describe('unnamedFiguresChanged', () => {
+  const sale = {
+    items: [{ name: 'wig', quantity: 3, unitPrice: 50_000 }],
+    reportedPayment: 100_000,
+  };
+  const four = { ...sale, items: [{ name: 'wig', quantity: 4, unitPrice: 50_000 }] };
+
+  it.each([
+    ['No, 4 not 3', four, false],
+    ['No, 4 not 3', { ...four, reportedPayment: 0 }, true],
+    ['No, 4 not 3', { ...four, items: [{ name: 'wig', quantity: 4, unitPrice: 40_000 }] }, true],
+    ['No, 4 not 3', { ...four, discount: 5_000 }, true],
+    ['she paid 120k not 100k', { ...sale, reportedPayment: 120_000 }, false],
+    [
+      'no, 40k each not 50k',
+      { ...sale, items: [{ name: 'wig', quantity: 3, unitPrice: 40_000 }] },
+      false,
+    ],
+  ] as const)('%s, reading %j: %s', (text, reading, expected) => {
+    expect(unnamedFiguresChanged(text, sale, reading)).toBe(expected);
+  });
+
+  it('judges an expense amount the same way', () => {
+    const fuel = { description: 'fuel', amount: 5_000 };
+    expect(unnamedFiguresChanged('no, 6k not 5k', fuel, { ...fuel, amount: 6_000 })).toBe(false);
+    expect(
+      unnamedFiguresChanged('it was diesel, not petrol', fuel, { ...fuel, amount: 6_000 }),
+    ).toBe(true);
   });
 });

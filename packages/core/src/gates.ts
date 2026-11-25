@@ -885,6 +885,54 @@ export function replacedFiguresFit(text: string, draft: DraftFigures): boolean {
   return true;
 }
 
+/**
+ * Whether a correction's reading changes a financial figure the merchant did not name (OD-76 Option
+ * A, owner ruling OWN-107). "No, 4 not 3" names a quantity; a reading of it that also changes what
+ * was paid, a price, a discount, a delivery fee or an amount changes something the merchant never
+ * mentioned, so it is asked about and nothing is replaced. A changed figure counts as named when the
+ * correction's words hold its old or its new value. A stated total is not checked here: it follows
+ * from the lines, and one that disagrees with them is the CG1 question already.
+ */
+export function unnamedFiguresChanged(
+  text: string,
+  stored: Record<string, unknown>,
+  reading: Record<string, unknown>,
+): boolean {
+  const named = new Set<number>();
+  for (const m of text.toLowerCase().matchAll(ANY_FIGURE)) {
+    const kobo = m[1] ? figureKobo(m[1].trim()) : null;
+    if (kobo !== null) named.add(kobo);
+  }
+  const kobo = (v: unknown, nullIsZero: boolean): number | null =>
+    typeof v === 'number' && Number.isFinite(v) ? nairaToKobo(v) : nullIsZero ? 0 : null;
+  const changed = (before: number | null, after: number | null) =>
+    before !== after &&
+    !(before !== null && named.has(before)) &&
+    !(after !== null && named.has(after));
+  for (const key of ['reportedPayment', 'discount', 'deliveryFee']) {
+    if (changed(kobo(stored[key], true), kobo(reading[key], true))) return true;
+  }
+  if (
+    'amount' in stored &&
+    changed(kobo(stored['amount'], false), kobo(reading['amount'], false))
+  ) {
+    return true;
+  }
+  /* A price is matched by its line's name: a line the reading drops or adds is the correction's own
+   * business, which the quantity and figure rules above it already judge. */
+  const lines = (v: unknown) =>
+    Array.isArray(v)
+      ? (v as unknown[]).filter((i): i is Record<string, unknown> => !!i && typeof i === 'object')
+      : [];
+  const after = lines(reading['items']);
+  for (const line of lines(stored['items'])) {
+    const same = after.find((l) => l['name'] === line['name']);
+    if (same && changed(kobo(line['unitPrice'], false), kobo(same['unitPrice'], false)))
+      return true;
+  }
+  return false;
+}
+
 /* ── money coming IN against an invoice already issued ───────────────────── */
 
 export interface PaymentLike {

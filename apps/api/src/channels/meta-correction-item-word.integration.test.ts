@@ -361,3 +361,41 @@ it('corrects the whole stock count shown for a fractional purchase quantity', as
     'RecordPurchase:confirmed',
   ]);
 });
+
+/* OD-76 Option A (owner ruling OWN-107): a correction changes only the figures the merchant names.
+ * "No, 4 not 3" read with a different payment, price or delivery fee is asked about and changes
+ * nothing; read with only the named figure (and the total that follows from it) it corrects. */
+describe('a correction whose reading changes a figure the merchant did not name', () => {
+  const PAID = { ...SALE, reportedPayment: 100_000 };
+  const FOUR = {
+    ...PAID,
+    items: [{ name: 'wig', quantity: 4, unitPrice: 50_000 }],
+    statedTotal: 200_000,
+  };
+
+  it.each([
+    ['the amount paid', { ...FOUR, reportedPayment: 0 }],
+    [
+      'the price',
+      { ...FOUR, items: [{ name: 'wig', quantity: 4, unitPrice: 40_000 }], statedTotal: 160_000 },
+    ],
+    ['a delivery fee', { ...FOUR, deliveryFee: 5_000 }],
+  ])('%s: asked about, the waiting sale unchanged, nothing booked', async (_, reading) => {
+    const { business } = await seedOwner();
+    await send('sold Ada 3 wigs for 150k, paid 100k', 'wamid.UF1', PAID);
+    await send('No, 4 not 3', 'wamid.UF2', reading);
+
+    expect(stubSender.lastText).toBe(replies.correctionChangedUnnamedFigure().text);
+    expect(await drafts(business.id)).toEqual(['RecordSale:pending']);
+    expect((await books(business.id)).invoices).toEqual([]);
+  });
+
+  it('a reading that changes only the named figure still corrects the sale', async () => {
+    const { business } = await seedOwner();
+    await send('sold Ada 3 wigs for 150k, paid 100k', 'wamid.UF3', PAID);
+    await send('No, 4 not 3', 'wamid.UF4', { ...FOUR, customer: { kind: 'none' } });
+
+    expect(stubSender.lastText).toContain('4 × wig');
+    expect(await drafts(business.id)).toEqual(['RecordSale:superseded', 'RecordSale:pending']);
+  });
+});

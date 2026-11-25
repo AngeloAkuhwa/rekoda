@@ -18,6 +18,7 @@ import {
   draftFigures,
   explicitlyCorrects,
   replacedFiguresFit,
+  unnamedFiguresChanged,
   correctionWordsExplained,
   orderPreview,
   orderQuestion,
@@ -5951,7 +5952,7 @@ type Inherited =
   /** A correction that supersedes the waiting draft but cannot keep its customer yet: asked. */
   | { readonly kind: 'withdraw' }
   /** Read as a correction, but which draft it changes, or how, is unclear: asked about. */
-  | { readonly kind: 'unclear'; readonly ask: 'customer' | 'figure' | CorrectionBlock }
+  | { readonly kind: 'unclear'; readonly ask: 'customer' | 'figure' | 'unnamed' | CorrectionBlock }
   | {
       readonly kind: 'inherit';
       readonly customer: { readonly token: string; readonly customerId: string } | null;
@@ -6103,6 +6104,11 @@ async function correctionInheritance(
    * expense says nothing about it, so it is asked about and changes nothing, whatever kind. */
   if (!replacedFiguresFit(input.rawText, draftFigures(stored))) {
     return { kind: 'unclear', ask: 'figure' };
+  }
+  /* Nor may it change a financial figure the merchant did not name (OD-76 Option A, OWN-107): a
+   * reading of "No, 4 not 3" that also moves the payment is asked about, never previewed. */
+  if (unnamedFiguresChanged(input.rawText, stored, command as unknown as Record<string, unknown>)) {
+    return { kind: 'unclear', ask: 'unnamed' };
   }
 
   /* A customer the correction names, by a name or by any token, is its own: a different one
@@ -6484,7 +6490,9 @@ async function interpretedReply(
               ? replies.correctionForAnotherMember()
               : carried.ask === 'figure'
                 ? replies.correctionFigureNotInDraft()
-                : replies.correctionNotClear(),
+                : carried.ask === 'unnamed'
+                  ? replies.correctionChangedUnnamedFigure()
+                  : replies.correctionNotClear(),
       );
     }
     if (carried.kind === 'withdraw') {

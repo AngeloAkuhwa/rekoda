@@ -1013,6 +1013,15 @@ export function optionChosen(invoiceNumber: string): Reply {
  * request waiting for a yes holds no such figure. Nothing was changed; it asks what is being
  * corrected, with the same steps as `correctionNotClear`.
  */
+/** OD-76 Option A (OWN-107): the correction would also change a figure the merchant did not name. */
+export function correctionChangedUnnamedFigure(): Reply {
+  return reply(
+    'That correction would also change a figure you did not mention, so I have not changed ' +
+      'anything. Tell me exactly what to change. To keep the waiting request as it is, reply *yes*. ' +
+      'To replace it, reply *cancel*, then send the whole corrected record.',
+  );
+}
+
 export function correctionFigureNotInDraft(): Reply {
   return reply(
     'The figure you said was wrong is not in the request waiting for your yes, so I have not ' +
