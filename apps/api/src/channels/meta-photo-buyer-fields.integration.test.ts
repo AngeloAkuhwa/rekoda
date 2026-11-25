@@ -115,27 +115,101 @@ describe('an empty buyer label does not name a customer', () => {
 /* A contact block under the label still names a customer: read with nobody, the sale is asked
  * about, never booked as anonymous (OWN-103(4), OWN-102(6); independent review on #437). */
 describe('a contact under an empty buyer label is evidence of a buyer', () => {
-  it.each(['Tel: 08035551234', 'Email: ada@example.test'])(
-    'a sale read with no customer before %s is asked about',
-    async (contact) => {
-      const business = await seedMerchant('+' + OWNER);
-      arrangePhoto();
-      stubOcr.answerWith({
-        text: `RECEIPT\nCustomer:\n${contact}\nWig 2 50000\nTOTAL 100,000`,
-        confidence: 0.9,
-      });
-      stubTransport.replyWith(sale({ kind: 'none' }));
+  it.each([
+    'Customer:\nTel: 08035551234',
+    'Customer:\nEmail: ada@example.test',
+    /* A same-line empty heading with its value below (independent review of 5e5267c). */
+    'Customer: Tel:\n08035551234',
+    'Customer:\nTel:\n08035551234',
+  ])('a sale read with no customer under %j is asked about', async (contact) => {
+    const business = await seedMerchant('+' + OWNER);
+    arrangePhoto();
+    stubOcr.answerWith({
+      text: `RECEIPT\n${contact}\nWig 2 50000\nTOTAL 100,000`,
+      confidence: 0.9,
+    });
+    stubTransport.replyWith(sale({ kind: 'none' }));
 
-      await post(photoPayload(OWNER, 'wamid.BUYER-contact'));
-      await drain();
+    await post(photoPayload(OWNER, 'wamid.BUYER-contact'));
+    await drain();
 
-      const drafts = await withBusiness(db, business.id, (tx) =>
-        tx.execute(sql`
+    const drafts = await withBusiness(db, business.id, (tx) =>
+      tx.execute(sql`
           SELECT 1 FROM command_drafts
            WHERE business_id = ${business.id}::uuid AND intent = 'RecordSale'
              AND state = 'pending' AND previewed`),
-      );
-      expect([...drafts]).toEqual([]);
+    );
+    expect([...drafts]).toEqual([]);
+  });
+});
+
+async function seedAda(businessId: string) {
+  const facets = [
+    ['name', 'Ada Obi'],
+    ['email', 'ada@example.test'],
+    ['phone', '08035551234'],
+  ] as const;
+  await customersRepo.createCustomerWithIdentities(
+    db,
+    businessId,
+    TOKEN,
+    facets.map(([facet, value]) => ({
+      facet,
+      ciphertext: encryptFacet(value, deps.config.vaultKey, `${businessId}:${facet}`),
+      matchKey: matchKeyFor(businessId, facet, normaliseFacet(facet, value), deps.config.matchKey),
+    })),
+  );
+}
+
+const previewedSales = (businessId: string) =>
+  withBusiness(db, businessId, (tx) =>
+    tx.execute(sql`
+      SELECT command->'customer' AS customer FROM command_drafts
+       WHERE business_id = ${businessId}::uuid AND intent = 'RecordSale'
+         AND state = 'pending' AND previewed`),
+  ).then((rows) => [...rows]);
+
+/* The caption the merchant typed is evidence of the buyer only where it does not label that name
+ * as somebody else (CodeRabbit on #437 at 600a155, OWN-102(6)), and a buyer the caption labels is
+ * evidence of a buyer as much as one the page labels (OWN-103(4)). */
+describe('a caption that labels its names', () => {
+  it.each([
+    ['labels the chosen customer as the supplier', 'Supplier - Ada Obi', 'RECEIPT', false],
+    ['labels the chosen customer as the buyer', 'Buyer: Ada Obi', 'Seller: Wigs Ltd', true],
+    ['labels the chosen customer as the delivery contact', 'Deliver to: Ada Obi', 'RECEIPT', false],
+    /* "Received from" is a buyer label, not another party (independent review of 5e5267c). */
+    ['receives from the chosen customer', 'Received from: Ada Obi', 'RECEIPT', true],
+    /* A caption's buyer and the page's must agree (independent review of 5e5267c). */
+    ['labels another buyer than the page', 'Buyer: Tunde Bello', 'Buyer: Ada Obi', false],
+  ])('a caption that %s', async (_, caption, page, accepted) => {
+    const business = await seedMerchant('+' + OWNER);
+    await seedAda(business.id);
+    arrangePhoto();
+    stubOcr.answerWith({ text: `${page}\n2 wigs TOTAL 100,000`, confidence: 0.9 });
+    stubTransport.replyWith(sale({ kind: 'token', token: TOKEN }));
+
+    await post(photoPayload(OWNER, 'wamid.BUYER-caption', { caption }));
+    await drain();
+
+    expect(await previewedSales(business.id)).toEqual(
+      accepted ? [{ customer: { kind: 'token', token: TOKEN } }] : [],
+    );
+    if (!accepted) expect(stubSender.lastText).toContain('could not tell which customer');
+  });
+
+  it.each(['Buyer: Tunde Bello', 'Customer - Tunde Bello'])(
+    'a sale read with no customer under the caption %s is asked about',
+    async (caption) => {
+      const business = await seedMerchant('+' + OWNER);
+      arrangePhoto();
+      stubOcr.answerWith({ text: 'RECEIPT\n2 wigs TOTAL 100,000', confidence: 0.9 });
+      stubTransport.replyWith(sale({ kind: 'none' }));
+
+      await post(photoPayload(OWNER, 'wamid.BUYER-caption-none', { caption }));
+      await drain();
+
+      expect(await previewedSales(business.id)).toEqual([]);
+      expect(stubSender.lastText).toContain('could not tell which customer');
     },
   );
 });
