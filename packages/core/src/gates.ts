@@ -921,33 +921,91 @@ export function unnamedFiguresChanged(
     const q = count(v);
     if (q !== null) seenQuantities.add(q);
   }
-  /* The figures the merchant wrote, each usable once: as money unless written as a count or equal
-   * to one of the draft's or the reading's quantities, as a count unless written as money. */
-  const namedMoney: number[] = [];
+  /* The money figures the merchant wrote, each usable once, with the field its clause names (Codex
+   * and CodeRabbit on #437 at 50f1cd9): a figure written as a count or equal to one of the draft's or
+   * the reading's quantities is a count, never money. A figure right after "not" is the one its
+   * predecessor replaces: the two are a pair and answer only together, for the change from the one
+   * to the other, so "price 50k not 40k" names the price change and the 40k never names a payment. */
+  const lower = text.toLowerCase();
+  const money: NamedFigure[] = [];
   const namedCounts: number[] = [];
-  for (const m of text.toLowerCase().matchAll(ANY_FIGURE)) {
+  let end = 0;
+  let previous: NamedFigure | null = null;
+  for (const m of lower.matchAll(ANY_FIGURE)) {
     const figure = m[1]?.trim();
     if (!figure) continue;
+    /* The gap runs to the figure itself: the word after the last figure ("50k not") is in it. */
+    const gap = lower.slice(end, m.index);
+    end = m.index + (m[1]?.length ?? 0);
     const kind = figureKind(figure, m[2]);
     const plain = Number(figure.replace(/,/gu, ''));
     const isCount = kind !== 'money' && Number.isFinite(plain);
     if (isCount) namedCounts.push(plain);
-    if (kind === 'quantity' || (kind === null && isCount && seenQuantities.has(plain))) continue;
+    if (kind === 'quantity' || (kind === null && isCount && seenQuantities.has(plain))) {
+      previous = null;
+      continue;
+    }
     const k = figureKobo(figure);
-    if (k !== null) namedMoney.push(k);
+    if (k === null) {
+      previous = null;
+      continue;
+    }
+    const replaces = previous !== null && PAIRED_GAP.test(gap) && previous.pair === null;
+    const own: NamedFigure = {
+      kobo: k,
+      field: m[2]?.toLowerCase() === 'each' ? 'price' : fieldOf(gap),
+      replaced: replaces || NEGATED_GAP.test(gap),
+      pair: null,
+      used: false,
+    };
+    if (replaces && previous) {
+      own.field ??= previous.field;
+      previous.field ??= own.field;
+      own.pair = previous;
+      previous.pair = own;
+    }
+    money.push(own);
+    previous = own;
   }
+  const fits = (f: NamedFigure, field: FigureField) =>
+    !f.used && (f.field === null || FIELD_FITS[f.field].includes(field));
+  const use = (f: NamedFigure | undefined) => {
+    if (!f) return false;
+    f.used = true;
+    if (f.pair) f.pair.used = true;
+    return true;
+  };
+  /* The pair naming exactly this change, from its replaced figure to its replacement. */
+  const exactPair = (field: FigureField, was: number | null, now: number | null) =>
+    money.find(
+      (f) =>
+        !f.replaced &&
+        f.pair !== null &&
+        f.kobo === now &&
+        f.pair.kobo === was &&
+        fits(f, field) &&
+        fits(f.pair, field),
+    );
+  /* Otherwise a change is named by a figure for its new value (never one a "not" replaces), or, when
+   * it falls to nothing, by a lone figure for its old value ("no discount, not 2k"); never by a
+   * pair's figure, which already names its own change. */
+  const loose = (field: FigureField, was: number | null, now: number | null) =>
+    now !== null && now !== 0
+      ? (money.find((f) => !f.replaced && f.pair === null && f.kobo === now && fits(f, field)) ??
+        money.find((f) => !f.replaced && f.pair !== null && f.kobo === now && fits(f, field)))
+      : money.find((f) => f.pair === null && f.kobo === was && fits(f, field));
   const take = (pool: number[], value: number) => {
     const i = pool.indexOf(value);
     if (i < 0) return false;
     pool.splice(i, 1);
     return true;
   };
-  /* Whether a change from `was` to `now` is one the merchant named: by its new value, or by its old
-   * one when it falls to nothing. Unchanged is always fine. */
-  const named = (pool: number[], was: number | null, now: number | null) => {
+  /* Whether a change of a count from `was` to `now` is one the merchant named: by its new value, or
+   * by its old one when it falls to nothing. Unchanged is always fine. */
+  const namedCount = (was: number | null, now: number | null) => {
     if (was === now) return true;
-    if (now !== null && now !== 0) return take(pool, now);
-    if (was !== null && was !== 0) return take(pool, was);
+    if (now !== null && now !== 0) return take(namedCounts, now);
+    if (was !== null && was !== 0) return take(namedCounts, was);
     return true;
   };
   const kobo = (v: unknown, nullIsZero: boolean): number | null =>
@@ -959,25 +1017,25 @@ export function unnamedFiguresChanged(
     purchase && command['reportedPayment'] == null
       ? kobo(command['amount'], false)
       : kobo(command['reportedPayment'], true);
-  const changes: Array<[number[], number | null, number | null]> = [];
+  const changes: Array<[FigureField, number | null, number | null]> = [];
+  const counts: Array<[number | null, number | null]> = [];
   if (purchase) {
     /* Paid in full stays paid in full when only the amount moves: the amount names that change. */
     const wasFull =
       stored['reportedPayment'] == null || paid(stored) === kobo(stored['amount'], false);
     const nowFull =
       reading['reportedPayment'] == null || paid(reading) === kobo(reading['amount'], false);
-    if (!(wasFull && nowFull)) changes.push([namedMoney, paid(stored), paid(reading)]);
+    if (!(wasFull && nowFull)) changes.push(['payment', paid(stored), paid(reading)]);
   } else {
-    changes.push([namedMoney, paid(stored), paid(reading)]);
+    changes.push(['payment', paid(stored), paid(reading)]);
   }
-  for (const key of ['discount', 'deliveryFee']) {
-    changes.push([namedMoney, kobo(stored[key], true), kobo(reading[key], true)]);
-  }
+  changes.push(['discount', kobo(stored['discount'], true), kobo(reading['discount'], true)]);
+  changes.push(['fee', kobo(stored['deliveryFee'], true), kobo(reading['deliveryFee'], true)]);
   if ('amount' in stored) {
-    changes.push([namedMoney, kobo(stored['amount'], false), kobo(reading['amount'], false)]);
+    changes.push(['amount', kobo(stored['amount'], false), kobo(reading['amount'], false)]);
   }
   if ('quantity' in stored) {
-    changes.push([namedCounts, count(stored['quantity']), count(reading['quantity'])]);
+    counts.push([count(stored['quantity']), count(reading['quantity'])]);
   }
   /* A price and a quantity are checked on every line the draft had: matched one to one, by its
    * exact name, else its name without case or spaces, else its position when the reading has as many
@@ -1000,34 +1058,86 @@ export function unnamedFiguresChanged(
       (after.length === before.length ? pick((_l, j) => j === i) : undefined);
     const price = kobo(line['unitPrice'], false);
     if (!same) {
-      changes.push([namedMoney, price, null]);
+      changes.push(['price', price, null]);
       continue;
     }
-    changes.push([namedMoney, price, kobo(same['unitPrice'], false)]);
-    changes.push([namedCounts, count(line['quantity']), count(same['quantity'])]);
+    changes.push(['price', price, kobo(same['unitPrice'], false)]);
+    counts.push([count(line['quantity']), count(same['quantity'])]);
   }
   for (const [j, line] of after.entries()) {
-    if (!used.has(j)) changes.push([namedMoney, null, kobo(line['unitPrice'], false)]);
+    if (!used.has(j)) changes.push(['price', null, kobo(line['unitPrice'], false)]);
   }
-  for (const [pool, was, now] of changes) {
-    if (!named(pool, was, now)) return true;
+  for (const [was, now] of counts) {
+    if (!namedCount(was, now)) return true;
   }
+  /* Exact pairs first, so a pair answers for its own change before any looser reading. */
+  const open = changes.filter(
+    ([field, was, now]) => was !== now && !use(exactPair(field, was, now)),
+  );
+  for (const [field, was, now] of open) {
+    if (!use(loose(field, was, now))) return true;
+  }
+  const namesTotal = (value: number) =>
+    money.some((f) => !f.replaced && f.kobo === value && fits(f, 'total'));
   /* A stated total the correction does not name must follow from the corrected figures: within
    * `computeMoney`'s tolerance a different one would become the invoice total unasked (Codex on #437
    * at 0bf9298). One the reading drops must have been the total the draft's lines computed, or the
    * invoice total moves unasked (CodeRabbit on #437 at c5392f0). */
   const statedBefore = kobo(stored['statedTotal'], false);
   const statedAfter = kobo(reading['statedTotal'], false);
-  if (statedBefore !== statedAfter && !(statedAfter !== null && namedMoney.includes(statedAfter))) {
+  if (statedBefore !== statedAfter && !(statedAfter !== null && namesTotal(statedAfter))) {
     if (statedAfter !== null) {
-      const money = after.length > 0 ? saleFigures(reading, after) : null;
-      if (!money || money.computedTotalK !== statedAfter) return true;
-    } else if (statedBefore !== null && !namedMoney.includes(statedBefore)) {
-      const money = before.length > 0 ? saleFigures(stored, before) : null;
-      if (!money || money.computedTotalK !== statedBefore) return true;
+      const figures = after.length > 0 ? saleFigures(reading, after) : null;
+      if (!figures || figures.computedTotalK !== statedAfter) return true;
+    } else if (statedBefore !== null && !namesTotal(statedBefore)) {
+      const figures = before.length > 0 ? saleFigures(stored, before) : null;
+      if (!figures || figures.computedTotalK !== statedBefore) return true;
     }
   }
   return false;
+}
+
+/** The field a correction's clause names for its figure, if it names one. */
+type FigureField = 'price' | 'payment' | 'discount' | 'fee' | 'amount' | 'total';
+interface NamedFigure {
+  kobo: number;
+  field: FigureField | null;
+  /** Written after a "not", "instead of" or "rather than": the value being corrected away. */
+  replaced: boolean;
+  /** Its other half in "50k not 40k"; the two answer for one change, together. */
+  pair: NamedFigure | null;
+  used: boolean;
+}
+/** What a figure named for one field may answer for. */
+const FIELD_FITS: Record<FigureField, readonly FigureField[]> = {
+  price: ['price', 'amount'],
+  payment: ['payment'],
+  discount: ['discount'],
+  fee: ['fee'],
+  amount: ['amount', 'total', 'price'],
+  total: ['total', 'amount'],
+};
+const FIELD_WORDS: ReadonlyArray<readonly [RegExp, FigureField]> = [
+  [/\b(?:paid|pay|payment|deposit)\b/u, 'payment'],
+  [/\bdiscount\b/u, 'discount'],
+  [/\b(?:delivery|fee|shipping)\b/u, 'fee'],
+  [/\b(?:price|each|cost|rate|per)\b/u, 'price'],
+  [/\btotal\b/u, 'total'],
+  [/\bamount\b/u, 'amount'],
+];
+/** The text between two figures that makes the second the one the first replaces. */
+const PAIRED_GAP = /^\s*,?\s*(?:not|instead\s+of|rather\s+than)\s*$/u;
+const NEGATED_GAP = /\b(?:not|instead\s+of|rather\s+than)\s*$/u;
+
+/** The field a figure's own clause names: the last field word before it, since the last figure. */
+function fieldOf(gap: string): FigureField | null {
+  let found: { at: number; field: FigureField } | null = null;
+  for (const [pattern, field] of FIELD_WORDS) {
+    for (const m of gap.matchAll(new RegExp(pattern.source, 'gu'))) {
+      if (!found || m.index > found.at) found = { at: m.index, field };
+    }
+  }
+  return found?.field ?? null;
 }
 
 /* ── money coming IN against an invoice already issued ───────────────────── */
