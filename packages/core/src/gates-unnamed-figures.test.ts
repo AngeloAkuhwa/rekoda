@@ -82,6 +82,11 @@ describe('unnamedFiguresChanged', () => {
     expect(
       unnamedFiguresChanged('it was diesel, not petrol', fuel, { ...fuel, amount: 6_000 }),
     ).toBe(true);
+    /* A payment's amount is what was paid, so "paid" names it (G-49). */
+    const payment = { intent: 'RecordPayment', amount: 180_000 };
+    expect(
+      unnamedFiguresChanged('no, Ada paid 150k not 180k', payment, { ...payment, amount: 150_000 }),
+    ).toBe(false);
   });
 
   /* CodeRabbit on #437 at c5392f0: each figure the merchant names answers for one change only, in

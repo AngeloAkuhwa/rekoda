@@ -1032,7 +1032,14 @@ export function unnamedFiguresChanged(
   changes.push(['discount', kobo(stored['discount'], true), kobo(reading['discount'], true)]);
   changes.push(['fee', kobo(stored['deliveryFee'], true), kobo(reading['deliveryFee'], true)]);
   if ('amount' in stored) {
-    changes.push(['amount', kobo(stored['amount'], false), kobo(reading['amount'], false)]);
+    /* A payment's or an expense's amount is what was paid: "paid 150k not 180k" names it. */
+    const intent = stored['intent'] ?? reading['intent'];
+    const paidAmount = intent === 'RecordPayment' || ('description' in stored && !purchase);
+    changes.push([
+      paidAmount ? 'paidAmount' : 'amount',
+      kobo(stored['amount'], false),
+      kobo(reading['amount'], false),
+    ]);
   }
   if ('quantity' in stored) {
     counts.push([count(stored['quantity']), count(reading['quantity'])]);
@@ -1098,10 +1105,12 @@ export function unnamedFiguresChanged(
 }
 
 /** The field a correction's clause names for its figure, if it names one. */
-type FigureField = 'price' | 'payment' | 'discount' | 'fee' | 'amount' | 'total';
+type NamedField = 'price' | 'payment' | 'discount' | 'fee' | 'amount' | 'total';
+/** A change's field: a named one, or the amount of a payment or an expense, which is what was paid. */
+type FigureField = NamedField | 'paidAmount';
 interface NamedFigure {
   kobo: number;
-  field: FigureField | null;
+  field: NamedField | null;
   /** Written after a "not", "instead of" or "rather than": the value being corrected away. */
   replaced: boolean;
   /** Its other half in "50k not 40k"; the two answer for one change, together. */
@@ -1109,15 +1118,15 @@ interface NamedFigure {
   used: boolean;
 }
 /** What a figure named for one field may answer for. */
-const FIELD_FITS: Record<FigureField, readonly FigureField[]> = {
-  price: ['price', 'amount'],
-  payment: ['payment'],
+const FIELD_FITS: Record<NamedField, readonly FigureField[]> = {
+  price: ['price', 'amount', 'paidAmount'],
+  payment: ['payment', 'paidAmount'],
   discount: ['discount'],
   fee: ['fee'],
-  amount: ['amount', 'total', 'price'],
-  total: ['total', 'amount'],
+  amount: ['amount', 'total', 'price', 'paidAmount'],
+  total: ['total', 'amount', 'paidAmount'],
 };
-const FIELD_WORDS: ReadonlyArray<readonly [RegExp, FigureField]> = [
+const FIELD_WORDS: ReadonlyArray<readonly [RegExp, NamedField]> = [
   [/\b(?:paid|pay|payment|deposit)\b/u, 'payment'],
   [/\bdiscount\b/u, 'discount'],
   [/\b(?:delivery|fee|shipping)\b/u, 'fee'],
@@ -1130,8 +1139,8 @@ const PAIRED_GAP = /^\s*,?\s*(?:not|instead\s+of|rather\s+than)\s*$/u;
 const NEGATED_GAP = /\b(?:not|instead\s+of|rather\s+than)\s*$/u;
 
 /** The field a figure's own clause names: the last field word before it, since the last figure. */
-function fieldOf(gap: string): FigureField | null {
-  let found: { at: number; field: FigureField } | null = null;
+function fieldOf(gap: string): NamedField | null {
+  let found: { at: number; field: NamedField } | null = null;
   for (const [pattern, field] of FIELD_WORDS) {
     for (const m of gap.matchAll(new RegExp(pattern.source, 'gu'))) {
       if (!found || m.index > found.at) found = { at: m.index, field };
