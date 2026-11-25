@@ -893,6 +893,41 @@ export async function closeRefusalDraft(
 }
 
 /**
+ * Whether a failed delivery receipt for the reply to `draft`'s request is stored and not yet applied:
+ * its `delivery.status` job is pending or running, or dead with its event unprocessed (a death the
+ * runner records without the inbound lock, after the yes applied the dead ones). The job marks the
+ * draft undelivered when it runs; until then the draft was still never read (CodeRabbit on #437 at
+ * c5392f0). Only a failed receipt queues a `delivery.status` job.
+ */
+const unappliedFailedReceipt = (draft: SQL) => sql`EXISTS (
+  SELECT 1 FROM jobs j
+    JOIN conversation_messages m
+      ON m.business_id = j.business_id
+     AND m.direction = 'outbound'
+     AND m.provider_message_id = j.payload->>'outboundMessageId'
+   WHERE j.business_id = ${draft}.business_id
+     AND j.kind = 'delivery.status'
+     AND m.reply_to_message_id = ${draft}.conversation_message_id
+     AND (j.state IN ('pending', 'running')
+          OR (j.state = 'dead' AND EXISTS (
+                SELECT 1 FROM external_events e
+                 WHERE e.business_id = j.business_id
+                   AND e.id::text = j.payload->>'eventId'
+                   AND e.processed_at IS NULL))))`;
+
+/** `unappliedFailedReceipt` for one draft of this business. */
+export async function hasUnappliedFailedReceipt(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ found: boolean }>(sql`
+    SELECT ${unappliedFailedReceipt(sql`d`)} AS found FROM command_drafts d
+     WHERE d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid`);
+  return [...rows][0]?.found === true;
+}
+
+/**
  * Whether `requestedBy` has recorded any draft since `draftId`, in any state and of any
  * intent, a question included (owner review of #437): their refusal is then no longer the
  * last thing they read, so a "yes" or "no" of theirs is not about it.
@@ -922,6 +957,9 @@ export async function hasDraftsAfterBy(
          AND withdrawn IS NOT TRUE
          AND NOT (intent NOT IN ('Query', 'Unclear', 'EraseData')
                   AND previewed IS NOT TRUE AND state <> 'held')
+         -- Nor one whose reply's failed receipt is stored and not yet applied (CodeRabbit on #437
+         -- at c5392f0).
+         AND NOT ${unappliedFailedReceipt(sql`command_drafts`)}
          AND insertion_seq > (
            SELECT d.insertion_seq FROM command_drafts d
             WHERE d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid)

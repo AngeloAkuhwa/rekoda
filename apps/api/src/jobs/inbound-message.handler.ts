@@ -1258,7 +1258,14 @@ async function pastRefusals(
        * reached them is no answer to their refusal (the rule `hasDraftsAfterBy` applies), so the
        * scan goes on to that refusal and another member's newer preview is never booked by this
        * sender's yes (CodeRabbit on #437 at cacc734). */
-      if (actor !== null && draft.requestedBy === actor && unseenRecord(draft)) {
+      /* Nor is one whose reply's failed receipt is stored and not yet applied: it was never read
+       * either (CodeRabbit on #437 at c5392f0). */
+      if (
+        actor !== null &&
+        draft.requestedBy === actor &&
+        (unseenRecord(draft) ||
+          (await conversationsRepo.hasUnappliedFailedReceipt(tx, businessId, draft.id)))
+      ) {
         except.push(draft.id);
         continue;
       }
