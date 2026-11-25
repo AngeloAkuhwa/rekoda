@@ -93,9 +93,11 @@ for a person nobody recorded, nothing is vaulted until a record needs them.
      - it adds no disclosure to any other provider and no new store of identities, and the
        retention, erasure and access controls that apply to every message apply to these.
 4. **A name first met in a record** (sale, invoice, payment, order and the other record intents).
-   Unchanged. It reaches the approved Anthropic interpreter as typed, once, and is vaulted as soon as the
-   command is interpreted (`resolveMention`), before the merchant confirms, so later messages name the
-   customer by token. Ratified as an exception to spec C.3 by OWN-106 (OD-73 Option A), under case 3's
+   It reaches the approved Anthropic interpreter as typed. When the reading names that customer, the
+   name is vaulted as soon as the command is interpreted (`resolveMention`), before the merchant
+   confirms, so later messages name the customer by token. When the reading names nobody, nothing is
+   vaulted, the record stays anonymous, and the name may reach the interpreter again in a later record
+   request under the same limits (OD-78, OWN-107). Ratified as an exception to spec C.3 by OWN-106 (OD-73 Option A), under case 3's
    limits; a phone or email beside the name is tokenised first, as in case 2.
 5. **A correction (CG5) that names nobody** ("No, 4 not 3"). The model reads it from its own words and
    never sees an earlier turn. The customer is carried from the trusted pending draft it corrects, by
