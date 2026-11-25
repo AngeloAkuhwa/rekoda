@@ -57,9 +57,9 @@ import { killInboundJob, queueOnly } from './meta-lost-message.fixtures.js';
 useMetaWebhookHarness();
 
 /**
- * Attempt 1 of the next "yes" meters, claims, then fails issuing (a
- * fail-once trigger on invoices): the job rolls back and is retried later,
- * so other messages can be handled before it. Test-scoped, on the owner.
+ * Attempt 1 of the next "yes" meters, claims, then fails issuing (a fail-once trigger on invoices):
+ * the job rolls back and is retried later, so other messages can be handled before it. Test-scoped,
+ * on the owner.
  */
 async function withFirstInvoiceFailing(run: (owner: Db) => Promise<void>) {
   const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
@@ -272,10 +272,10 @@ describe('a preview has a time limit (G-23)', () => {
 });
 
 /**
- * OD-58 (owner ruling, 21 Nov 2026): a correction whose preview never reached the merchant
- * fails closed. The replacement is unconfirmable, the draft it superseded stays superseded
- * (only purchase drafts are recorded for restoring), so a "yes" posts nothing, costs nothing,
- * and is told nothing waits for it; the merchant sends the request again.
+ * OD-58 (owner ruling, 21 Nov 2026): a correction whose preview never reached the merchant fails
+ * closed. The replacement is unconfirmable, the draft it superseded stays superseded (only purchase
+ * drafts are recorded for restoring), so a "yes" posts nothing, costs nothing, and is told nothing
+ * waits for it; the merchant sends the request again.
  */
 describe('a correction whose preview was not delivered fails closed (OD-58)', () => {
   const FOUR = {
@@ -362,6 +362,7 @@ const statesR = async (businessId: string) =>
          WHERE business_id = ${businessId}::uuid ORDER BY insertion_seq`),
     )),
   ].map((r) => `${r.intent}:${r.state}`);
+const BEHIND = [replies.previewBehindQuestion().text];
 
 /* OD-75 Option A (owner ruling OWN-107): when the question's answer AND the pointer past it both fail,
  * in either order, the question still stands, so a repeated yes is pointed again and books nothing. */
@@ -382,7 +383,6 @@ describe('the answer to a question and the pointer past it both reported failed'
     },
   );
 });
-
 describe('a repeated yes and a failed receipt for the pointer reply (CodeRabbit on #437)', () => {
   /* The yes is answered with the pointer again and books nothing; the receipt then puts the question
    * back, so it takes the ordinary pointer and one more yes to book, exactly once. */
@@ -394,8 +394,7 @@ describe('a repeated yes and a failed receipt for the pointer reply (CodeRabbit 
     await drainR();
 
     expect(await footprintR(business.id)).toEqual(before);
-    expect(stubSender.lastText).toBe(replies.previewBehindQuestion().text);
-    expect(await answered(business.id, 'RC1-yes2')).toEqual({ replies: [1], unfinished: 0 });
+    expect(await answered(business.id, 'RC1-yes2')).toEqual({ replies: [BEHIND], unfinished: 0 });
     expect(await statesR(business.id)).toEqual(['RecordSale:pending', 'Query:pending']);
   });
 
@@ -455,7 +454,7 @@ describe('a repeated yes and a failed receipt for the pointer reply (CodeRabbit 
     await drainR();
 
     expect(await footprintR(business.id)).toEqual(before);
-    expect((await answered(business.id, 'RC6-yes2', 'RC6-yes3')).replies).toEqual([1, 1]);
+    expect((await answered(business.id, 'RC6-yes2', 'RC6-yes3')).replies).toEqual([BEHIND, BEHIND]);
   });
 });
 
@@ -572,7 +571,8 @@ describe('a repeated yes and a failed receipt for the refusal pointer', () => {
     await drainR();
 
     expect(await footprintR(business.id)).toEqual(before);
-    expect(await answered(business.id, 'RF4')).toEqual({ replies: [1], unfinished: 0 });
+    const behind = [replies.previewBehindRefusal().text];
+    expect(await answered(business.id, 'RF4')).toEqual({ replies: [behind], unfinished: 0 });
     const refused = await withBusiness(db, business.id, (tx) =>
       tx.execute<{ state: string }>(sql`
         SELECT state FROM command_drafts
@@ -595,6 +595,6 @@ describe('a spoken yes held by a failed pointer receipt', () => {
 
     expect(stubStt.calls).toHaveLength(1);
     expect(await footprintR(business.id)).toEqual(before);
-    expect(await answered(business.id, 'RV-voice')).toEqual({ replies: [1], unfinished: 0 });
+    expect(await answered(business.id, 'RV-voice')).toEqual({ replies: [BEHIND], unfinished: 0 });
   });
 });

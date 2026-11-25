@@ -10,6 +10,7 @@ import {
   deps,
   messagePayload,
   post,
+  stubSender,
   stubTransport,
   workerDb,
   knownCustomer,
@@ -167,22 +168,30 @@ export function mediaMessage(wamid: string, fields: Record<string, unknown>, fro
 }
 
 /**
- * For each inbound message (by wamid, without the "wamid." prefix): how many replies answer it,
- * and how many of the business's inbound jobs are not done, so a held message is shown answered
- * and finished, never dropped or left to retry (CodeRabbit on #437 at c5392f0).
+ * For each inbound message (by wamid, without the "wamid." prefix): the text of each reply that
+ * answers it and was actually sent (a row recorded before a send that never happened reads
+ * 'unsent'), and how many of the business's inbound jobs are not done, so a held message is shown
+ * answered and finished, never dropped or left to retry (CodeRabbit on #437 at c5392f0 and 00c0620).
  */
 export async function answered(businessId: string, ...wamids: string[]) {
   const { db: owner, close } = createDb(urls.owner, { max: 1 });
   try {
-    const replies: number[] = [];
+    const replies: string[][] = [];
     for (const wamid of wamids) {
-      const [row] = await owner.execute<{ n: number }>(sql`
-        SELECT count(*)::int AS n FROM conversation_messages o
+      const rows = await owner.execute<{ sent: string | null }>(sql`
+        SELECT o.provider_message_id AS sent FROM conversation_messages o
           JOIN conversation_messages i
             ON i.id = o.reply_to_message_id AND i.business_id = o.business_id
          WHERE o.business_id = ${businessId}::uuid AND o.direction = 'outbound'
-           AND i.provider_message_id = ${`wamid.${wamid}`}`);
-      replies.push(Number(row?.n));
+           AND i.provider_message_id = ${`wamid.${wamid}`}
+         ORDER BY o.created_at`);
+      /* The stub sender numbers what it sends: wamid.STUB<n> is its nth message. */
+      replies.push(
+        [...rows].map(
+          ({ sent }) =>
+            stubSender.sent[Number(sent?.replace('wamid.STUB', '') ?? 0) - 1]?.text ?? 'unsent',
+        ),
+      );
     }
     const [jobs] = await owner.execute<{ n: number }>(sql`
       SELECT count(*)::int AS n FROM jobs
