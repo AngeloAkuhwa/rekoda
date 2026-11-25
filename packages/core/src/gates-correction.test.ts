@@ -420,3 +420,44 @@ describe('corrections use displayed figures', () => {
     expect(sale.quantities).toEqual([3.5]);
   });
 });
+
+describe('CodeRabbit on #437 at 400ca58', () => {
+  it('reads a decimal quantity with a unit as one figure, so the correction checks see it', () => {
+    expect(clearlyCorrects('change the quantity to 2.5 kg')).toBe(true);
+    expect(clearlyCorrects('make it 1.5 litres')).toBe(true);
+    expect(clearlyCorrects('No, 2.5 kg not 2 kg')).toBe(true);
+    expect(looksLikeCorrection('change the quantity to 2.5 kg', true)).toBe(true);
+    /* A bare decimal is still a time, and a decimal before a word that is not a unit stays out. */
+    expect(clearlyCorrects('make it 4.30')).toBe(false);
+    expect(clearlyCorrects('make it 2.5 Tunde')).toBe(false);
+  });
+
+  it('reads the balance a part-paid sale preview shows', () => {
+    const sale = draftFigures({
+      intent: 'RecordSale',
+      items: [{ name: 'generator', quantity: 1, unitPrice: 150_000 }],
+      reportedPayment: 110_000,
+    });
+    expect(replacedFiguresFit('balance should be 35k not 40k', sale)).toBe(true);
+    expect(replacedFiguresFit('balance should be 35k not 99k', sale)).toBe(false);
+    /* Fully paid: no balance line is shown, so none is a figure the merchant saw. */
+    const paid = draftFigures({
+      intent: 'RecordSale',
+      items: [{ name: 'generator', quantity: 1, unitPrice: 150_000 }],
+      reportedPayment: 150_000,
+    });
+    expect(paid.moneyKobo).not.toContain(0);
+  });
+
+  it('lets the field a correction names classify an unmarked decimal', () => {
+    const rice = draftFigures({
+      intent: 'RecordSale',
+      items: [{ name: 'rice', quantity: 1.5, unitPrice: 2_000 }],
+    });
+    expect(replacedFiguresFit('No, quantity should be 2 not 1.5', rice)).toBe(true);
+    /* An explicit currency still conflicts with the quantity field. */
+    expect(replacedFiguresFit('No, quantity should be 2 not ₦1.50', rice)).toBe(false);
+    /* With no field named, an unmarked decimal is still read as money. */
+    expect(replacedFiguresFit('No, 2 not 1.5', rice)).toBe(false);
+  });
+});
