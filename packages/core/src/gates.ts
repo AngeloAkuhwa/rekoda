@@ -1028,10 +1028,17 @@ export function unnamedFiguresChanged(
     if (c.pair) c.pair.used = true;
     return true;
   };
-  /* The pair naming exactly this count change ("4 not 3" for 3 to 4). */
+  /* The pair naming exactly this count change ("4 not 3" for 3 to 4). Its replaced count may be the
+   * whole count the preview showed for a fractional one ("Adding to stock: 3" for 3.5). */
   const exactCount = (was: number | null, now: number | null) =>
     namedCounts.find(
-      (c) => !c.used && !c.replaced && c.pair && c.value === now && c.pair.value === was,
+      (c) =>
+        !c.used &&
+        !c.replaced &&
+        c.pair &&
+        c.value === now &&
+        was !== null &&
+        (c.pair.value === was || c.pair.value === Math.trunc(was)),
     );
   /* Otherwise a count change is named by a lone count for its new value, or, when it falls to
    * nothing, by a lone count for its old value; never by a count a "not" replaces, nor by a pair's
