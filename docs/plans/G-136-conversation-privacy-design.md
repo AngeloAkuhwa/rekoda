@@ -533,8 +533,7 @@ sweep, for events with no business), so erasing a finished one never blocks a re
   Option A for R3 would not change R4: the earlier ruling that `error` is no reason to keep a payload
   (`events.ts`, owner review of `3a60b0f`) was for the merchant's own DELETE MY DATA request and stands
   there. The owner decides whether a time-based purge should be more conservative than a request.
-- **Option B:** exclude only unprocessed rows, as R4 does. Bounds every ELIGIBLE finished payload at 30
-  days now; an operator flag on a finished message no longer keeps its payload. "Eligible" is the
+- **Option B:** exclude only unprocessed rows, as R4 does. Targets erasure of every ELIGIBLE finished payload once it is 30 days old: a target, not a guaranteed bound, since a daily pass discovers at most 200 businesses and a larger backlog waits for later passes; an operator flag on a finished message no longer keeps its payload. "Eligible" is the
   predicate's own scope, so Option B is not universal retention enforcement: it never reaches
   pre-cutoff payloads (rows created before `before`), delivery-status events (`status.*`) or events with
   no business, which keep their sealed bodies until their own owner decisions (see the exclusions above
