@@ -121,6 +121,11 @@ describe('a contact under an empty buyer label is evidence of a buyer', () => {
     /* A same-line empty heading with its value below (independent review of 5e5267c). */
     'Customer: Tel:\n08035551234',
     'Customer:\nTel:\n08035551234',
+    /* A name beside the phone below the heading, or no contact at all below a same-line heading
+     * (independent review of a4ba72d). */
+    'Customer: Tel:\nAda Obi 08035551234',
+    'Customer:\nTel:\nAda Obi 08035551234',
+    'Customer: Tel:\nAda Obi',
   ])('a sale read with no customer under %j is asked about', async (contact) => {
     const business = await seedMerchant('+' + OWNER);
     arrangePhoto();
