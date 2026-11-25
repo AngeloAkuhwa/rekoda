@@ -241,6 +241,24 @@ describe('unnamedFiguresChanged', () => {
       }
     });
 
+    /* Codex on #437 at 1f99af5: the count a correction replaces never names another line's count. */
+    it('pairs a replaced quantity with its replacement', () => {
+      const two = {
+        items: [
+          { name: 'wig', quantity: 3, unitPrice: 50_000 },
+          { name: 'cap', quantity: 2, unitPrice: 10_000 },
+        ],
+      };
+      const read = (caps: number) => ({
+        items: [
+          { name: 'wig', quantity: 4, unitPrice: 50_000 },
+          { name: 'cap', quantity: caps, unitPrice: 10_000 },
+        ],
+      });
+      expect(unnamedFiguresChanged('No, 4 not 3', two, read(3))).toBe(true);
+      expect(unnamedFiguresChanged('No, 4 not 3', two, read(2))).toBe(false);
+    });
+
     it('checks the price of a line the reading adds', () => {
       expect(
         unnamedFiguresChanged('No, 4 not 3', sale, {
