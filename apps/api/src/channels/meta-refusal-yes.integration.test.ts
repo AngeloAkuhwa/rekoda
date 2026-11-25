@@ -480,6 +480,18 @@ describe('a refusal that fails to record is answered once across the retry', () 
       payload: () => messagePayload(OWNER, 'wamid.UNREAD-ONCE', 'account 0123456789 or 0987654321'),
       answer: () => replies.messageNotReadSafely().text,
     },
+    /* A photo or voice note whose media cannot be fetched: the reader used to send its refusal
+     * before the caller recorded it (CodeRabbit on #437 at c5392f0). No media is stubbed. */
+    {
+      name: 'a photo that cannot be fetched',
+      payload: () => photoPayload(OWNER, 'wamid.PHOTO-ONCE'),
+      answer: () => replies.photoUnavailable().text,
+    },
+    {
+      name: 'a voice note that cannot be fetched',
+      payload: () => voicePayload(OWNER, 'wamid.VOICE-ONCE'),
+      answer: () => replies.voiceUnavailable().text,
+    },
   ])('$name', async ({ payload, answer }) => {
     const business = await seedMerchant();
     const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
