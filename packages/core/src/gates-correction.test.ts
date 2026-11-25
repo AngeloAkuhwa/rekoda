@@ -471,10 +471,7 @@ describe('CodeRabbit on #437 at 400ca58', () => {
   });
 });
 
-/* CodeRabbit on #437 (PRRT_kwDOT845J8676qPN): the total a sale preview shows is the one
- * `computeMoney` returns, which rounds the unit price to the kobo first. 1.5 at ₦0.29 is ₦0.44
- * there, though quantity x price x 100 rounds to ₦0.43. A merchant correcting the displayed ₦0.44
- * must be told it was in the draft, whether or not anything was paid. Integer kobo throughout. */
+/* CodeRabbit on #437: the shown total is `computeMoney`'s (1.5 at ₦0.29 is ₦0.44, not ₦0.43). */
 describe('the sale total the preview shows is a figure of the draft', () => {
   const FRACTIONAL = {
     intent: 'RecordSale',
@@ -499,8 +496,7 @@ describe('the sale total the preview shows is a figure of the draft', () => {
 
   /* A CG1 question shows both totals when the stated one disagrees with the lines. */
   it('includes the computed total beside a stated total that disagrees', () => {
-    /* 1.5 at ₦1,000.29 is ₦1,500.44 by `computeMoney` (₦1,500.43 by the gross rebuilt line by line);
-     * a stated ₦100 is far outside the ₦50 tolerance, so the question shows ₦1,500.44 and ₦100. */
+    /* ₦1,500.44 computed against a stated ₦100: the CG1 question shows both. */
     const figures = draftFigures({
       intent: 'RecordSale',
       items: [{ name: 'tape', quantity: 1.5, unitPrice: 1000.29 }],
@@ -520,9 +516,7 @@ describe('the sale total the preview shows is a figure of the draft', () => {
   });
 });
 
-/* CodeRabbit on #437 at 1ec5a22: only figures a sale preview DISPLAYS are draft figures. A stated
- * total within tolerance is what the preview shows, never the lines' sum it was compared with; an
- * overpayment the preview shows ("Paid over by") is one. */
+/* CodeRabbit on #437 at 1ec5a22: only figures a sale preview displays are draft figures. */
 describe('a sale preview shows only these aggregates', () => {
   const LINES = {
     intent: 'RecordSale',
@@ -570,8 +564,7 @@ describe('unnamedFiguresChanged', () => {
     expect(unnamedFiguresChanged(text, sale, reading)).toBe(expected);
   });
 
-  /* Codex on #437 at 0bf9298: a stated total must follow from the corrected lines, and a line the
-   * reading renames (or recases) is still checked, never exempted. */
+  /* Codex on #437 at 0bf9298: a stated total follows from the lines; a recased line is checked. */
   it.each([
     ['an unnamed stated total that does not follow', { ...four, statedTotal: 199_000 }, true],
     ['a stated total that follows from the lines', { ...four, statedTotal: 200_000 }, false],
