@@ -842,10 +842,6 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
        * proposal goes, so a yes to what the merchant read never joins two
        * customers (G-60, Codex on #271). */
       if (sent.delivered) {
-        const heldId = outcome.heldQuestion ?? outcome.refusedHeld?.draftId;
-        if (heldId) {
-          await conversationsRepo.setHeldQuestionMessage(tx, businessId, heldId, message.id);
-        }
         const proposal = identityLinkOf(
           await conversationsRepo.draftIdentityLink(tx, businessId, message.id),
         );
@@ -1074,8 +1070,6 @@ type RebuildOutcome = {
    * draft. A draft a yes was refused for is put back as a preview if its
    * question is never delivered (`unholdRefusedPurchase`), not withdrawn. */
   heldDrafts?: string[];
-  /** The held purchase whose latest question changes if WhatsApp accepts this reply. */
-  heldQuestion?: string;
   /** The held purchase this message's "separate" answer closed (G-81). */
   separatedFrom?: { heldId: string; expiresAt: Date };
   /** The held purchase this message asked about again, and what it was (G-81). */
@@ -4409,7 +4403,6 @@ async function reaskPurchaseIdentity(
       expiresAt: held.expiresAt,
     });
   }
-  if (sender.outcome) sender.outcome.heldQuestion = heldId;
   return replies.purchaseIdentityReask({
     ...options,
     kind: spendKindOf(held.command) ?? 'purchase',
@@ -4538,10 +4531,7 @@ async function answerPurchaseIdentity(
       verdict.asked.map((r) => r.self),
     );
     if (!again) return identityClosedReply(tx, businessId);
-    if (message.outcome) {
-      message.outcome.heldQuestion = heldId;
-      message.outcome.reaskedHeld = { heldId, previous: again.previous };
-    }
+    if (message.outcome) message.outcome.reaskedHeld = { heldId, previous: again.previous };
     await continuationsRepo.openContinuation(tx, {
       businessId,
       userId: actorId,
