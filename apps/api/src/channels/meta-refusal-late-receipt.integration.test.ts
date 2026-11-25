@@ -485,3 +485,51 @@ describe('a pointer to a preview behind a question that never arrived', () => {
     expect((await footprint(business.id)).invoices).toBe(before.invoices + 1);
   });
 });
+
+/**
+ * CodeRabbit on #437 (PRRT_kwDOT845J8676qPZ): "cancel" dismisses a refusal for good; only a bare "no"
+ * is put back when its acknowledgement never reached the merchant (OD-62(o), above). A cancel whose
+ * acknowledgement fails, at once or later, never reopens what the merchant cancelled.
+ */
+describe('a cancel whose acknowledgement does not arrive', () => {
+  it.each(['delivered', 'at once', 'later', 'twice'] as const)(
+    'cancel acknowledgement %s: the refusal stays cancelled and repeated yeses book nothing',
+    async (how) => {
+      const business = await saleAndRefusal(`CX${how.length}`);
+      const before = await footprint(business.id);
+
+      if (how === 'at once') stubSender.failWith();
+      await plain(`wamid.CX${how.length}3`, 'cancel');
+      if (how === 'later' || how === 'twice') {
+        await receipt(OWNER, lastWamid(), 'failed');
+        if (how === 'twice') await receipt(OWNER, lastWamid(), 'failed');
+        await drain();
+      }
+
+      expect(await refusalStates(business.id)).toEqual([`+${OWNER}:superseded`]);
+      await plain(`wamid.CX${how.length}4`, 'yes');
+      await plain(`wamid.CX${how.length}5`, 'yes');
+      expect(await footprint(business.id)).toEqual(before);
+      expect(await refusalStates(business.id)).toEqual([`+${OWNER}:superseded`]);
+    },
+  );
+
+  it("leaves another member's refusal untouched, through the cancel and its failed receipt", async () => {
+    const business = await saleAndRefusal('CXdl');
+    const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+    await identity.addMembership(db, business.id, delegate.id, 'delegate');
+    await post(mediaMessage('wamid.CXdl-d', STICKER, DELEGATE));
+    await drain();
+
+    await plain('wamid.CXdl3', 'cancel');
+    await receipt(OWNER, lastWamid(), 'failed');
+    await drain();
+
+    expect(await refusalStates(business.id)).toEqual([
+      `+${OWNER}:superseded`,
+      `+${DELEGATE}:pending`,
+    ]);
+    await plain('wamid.CXdl4', 'yes');
+    expect((await footprint(business.id)).invoices).toBe(0);
+  });
+});

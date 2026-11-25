@@ -6,16 +6,24 @@
  * webhook.fixtures.ts.
  */
 import { describe, expect, it } from 'vitest';
-import { createDb, withBusiness, sql, type Db } from '@rekoda/db';
+import {
+  createDb,
+  withBusiness,
+  sql,
+  type Db,
+  customersRepo,
+  conversationsRepo,
+  identity,
+} from '@rekoda/db';
 import { replies } from '@rekoda/core';
 import { buildRunner } from '../jobs/jobs.module.js';
-import { customersRepo } from '@rekoda/db';
 import {
   db,
   deps,
   messagePayload,
   post,
   stubSender,
+  stubStt,
   stubTransport,
   urls,
   useMetaWebhookHarness,
@@ -35,7 +43,19 @@ import {
   lastWamid,
   draftStates,
   previewFlags,
+  AN_EXPENSE,
 } from './meta-preview-expiry.fixtures.js';
+import { arrangeAudio, drain as drainR, voicePayload } from './meta-voice-note.fixtures.js';
+import {
+  OWNER,
+  footprint as footprintR,
+  plain as plainR,
+  sale,
+  say as sayR,
+  seedMerchant as seedMerchantR,
+} from './meta-customer-token.fixtures.js';
+import { mediaMessage } from './meta-continuations.fixtures.js';
+import { killInboundJob, queueOnly } from './meta-lost-message.fixtures.js';
 
 useMetaWebhookHarness();
 
@@ -306,5 +326,267 @@ describe('a correction whose preview was not delivered fails closed (OD-58)', ()
     expect(stubSender.lastText).toBe(replies.nothingToConfirm().text);
     expect(await footprint(business.id)).toMatchObject({ invoices: 0, payments: 0, postings: 0 });
     expect((await used(business.id)).documents).toBe(0);
+  });
+});
+
+/**
+ * CodeRabbit on #437 (PRRT_kwDOT845J8676qPh): a repeated "yes" must never book a preview while a
+ * failed receipt for the pointer reply that stood in front of it is stored and not yet applied.
+ *
+ * A first "yes" to a preview behind a question retires the question and is answered with a pointer
+ * ("a preview is waiting, reply yes"). If WhatsApp accepts that reply and later reports it failed,
+ * the receipt puts the question back, so the merchant's repeated yes is pointed again. A second
+ * "yes" whose job was created BEFORE the receipt's job used to run first, find no question, and
+ * book; the restoration then came too late to undo it. The financial footprint is asserted, never
+ * only the reply.
+ */
+const QUESTION = {
+  intent: 'Query',
+  topic: 'sales_summary',
+  customer: null,
+  period: 'today',
+  periodText: 'today',
+  format: 'chat',
+};
+
+/** A preview, a question after it, and a first yes answered with a pointer WhatsApp accepted. */
+async function pointedAt(tag: string) {
+  const business = await seedMerchantR();
+  const ada = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+  await sayR(
+    `wamid.${tag}1`,
+    sale({ kind: 'token', token: ada.token }),
+    'sold Ada Obi 2 wigs for 100k',
+  );
+  await sayR(`wamid.${tag}2`, QUESTION, 'how much did I sell today');
+  const before = await footprintR(business.id);
+  await plainR(`wamid.${tag}3`, 'yes');
+  expect(stubSender.lastText).toBe(replies.previewBehindQuestion().text);
+  return { business, before, pointer: lastWamid() };
+}
+
+const statesR = async (businessId: string) =>
+  [
+    ...(await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ intent: string; state: string }>(sql`
+        SELECT intent, state FROM command_drafts
+         WHERE business_id = ${businessId}::uuid ORDER BY insertion_seq`),
+    )),
+  ].map((r) => `${r.intent}:${r.state}`);
+
+describe('a repeated yes and a failed receipt for the pointer reply (CodeRabbit on #437)', () => {
+  /* The yes is answered with the pointer again and books nothing; the receipt then puts the question
+   * back, so it takes the ordinary pointer and one more yes to book, exactly once. */
+  it('a receipt stored after the second yes was queued: nothing booked, the question is back', async () => {
+    const { business, before, pointer } = await pointedAt('RC1');
+
+    await post(messagePayload(OWNER, 'wamid.RC1-yes2', 'yes'));
+    await receipt(OWNER, pointer, 'failed');
+    await drainR();
+
+    expect(await footprintR(business.id)).toEqual(before);
+    expect(stubSender.lastText).toBe(replies.previewBehindQuestion().text);
+    expect(await statesR(business.id)).toEqual(['RecordSale:pending', 'Query:pending']);
+  });
+
+  it('afterwards the pointer and one more yes book the preview once', async () => {
+    const { business, before, pointer } = await pointedAt('RC2');
+
+    await post(messagePayload(OWNER, 'wamid.RC2-yes2', 'yes'));
+    await receipt(OWNER, pointer, 'failed');
+    await drainR();
+    await plainR('wamid.RC2-yes3', 'yes');
+    expect(stubSender.lastText).toBe(replies.previewBehindQuestion().text);
+    expect(await footprintR(business.id)).toEqual(before);
+    await plainR('wamid.RC2-yes4', 'yes');
+    expect((await footprintR(business.id)).invoices).toBe(before.invoices + 1);
+    await plainR('wamid.RC2-yes5', 'yes');
+    expect((await footprintR(business.id)).invoices).toBe(before.invoices + 1);
+  });
+
+  it('a receipt applied before the second yes: nothing booked', async () => {
+    const { business, before, pointer } = await pointedAt('RC3');
+
+    await receipt(OWNER, pointer, 'failed');
+    await drainR();
+    await plainR('wamid.RC3-yes2', 'yes');
+
+    expect(await footprintR(business.id)).toEqual(before);
+    expect(stubSender.lastText).toBe(replies.previewBehindQuestion().text);
+  });
+
+  it('duplicate failed receipts change nothing more than one', async () => {
+    const { business, before, pointer } = await pointedAt('RC4');
+
+    await post(messagePayload(OWNER, 'wamid.RC4-yes2', 'yes'));
+    await receipt(OWNER, pointer, 'failed');
+    await receipt(OWNER, pointer, 'failed');
+    await drainR();
+
+    expect(await footprintR(business.id)).toEqual(before);
+    expect(await statesR(business.id)).toEqual(['RecordSale:pending', 'Query:pending']);
+  });
+
+  it('a pointer WhatsApp delivered: the second yes books once', async () => {
+    const { business, before } = await pointedAt('RC5');
+
+    await post(messagePayload(OWNER, 'wamid.RC5-yes2', 'yes'));
+    await drainR();
+
+    expect((await footprintR(business.id)).invoices).toBe(before.invoices + 1);
+  });
+
+  it('two yeses queued with the receipt: neither books (without the fix the first one did)', async () => {
+    const { business, before, pointer } = await pointedAt('RC6');
+
+    await post(messagePayload(OWNER, 'wamid.RC6-yes2', 'yes'));
+    await post(messagePayload(OWNER, 'wamid.RC6-yes3', 'yes'));
+    await receipt(OWNER, pointer, 'failed');
+    await drainR();
+
+    expect(await footprintR(business.id)).toEqual(before);
+  });
+});
+
+/**
+ * CodeRabbit on #437 (PRRT_kwDOT845J8676qPS): a preview withdrawn because an earlier message of
+ * the merchant was lost keeps that fact when a failed receipt for the preview arrives later.
+ *
+ * Both are true and both are kept: the request was withdrawn (so a "yes" is told to send it
+ * again, and books nothing) and its preview never reached the merchant (so it is no answer to
+ * a refusal, `hasDraftsAfterBy`). Before, the receipt overwrote `inbound_message_failed` with
+ * `preview_not_delivered` and the next "yes" lost the resend instruction.
+ */
+const OWNERF = '2348031234567';
+
+describe('a failed receipt for a preview withdrawn behind a lost message', () => {
+  it.each(['yes', 'no'] as const)(
+    'keeps the resend guidance for a later "%s", books nothing, and a repeated receipt changes nothing',
+    async (answer) => {
+      const business = await seedMerchant();
+      await say(`wamid.FI-${answer}-1`, AN_EXPENSE, 'bought fuel 20k cash');
+      const preview = lastWamid();
+      await queueOnly(`wamid.FI-${answer}-cancel`, 'cancel');
+      await killInboundJob(business.id, 'markFailed');
+
+      /* The lost message is reconciled first: the preview is withdrawn with the reason. */
+      await plain(`wamid.FI-${answer}-2`, answer);
+      const told =
+        answer === 'yes' ? replies.earlierMessageLostYes() : replies.earlierMessageLostNo();
+      expect(stubSender.lastText).toBe(told.text);
+
+      /* WhatsApp then reports that preview undelivered, twice. */
+      await receipt(OWNERF, preview, 'failed');
+      await receipt(OWNERF, preview, 'failed');
+      await drain();
+
+      const states = await draftStates(business.id);
+      expect(states).toEqual([{ state: 'superseded', reason: 'inbound_message_failed' }]);
+
+      await plain(`wamid.FI-${answer}-3`, answer);
+      expect(stubSender.lastText).toBe(told.text);
+      await plain(`wamid.FI-${answer}-4`, 'yes');
+      expect(stubSender.lastText).toBe(replies.earlierMessageLostYes().text);
+      expect((await footprint(business.id)).expenses).toBe(0);
+    },
+  );
+
+  /* The undelivered mark is what lets a refusal stay the member's last read: a withdrawn preview
+   * that never arrived is not "recorded since" it (`hasDraftsAfterBy`). */
+  it('still reads as undelivered by hasDraftsAfterBy once the receipt arrives', async () => {
+    const business = await seedMerchant();
+    await post(
+      mediaMessage(
+        'wamid.FI-ref',
+        { type: 'sticker', sticker: { id: 's', mime_type: 'image/webp' } },
+        OWNERF,
+      ),
+    );
+    await drain();
+    await say('wamid.FI-ref-1', AN_EXPENSE, 'bought fuel 20k cash');
+    const preview = lastWamid();
+    await queueOnly('wamid.FI-ref-cancel', 'cancel');
+    await killInboundJob(business.id, 'markFailed');
+    await plain('wamid.FI-ref-yes', 'yes');
+
+    const owner = (await identity.upsertUserByPhone(db, `+${OWNERF}`)).id;
+    const closes = () =>
+      withBusiness(db, business.id, async (tx) => {
+        const [refusal] = [
+          ...(await tx.execute<{ id: string }>(sql`
+            SELECT id FROM command_drafts
+             WHERE business_id = ${business.id}::uuid AND command->>'refused' = 'true'
+             ORDER BY insertion_seq LIMIT 1`)),
+        ];
+        return conversationsRepo.hasDraftsAfterBy(tx, business.id, refusal!.id, owner);
+      });
+    /* Withdrawn but possibly read: it still stands after the refusal. */
+    expect(await closes()).toBe(true);
+    await receipt(OWNERF, preview, 'failed');
+    await drain();
+    /* Reported undelivered: never read, so it no longer does. The reason is still the lost message. */
+    expect(await closes()).toBe(false);
+    expect(await draftStates(business.id)).toContainEqual({
+      state: 'superseded',
+      reason: 'inbound_message_failed',
+    });
+  });
+});
+
+/* Independent review of f605c98: the same race by the refusal route. A yes to the member's own refusal
+ * closes it and points at the preview behind it ("reply yes to save it"); that reply is accepted and
+ * later reported failed, so the receipt puts the refusal back. A second yes queued before the receipt
+ * runs must not book the preview. */
+describe('a repeated yes and a failed receipt for the refusal pointer', () => {
+  it('books nothing while the receipt is stored, and the refusal is back once it runs', async () => {
+    const business = await seedMerchantR();
+    const ada = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+    await sayR(
+      'wamid.RF1',
+      sale({ kind: 'token', token: ada.token }),
+      'sold Ada Obi 2 wigs for 100k',
+    );
+    await post(
+      mediaMessage(
+        'wamid.RF2',
+        { type: 'sticker', sticker: { id: 's', mime_type: 'image/webp' } },
+        OWNER,
+      ),
+    );
+    await drainR();
+    const before = await footprintR(business.id);
+    await plainR('wamid.RF3', 'yes');
+    expect(stubSender.lastText).toBe(replies.previewBehindRefusal().text);
+    const pointer = lastWamid();
+
+    await post(messagePayload(OWNER, 'wamid.RF4', 'yes'));
+    await receipt(OWNER, pointer, 'failed');
+    await drainR();
+
+    expect(await footprintR(business.id)).toEqual(before);
+    const refused = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ state: string }>(sql`
+        SELECT state FROM command_drafts
+         WHERE business_id = ${business.id}::uuid AND command->>'refused' = 'true'`),
+    );
+    expect([...refused].map((r) => r.state)).toEqual(['pending']);
+  });
+});
+
+/* Independent review of f605c98: a SPOKEN yes held by a stored pointer receipt is transcribed once.
+ * It is answered (pointed again, nothing booked), never deferred and re-run, which would transcribe
+ * and meter it again on every retry. */
+describe('a spoken yes held by a failed pointer receipt', () => {
+  it('is transcribed once, books nothing, and is pointed again', async () => {
+    const { business, before, pointer } = await pointedAt('RV');
+    arrangeAudio(1);
+    stubStt.answerWith({ text: 'yes', seconds: 1, confidence: 0.95 });
+
+    await post(voicePayload(OWNER, 'wamid.RV-voice'));
+    await receipt(OWNER, pointer, 'failed');
+    await drainR();
+
+    expect(stubStt.calls).toHaveLength(1);
+    expect(await footprintR(business.id)).toEqual(before);
   });
 });

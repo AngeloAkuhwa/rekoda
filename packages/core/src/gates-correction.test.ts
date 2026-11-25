@@ -496,6 +496,18 @@ describe('the sale total the preview shows is a figure of the draft', () => {
     expect(figures.moneyKobo).not.toContain(45);
   });
 
+  /* A CG1 question shows both totals when the stated one disagrees with the lines. */
+  it('includes the computed total beside a stated total that disagrees', () => {
+    /* 1.5 at ₦1,000.29 is ₦1,500.44 by `computeMoney` (₦1,500.43 by the gross rebuilt line by line);
+     * a stated ₦100 is far outside the ₦50 tolerance, so the question shows ₦1,500.44 and ₦100. */
+    const figures = draftFigures({
+      intent: 'RecordSale',
+      items: [{ name: 'tape', quantity: 1.5, unitPrice: 1000.29 }],
+      statedTotal: 100,
+    });
+    expect(figures.moneyKobo).toEqual(expect.arrayContaining([150_044, 10_000]));
+  });
+
   it('carries a discount and a delivery fee into the shown total', () => {
     const figures = draftFigures({
       intent: 'RecordSale',

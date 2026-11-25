@@ -1680,9 +1680,11 @@ export async function reopenReadsRetiredBy(
  * receipt's `delivery.status` job puts the question back. A repeated "yes" queued BEFORE that job
  * is not held up by it (`hasEarlierLiveJob` looks only at earlier jobs), so it would find no
  * question and book the preview the merchant was never told is waiting, and the later restoration
- * cannot undo a booking. While such a job is pending or running, the yes must wait for it: the
- * caller defers, the runner re-queues it without charging an attempt, and the receipt either runs
- * or dies (`reconcileDeadReceipts` applies a dead one before any yes is read).
+ * cannot undo a booking. While such a job is pending or running, the yes books nothing: the caller
+ * answers it with the pointer again. It is answered, not deferred: a deferred job re-runs every
+ * half second without an attempt charged, and a spoken yes would be transcribed and metered again on
+ * every run (independent review of f605c98). A dead receipt is applied before any yes is read
+ * (`reconcileDeadReceipts`).
  *
  * Narrow on purpose: only a receipt naming a reply to a message that retired a Query standing
  * after `draftId`, so unrelated receipts never hold a yes. Read under the business's inbound lock,
@@ -1692,29 +1694,49 @@ export async function hasLivePointerReceipt(
   tx: TenantDb,
   businessId: string,
   draftId: string,
-): Promise<boolean> {
-  const rows = await tx.execute<{ held: boolean }>(sql`
-    SELECT EXISTS (
-      SELECT 1
+): Promise<'question' | 'refusal' | null> {
+  /* Two pointer replies exist, both "a preview is waiting, reply yes": the one a yes gets past a
+   * question it retires (`retiredBy` on that Query), and the one a yes or a bare "no" gets past the
+   * member's own refusal, which it closes (`answeredBy` on that refusal; independent review of
+   * f605c98). A failed receipt for either puts that guard back, so either holds the yes. Only a
+   * guard the receipt would actually reopen counts (the `pointed` and `answered` steps of
+   * `markPreviewUndelivered`). */
+  const rows = await tx.execute<{ held: string | null }>(sql`
+    WITH live AS (
+      SELECT m.reply_to_message_id AS request_id
         FROM jobs j
         JOIN conversation_messages m
           ON m.business_id = j.business_id
          AND m.direction = 'outbound'
          AND m.provider_message_id = j.payload->>'outboundMessageId'
          AND m.reply_to_message_id IS NOT NULL
-        JOIN command_drafts q
-          ON q.business_id = m.business_id
-         AND q.command->>'retiredBy' = m.reply_to_message_id::text
        WHERE j.business_id = ${businessId}::uuid
          AND j.kind = 'delivery.status'
          AND j.state IN ('pending', 'running')
-         AND q.state = 'superseded'
-         AND q.intent = 'Query'
-         AND q.insertion_seq > (
-           SELECT d.insertion_seq FROM command_drafts d
-            WHERE d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid)
-    ) AS held`);
-  return rows[0]?.held === true;
+    ), preview AS (
+      SELECT d.insertion_seq FROM command_drafts d
+       WHERE d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid
+    )
+    SELECT CASE
+      WHEN EXISTS (
+        SELECT 1 FROM command_drafts q, live, preview
+         WHERE q.business_id = ${businessId}::uuid
+           AND q.state = 'superseded'
+           AND q.intent = 'Query'
+           AND q.retired_reason IS DISTINCT FROM 'preview_not_delivered'
+           AND q.command->>'retiredBy' = live.request_id::text
+           AND q.insertion_seq > preview.insertion_seq) THEN 'question'
+      WHEN EXISTS (
+        SELECT 1 FROM command_drafts r, live, preview
+         WHERE r.business_id = ${businessId}::uuid
+           AND r.state = 'superseded'
+           AND r.intent = 'Unclear'
+           AND COALESCE(r.command->>'refused', '') = 'true'
+           AND r.command->>'answeredBy' = live.request_id::text
+           AND r.insertion_seq > preview.insertion_seq) THEN 'refusal'
+    END AS held`);
+  const held = rows[0]?.held;
+  return held === 'question' || held === 'refusal' ? held : null;
 }
 
 /**

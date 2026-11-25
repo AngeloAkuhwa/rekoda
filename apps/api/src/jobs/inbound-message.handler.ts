@@ -3063,15 +3063,20 @@ async function confirmPendingDraft(
     }
   }
 
-  /* A failed receipt for the pointer that retired a question in front of this preview is stored
-   * and not yet applied: it will put that question back, and this yes would then have booked a
-   * preview the merchant was never told is waiting. Wait for the receipt (the job is re-queued
-   * without an attempt); a dead one was applied above (CodeRabbit on #437). */
-  if (
-    !NOT_A_FINANCIAL_PREVIEW.has(draft.intent) &&
-    (await conversationsRepo.hasLivePointerReceipt(tx, businessId, draft.id))
-  ) {
-    throw new JobDeferred();
+  /* A failed receipt is stored, not yet applied, for the pointer that stood in front of this preview
+   * (past a question it retired, or past the member's own refusal it answered): it will put that
+   * guard back, so this yes books nothing and is pointed again (CodeRabbit on #437). Answered, never
+   * deferred: a deferred spoken yes would be transcribed and metered again on every re-run. */
+  const pointerHeld = NOT_A_FINANCIAL_PREVIEW.has(draft.intent)
+    ? null
+    : await conversationsRepo.hasLivePointerReceipt(tx, businessId, draft.id);
+  if (pointerHeld) {
+    if (retrying) {
+      await refundRecordedReservations(tx, businessId, eventId, usagePeriod(receivedAt));
+    }
+    return pointerHeld === 'refusal'
+      ? replies.previewBehindRefusal()
+      : replies.previewBehindQuestion();
   }
 
   let command = draft.command as { intent?: string } & Record<string, unknown>;

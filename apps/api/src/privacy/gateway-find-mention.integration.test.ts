@@ -129,7 +129,7 @@ describe('a question looks a name up and never creates it (G-135)', () => {
       [facet('name', 'Bola Ige'), facet('phone', '08031112222')],
     );
     /* A second customer with a different name, so a lookup that strayed would be seen. */
-    await gateway.resolveMention(businessId, 'Chidi Eze');
+    const other = await gateway.resolveMention(businessId, 'Chidi Eze');
     const identityRows = () =>
       withBusiness(db, businessId, async (tx) => [
         ...(await tx.execute<{ id: string; customer_id: string; facet: string; match_key: string }>(
@@ -143,8 +143,10 @@ describe('a question looks a name up and never creates it (G-135)', () => {
     const counted = await counts(businessId);
 
     expect(await gateway.findMention(businessId, 'bola  ige')).toEqual({ token, customerId });
-    /* A name only the phone's owner has: still that customer, never the other one. */
-    expect(await gateway.findMention(businessId, 'Chidi Eze')).not.toEqual({ token, customerId });
+    /* The other customer's name finds the other customer, never this one. */
+    const chidi = await gateway.findMention(businessId, 'Chidi Eze');
+    expect(chidi).toEqual({ token: other.token, customerId: other.customerId });
+    expect(chidi).not.toEqual({ token, customerId });
     expect(await counts(businessId)).toEqual(counted);
     expect(await identityRows()).toEqual(before);
   });
