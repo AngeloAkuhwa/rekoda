@@ -139,14 +139,16 @@ export default function PrivacyPage() {
                   </thead>
                   <tbody>
                     <tr>
-                      <td>Invoices, receipts, ledger entries</td>
-                      <td>{RETENTION.financialYears} years</td>
-                      <td>Nigerian tax law expects your books to be available for that long.</td>
+                      <td className="rk-wrap">Invoices, receipts, ledger entries</td>
+                      <td className="rk-wrap">{RETENTION.financialYears} years</td>
+                      <td className="rk-wrap">
+                        Nigerian tax law expects your books to be available for that long.
+                      </td>
                     </tr>
                     <tr>
-                      <td>Chat history</td>
-                      <td>Until your account is deleted</td>
-                      <td>
+                      <td className="rk-wrap">Chat history</td>
+                      <td className="rk-wrap">Until your account is deleted</td>
+                      <td className="rk-wrap">
                         For ordinary messages it records what kind each one was, not what it said. A
                         document Rekoda sends is recorded by its number and amount, and a template
                         message by its name. Text kept from before that change is erased when your
@@ -155,20 +157,20 @@ export default function PrivacyPage() {
                       </td>
                     </tr>
                     <tr>
-                      <td>Drafts of records you were asked to confirm</td>
-                      <td>Until your account is deleted</td>
-                      <td>
+                      <td className="rk-wrap">Drafts of records you were asked to confirm</td>
+                      <td className="rk-wrap">Until your account is deleted</td>
+                      <td className="rk-wrap">
                         They are how the records were made, not records themselves. The customer a
                         record is for is kept as a token, not by name.
                       </td>
                     </tr>
                     <tr>
-                      <td>The original WhatsApp messages, encrypted</td>
-                      <td>
+                      <td className="rk-wrap">The original WhatsApp messages, encrypted</td>
+                      <td className="rk-wrap">
                         Until your account is deleted, or until you send DELETE MY DATA where it is
                         enabled for your account
                       </td>
-                      <td>
+                      <td className="rk-wrap">
                         Kept while Rekoda processes a message. DELETE MY DATA erases the ones
                         already processed. A message delivered before our latest privacy change in
                         the same batch as another business&apos;s message can still have a copy
@@ -176,36 +178,40 @@ export default function PrivacyPage() {
                       </td>
                     </tr>
                     <tr>
-                      <td>Voice notes</td>
-                      <td>Not kept</td>
-                      <td>Turned into text and deleted in the same request. Never stored.</td>
+                      <td className="rk-wrap">Voice notes</td>
+                      <td className="rk-wrap">Not kept</td>
+                      <td className="rk-wrap">
+                        Turned into text and deleted in the same request. Never stored.
+                      </td>
                     </tr>
                     <tr>
-                      <td>A trial you never converted</td>
-                      <td>
+                      <td className="rk-wrap">A trial you never converted</td>
+                      <td className="rk-wrap">
                         No earlier than {RETENTION.abandonedTrialDays} days after it ends, and only
                         after {RETENTION.noticeDays} days&apos; notice
                       </td>
-                      <td>
+                      <td className="rk-wrap">
                         Long enough to come back or export. Not forever. A business that has ever
                         held a paid Rekoda plan is not treated as an abandoned trial.
                       </td>
                     </tr>
                     <tr>
-                      <td>Payment screenshots customers send</td>
-                      <td>
+                      <td className="rk-wrap">Payment screenshots customers send</td>
+                      <td className="rk-wrap">
                         Until the claim is settled or {RETENTION.evidenceResolutionDays} days pass
                         unanswered, then the image is deleted {RETENTION.evidenceRawDays} days later
                       </td>
-                      <td>
+                      <td className="rk-wrap">
                         A screenshot proves a claim was made, never a payment. The claim and its
                         outcome stay with your books; the picture does not need to.
                       </td>
                     </tr>
                     <tr>
-                      <td>Customer names, phones and addresses</td>
-                      <td>While you need them, or until you ask us to erase them</td>
-                      <td>Encrypted separately from the books throughout.</td>
+                      <td className="rk-wrap">Customer names, phones and addresses</td>
+                      <td className="rk-wrap">
+                        While you need them, or until you ask us to erase them
+                      </td>
+                      <td className="rk-wrap">Encrypted separately from the books throughout.</td>
                     </tr>
                   </tbody>
                 </table>

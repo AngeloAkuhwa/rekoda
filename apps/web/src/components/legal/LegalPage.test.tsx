@@ -52,3 +52,32 @@ describe('the revision date on a legal page', () => {
     }
   });
 });
+
+/* Every element of a tree whose type is `tag`, walking server-component output as plain data. */
+function elements(node: ReactNode, tag: string): ReactElement<{ className?: string }>[] {
+  if (node == null || typeof node !== 'object') return [];
+  if (Array.isArray(node)) return node.flatMap((child) => elements(child, tag));
+  const element = node as ReactElement<Record<string, unknown>>;
+  const own = element.type === tag ? [element as ReactElement<{ className?: string }>] : [];
+  return [
+    ...own,
+    ...Object.values(element.props ?? {}).flatMap((value) =>
+      Array.isArray(value)
+        ? value.flatMap((item) =>
+            item && typeof item === 'object' && 'body' in item
+              ? elements((item as { body: ReactNode }).body, tag)
+              : elements(item as ReactNode, tag),
+          )
+        : elements(value as ReactNode, tag),
+    ),
+  ];
+}
+
+describe('the privacy retention table', () => {
+  /* `.rk-table td` never wraps, so a prose cell stretched the page to 3,200px on a phone. */
+  it('lets every prose cell wrap, so the page never scrolls sideways', () => {
+    const cells = elements(PrivacyPage(), 'td');
+    expect(cells.length).toBeGreaterThan(0);
+    for (const cell of cells) expect(cell.props.className).toBe('rk-wrap');
+  });
+});
