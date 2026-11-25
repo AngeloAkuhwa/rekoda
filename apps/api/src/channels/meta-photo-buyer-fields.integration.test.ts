@@ -83,27 +83,24 @@ describe('an empty buyer label does not name a customer', () => {
     /* A contact heading ends the empty field too (CodeRabbit on #437 at 6b3fc05). */
     'Tel: 08035551234',
     'Email: ada@example.test',
-  ])(
-    'leaves the sale anonymous before %s',
-    async (heading) => {
-      const business = await seedMerchant('+' + OWNER);
-      arrangePhoto();
-      stubOcr.answerWith({
-        text: `RECEIPT\nCustomer:\n${heading}\nWig 2 50000\nTOTAL 100,000`,
-        confidence: 0.9,
-      });
-      stubTransport.replyWith(sale({ kind: 'none' }));
+  ])('leaves the sale anonymous before %s', async (heading) => {
+    const business = await seedMerchant('+' + OWNER);
+    arrangePhoto();
+    stubOcr.answerWith({
+      text: `RECEIPT\nCustomer:\n${heading}\nWig 2 50000\nTOTAL 100,000`,
+      confidence: 0.9,
+    });
+    stubTransport.replyWith(sale({ kind: 'none' }));
 
-      await post(photoPayload(OWNER, 'wamid.BUYER-empty'));
-      await drain();
+    await post(photoPayload(OWNER, 'wamid.BUYER-empty'));
+    await drain();
 
-      const drafts = await withBusiness(db, business.id, (tx) =>
-        tx.execute(sql`
+    const drafts = await withBusiness(db, business.id, (tx) =>
+      tx.execute(sql`
           SELECT command->'customer' AS customer FROM command_drafts
            WHERE business_id = ${business.id}::uuid AND intent = 'RecordSale'
              AND state = 'pending' AND previewed`),
-      );
-      expect([...drafts]).toEqual([{ customer: { kind: 'none' } }]);
-    },
-  );
+    );
+    expect([...drafts]).toEqual([{ customer: { kind: 'none' } }]);
+  });
 });
