@@ -12,7 +12,7 @@ import {
   stubTransport,
   useMetaWebhookHarness,
 } from './meta-webhook.fixtures.js';
-import { sale } from './meta-customer-token.fixtures.js';
+import { plaintextIn, sale } from './meta-customer-token.fixtures.js';
 import { arrangePhoto, drain, seedMerchant } from './meta-receipt-photo.fixtures.js';
 
 useMetaWebhookHarness();
@@ -500,5 +500,44 @@ describe('a photographed buyer returned as a mention (CodeRabbit on #437)', () =
 
     expect(await previewedBuyers(business.id)).toEqual([]);
     expect(await customerCount(business.id)).toBe(customers);
+  });
+});
+
+/* OD-74 Option A (owner ruling OWN-107): for a photographed record, an unrecorded buyer name may reach
+ * the approved Anthropic document classifier as read, within OWN-106's limits. Recorded identities and
+ * every phone or email are tokenised before it, and the name is stored nowhere. */
+describe('the document classifier on a photographed record (OD-74)', () => {
+  it('reads an unrecorded buyer as written, never a recorded name, phone or email', async () => {
+    const business = await seedMerchant('+' + OWNER);
+    await customersRepo.createCustomerWithIdentities(db, business.id, TOKEN, [
+      {
+        facet: 'phone',
+        ciphertext: encryptFacet('08035551234', deps.config.vaultKey, `${business.id}:phone`),
+        matchKey: matchKeyFor(
+          business.id,
+          'phone',
+          normaliseFacet('phone', '08035551234'),
+          deps.config.matchKey,
+        ),
+      },
+    ]);
+    arrangePhoto();
+    stubOcr.answerWith({
+      text: 'RECEIPT\nBuyer: Chidi Eze\nRef: 08035551234 chidi@example.test 08039998888\n2 wigs TOTAL 100,000',
+      confidence: 0.9,
+    });
+    stubTransport.replyWith(sale({ kind: 'none' }));
+    stubTransport.requests.length = 0;
+
+    await post(photoPayload(OWNER, 'wamid.OD74-1', {}));
+    await drain();
+
+    const classifier = stubTransport.requests.filter((r) => r.toolName === 'classify_document');
+    expect(classifier).toHaveLength(1);
+    expect(classifier[0]!.userText).toContain('Chidi Eze');
+    for (const raw of ['08035551234', 'chidi@example.test', '08039998888']) {
+      expect(classifier[0]!.userText).not.toContain(raw);
+    }
+    expect(await plaintextIn(business.id, ['Chidi Eze'])).toEqual([]);
   });
 });
