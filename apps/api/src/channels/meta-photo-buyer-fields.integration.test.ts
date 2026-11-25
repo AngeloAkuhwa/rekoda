@@ -514,21 +514,30 @@ describe('a photographed buyer returned as a mention (CodeRabbit on #437)', () =
 describe('the document classifier on a photographed record (OD-74)', () => {
   it('reads an unrecorded buyer as written, never a recorded name, phone or email', async () => {
     const business = await seedMerchant('+' + OWNER);
-    await customersRepo.createCustomerWithIdentities(db, business.id, TOKEN, [
-      {
-        facet: 'phone',
-        ciphertext: encryptFacet('08035551234', deps.config.vaultKey, `${business.id}:phone`),
+    /* A recorded name as well as a recorded phone (CodeRabbit on #437 at c5392f0). */
+    await customersRepo.createCustomerWithIdentities(
+      db,
+      business.id,
+      TOKEN,
+      (
+        [
+          ['phone', '08035551234'],
+          ['name', 'Ada Obi'],
+        ] as const
+      ).map(([facet, value]) => ({
+        facet,
+        ciphertext: encryptFacet(value, deps.config.vaultKey, `${business.id}:${facet}`),
         matchKey: matchKeyFor(
           business.id,
-          'phone',
-          normaliseFacet('phone', '08035551234'),
+          facet,
+          normaliseFacet(facet, value),
           deps.config.matchKey,
         ),
-      },
-    ]);
+      })),
+    );
     arrangePhoto();
     stubOcr.answerWith({
-      text: 'RECEIPT\nBuyer: Chidi Eze\nRef: 08035551234 chidi@example.test 08039998888\n2 wigs TOTAL 100,000',
+      text: 'RECEIPT\nBuyer: Chidi Eze\nRef: 08035551234 chidi@example.test 08039998888\nAlso for Ada Obi\n2 wigs TOTAL 100,000',
       confidence: 0.9,
     });
     stubTransport.replyWith(sale({ kind: 'none' }));
@@ -540,7 +549,7 @@ describe('the document classifier on a photographed record (OD-74)', () => {
     const classifier = stubTransport.requests.filter((r) => r.toolName === 'classify_document');
     expect(classifier).toHaveLength(1);
     expect(classifier[0]!.userText).toContain('Chidi Eze');
-    for (const raw of ['08035551234', 'chidi@example.test', '08039998888']) {
+    for (const raw of ['08035551234', 'chidi@example.test', '08039998888', 'Ada Obi']) {
       expect(classifier[0]!.userText).not.toContain(raw);
     }
     expect(await plaintextIn(business.id, ['Chidi Eze'])).toEqual([]);
