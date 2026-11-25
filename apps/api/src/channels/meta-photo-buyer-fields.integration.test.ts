@@ -190,6 +190,13 @@ describe('a caption that labels its names', () => {
     ['receives from the chosen customer', 'Received from: Ada Obi', 'RECEIPT', true],
     /* A caption's buyer and the page's must agree (independent review of 5e5267c). */
     ['labels another buyer than the page', 'Buyer: Tunde Bello', 'Buyer: Ada Obi', false],
+    /* A caption that rules the chosen customer out is no evidence she bought, while the same
+     * words without the negation are (CodeRabbit on #437 at 400ca58). */
+    ['rules the chosen customer out', 'Not sold to Ada Obi', 'RECEIPT', false],
+    ['rules the chosen customer out with "not for"', 'Not for Ada Obi', 'RECEIPT', false],
+    /* A negation after the buyer's name says something else about the sale. */
+    ['names the buyer before "not paid yet"', 'Sold to Ada Obi, not paid yet', 'RECEIPT', true],
+    ['names the chosen customer as the buyer', 'Sold to Ada Obi', 'RECEIPT', true],
   ])('a caption that %s', async (_, caption, page, accepted) => {
     const business = await seedMerchant('+' + OWNER);
     await seedAda(business.id);
