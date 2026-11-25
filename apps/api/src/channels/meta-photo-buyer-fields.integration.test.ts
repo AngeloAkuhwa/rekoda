@@ -288,6 +288,8 @@ describe('a caption that names an issued customer, read with no customer (OD-72)
     ['a recorded customer by a quoted email', '"ada@example.test"'],
     ['a buyer after an unrelated negation', 'Not paid yet Ada Obi 0803 555 1234'],
     ['a buyer after an unrelated dashed negation', 'Not paid yet - Ada Obi'],
+    /* "for" after a negation need not name a person (second review of 42a2422..20a95c4). */
+    ['a buyer after "not for credit"', 'Not for credit Ada Obi 0803 555 1234'],
     ['two different people', 'Ada Obi and bola@example.test'],
     /* The caption's customer contradicts the page's labelled buyer. */
     ['a customer the page contradicts', 'Ada Obi', 'Buyer: Bola Ige'],
