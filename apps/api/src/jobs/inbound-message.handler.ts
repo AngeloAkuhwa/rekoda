@@ -5694,16 +5694,20 @@ function buyerFieldsIn(page: string): string[] {
     if (contact) {
       after = after.slice(contact[0].length).trim();
       if (!after) {
-        /* An empty heading's value may sit on the line below it ("Buyer: Tel:\n0803…"); only a
-         * phone or an address there is that contact, anything else leaves the field empty
-         * (independent review on #437 at 5e5267c). */
+        /* An empty heading's value may sit on the line below it ("Buyer: Tel:\n0803…", with or
+         * without a name beside it): a line holding a phone or an address is that contact. On
+         * the label's own line, an empty heading with nothing of the kind below still labels a
+         * buyer, as it did before the heading was read there, so a sale read with nobody is
+         * asked about; on the next line it leaves the field empty (independent reviews on #437
+         * at 5e5267c and a4ba72d). */
         const at = lines.findIndex((line) => line.trim());
         const below = foldField(lines.slice(at + 1).find((line) => line.trim()) ?? '');
-        const value = /^e-?mail/u.test(contact[0])
-          ? (below.split(/\s/u)[0] ?? '').includes('@')
-          : leadingPhoneDigits(below).length >= 10;
-        if (!value) continue;
-        after = below;
+        const valued = /^e-?mail/u.test(contact[0])
+          ? /\S@\S/u.test(below)
+          : (/\+?\d[\d\s\-().]*\d/u.exec(below)?.[0] ?? '').replace(/\D/gu, '').length >= 10;
+        if (valued) after = below;
+        else if (lines[0]?.trim()) after = contact[0].trim();
+        else continue;
       }
     }
     const first = after.split(/\s/u)[0] ?? '';
@@ -5744,7 +5748,6 @@ function fieldNames(after: string, name: string): boolean {
   );
 }
 
-/** A field label after a buyer's name on the same line: it ends the name. */
 /** A caption segment that names somebody other than the buyer: "Seller: Ada Obi", "sold by Ada". */
 const NON_BUYER_SEGMENT =
   /\b(?:seller|supplier|vendor|cashier|sales\s*(?:person|rep)|sold\s+by|served\s+by|issued\s+by|(?:deliver(?:y|ed)?|ship(?:ped)?)\s+to)\b\s*[:#\-\u2013]?[^\n,;]*/giu;
@@ -5752,6 +5755,7 @@ const NON_BUYER_SEGMENT =
 /** A contact heading at the start of a line, with its separator: "Tel:", "Email -". */
 const CONTACT_HEADING = /^(?:tel|telephone|phone|mobile|whatsapp|email|e-mail)\b\.?\s*[:#-]\s*/iu;
 
+/** A field label after a buyer's name on the same line: it ends the name. */
 const NEXT_FIELD =
   /^\s+(?:tel|telephone|phone|mobile|whatsapp|email|e-mail|address|addr|date|invoice|inv|receipt|ref)\b\.?\s*[:#-]/iu;
 
