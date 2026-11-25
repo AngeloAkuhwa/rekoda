@@ -6712,7 +6712,21 @@ async function interpretedReply(
     /* On a photo, the page names many people (the seller, the merchant, a supplier, a delivery
      * contact): a buyer is one the caption types or the page labels as the buyer, never any name
      * on it, recorded or not (owner ruling 22 Nov 2026 on photo-extracted customer names). */
-    if (fromDocument && !photoBuyerNamed(rawText, documentCaption, [mention])) {
+    /* The same customer can be named through several buyer fields (`Buyer: Ada Obi`,
+     * `Client: ada@example.test`). When the mention is a recorded customer this message was
+     * issued, it is judged by that customer's observed facets, as a returned token is, so a field
+     * that names them another way is not a contradiction. Read-only lookup, before anything is
+     * created; a mention that is nobody recorded, or whose token this message was not issued, is
+     * judged by its own words alone, and the complete name is still required (CodeRabbit on #437). */
+    const photoNames = async (): Promise<string[]> => {
+      const recorded = await deps.gateway.findMention(businessId, mention);
+      const observed =
+        recorded && tokens.displays.has(recorded.token)
+          ? facetValuesOf(tokens, recorded.token)
+          : [];
+      return observed.length > 0 ? [mention, ...observed] : [mention];
+    };
+    if (fromDocument && !photoBuyerNamed(rawText, documentCaption, await photoNames())) {
       authorisationLog.warn(`${command.intent} named a buyer the photo does not label`);
       await refundMessage(tx, businessId, eventId, period);
       return refusedAs(replies.customerNotRecognised());
