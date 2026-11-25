@@ -339,11 +339,11 @@ describe('a customer name never reaches the model twice', () => {
     expect(messages.map((m) => m.body).sort()).toEqual(['[reply]', '[text message]']);
   });
 
-  /* OD-73 (OPEN OWNER DECISION, REKODA_LAUNCH_READINESS.md): this pins what the runtime does today, ADR
-   * 0005 Amendment 1 case 4: a name first met in a record reaches the approved Anthropic interpreter
-   * as typed ("Ada" below), a known token never does. Canonical spec Appendix C.3 permits an unrecorded
-   * name in a read-only Query only, so the record-intent exception is unratified until the owner
-   * rules; the expectation is not edited to silence the review, and it changes with the ruling. */
+  /* OD-73 Option A (owner ruling OWN-106, 25 Nov 2026): ADR 0005 Amendment 1 case 4, the record-intent
+   * exception to spec Appendix C.3. A name first met in a record reaches the approved Anthropic
+   * interpreter as typed ("Ada" below) until it is tokenised; a known identity never does
+   * (CUSTOMER_ADA). The permitted and forbidden cases are pinned in
+   * `channels/meta-record-name-exception.integration.test.ts`. */
   /* Was "never rewrites a token while scrubbing a name": the after-model scrub is gone
    * with G-136 (the history keeps a placeholder, so there is nothing to scrub). What
    * stays true: the model reads the known phone as its token, untouched, and the

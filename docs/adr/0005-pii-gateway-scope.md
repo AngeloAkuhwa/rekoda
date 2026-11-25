@@ -1,6 +1,6 @@
 # 0005 — Privacy gateway: deterministic-first tokenisation, self-hosted STT
 
-**Status:** Accepted, amended by Amendment 1 (accepted 21 Nov 2026, OWN-100) for names in read-only questions; the self-hosted STT portion is **superseded by [0032](0032-launch-media-architecture.md)** (2026-08-29) — the launch transcriber is OpenAI, and no self-hosted STT service exists. The tokenisation gateway this ADR designed is unchanged and current.
+**Status:** Accepted, amended by Amendment 1 (accepted 21 Nov 2026, OWN-100) for names in read-only questions, and its case 4 ratified as the record-intent exception to spec C.3 (OWN-106, 25 Nov 2026); the self-hosted STT portion is **superseded by [0032](0032-launch-media-architecture.md)** (2026-08-29) — the launch transcriber is OpenAI, and no self-hosted STT service exists. The tokenisation gateway this ADR designed is unchanged and current.
 **Date:** 2026-08-19
 
 ## Context
@@ -52,6 +52,8 @@ interpretation processor only. It does not extend to OpenAI, any other provider,
 document verifier, general customer extraction, logs, telemetry, any identity store or any other
 message. Appendix C.3 carries a pointer to this amendment.
 
+**Precedence for records (owner ruling OWN-106, 25 Nov 2026, OD-73 Option A):** case 4 below is the second explicit exception to the canonical spec's Appendix C.3, which carries a pointer to it. For a record intent (a sale, invoice, payment, order or other record request), a customer name nobody has recorded, typed for the first time, may reach the approved Anthropic interpretation processor as typed when needed to interpret that request, and only until Rekoda can tokenise it: the command vaults the name (`resolveMention`), so later messages name the customer by token. The limits of case 3 apply: at most the primary call and one escalation per attempt, Anthropic only (no OpenAI call, not the high-value document verifier, no other provider), no log line or telemetry field carrying the name, no new identity store, no wider storage, no reuse for an unrelated purpose and no general disclosure. Known identities (a recorded name, phone or email) and structural personal data (phones, emails and supported financial identifiers, recorded or not) are tokenised before any model call, as before.
+
 **Processors (owner ruling OWN-103(5), 22 Nov 2026):** For a read-only question (`Query`) naming a customer nobody has recorded, the approved Anthropic document classifier may process text read from a photographed document as needed to classify it, and the approved Anthropic interpretation processor may interpret the question, within ADR 0005 Amendment 1's limits; this authorises no OpenAI call (the high-value document verifier included), no other provider, no logging of the name, no wider storage of personal data and no reuse for an unrelated purpose.
 
 **Status: ACCEPTED** by the owner on 21 Nov 2026 (OWN-100, `REKODA_OWNER_DECISIONS.md`), on PR #437
@@ -91,8 +93,10 @@ for a person nobody recorded, nothing is vaulted until a record needs them.
      - it adds no disclosure to any other provider and no new store of identities, and the
        retention, erasure and access controls that apply to every message apply to these.
 4. **A name first met in a record** (sale, invoice, payment, order and the other record intents).
-   Unchanged. It is vaulted as soon as the command is interpreted (`resolveMention`), before the merchant
-   confirms.
+   Unchanged. It reaches the approved Anthropic interpreter as typed, once, and is vaulted as soon as the
+   command is interpreted (`resolveMention`), before the merchant confirms, so later messages name the
+   customer by token. Ratified as an exception to spec C.3 by OWN-106 (OD-73 Option A), under case 3's
+   limits; a phone or email beside the name is tokenised first, as in case 2.
 5. **A correction (CG5) that names nobody** ("No, 4 not 3"). The model reads it from its own words and
    never sees an earlier turn. The customer is carried from the trusted pending draft it corrects, by
    Rekoda and never by the model: that draft must be the merchant's own, the only one waiting, live,
