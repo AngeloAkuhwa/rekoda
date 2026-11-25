@@ -141,6 +141,36 @@ describe('a forwarded order', () => {
     expect(stock.rows.find((p) => p.name === 'Ankara bale')?.onHand).toBe(8);
   });
 
+  /* CodeRabbit on #437 at 1ec5a22: a corrected order that inherits its customer (CG5, OWN-100) says
+   * who it is for, since nothing in the correction's own words names them; the confirmed order keeps
+   * that customer. An order quote that names nobody stays anonymous. */
+  it('a corrected order shows the customer it inherits, and the confirmed order keeps them', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await seedCatalogue(business.id);
+    stubTransport.replyWith(THE_ORDER);
+    await send('Ada: please I want 2 ankara bale', 'wamid.ORDFIX1');
+    expect(stubSender.lastText).not.toContain('For: ');
+
+    stubTransport.replyWith({
+      ...THE_ORDER,
+      customer: { kind: 'none' },
+      items: [{ name: 'Ankara bale', quantity: 3 }],
+    });
+    await send('No, 3 not 2', 'wamid.ORDFIX2');
+    expect(stubSender.lastText).toContain('3 × Ankara bale at ₦8,500');
+    expect(stubSender.lastText).toContain('For: The same customer as before');
+
+    await send('yes', 'wamid.ORDFIX3');
+    const [row] = [
+      ...(await withBusiness(db, business.id, (tx) =>
+        tx.execute<{ token: string | null }>(sql`
+          SELECT c.token FROM invoices i LEFT JOIN customers c ON c.id = i.customer_id
+           WHERE i.business_id = ${business.id}::uuid`),
+      )),
+    ];
+    expect(row?.token).toBe('CUSTOMER_7K2');
+  });
+
   /**
    * The persistence boundary (launch remediation R5): the customer's
    * delivery words are echoed to the merchant ONCE and never stored. The

@@ -5892,12 +5892,14 @@ const NEXT_FIELD =
 /** Whether `text` holds the whole address `address`, ignoring case. */
 function addressIn(text: string, address: string): boolean {
   const want = address.trim().toLowerCase();
-  return text
-    .toLowerCase()
-    /* Quotes delimit an address too ('For "ada@example.test"'); a longer address it only prefixes
-     * still differs (CodeRabbit on #437 at 1ec5a22). */
-    .split(/[\s,;()<>"'\u2018\u2019\u201C\u201D]+/u)
-    .some((word) => word.replace(/[.:!?]+$/u, '') === want);
+  return (
+    text
+      .toLowerCase()
+      /* Quotes delimit an address too ('For "ada@example.test"'); a longer address it only prefixes
+       * still differs (CodeRabbit on #437 at 1ec5a22). */
+      .split(/[\s,;()<>"'\u2018\u2019\u201C\u201D]+/u)
+      .some((word) => word.replace(/[.:!?]+$/u, '') === want)
+  );
 }
 
 /** Every value this message holds for `token`: its typed facets and any provisional contact. */
@@ -7293,7 +7295,7 @@ async function acknowledge(
     return withLink(
       replies.preview(
         correcting
-          ? `${replies.correctionTaken().text}\n\n${orderPreview(order, command.note)}`
+          ? `${replies.correctionTaken().text}\n\n${orderPreview(order, command.note, customerTokenOf(command as never))}`
           : orderPreview(order, command.note),
       ),
     );
