@@ -329,17 +329,8 @@ describe('a correction whose preview was not delivered fails closed (OD-58)', ()
   });
 });
 
-/**
- * CodeRabbit on #437 (PRRT_kwDOT845J8676qPh): a repeated "yes" must never book a preview while a
- * failed receipt for the pointer reply that stood in front of it is stored and not yet applied.
- *
- * A first "yes" to a preview behind a question retires the question and is answered with a pointer
- * ("a preview is waiting, reply yes"). If WhatsApp accepts that reply and later reports it failed,
- * the receipt puts the question back, so the merchant's repeated yes is pointed again. A second
- * "yes" whose job was created BEFORE the receipt's job used to run first, find no question, and
- * book; the restoration then came too late to undo it. The financial footprint is asserted, never
- * only the reply.
- */
+/* CodeRabbit on #437 (PRRT_kwDOT845J8676qPh): a repeated yes never books a preview while a failed
+ * receipt for the pointer in front of it ("a preview is waiting") is stored and not yet applied. */
 const QUESTION = {
   intent: 'Query',
   topic: 'sales_summary',
@@ -359,10 +350,11 @@ async function pointedAt(tag: string) {
     'sold Ada Obi 2 wigs for 100k',
   );
   await sayR(`wamid.${tag}2`, QUESTION, 'how much did I sell today');
+  const answer = lastWamid();
   const before = await footprintR(business.id);
   await plainR(`wamid.${tag}3`, 'yes');
   expect(stubSender.lastText).toBe(replies.previewBehindQuestion().text);
-  return { business, before, pointer: lastWamid() };
+  return { business, before, answer, pointer: lastWamid() };
 }
 
 const statesR = async (businessId: string) =>
@@ -373,6 +365,26 @@ const statesR = async (businessId: string) =>
          WHERE business_id = ${businessId}::uuid ORDER BY insertion_seq`),
     )),
   ].map((r) => `${r.intent}:${r.state}`);
+
+/* OD-75 Option A (owner ruling OWN-107): when the question's answer AND the pointer past it both fail,
+ * in either order, the question still stands, so a repeated yes is pointed again and books nothing. */
+describe('the answer to a question and the pointer past it both reported failed', () => {
+  it.each(['answer first', 'pointer first'] as const)(
+    '%s: the yes books nothing',
+    async (order) => {
+      const { business, before, answer, pointer } = await pointedAt(`DF${order.length}`);
+      for (const wamid of order === 'answer first' ? [answer, pointer] : [pointer, answer]) {
+        await receipt(OWNER, wamid, 'failed');
+        await drainR();
+      }
+      await plainR(`wamid.DF${order.length}-yes`, 'yes');
+      expect(stubSender.lastText).toBe(replies.previewBehindQuestion().text);
+      expect(await footprintR(business.id)).toEqual(before);
+      await plainR(`wamid.DF${order.length}-yes2`, 'yes');
+      expect((await footprintR(business.id)).invoices).toBe(before.invoices + 1);
+    },
+  );
+});
 
 describe('a repeated yes and a failed receipt for the pointer reply (CodeRabbit on #437)', () => {
   /* The yes is answered with the pointer again and books nothing; the receipt then puts the question
@@ -533,10 +545,7 @@ describe('a failed receipt for a preview withdrawn behind a lost message', () =>
   });
 });
 
-/* Independent review of f605c98: the same race by the refusal route. A yes to the member's own refusal
- * closes it and points at the preview behind it ("reply yes to save it"); that reply is accepted and
- * later reported failed, so the receipt puts the refusal back. A second yes queued before the receipt
- * runs must not book the preview. */
+/* Independent review of f605c98: the same race by the refusal route (a yes past the member's own refusal). */
 describe('a repeated yes and a failed receipt for the refusal pointer', () => {
   it('books nothing while the receipt is stored, and the refusal is back once it runs', async () => {
     const business = await seedMerchantR();
@@ -573,9 +582,7 @@ describe('a repeated yes and a failed receipt for the refusal pointer', () => {
   });
 });
 
-/* Independent review of f605c98: a SPOKEN yes held by a stored pointer receipt is transcribed once.
- * It is answered (pointed again, nothing booked), never deferred and re-run, which would transcribe
- * and meter it again on every retry. */
+/* Independent review of f605c98: a spoken yes held by a stored pointer receipt is answered, never re-run. */
 describe('a spoken yes held by a failed pointer receipt', () => {
   it('is transcribed once, books nothing, and is pointed again', async () => {
     const { business, before, pointer } = await pointedAt('RV');

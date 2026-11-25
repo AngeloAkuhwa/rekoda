@@ -1180,8 +1180,12 @@ export async function markPreviewUndelivered(
       -- next yes, since only what the member read closes a refusal (CodeRabbit on #437 at ccdcc8e).
       -- An expired one keeps its state and carries the reason, as in the drafts update: it was never
       -- read, so it never counts as read since a refusal (CodeRabbit on #437 at b8330cd).
+      -- A question a failed pointer already put back keeps standing (OD-75 Option A, OWN-107): its
+      -- answer's failure, arriving after the pointer's, never lets a repeated yes past it.
       UPDATE command_drafts d SET retired_reason = 'preview_not_delivered',
-             state = CASE WHEN d.state = 'pending' THEN 'superseded' ELSE d.state END,
+             state = CASE WHEN d.state = 'pending'
+                           AND NOT (d.intent = 'Query' AND d.command ? 'pointerRestored')
+                          THEN 'superseded' ELSE d.state END,
              updated_at = clock_timestamp()
         FROM reply
        WHERE d.business_id = ${businessId}::uuid
@@ -1260,13 +1264,17 @@ export async function markPreviewUndelivered(
       -- The question a pointer reply retired ("a preview is waiting"), when WhatsApp accepted that
       -- reply and then failed it: put back as reopenReadsRetiredBy does for a send that failed
       -- outright, so the repeated yes is pointed again (CodeRabbit on #437 at 400ca58).
+      -- Whatever its own answer's delivery (OD-75 Option A, OWN-107): a question whose answer also
+      -- failed is still unanswered, so it stands again. Marked, so its answer's own late failure never
+      -- retires it after this (the \`asks\` step above).
       UPDATE command_drafts q
-         SET state = 'pending', command = q.command - 'retiredBy', updated_at = clock_timestamp()
+         SET state = 'pending',
+             command = (q.command - 'retiredBy') || '{"pointerRestored": true}'::jsonb,
+             updated_at = clock_timestamp()
         FROM reply
        WHERE q.business_id = ${businessId}::uuid
          AND q.state = 'superseded'
          AND q.intent = 'Query'
-         AND q.retired_reason IS DISTINCT FROM 'preview_not_delivered'
          AND q.command->>'retiredBy' = reply.request_id::text
       RETURNING q.id
     ), reads AS (
@@ -1661,11 +1669,12 @@ export async function reopenReadsRetiredBy(
 ): Promise<number> {
   const rows = await tx.execute<{ id: string }>(sql`
     UPDATE command_drafts
-       SET state = 'pending', command = command - 'retiredBy', updated_at = clock_timestamp()
+       SET state = 'pending',
+           command = (command - 'retiredBy') || '{"pointerRestored": true}'::jsonb,
+           updated_at = clock_timestamp()
      WHERE business_id = ${businessId}::uuid
        AND state = 'superseded'
        AND intent = 'Query'
-       AND retired_reason IS DISTINCT FROM 'preview_not_delivered'
        AND command->>'retiredBy' = ${messageId}::text
     RETURNING id`);
   return [...rows].length;
@@ -1726,7 +1735,6 @@ export async function hasLivePointerReceipt(
          WHERE q.business_id = ${businessId}::uuid
            AND q.state = 'superseded'
            AND q.intent = 'Query'
-           AND q.retired_reason IS DISTINCT FROM 'preview_not_delivered'
            AND q.command->>'retiredBy' = live.request_id::text
            AND q.insertion_seq > preview.insertion_seq) THEN 'question'
       WHEN EXISTS (
