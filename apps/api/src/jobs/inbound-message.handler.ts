@@ -5670,7 +5670,10 @@ function pageBuyerFields(rawText: string, caption: string | null): string[] {
   for (const label of page.matchAll(BUYER_LABEL)) {
     const lines = page.slice(label.index + label[0].length).split(/\r?\n/u);
     const after = foldField(lines.find((line) => line.trim()) ?? '');
-    if (!lines[0]?.trim() && RECEIPT_HEADING.test(after)) continue;
+    /* An empty label followed by another field's heading ("Buyer:\nTel: 0803…") holds nothing: the
+     * heading is not the buyer's value (CodeRabbit on #437 at 6b3fc05). */
+    if (!lines[0]?.trim() && (RECEIPT_HEADING.test(after) || NEXT_FIELD.test(` ${after}`)))
+      continue;
     const first = after.split(/\s/u)[0] ?? '';
     const phone = leadingPhoneDigits(after).length >= 10;
     if (/^[\p{L}]/u.test(after) || first.includes('@') || phone) fields.push(after);

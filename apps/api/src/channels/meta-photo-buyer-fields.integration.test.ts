@@ -23,6 +23,7 @@ describe('buyer fields on a photographed sale', () => {
   it.each([
     ['matching name and email', 'Buyer: Ada Obi\nClient: ada@example.test', true],
     ['a buyer on the next line', 'Buyer:\nAda Obi', true],
+    ['a phone on the next line', 'Buyer:\n08035551234', true],
     ['different customers', 'Buyer: Ada Obi\nClient: bola@example.test', false],
     ['an exact spaced phone', 'Buyer: 0803 555 1234', true],
     ['extra phone digits', 'Buyer: 08035551234 567\nSeller: 08035551234', false],
@@ -74,7 +75,15 @@ describe('buyer fields on a photographed sale', () => {
 });
 
 describe('an empty buyer label does not name a customer', () => {
-  it.each(['Item Qty Price', 'Description Quantity Amount', 'Items:', 'Seller: Wigs Ltd'])(
+  it.each([
+    'Item Qty Price',
+    'Description Quantity Amount',
+    'Items:',
+    'Seller: Wigs Ltd',
+    /* A contact heading ends the empty field too (CodeRabbit on #437 at 6b3fc05). */
+    'Tel: 08035551234',
+    'Email: ada@example.test',
+  ])(
     'leaves the sale anonymous before %s',
     async (heading) => {
       const business = await seedMerchant('+' + OWNER);
