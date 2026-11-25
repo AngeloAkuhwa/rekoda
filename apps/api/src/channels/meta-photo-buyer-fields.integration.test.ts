@@ -284,18 +284,21 @@ describe('a caption that names an issued customer, read with no customer (OD-72)
     ['two different people', 'Ada Obi and bola@example.test'],
     /* The caption's customer contradicts the page's labelled buyer. */
     ['a customer the page contradicts', 'Ada Obi', 'Buyer: Bola Ige'],
-  ] as [string, string, string?][])('is asked about when the caption names %s', async (_, caption, page) => {
-    const business = await photographed(caption, page);
+  ] as [string, string, string?][])(
+    'is asked about when the caption names %s',
+    async (_, caption, page) => {
+      const business = await photographed(caption, page);
 
-    expect(await previewedSales(business.id)).toEqual([]);
-    expect(stubSender.lastText).toContain('could not tell which customer');
-    /* Nobody created (Ada and Bola were seeded), nothing invoiced or posted. */
-    expect(await footprint(business.id)).toEqual({ customers: 2, invoices: 0, postings: 0 });
-    /* A generic yes afterwards books nothing. */
-    await post(messagePayload(OWNER, 'wamid.OD72-yes', 'yes'));
-    await drain();
-    expect(await footprint(business.id)).toEqual({ customers: 2, invoices: 0, postings: 0 });
-  });
+      expect(await previewedSales(business.id)).toEqual([]);
+      expect(stubSender.lastText).toContain('could not tell which customer');
+      /* Nobody created (Ada and Bola were seeded), nothing invoiced or posted. */
+      expect(await footprint(business.id)).toEqual({ customers: 2, invoices: 0, postings: 0 });
+      /* A generic yes afterwards books nothing. */
+      await post(messagePayload(OWNER, 'wamid.OD72-yes', 'yes'));
+      await drain();
+      expect(await footprint(business.id)).toEqual({ customers: 2, invoices: 0, postings: 0 });
+    },
+  );
 
   it.each([
     ['names nobody', '2 wigs'],

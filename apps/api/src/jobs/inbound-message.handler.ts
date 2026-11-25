@@ -5668,6 +5668,57 @@ function photoBuyerNamed(
   );
 }
 
+/**
+ * Whether the caption the merchant typed carries a customer token this message was issued: a
+ * recorded customer's name, phone or email, or a new phone or email (OD-72 Option A, owner ruling
+ * 25 Nov 2026). Read with no customer, such a sale is asked about, never previewed as anonymous,
+ * and nobody is created or attached. Only issued tokens count: an unrecorded name typed without a
+ * label issues none, so no capitalised word is ever taken for a person (OD-66). A clause naming
+ * another party ("Supplier: Ada Obi", "Deliver to …") or ruling the person out ("Not sold to Ada
+ * Obi") is taken out first, as in `photoBuyerNamed`.
+ */
+function captionNamesIssuedCustomer(tokens: LiveTokens, caption: string | null): boolean {
+  if (caption === null || !caption.trim()) return false;
+  const typed = caption
+    .split(NON_BUYER_SEGMENT)
+    .flatMap((part) => part.split(NEGATED_SEGMENT))
+    .filter((part) => part.trim());
+  if (typed.length === 0) return false;
+  const issued = new Set([...tokens.displays.keys(), ...(tokens.provisional?.keys() ?? [])]);
+  return [...issued].some((token) => {
+    const facets = [
+      ...(tokens.facets.get(token) ?? []),
+      ...(tokens.provisional?.get(token) ? [tokens.provisional.get(token)!] : []),
+    ];
+    return facets.some(({ facet, value }) => {
+      if (!value.trim()) return false;
+      if (facet === 'phone') return typed.some((part) => phoneIn(part, value));
+      return typed.some((part) =>
+        value.includes('@') ? addressIn(part, value) : typedIn(part, value),
+      );
+    });
+  });
+}
+
+/**
+ * Whether `text` holds the phone `phone`, however it is spaced or prefixed ("0803 555 1234",
+ * "+234 803 555 1234"). Neighbouring digit groups ("… 1234 2 wigs") never join it: any run of
+ * whole groups may be the phone.
+ */
+function phoneIn(text: string, phone: string): boolean {
+  const want = normaliseFacet('phone', phone);
+  if (want.length < 7) return false;
+  for (const run of text.matchAll(/\+?\d[\d \t().-]*/gu)) {
+    const groups = run[0].split(/[^\d+]+/u).filter(Boolean);
+    for (let from = 0; from < groups.length; from += 1) {
+      for (let to = from + 1; to <= groups.length; to += 1) {
+        if (normaliseFacet('phone', groups.slice(from, to).join('')) === want) return true;
+      }
+    }
+  }
+  return false;
+}
+
 /** The page without the caption the merchant typed in front of it. */
 function pageOf(rawText: string, caption: string | null): string {
   return caption && rawText.startsWith(`${caption}\n`)
@@ -6445,7 +6496,10 @@ async function interpretedReply(
     (pageBuyerFields(rawText, documentCaption).length > 0 ||
       /* A buyer the caption labels is as much a buyer as one the page labels (CodeRabbit on #437
        * at 600a155). */
-      (documentCaption !== null && buyerFieldsIn(documentCaption).length > 0))
+      (documentCaption !== null && buyerFieldsIn(documentCaption).length > 0) ||
+      /* A caption that carries a customer token this message was issued names a buyer the
+       * model left out (OD-72 Option A, owner ruling 25 Nov 2026). */
+      captionNamesIssuedCustomer(tokens, documentCaption))
   ) {
     authorisationLog.warn(`${command.intent} named no buyer on a page that labels one`);
     await refundMessage(tx, businessId, eventId, period);
