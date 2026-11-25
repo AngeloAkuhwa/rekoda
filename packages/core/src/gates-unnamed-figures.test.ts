@@ -131,6 +131,14 @@ describe('unnamedFiguresChanged', () => {
         }),
       ).toBe(true);
       expect(unnamedFiguresChanged('No, 4 not 3', bought, { ...bought, quantity: 4 })).toBe(false);
+      /* The preview shows a fractional count whole ("Adding to stock: 3" for 3.5). */
+      const fabric = { ...bought, quantity: 3.5 };
+      expect(unnamedFiguresChanged('No, 4 pcs not 3', fabric, { ...fabric, quantity: 4 })).toBe(
+        false,
+      );
+      expect(unnamedFiguresChanged('No, 4 pcs not 2', fabric, { ...fabric, quantity: 4 })).toBe(
+        true,
+      );
       expect(unnamedFiguresChanged('no, 60k not 50k', bought, { ...bought, amount: 60_000 })).toBe(
         false,
       );
