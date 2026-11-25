@@ -5705,16 +5705,21 @@ function buyerFieldsIn(page: string): string[] {
         const valued = /^e-?mail/u.test(contact[0])
           ? /\S@\S/u.test(below)
           : (/\+?\d[\d\s\-().]*\d/u.exec(below)?.[0] ?? '').replace(/\D/gu, '').length >= 10;
-        if (valued) after = below;
+        /* A value that is no usable field ("• 0803…") falls back like no value at all. */
+        if (valued && isFieldValue(below)) after = below;
         else if (lines[0]?.trim()) after = contact[0].trim();
         else continue;
       }
     }
-    const first = after.split(/\s/u)[0] ?? '';
-    const phone = leadingPhoneDigits(after).length >= 10;
-    if (/^[\p{L}]/u.test(after) || first.includes('@') || phone) fields.push(after);
+    if (isFieldValue(after)) fields.push(after);
   }
   return fields;
+}
+
+/** Whether a folded field value can name a buyer: a word, an address or a phone. */
+function isFieldValue(after: string): boolean {
+  const first = after.split(/\s/u)[0] ?? '';
+  return /^[\p{L}]/u.test(after) || first.includes('@') || leadingPhoneDigits(after).length >= 10;
 }
 
 /** Read the whole leading phone run, including any extra digits after separators. */
