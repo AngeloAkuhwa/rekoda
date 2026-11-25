@@ -20,6 +20,7 @@ import {
   RACE,
   seedMerchant,
   addDelegate,
+  drain,
   say,
   reply,
   purchaseStates,
@@ -27,6 +28,8 @@ import {
   purchases,
   bookMilo,
 } from './meta-purchase-truth.fixtures.js';
+
+import { lastWamid, receipt } from './meta-preview-expiry.fixtures.js';
 
 useMetaWebhookHarness();
 
@@ -254,6 +257,59 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
       ];
       expect(row!.ref).toBeNull();
     });
+
+    /*
+     * OD-70 Option B: linking a hold to its latest identity question (migration 0247) is its own
+     * PR after #437. Until then a late failed receipt for an earlier question can withdraw a hold
+     * whose re-ask is still live, and a failed re-ask can leave the hold waiting. Either way the
+     * merchant's answer books nothing they did not confirm: this pins that safety floor, not the
+     * finished behaviour.
+     */
+    it.each([
+      ['initial', false],
+      ['current', false],
+      ['initial', true],
+      ['current', true],
+    ] as const)(
+      'a late failure of the %s identity question books nothing unconfirmed (new match: %s)',
+      async (failed, newMatch) => {
+        const business = await seedMerchant();
+        await addDelegate(business.id);
+        await bookMilo(business.id, 'late-reask');
+        await say('wamid.LS-first', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+        expect(stubSender.lastText).toContain(QUESTION);
+        const initial = lastWamid();
+
+        if (newMatch) {
+          await say('wamid.LS-new', MILO, 'I bought 10 cartons of Milo for 100k cash');
+          await reply('wamid.LS-new-separate', 'separate');
+          await reply('wamid.LS-new-yes', 'yes');
+          await reply('wamid.LS-reask', 'separate', DELEGATE);
+          expect(stubSender.lastText).toContain(QUESTION);
+        } else {
+          await reply('wamid.LS-no', 'no', DELEGATE);
+          expect(stubSender.lastText).toContain(REASK);
+        }
+        const current = lastWamid();
+        expect(current).not.toBe(initial);
+        const before = await footprint(business.id);
+        const confirmed = async () =>
+          (await purchaseStates(business.id)).filter((state) => state === 'confirmed').length;
+        const confirmedBefore = await confirmed();
+
+        const failedWamid = failed === 'initial' ? initial : current;
+        await receipt(DELEGATE, failedWamid, 'failed');
+        await receipt(DELEGATE, failedWamid, 'failed');
+        await drain();
+        expect(await footprint(business.id)).toEqual(before);
+
+        await reply('wamid.LS-same', 'same', DELEGATE);
+        /* "same" books no second purchase, and nothing posts unseen. */
+        expect(await purchases(business.id)).toBe(newMatch ? 2 : 1);
+        expect((await footprint(business.id)).postings).toBe(before.postings);
+        expect(await confirmed()).toBe(confirmedBefore);
+      },
+    );
 
     it('the re-ask after a no never offers cancel', async () => {
       const business = await seedMerchant();
