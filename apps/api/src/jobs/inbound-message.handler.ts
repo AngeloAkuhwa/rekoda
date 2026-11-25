@@ -3069,7 +3069,7 @@ async function confirmPendingDraft(
    * deferred: a deferred spoken yes would be transcribed and metered again on every re-run. */
   const pointerHeld = NOT_A_FINANCIAL_PREVIEW.has(draft.intent)
     ? null
-    : await conversationsRepo.hasLivePointerReceipt(tx, businessId, draft.id);
+    : await conversationsRepo.hasLivePointerReceipt(tx, businessId, draft.id, answering);
   if (pointerHeld) {
     if (retrying) {
       await refundRecordedReservations(tx, businessId, eventId, usagePeriod(receivedAt));

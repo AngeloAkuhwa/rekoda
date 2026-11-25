@@ -533,3 +533,31 @@ describe('a cancel whose acknowledgement does not arrive', () => {
     expect((await footprint(business.id)).invoices).toBe(0);
   });
 });
+
+/* CodeRabbit and Codex on #437 at 1ec5a22: a stored failed receipt for ANOTHER member's refusal
+ * answer never holds this member's yes. Only the member's own refusal guards their preview. */
+describe("a failed receipt for another member's refusal answer", () => {
+  it("does not hold the owner's yes, which books their preview once", async () => {
+    const business = await seedMerchant();
+    const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+    await identity.addMembership(db, business.id, delegate.id, 'delegate');
+    const ada = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+    await say(
+      'wamid.OM1',
+      sale({ kind: 'token', token: ada.token }),
+      'sold Ada Obi 2 wigs for 100k',
+    );
+    await post(mediaMessage('wamid.OM2', STICKER, DELEGATE));
+    await drain();
+    await post(messagePayload(DELEGATE, 'wamid.OM3', 'yes'));
+    await drain();
+    expect(stubSender.lastText).toBe(replies.previewWaitingForAnotherMember().text);
+    const before = await footprint(business.id);
+
+    await post(messagePayload(OWNER, 'wamid.OM4', 'yes'));
+    await receipt(DELEGATE, lastWamid(), 'failed');
+    await drain();
+
+    expect((await footprint(business.id)).invoices).toBe(before.invoices + 1);
+  });
+});

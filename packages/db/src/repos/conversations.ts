@@ -1694,6 +1694,9 @@ export async function hasLivePointerReceipt(
   tx: TenantDb,
   businessId: string,
   draftId: string,
+  /* The member whose yes this is: only their OWN refusal guards their preview, so another member's
+   * refusal answer never holds it (CodeRabbit and Codex on #437 at 1ec5a22). */
+  answering: string | null,
 ): Promise<'question' | 'refusal' | null> {
   /* Two pointer replies exist, both "a preview is waiting, reply yes": the one a yes gets past a
    * question it retires (`retiredBy` on that Query), and the one a yes or a bare "no" gets past the
@@ -1733,6 +1736,7 @@ export async function hasLivePointerReceipt(
            AND r.intent = 'Unclear'
            AND COALESCE(r.command->>'refused', '') = 'true'
            AND r.command->>'answeredBy' = live.request_id::text
+           AND r.requested_by IS NOT DISTINCT FROM ${answering}::uuid
            AND r.insertion_seq > preview.insertion_seq) THEN 'refusal'
     END AS held`);
   const held = rows[0]?.held;
