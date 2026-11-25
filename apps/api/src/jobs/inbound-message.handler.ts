@@ -5627,16 +5627,24 @@ function photoBuyerNamed(
   caption: string | null,
   names: readonly string[],
 ): boolean {
-  const fields = pageBuyerFields(rawText, caption);
+  /* A buyer the caption labels must agree with the page's: a caption that labels somebody else
+   * contradicts the chosen customer (independent review on #437 at 5e5267c). */
+  const fields = [
+    ...pageBuyerFields(rawText, caption),
+    ...(caption === null ? [] : buyerFieldsIn(caption)),
+  ];
   /* A caption can name the buyer directly. An email must match as a whole address. A name the
    * caption labels as somebody else ("Seller: Ada Obi") is no evidence of the buyer, so those
-   * segments are taken out first (CodeRabbit on #437 at 600a155). */
-  const typed = caption?.replace(NON_BUYER_SEGMENT, ' ');
+   * segments are taken out first, and the words either side of one never join into a name
+   * (CodeRabbit on #437 at 600a155; independent review at 5e5267c). */
+  const typed = caption === null ? [] : caption.split(NON_BUYER_SEGMENT);
   if (
-    typed &&
     names.some(
-      (name) => name.trim() && (name.includes('@') ? addressIn(typed, name) : typedIn(typed, name)),
-    )
+      (name) =>
+        name.trim() &&
+        typed.some((part) => (name.includes('@') ? addressIn(part, name) : typedIn(part, name))),
+    ) &&
+    fields.every((field) => names.some((name) => name.trim() && fieldNames(field, name)))
   ) {
     return true;
   }
@@ -5667,7 +5675,11 @@ const RECEIPT_HEADING =
  * A field can name a buyer by name, address or phone.
  */
 function pageBuyerFields(rawText: string, caption: string | null): string[] {
-  const page = pageOf(rawText, caption);
+  return buyerFieldsIn(pageOf(rawText, caption));
+}
+
+/** What each buyer label in `page` holds (see `pageBuyerFields`). */
+function buyerFieldsIn(page: string): string[] {
   const fields: string[] = [];
   for (const label of page.matchAll(BUYER_LABEL)) {
     const lines = page.slice(label.index + label[0].length).split(/\r?\n/u);
@@ -5681,7 +5693,18 @@ function pageBuyerFields(rawText: string, caption: string | null): string[] {
     const contact = CONTACT_HEADING.exec(after);
     if (contact) {
       after = after.slice(contact[0].length).trim();
-      if (!after) continue;
+      if (!after) {
+        /* An empty heading's value may sit on the line below it ("Buyer: Tel:\n0803…"); only a
+         * phone or an address there is that contact, anything else leaves the field empty
+         * (independent review on #437 at 5e5267c). */
+        const at = lines.findIndex((line) => line.trim());
+        const below = foldField(lines.slice(at + 1).find((line) => line.trim()) ?? '');
+        const value = /^e-?mail/u.test(contact[0])
+          ? (below.split(/\s/u)[0] ?? '').includes('@')
+          : leadingPhoneDigits(below).length >= 10;
+        if (!value) continue;
+        after = below;
+      }
     }
     const first = after.split(/\s/u)[0] ?? '';
     const phone = leadingPhoneDigits(after).length >= 10;
@@ -5724,7 +5747,7 @@ function fieldNames(after: string, name: string): boolean {
 /** A field label after a buyer's name on the same line: it ends the name. */
 /** A caption segment that names somebody other than the buyer: "Seller: Ada Obi", "sold by Ada". */
 const NON_BUYER_SEGMENT =
-  /\b(?:seller|supplier|vendor|cashier|sales\s*(?:person|rep)|sold\s+by|served\s+by|issued\s+by)\b\s*[:#\-\u2013]?[^\n,;]*/giu;
+  /\b(?:seller|supplier|vendor|cashier|sales\s*(?:person|rep)|sold\s+by|served\s+by|issued\s+by|(?:deliver(?:y|ed)?|ship(?:ped)?)\s+to)\b\s*[:#\-\u2013]?[^\n,;]*/giu;
 
 /** A contact heading at the start of a line, with its separator: "Tel:", "Email -". */
 const CONTACT_HEADING = /^(?:tel|telephone|phone|mobile|whatsapp|email|e-mail)\b\.?\s*[:#-]\s*/iu;
@@ -6394,7 +6417,10 @@ async function interpretedReply(
     CUSTOMER_BEARING.has(command.intent) &&
     'customer' in command &&
     command.customer?.kind === 'none' &&
-    pageBuyerFields(rawText, documentCaption).length > 0
+    (pageBuyerFields(rawText, documentCaption).length > 0 ||
+      /* A buyer the caption labels is as much a buyer as one the page labels (CodeRabbit on #437
+       * at 600a155). */
+      (documentCaption !== null && buyerFieldsIn(documentCaption).length > 0))
   ) {
     authorisationLog.warn(`${command.intent} named no buyer on a page that labels one`);
     await refundMessage(tx, businessId, eventId, period);
