@@ -791,8 +791,12 @@ export function replacedFiguresFit(text: string, draft: DraftFigures): boolean {
       : QUANTITY_FIELD.test(clause)
         ? 'quantity'
         : null;
-    const own =
-      figureKind(figure, m[2]) ?? (before?.[1] ? figureKind(before[1].trim(), before[2]) : null);
+    const replacedKind = figureKind(figure, m[2]);
+    const replacementKind = before?.[1] ? figureKind(before[1].trim(), before[2]) : null;
+    /* Both figures written with their own sense must agree: "4 pc not ₦3" puts a count in place
+     * of an amount, and is asked about (CodeRabbit on #437 at 6b3fc05). */
+    if (replacedKind && replacementKind && replacedKind !== replacementKind) return false;
+    const own = replacedKind ?? replacementKind;
     if (own && field && own !== field) return false;
     let kind = own ?? field;
     if (!kind) {

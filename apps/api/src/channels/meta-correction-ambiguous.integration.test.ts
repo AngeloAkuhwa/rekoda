@@ -483,6 +483,28 @@ describe('CG5: a replaced figure the waiting draft does not hold (OD-67)', () =>
     await expectAdaUntouched(business.id, ada.token, before);
   });
 
+  /* A count written in place of an amount: ₦50,000 is in the draft, but "4 pc" is not money, so
+   * the pair is asked about (CodeRabbit on #437 at 6b3fc05). */
+  it('"No, 4 pc not ₦50,000" changes nothing, inherits nobody and books nothing', async () => {
+    const { business, ada } = await seedOwner();
+    stubTransport.replyWith(SALE);
+    await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.F4-SALE');
+    const before = await saleDraft(business.id);
+
+    stubTransport.replyWith({
+      ...FOUR,
+      customer: { kind: 'none' },
+      items: [{ name: 'wig', quantity: 4, unitPrice: 50_000 }],
+      statedTotal: 200_000,
+    });
+    await send('No, 4 pc not ₦50,000', 'wamid.F4-FIX');
+    expect(stubSender.lastText).toBe(replies.correctionFigureNotInDraft().text);
+    expect(stubSender.lastText).not.toContain('The same customer as before');
+    await expectAdaUntouched(business.id, ada.token, before);
+    expect((await sales(business.id)).map((r) => r.state)).toEqual(['pending']);
+    expect(await invoices(business.id)).toEqual([]);
+  });
+
   it('a replaced figure the draft holds still corrects it and keeps Ada, booked once', async () => {
     const { business, ada } = await seedOwner();
     stubTransport.replyWith(SALE);

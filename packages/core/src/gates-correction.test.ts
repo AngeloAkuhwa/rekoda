@@ -372,6 +372,22 @@ describe('a replaced figure the waiting draft does not hold', () => {
   });
 });
 
+describe('a replaced figure and its replacement agree on what they are', () => {
+  /* Five pieces at ₦3 each: 5 is a quantity and ₦3 a price the draft holds. */
+  const fivePieces = draftFigures({ items: [{ name: 'wig', quantity: 5, unitPrice: 3 }] });
+  const threePieces = draftFigures({ items: [{ name: 'wig', quantity: 3, unitPrice: 3 }] });
+
+  it('refuses a count written in place of an amount (CodeRabbit on #437 at 6b3fc05)', () => {
+    expect(replacedFiguresFit('No, 4 pc not ₦3', fivePieces)).toBe(false);
+    expect(replacedFiguresFit('No, ₦4 not 3 pcs', threePieces)).toBe(false);
+  });
+
+  it('still accepts a pair of the same kind', () => {
+    expect(replacedFiguresFit('No, 4 pcs not 3', threePieces)).toBe(true);
+    expect(replacedFiguresFit('No, ₦4 not ₦3', fivePieces)).toBe(true);
+  });
+});
+
 describe('corrections use displayed figures', () => {
   it('recognises a decimal million suffix in the inheritance check', () => {
     expect(correctionWordsExplained('change the price to 1.6m', ['wig'])).toBe(true);
