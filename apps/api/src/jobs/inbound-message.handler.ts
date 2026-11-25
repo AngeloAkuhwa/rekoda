@@ -5702,9 +5702,13 @@ function captionNamesIssuedCustomer(tokens: LiveTokens, caption: string | null):
   });
 }
 
-/** A caption clause that rules a buyer out: "not sold to Ada", "wasn’t for Ada". */
+/**
+ * A caption clause that rules a buyer out: "not sold to Ada", "wasn’t bought by Ada". A bare
+ * "not for" is not one: "Not for credit Ada Obi" still names Ada, and "Not for Ada" is asked
+ * about, which fails safe (second review of 42a2422..20a95c4).
+ */
 const NEGATED_BUYER =
-  /\b(?:not|never|isn['’]?t|wasn['’]?t|didn['’]?t|no\s+longer)\s+(?:(?:sold|billed|invoiced|delivered)\s+to|bought\s+by|for)\b[^\n,;]*/giu;
+  /\b(?:not|never|isn['’]?t|wasn['’]?t|didn['’]?t|no\s+longer)\s+(?:(?:sold|billed|invoiced|delivered)\s+to|bought\s+by)\b[^\n,;]*/giu;
 
 /** Whether `text` holds the address `address` between non-address characters ("email:ada@…"). */
 function addressWithin(text: string, address: string): boolean {
