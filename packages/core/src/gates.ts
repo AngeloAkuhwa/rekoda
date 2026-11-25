@@ -890,8 +890,8 @@ export function replacedFiguresFit(text: string, draft: DraftFigures): boolean {
  * A, owner ruling OWN-107). "No, 4 not 3" names a quantity; a reading of it that also changes what
  * was paid, a price, a discount, a delivery fee or an amount changes something the merchant never
  * mentioned, so it is asked about and nothing is replaced. A changed figure counts as named when the
- * correction's words hold its old or its new value. A stated total is not checked here: it follows
- * from the lines, and one that disagrees with them is the CG1 question already.
+ * correction's words hold its old or its new value. A stated total the correction does not name
+ * must equal the total its corrected lines compute.
  */
 export function unnamedFiguresChanged(
   text: string,
@@ -918,17 +918,37 @@ export function unnamedFiguresChanged(
   ) {
     return true;
   }
-  /* A price is matched by its line's name: a line the reading drops or adds is the correction's own
-   * business, which the quantity and figure rules above it already judge. */
+  /* A price is checked on every line the draft had: matched by its name, compared without case or
+   * surrounding spaces, else by its position when the reading has as many lines. A priced line the
+   * reading drops or renames past matching cannot be checked, so it is asked about, never exempted
+   * (Codex on #437 at 0bf9298). */
   const lines = (v: unknown) =>
     Array.isArray(v)
       ? (v as unknown[]).filter((i): i is Record<string, unknown> => !!i && typeof i === 'object')
       : [];
+  const key = (line: Record<string, unknown>) =>
+    typeof line['name'] === 'string' ? line['name'].trim().toLowerCase() : '';
+  const before = lines(stored['items']);
   const after = lines(reading['items']);
-  for (const line of lines(stored['items'])) {
-    const same = after.find((l) => l['name'] === line['name']);
-    if (same && changed(kobo(line['unitPrice'], false), kobo(same['unitPrice'], false)))
-      return true;
+  for (const [i, line] of before.entries()) {
+    const same =
+      after.find((l) => key(l) !== '' && key(l) === key(line)) ??
+      (after.length === before.length ? after[i] : undefined);
+    const price = kobo(line['unitPrice'], false);
+    if (!same) {
+      if (price !== null && !named.has(price)) return true;
+      continue;
+    }
+    if (changed(price, kobo(same['unitPrice'], false))) return true;
+  }
+  /* A stated total the correction does not name must follow from the corrected figures: within
+   * `computeMoney`'s tolerance a different one would become the invoice total unasked (Codex on #437
+   * at 0bf9298). */
+  const statedBefore = kobo(stored['statedTotal'], false);
+  const statedAfter = kobo(reading['statedTotal'], false);
+  if (changed(statedBefore, statedAfter) && statedAfter !== null) {
+    const money = after.length > 0 ? saleFigures(reading, after) : null;
+    if (!money || money.computedTotalK !== statedAfter) return true;
   }
   return false;
 }

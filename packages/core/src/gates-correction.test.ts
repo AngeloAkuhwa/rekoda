@@ -570,6 +570,33 @@ describe('unnamedFiguresChanged', () => {
     expect(unnamedFiguresChanged(text, sale, reading)).toBe(expected);
   });
 
+  /* Codex on #437 at 0bf9298: a stated total must follow from the corrected lines, and a line the
+   * reading renames (or recases) is still checked, never exempted. */
+  it.each([
+    ['an unnamed stated total that does not follow', { ...four, statedTotal: 199_000 }, true],
+    ['a stated total that follows from the lines', { ...four, statedTotal: 200_000 }, false],
+    [
+      'a recased item at a new price',
+      { ...four, items: [{ name: 'Wig', quantity: 4, unitPrice: 40_000 }] },
+      true,
+    ],
+    [
+      'a recased item at the same price',
+      { ...four, items: [{ name: 'Wig ', quantity: 4, unitPrice: 50_000 }] },
+      false,
+    ],
+    [
+      'a renamed only line at a new price',
+      { ...four, items: [{ name: 'weave', quantity: 4, unitPrice: 40_000 }] },
+      true,
+    ],
+    ['a dropped priced line', { ...four, items: [] }, true],
+  ] as const)('%s', (_, reading, expected) => {
+    expect(unnamedFiguresChanged('No, 4 not 3', { ...sale, statedTotal: 150_000 }, reading)).toBe(
+      expected,
+    );
+  });
+
   it('judges an expense amount the same way', () => {
     const fuel = { description: 'fuel', amount: 5_000 };
     expect(unnamedFiguresChanged('no, 6k not 5k', fuel, { ...fuel, amount: 6_000 })).toBe(false);
