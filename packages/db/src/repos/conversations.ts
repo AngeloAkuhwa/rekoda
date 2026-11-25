@@ -1693,7 +1693,8 @@ export async function reopenReadsRetiredBy(
  * answers it with the pointer again. It is answered, not deferred: a deferred job re-runs every
  * half second without an attempt charged, and a spoken yes would be transcribed and metered again on
  * every run (independent review of f605c98). A dead receipt is applied before any yes is read
- * (`reconcileDeadReceipts`).
+ * (`reconcileDeadReceipts`); one that dies after that, and is not yet applied, holds the yes the
+ * same way (CodeRabbit on #437 at c5392f0).
  *
  * Narrow on purpose: only a receipt naming a reply to a message that retired a Query standing
  * after `draftId`, so unrelated receipts never hold a yes. Read under the business's inbound lock,
@@ -1724,7 +1725,15 @@ export async function hasLivePointerReceipt(
          AND m.reply_to_message_id IS NOT NULL
        WHERE j.business_id = ${businessId}::uuid
          AND j.kind = 'delivery.status'
-         AND j.state IN ('pending', 'running')
+         AND (j.state IN ('pending', 'running')
+              /* A receipt whose job died after this yes applied the dead ones, and is not applied
+               * yet: the runner records a death without the inbound lock (CodeRabbit on #437 at
+               * c5392f0). Once applied, its event is processed and it holds nothing. */
+              OR (j.state = 'dead' AND EXISTS (
+                    SELECT 1 FROM external_events e
+                     WHERE e.business_id = j.business_id
+                       AND e.id::text = j.payload->>'eventId'
+                       AND e.processed_at IS NULL)))
     ), preview AS (
       SELECT d.insertion_seq FROM command_drafts d
        WHERE d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid
