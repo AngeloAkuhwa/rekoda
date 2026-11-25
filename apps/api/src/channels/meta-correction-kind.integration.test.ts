@@ -454,12 +454,8 @@ describe('CG5: a correction with no live draft to change is a new request', () =
   });
 });
 
-/**
- * OD-63(a): an unrecorded person named like an item could once inherit; since OWN-102(3) the bare
- * item word is asked about and only a plural or unit keeps the customer (`meta-correction-item-word`).
- * A recorded customer with that name is tokenised before the model reads the correction, so it names
- * somebody and keeps nobody.
- */
+/* OD-63(a), OWN-102(3): a bare item word is asked about (`meta-correction-item-word`). A recorded
+ * customer with that name is tokenised before the model reads the correction, so it names somebody. */
 describe('CG5: a recorded customer named like the waiting sale’s item (OD-63(a))', () => {
   it('"4 Tunde not 3" is asked about and the preview keeps Ada', async () => {
     const { business, ada } = await seedOwner();
@@ -467,6 +463,7 @@ describe('CG5: a recorded customer named like the waiting sale’s item (OD-63(a
     const TUNDE_ITEM = { ...SALE, items: [{ name: 'Tunde', quantity: 3, unitPrice: 50_000 }] };
     await send('Ada bought 3 Tunde for 150k', 'wamid.K11-SALE', TUNDE_ITEM);
 
+    stubTransport.requests.length = 0;
     await send('4 Tunde not 3', 'wamid.K11-FIX', {
       ...TUNDE_ITEM,
       customer: { kind: 'none' },
@@ -474,6 +471,9 @@ describe('CG5: a recorded customer named like the waiting sale’s item (OD-63(a
       statedTotal: 200_000,
     });
     expect(stubSender.lastText).not.toContain('The same customer as before');
+    /* The model read Tunde's token, never the name (CodeRabbit on #437 at c5392f0). */
+    const read = stubTransport.requests.map((r) => r.userText).join('\n');
+    expect([read.includes('CUSTOMER_9TD'), /\bTunde\b/u.test(read)]).toEqual([true, false]);
     const sale = await withBusiness(db, business.id, (tx) =>
       tx.execute<{ customer: unknown }>(sql`
         SELECT command->'customer' AS customer FROM command_drafts
