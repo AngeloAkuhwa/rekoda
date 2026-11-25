@@ -888,78 +888,144 @@ export function replacedFiguresFit(text: string, draft: DraftFigures): boolean {
 /**
  * Whether a correction's reading changes a financial figure the merchant did not name (OD-76 Option
  * A, owner ruling OWN-107). "No, 4 not 3" names a quantity; a reading of it that also changes what
- * was paid, a price, a discount, a delivery fee or an amount changes something the merchant never
- * mentioned, so it is asked about and nothing is replaced. A changed figure counts as named when the
- * correction's words hold its old or its new value. A stated total the correction does not name
- * must equal the total its corrected lines compute.
+ * was paid, a price, a quantity, a discount, a delivery fee or an amount changes something the
+ * merchant never mentioned, so it is asked about and nothing is replaced.
+ *
+ * Each figure the correction's words hold answers for one change only, in its own sense (CodeRabbit
+ * on #437 at c5392f0): a change counts as named by its new value, or by its old value when it falls
+ * to nothing ("no discount, not 2k"). So "price 50k not 40k" names the price, never also a payment
+ * of 50k. A plain figure equal to a quantity of the draft or the reading is that quantity, never
+ * also a price ("No, 4 not 3" names no ₦4). A stated total the correction does not name must equal
+ * the total its corrected lines compute, and one the reading drops must have been the computed one.
  */
 export function unnamedFiguresChanged(
   text: string,
   stored: Record<string, unknown>,
   reading: Record<string, unknown>,
 ): boolean {
-  const named = new Set<number>();
-  for (const m of text.toLowerCase().matchAll(ANY_FIGURE)) {
-    const kobo = m[1] ? figureKobo(m[1].trim()) : null;
-    if (kobo !== null) named.add(kobo);
-  }
-  const kobo = (v: unknown, nullIsZero: boolean): number | null =>
-    typeof v === 'number' && Number.isFinite(v) ? nairaToKobo(v) : nullIsZero ? 0 : null;
-  const changed = (before: number | null, after: number | null) =>
-    before !== after &&
-    !(before !== null && named.has(before)) &&
-    !(after !== null && named.has(after));
-  for (const key of ['reportedPayment', 'discount', 'deliveryFee']) {
-    if (changed(kobo(stored[key], true), kobo(reading[key], true))) return true;
-  }
-  if (
-    'amount' in stored &&
-    changed(kobo(stored['amount'], false), kobo(reading['amount'], false))
-  ) {
-    return true;
-  }
-  /* A price is checked on every line the draft had: matched by its name, compared without case or
-   * surrounding spaces, else by its position when the reading has as many lines. A priced line the
-   * reading drops or renames past matching cannot be checked, so it is asked about, never exempted
-   * (Codex on #437 at 0bf9298). */
   const lines = (v: unknown) =>
     Array.isArray(v)
       ? (v as unknown[]).filter((i): i is Record<string, unknown> => !!i && typeof i === 'object')
       : [];
-  const key = (line: Record<string, unknown>) =>
-    typeof line['name'] === 'string' ? line['name'].trim().toLowerCase() : '';
   const before = lines(stored['items']);
   const after = lines(reading['items']);
-  /* One to one: each corrected line answers for one draft line at most, by its exact name, else its
-   * name without case or spaces, else its position, so two lines alike but for case are both checked
-   * (Codex on #437 at c5392f0). */
+  const count = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isFinite(v) ? v : null;
+  const seenQuantities = new Set<number>();
+  for (const v of [
+    ...before.map((l) => l['quantity']),
+    ...after.map((l) => l['quantity']),
+    stored['quantity'],
+    reading['quantity'],
+  ]) {
+    const q = count(v);
+    if (q !== null) seenQuantities.add(q);
+  }
+  /* The figures the merchant wrote, each usable once: as money unless written as a count or equal
+   * to one of the draft's or the reading's quantities, as a count unless written as money. */
+  const namedMoney: number[] = [];
+  const namedCounts: number[] = [];
+  for (const m of text.toLowerCase().matchAll(ANY_FIGURE)) {
+    const figure = m[1]?.trim();
+    if (!figure) continue;
+    const kind = figureKind(figure, m[2]);
+    const plain = Number(figure.replace(/,/gu, ''));
+    const isCount = kind !== 'money' && Number.isFinite(plain);
+    if (isCount) namedCounts.push(plain);
+    if (kind === 'quantity' || (kind === null && isCount && seenQuantities.has(plain))) continue;
+    const k = figureKobo(figure);
+    if (k !== null) namedMoney.push(k);
+  }
+  const take = (pool: number[], value: number) => {
+    const i = pool.indexOf(value);
+    if (i < 0) return false;
+    pool.splice(i, 1);
+    return true;
+  };
+  /* Whether a change from `was` to `now` is one the merchant named: by its new value, or by its old
+   * one when it falls to nothing. Unchanged is always fine. */
+  const named = (pool: number[], was: number | null, now: number | null) => {
+    if (was === now) return true;
+    if (now !== null && now !== 0) return take(pool, now);
+    if (was !== null && was !== 0) return take(pool, was);
+    return true;
+  };
+  const kobo = (v: unknown, nullIsZero: boolean): number | null =>
+    typeof v === 'number' && Number.isFinite(v) ? nairaToKobo(v) : nullIsZero ? 0 : null;
+  /* A purchase with no payment stated is paid in full (`gatePurchase`), so "nothing stated" and ₦0
+   * are different payments there (CodeRabbit on #437 at c5392f0). */
+  const purchase = stored['intent'] === 'RecordPurchase' || reading['intent'] === 'RecordPurchase';
+  const paid = (command: Record<string, unknown>) =>
+    purchase && command['reportedPayment'] == null
+      ? kobo(command['amount'], false)
+      : kobo(command['reportedPayment'], true);
+  const changes: Array<[number[], number | null, number | null]> = [];
+  if (purchase) {
+    /* Paid in full stays paid in full when only the amount moves: the amount names that change. */
+    const wasFull =
+      stored['reportedPayment'] == null || paid(stored) === kobo(stored['amount'], false);
+    const nowFull =
+      reading['reportedPayment'] == null || paid(reading) === kobo(reading['amount'], false);
+    if (!(wasFull && nowFull)) changes.push([namedMoney, paid(stored), paid(reading)]);
+  } else {
+    changes.push([namedMoney, paid(stored), paid(reading)]);
+  }
+  for (const key of ['discount', 'deliveryFee']) {
+    changes.push([namedMoney, kobo(stored[key], true), kobo(reading[key], true)]);
+  }
+  if ('amount' in stored) {
+    changes.push([namedMoney, kobo(stored['amount'], false), kobo(reading['amount'], false)]);
+  }
+  if ('quantity' in stored) {
+    changes.push([namedCounts, count(stored['quantity']), count(reading['quantity'])]);
+  }
+  /* A price and a quantity are checked on every line the draft had: matched one to one, by its
+   * exact name, else its name without case or spaces, else its position when the reading has as many
+   * lines. A priced line the reading drops or renames past matching cannot be checked, so it is asked
+   * about, never exempted (Codex on #437 at 0bf9298 and c5392f0); a line the reading adds must have
+   * its price named (CodeRabbit on #437 at c5392f0). */
+  const key = (line: Record<string, unknown>) =>
+    typeof line['name'] === 'string' ? line['name'].trim().toLowerCase() : '';
   const used = new Set<number>();
-  const take = (pick: (l: Record<string, unknown>, j: number) => boolean) => {
-    const j = after.findIndex((l, k) => !used.has(k) && pick(l, k));
+  const pick = (match: (l: Record<string, unknown>, j: number) => boolean) => {
+    const j = after.findIndex((l, k) => !used.has(k) && match(l, k));
     if (j < 0) return undefined;
     used.add(j);
     return after[j];
   };
   for (const [i, line] of before.entries()) {
     const same =
-      take((l) => typeof l['name'] === 'string' && l['name'] === line['name']) ??
-      take((l) => key(l) !== '' && key(l) === key(line)) ??
-      (after.length === before.length ? take((_l, j) => j === i) : undefined);
+      pick((l) => typeof l['name'] === 'string' && l['name'] === line['name']) ??
+      pick((l) => key(l) !== '' && key(l) === key(line)) ??
+      (after.length === before.length ? pick((_l, j) => j === i) : undefined);
     const price = kobo(line['unitPrice'], false);
     if (!same) {
-      if (price !== null && !named.has(price)) return true;
+      changes.push([namedMoney, price, null]);
       continue;
     }
-    if (changed(price, kobo(same['unitPrice'], false))) return true;
+    changes.push([namedMoney, price, kobo(same['unitPrice'], false)]);
+    changes.push([namedCounts, count(line['quantity']), count(same['quantity'])]);
+  }
+  for (const [j, line] of after.entries()) {
+    if (!used.has(j)) changes.push([namedMoney, null, kobo(line['unitPrice'], false)]);
+  }
+  for (const [pool, was, now] of changes) {
+    if (!named(pool, was, now)) return true;
   }
   /* A stated total the correction does not name must follow from the corrected figures: within
    * `computeMoney`'s tolerance a different one would become the invoice total unasked (Codex on #437
-   * at 0bf9298). */
+   * at 0bf9298). One the reading drops must have been the total the draft's lines computed, or the
+   * invoice total moves unasked (CodeRabbit on #437 at c5392f0). */
   const statedBefore = kobo(stored['statedTotal'], false);
   const statedAfter = kobo(reading['statedTotal'], false);
-  if (changed(statedBefore, statedAfter) && statedAfter !== null) {
-    const money = after.length > 0 ? saleFigures(reading, after) : null;
-    if (!money || money.computedTotalK !== statedAfter) return true;
+  if (statedBefore !== statedAfter && !(statedAfter !== null && namedMoney.includes(statedAfter))) {
+    if (statedAfter !== null) {
+      const money = after.length > 0 ? saleFigures(reading, after) : null;
+      if (!money || money.computedTotalK !== statedAfter) return true;
+    } else if (statedBefore !== null && !namedMoney.includes(statedBefore)) {
+      const money = before.length > 0 ? saleFigures(stored, before) : null;
+      if (!money || money.computedTotalK !== statedBefore) return true;
+    }
   }
   return false;
 }

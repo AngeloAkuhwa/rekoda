@@ -53,6 +53,21 @@ const FOUR = {
   items: [{ name: 'wig', quantity: 4, unitPrice: 50_000 }],
   statedTotal: 200_000,
 };
+/* Readings that follow the correction's own figures, so a test of the customer gate is not
+ * answered first by the unnamed-figure gate (OD-76; CodeRabbit on #437 at c5392f0). */
+const FIVE = {
+  ...SALE,
+  customer: { kind: 'none' },
+  items: [{ name: 'wig', quantity: 5, unitPrice: 50_000 }],
+  statedTotal: 250_000,
+};
+const SAME_FIGURES = { ...SALE, customer: { kind: 'none' } };
+const readingFor = (text: string) =>
+  /\b5\b/u.test(text) && !text.includes('more')
+    ? FIVE
+    : text.includes('2 days')
+      ? SAME_FIGURES
+      : FOUR;
 
 async function send(text: string, wamid: string, from = OWNER) {
   await post(messagePayload(from, wamid, text));
@@ -255,7 +270,7 @@ describe('CG5: a correction mixed with another instruction, or about no field of
     stubTransport.replyWith(SALE);
     await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.M-SALE');
     const before = await saleDraft(business.id);
-    stubTransport.replyWith(FOUR);
+    stubTransport.replyWith(readingFor(text));
     await send(text, 'wamid.M-FIX');
     expect(stubSender.lastText).toContain('I could not tell which customer');
     await expectAdaUntouched(business.id, ada.token, before);
@@ -318,7 +333,7 @@ describe('CG5: a correction that names somebody, read by the model as naming nob
     stubTransport.replyWith(SALE);
     await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.N-SALE');
     const before = await saleDraft(business.id);
-    stubTransport.replyWith(FOUR);
+    stubTransport.replyWith(readingFor(text));
     await send(text, 'wamid.N-FIX');
     expect(stubSender.lastText).toContain('I could not tell which customer');
     expect(stubSender.lastText).not.toContain('The same customer as before');
@@ -334,7 +349,7 @@ describe("CG5: a name in the waiting draft's free text never explains a correcti
     stubTransport.replyWith({ ...SALE, dueDescription: 'when Tunde comes' });
     await send('Ada bought 3 wigs for 150k, paid 100k, balance when Tunde comes', 'wamid.V-SALE');
     const before = await saleDraft(business.id);
-    stubTransport.replyWith(FOUR);
+    stubTransport.replyWith(FIVE);
     await send('make it 5 Tunde', 'wamid.V-FIX');
     expect(stubSender.lastText).toContain('I could not tell which customer');
     await expectAdaUntouched(business.id, ada.token, before);
