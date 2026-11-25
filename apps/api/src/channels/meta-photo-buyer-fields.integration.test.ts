@@ -281,6 +281,13 @@ describe('a caption that names an issued customer, read with no customer (OD-72)
     ['a recorded customer by a spaced phone', 'for 0803 555 1234'],
     ['a recorded customer by email', 'ada@example.test'],
     ['a new phone, issued a provisional token', '08099998888 took 2 wigs'],
+    /* Independent review of 42a2422: a +234 phone, an email inside punctuation, and a negation
+     * that rules nobody out before the buyer's name. */
+    ['a recorded customer by a +234 phone', '+234 803 555 1234 2 wigs'],
+    ['a recorded customer by a labelled email', 'email:ada@example.test'],
+    ['a recorded customer by a quoted email', '"ada@example.test"'],
+    ['a buyer after an unrelated negation', 'Not paid yet Ada Obi 0803 555 1234'],
+    ['a buyer after an unrelated dashed negation', 'Not paid yet - Ada Obi'],
     ['two different people', 'Ada Obi and bola@example.test'],
     /* The caption's customer contradicts the page's labelled buyer. */
     ['a customer the page contradicts', 'Ada Obi', 'Buyer: Bola Ige'],
@@ -311,6 +318,15 @@ describe('a caption that names an issued customer, read with no customer (OD-72)
     expect(await previewedSales(business.id)).toEqual([{ customer: { kind: 'none' } }]);
     expect(await footprint(business.id)).toEqual({ customers: 2, invoices: 0, postings: 0 });
   });
+
+  /* A caption of many digit groups is read in time (independent review of 42a2422: the phone
+   * match was cubic in the number of groups). */
+  it('reads a caption of thousands of digit groups quickly', async () => {
+    const started = Date.now();
+    const business = await photographed(`${'1 '.repeat(4000)}08099998888`);
+    expect(Date.now() - started).toBeLessThan(15_000);
+    expect(await previewedSales(business.id)).toEqual([]);
+  }, 60_000);
 
   it('books the sale to the buyer once the merchant says who it is for', async () => {
     const business = await photographed('Ada Obi 2 wigs');
