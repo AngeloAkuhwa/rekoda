@@ -914,6 +914,8 @@ export async function hasDraftsAfterBy(
          AND requested_by = ${requestedBy}::uuid
          -- A preview WhatsApp reported undelivered was never read (CodeRabbit on #437).
          AND retired_reason IS DISTINCT FROM 'preview_not_delivered'
+         -- Nor one withdrawn behind a lost message whose preview was then reported undelivered.
+         AND COALESCE(command->>'undelivered', '') <> 'true'
          -- Nor a preview withdrawn when its send failed, nor a record's preview that never reached
          -- the merchant (markDraftUnseen, then expired or superseded): only what they read closes
          -- their refusal (CodeRabbit on #437 at 1db1a0a). A held purchase question was asked.
@@ -1211,13 +1213,21 @@ export async function markPreviewUndelivered(
       -- draft already superseded when its preview's receipt failed: a clarification (503acf3) or a
       -- record superseded by another member's request (cf96697). Never a refusal, and a repeated
       -- receipt changes nothing.
-      UPDATE command_drafts d SET retired_reason = 'preview_not_delivered',
+      -- A draft withdrawn because an earlier message of the merchant was lost keeps that reason:
+      -- the next yes is told to send the request again (OWN-74). That its preview never arrived is
+      -- kept beside it as an 'undelivered' mark, which hasDraftsAfterBy reads (CodeRabbit on #437).
+      UPDATE command_drafts d
+         SET retired_reason = CASE WHEN d.retired_reason = ${INBOUND_MESSAGE_FAILED}
+                                   THEN d.retired_reason ELSE 'preview_not_delivered' END,
+             command = CASE WHEN d.retired_reason = ${INBOUND_MESSAGE_FAILED}
+                            THEN d.command || '{"undelivered": true}'::jsonb ELSE d.command END,
              updated_at = clock_timestamp()
         FROM reply
        WHERE d.business_id = ${businessId}::uuid
          AND d.conversation_message_id = reply.request_id
          AND d.state = 'superseded'
          AND d.retired_reason IS DISTINCT FROM 'preview_not_delivered'
+         AND COALESCE(d.command->>'undelivered', '') <> 'true'
          AND NOT (d.intent = 'Unclear' AND COALESCE(d.command->>'refused', '') = 'true')
       RETURNING d.id
     ), continuations AS (
