@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { LegalPage } from '@/components/legal/LegalPage';
+import { PRIVACY_PAGES_LAST_UPDATED } from '@/lib/legal';
 import { canonical } from '@/lib/site';
 
 export const metadata: Metadata = {
@@ -13,6 +14,7 @@ export default function AiPrivacyPage() {
   return (
     <LegalPage
       title="AI & privacy"
+      updated={PRIVACY_PAGES_LAST_UPDATED}
       intro="Rekoda uses AI to understand what you say. It does not use AI to decide what your money did. That distinction is the whole design."
       sections={[
         {
@@ -89,18 +91,18 @@ export default function AiPrivacyPage() {
                 Rekoda&rsquo;s ordinary replies, it records that a message was sent and what kind it
                 was, not what it said. A document Rekoda sends you is recorded by its number and
                 amount, and a template message by its name. Messages from before this change can
-                still hold their text until you send <strong>DELETE MY DATA</strong> or your account
-                is deleted.
+                still hold their text until your account is deleted, or until you send{' '}
+                <strong>DELETE MY DATA</strong> where WhatsApp deletion is enabled for your account.
               </p>
               <p>
                 <strong>The original WhatsApp message.</strong> It is kept encrypted, separately
-                from the chat history, and is not yet deleted on a fixed schedule. When you send{' '}
-                <strong>DELETE MY DATA</strong> and confirm, the originals of the messages Rekoda
-                has finished processing are erased along with your customers&rsquo; details.
-                Messages still being processed at that moment, delivery receipts and your books are
-                kept. A message delivered before this change in the same batch as another
-                business&rsquo;s message can still have an encrypted copy stored with that other
-                business&rsquo;s message.
+                from the chat history, and is not yet deleted on a fixed schedule. Where WhatsApp
+                deletion is enabled for your account, when you send <strong>DELETE MY DATA</strong>{' '}
+                and confirm, the originals of the messages Rekoda has finished processing are erased
+                along with your customers&rsquo; details. Messages still being processed at that
+                moment, delivery receipts and your books are kept. A message delivered before this
+                change in the same batch as another business&rsquo;s message can still have an
+                encrypted copy stored with that other business&rsquo;s message.
               </p>
               <p>
                 The substitution runs on the way out and is reversed on the way back, so your

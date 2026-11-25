@@ -1,7 +1,12 @@
 import type { Metadata } from 'next';
 import { LegalPage } from '@/components/legal/LegalPage';
 import { Fact } from '@/components/legal/Fact';
-import { FINANCIAL_RETENTION_YEARS, LEGAL, RETENTION } from '@/lib/legal';
+import {
+  FINANCIAL_RETENTION_YEARS,
+  LEGAL,
+  PRIVACY_PAGES_LAST_UPDATED,
+  RETENTION,
+} from '@/lib/legal';
 import { canonical } from '@/lib/site';
 
 export const metadata: Metadata = {
@@ -15,6 +20,7 @@ export default function PrivacyPage() {
   return (
     <LegalPage
       title="Privacy"
+      updated={PRIVACY_PAGES_LAST_UPDATED}
       intro="What we collect, why we collect it, and how to get rid of it. Nigerian data protection law (the NDPA) gives you rights over all of it."
       sections={[
         {
@@ -143,8 +149,9 @@ export default function PrivacyPage() {
                       <td>
                         For ordinary messages it records what kind each one was, not what it said. A
                         document Rekoda sends is recorded by its number and amount, and a template
-                        message by its name. Text kept from before that change is erased when you
-                        send DELETE MY DATA.
+                        message by its name. Text kept from before that change is erased when your
+                        account is deleted, or earlier by DELETE MY DATA on WhatsApp where it is
+                        enabled for your account.
                       </td>
                     </tr>
                     <tr>
@@ -157,7 +164,10 @@ export default function PrivacyPage() {
                     </tr>
                     <tr>
                       <td>The original WhatsApp messages, encrypted</td>
-                      <td>Until you send DELETE MY DATA, or your account is deleted</td>
+                      <td>
+                        Until your account is deleted, or until you send DELETE MY DATA where it is
+                        enabled for your account
+                      </td>
                       <td>
                         Kept while Rekoda processes a message. DELETE MY DATA erases the ones
                         already processed. A message delivered before our latest privacy change in

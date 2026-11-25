@@ -1,8 +1,12 @@
 import type { ReactElement, ReactNode } from 'react';
 import { describe, expect, it } from 'vitest';
-import { POLICY_LAST_UPDATED, TERMS_LAST_UPDATED } from '@/lib/legal';
+import { POLICY_LAST_UPDATED, PRIVACY_PAGES_LAST_UPDATED, TERMS_LAST_UPDATED } from '@/lib/legal';
 import TermsPage from '@/app/terms/page';
 import PrivacyPage from '@/app/privacy/page';
+import AiPrivacyPage from '@/app/ai-privacy/page';
+import DataDeletionPage from '@/app/data-deletion/page';
+import SecurityPage from '@/app/security/page';
+import RefundsPage from '@/app/refunds/page';
 import { LegalPage } from './LegalPage';
 
 const sections = [{ id: 'a', heading: 'A', body: 'text' }];
@@ -30,6 +34,21 @@ describe('the revision date on a legal page', () => {
     const terms = (await TermsPage()) as ReactElement<{ updated?: string }>;
     const privacy = (await PrivacyPage()) as ReactElement<{ updated?: string }>;
     expect(terms.props.updated).toBe(TERMS_LAST_UPDATED);
-    expect(privacy.props.updated).toBeUndefined();
+    expect(privacy.props.updated).not.toBe(TERMS_LAST_UPDATED);
+  });
+
+  it('is 25 November 2026 on the three pages PR #437 revised, and unchanged elsewhere', async () => {
+    expect(PRIVACY_PAGES_LAST_UPDATED).toBe('25 November 2026');
+    for (const page of [PrivacyPage, AiPrivacyPage, DataDeletionPage]) {
+      const element = (await page()) as ReactElement<{ updated?: string }>;
+      expect(element.props.updated).toBe(PRIVACY_PAGES_LAST_UPDATED);
+      expect(text(LegalPage(element.props as Parameters<typeof LegalPage>[0]))).toContain(
+        'Last updated 25 November 2026',
+      );
+    }
+    for (const page of [SecurityPage, RefundsPage]) {
+      const element = (await page()) as ReactElement<{ updated?: string }>;
+      expect(element.props.updated).toBeUndefined();
+    }
   });
 });
