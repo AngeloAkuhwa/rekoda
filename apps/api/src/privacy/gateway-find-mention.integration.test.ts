@@ -112,15 +112,40 @@ describe('a question looks a name up and never creates it (G-135)', () => {
     expect(await counts(theirs)).toEqual(theirsBefore);
   });
 
-  it('finds a customer known by name and phone through the name, adding no facet', async () => {
+  /* CodeRabbit on #437: ONE customer carries both facets (a name and a phone), so a lookup by the
+   * name must return that customer's id and token and leave every facet row exactly as it was. */
+  it('finds ONE customer known by name and phone through the name, changing no identity row', async () => {
     const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
-    const { token, customerId } = await gateway.resolveMention(businessId, 'Bola Ige');
-    /* The phone joins the same customer only through a confirmed link; here it
-     * is its own facet on its own customer, so two identities exist. */
-    await gateway.tokenise(businessId, 'Bola 08031112222 paid');
-    const before = await counts(businessId);
-    expect(before.facets).toBeGreaterThanOrEqual(2);
+    const config = loadConfig();
+    const facet = (kind: 'name' | 'phone', value: string) => ({
+      facet: kind,
+      ciphertext: encryptFacet(value, config.vaultKey, `${businessId}:${kind}`),
+      matchKey: matchKeyFor(businessId, kind, normaliseFacet(kind, value), config.matchKey),
+    });
+    const { token, id: customerId } = await customersRepo.createCustomerWithIdentities(
+      db,
+      businessId,
+      'CUSTOMER_B1G',
+      [facet('name', 'Bola Ige'), facet('phone', '08031112222')],
+    );
+    /* A second customer with a different name, so a lookup that strayed would be seen. */
+    await gateway.resolveMention(businessId, 'Chidi Eze');
+    const identityRows = () =>
+      withBusiness(db, businessId, async (tx) => [
+        ...(await tx.execute<{ id: string; customer_id: string; facet: string; match_key: string }>(
+          sql`SELECT id, customer_id, facet, match_key FROM customer_identities
+               WHERE business_id = ${businessId}::uuid ORDER BY id`,
+        )),
+      ]);
+    const before = await identityRows();
+    const owned = before.filter((r) => r.customer_id === customerId);
+    expect(owned.map((r) => r.facet).sort()).toEqual(['name', 'phone']);
+    const counted = await counts(businessId);
+
     expect(await gateway.findMention(businessId, 'bola  ige')).toEqual({ token, customerId });
-    expect(await counts(businessId)).toEqual(before);
+    /* A name only the phone's owner has: still that customer, never the other one. */
+    expect(await gateway.findMention(businessId, 'Chidi Eze')).not.toEqual({ token, customerId });
+    expect(await counts(businessId)).toEqual(counted);
+    expect(await identityRows()).toEqual(before);
   });
 });

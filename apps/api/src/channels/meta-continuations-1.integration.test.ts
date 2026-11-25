@@ -392,6 +392,9 @@ describe('a short reply continues what Rekoda just asked (Build 6)', () => {
   it('a yes after a question about an unknown customer does not save the preview before it', async () => {
     const business = await seedMerchant();
     await say('wamid.G135-sale', A_SALE, 'sold Ada 3 wigs for 300k');
+    /* Counted after the preview and before the question, so a customer the QUESTION created could
+     * not hide inside the number the last assertion compares with (CodeRabbit on #437). */
+    const customersBeforeAsk = await customerCount(business.id);
     await say(
       'wamid.G135-ask',
       {
@@ -405,6 +408,7 @@ describe('a short reply continues what Rekoda just asked (Build 6)', () => {
     expect(stubSender.lastText).toBe(replies.customerNotKnown().text);
     /* The question left its read-only draft behind the preview, and nobody new. */
     expect(await draftStates(business.id)).toEqual(['RecordSale:pending', 'Query:pending']);
+    expect(await customerCount(business.id)).toBe(customersBeforeAsk);
     const customers = await customerCount(business.id);
 
     await reply('wamid.G135-yes', 'yes');
