@@ -862,6 +862,9 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
         if (outcome.closedByAnswer?.length) {
           await conversationsRepo.reopenClosedDrafts(tx, businessId, outcome.closedByAnswer);
         }
+        /* The pointer back at a preview never arrived either: the question it retired is put
+         * back, so the repeated yes is pointed again (CodeRabbit on #437 at 400ca58). */
+        await conversationsRepo.reopenReadsRetiredBy(tx, businessId, message.id);
         await conversationsRepo.markDraftUnseen(tx, businessId, message.id);
         /* Build 6: nor was the question or the answer a continuation holds
          * on to. A member who never saw "Which period?" is not answering it
@@ -3026,7 +3029,10 @@ async function confirmPendingDraft(
    * about, and it is answered as that, writing nothing. */
   if (await conversationsRepo.hasReadsAfter(tx, businessId, draft.id, { asOf: receivedAt })) {
     if (draft.previewed === true && !NOT_A_FINANCIAL_PREVIEW.has(draft.intent)) {
-      await conversationsRepo.retireNewestReadAfter(tx, businessId, draft.id, { asOf: receivedAt });
+      await conversationsRepo.retireNewestReadAfter(tx, businessId, draft.id, {
+        asOf: receivedAt,
+        retiredBy: sender.messageId,
+      });
       if (retrying) {
         await refundRecordedReservations(tx, businessId, eventId, usagePeriod(receivedAt));
       }

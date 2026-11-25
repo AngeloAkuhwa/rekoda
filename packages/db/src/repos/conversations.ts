@@ -1246,6 +1246,19 @@ export async function markPreviewUndelivered(
         FROM answered a
        WHERE d.business_id = ${businessId}::uuid AND d.id = a.id
       RETURNING d.id
+    ), pointed AS (
+      -- The question a pointer reply retired ("a preview is waiting"), when WhatsApp accepted that
+      -- reply and then failed it: put back as reopenReadsRetiredBy does for a send that failed
+      -- outright, so the repeated yes is pointed again (CodeRabbit on #437 at 400ca58).
+      UPDATE command_drafts q
+         SET state = 'pending', command = q.command - 'retiredBy', updated_at = clock_timestamp()
+        FROM reply
+       WHERE q.business_id = ${businessId}::uuid
+         AND q.state = 'superseded'
+         AND q.intent = 'Query'
+         AND q.retired_reason IS DISTINCT FROM 'preview_not_delivered'
+         AND q.command->>'retiredBy' = reply.request_id::text
+      RETURNING q.id
     ), reads AS (
       UPDATE command_drafts q
          SET state = 'pending', updated_at = clock_timestamp()
@@ -1259,7 +1272,8 @@ export async function markPreviewUndelivered(
     SELECT ((SELECT count(*) FROM drafts) + (SELECT count(*) FROM asks)
             + (SELECT count(*) FROM held_asks))::text AS drafts,
            (SELECT count(*) FROM continuations)::text AS continuations,
-           ((SELECT count(*) FROM refusals) + (SELECT count(*) FROM reads))::text AS reopened`);
+           ((SELECT count(*) FROM refusals) + (SELECT count(*) FROM reads)
+            + (SELECT count(*) FROM pointed))::text AS reopened`);
   const row = [...rows][0];
   return {
     drafts: Number(row?.drafts ?? 0),
@@ -1594,13 +1608,19 @@ export async function retireNewestReadAfter(
   tx: TenantDb,
   businessId: string,
   draftId: string,
-  options: { asOf?: Date } = {},
+  /* `retiredBy`: the message whose reply points back at the preview. It is kept on the retired
+   * question, so a reply that never reaches the merchant puts it back (`reopenReadsRetiredBy`,
+   * `markPreviewUndelivered`; CodeRabbit on #437 at 400ca58). */
+  options: { asOf?: Date; retiredBy?: string } = {},
 ): Promise<number> {
   const seen = options.asOf
     ? sql`AND created_at <= ${options.asOf.toISOString()}::timestamptz`
     : sql``;
+  const stamp = options.retiredBy
+    ? sql`, command = command || jsonb_build_object('retiredBy', ${options.retiredBy}::text)`
+    : sql``;
   const rows = await tx.execute<{ id: string }>(sql`
-    UPDATE command_drafts SET state = 'superseded', updated_at = clock_timestamp()
+    UPDATE command_drafts SET state = 'superseded', updated_at = clock_timestamp() ${stamp}
      WHERE id = (
        SELECT id FROM command_drafts
         WHERE business_id = ${businessId}::uuid
@@ -1614,6 +1634,29 @@ export async function retireNewestReadAfter(
         LIMIT 1)
        AND business_id = ${businessId}::uuid
        AND state = 'pending'
+    RETURNING id`);
+  return [...rows].length;
+}
+
+/**
+ * Put back the question a pointer reply retired when that reply was never delivered (CodeRabbit on
+ * #437 at 400ca58): the merchant never read "a preview is waiting", so their repeated yes is
+ * pointed again and never books the preview. Only a read-only Query still `superseded` and never
+ * marked undelivered itself, in this business. Returns how many moved.
+ */
+export async function reopenReadsRetiredBy(
+  tx: TenantDb,
+  businessId: string,
+  messageId: string,
+): Promise<number> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE command_drafts
+       SET state = 'pending', command = command - 'retiredBy', updated_at = clock_timestamp()
+     WHERE business_id = ${businessId}::uuid
+       AND state = 'superseded'
+       AND intent = 'Query'
+       AND retired_reason IS DISTINCT FROM 'preview_not_delivered'
+       AND command->>'retiredBy' = ${messageId}::text
     RETURNING id`);
   return [...rows].length;
 }
