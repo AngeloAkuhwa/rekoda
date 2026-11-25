@@ -2030,10 +2030,18 @@ async function deterministicReply(
      * cancelled. Another member's refusal is looked past (`pastRefusals`). */
     const past = await pastRefusals(tx, businessId, ctx.from, ctx.receivedAt);
     if (past.ownRefusal) {
-      await conversationsRepo.closeRefusalDraft(tx, businessId, past.ownRefusal.id, {
-        answeredBy: ctx.messageId,
-      });
-      if (ctx.outcome) (ctx.outcome.closedByAnswer ??= []).push(past.ownRefusal.id);
+      /* Only a bare "no" is recoverable: its acknowledgement that never reached the merchant puts
+       * the refusal back (OD-62(o)). "cancel" dismisses the refusal for good (owner rule, CodeRabbit
+       * on #437), so it carries no recovery marker and is never offered to a send-failure restore:
+       * neither a failed send nor a late failed receipt may reopen what the merchant cancelled. */
+      if (intent.kind === 'deny') {
+        await conversationsRepo.closeRefusalDraft(tx, businessId, past.ownRefusal.id, {
+          answeredBy: ctx.messageId,
+        });
+        if (ctx.outcome) (ctx.outcome.closedByAnswer ??= []).push(past.ownRefusal.id);
+      } else {
+        await conversationsRepo.closeRefusalDraft(tx, businessId, past.ownRefusal.id);
+      }
       if (intent.kind === 'deny') {
         const behind = await pastRefusals(tx, businessId, ctx.from, ctx.receivedAt);
         /* Pointing at a preview only a "yes" could save, and only while Chat stands (G-65). */
