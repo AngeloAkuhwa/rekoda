@@ -110,7 +110,7 @@ import type {
   ResolvedCustomer,
   PrivacyGateway,
 } from '../privacy/gateway.service.js';
-import type { ReplySender } from '../replies/reply.service.js';
+import type { ReplySender, SendReplyInput } from '../replies/reply.service.js';
 import type { PaymentIntentsService } from '../payments/payment-intents.service.js';
 import { openPayload } from '../privacy/payload-vault.js';
 import { neutraliseTokens, protectedSpans, redactForLog, STORED_BODY } from '@rekoda/core/privacy';
@@ -492,6 +492,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
           '[voice note not read]',
           inbound.from,
         );
+        await deps.replySender.send(tx, { businessId, to: inbound.from, reply: heard.reply });
         await events.markProcessed(tx, eventId, null, businessId);
         return;
       }
@@ -525,6 +526,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
           '[photo not read]',
           inbound.from,
         );
+        await deps.replySender.send(tx, { businessId, to: inbound.from, reply: seen.reply });
         await events.markProcessed(tx, eventId, null, businessId);
         return;
       }
@@ -1301,9 +1303,13 @@ function unseenRecord(draft: conversationsRepo.DraftRow): boolean {
 const ERASURE_CONSEQUENCE =
   'Every customer contact detail for this business, and the stored copies of its chat messages that Rekoda has finished processing, will be permanently deleted.';
 
-/** What a voice note or photo reader answered instead of reading: a refusal, already sent. */
+/** What a voice note or photo reader answered instead of reading: a refusal, NOT yet sent. The
+ * caller records the refusal first and sends `reply` after it: the send cannot be rolled back, and a
+ * failed write after it would roll the message back and answer it again on the retry (CodeRabbit on
+ * #437 at c5392f0). */
 interface RefusedReading {
   readonly refusedIn: string;
+  readonly reply: SendReplyInput['reply'];
 }
 const refusedReading = (value: unknown): value is RefusedReading =>
   typeof value === 'object' && value !== null && 'refusedIn' in value;
@@ -1340,12 +1346,7 @@ async function readReceiptPhoto(
 
   const plan = await usageRepo.planFor(tx, businessId);
   if (plan === 'expired') {
-    await deps.replySender.send(tx, {
-      businessId,
-      to: inbound.from,
-      reply: await lapsedReply(tx, businessId, inbound.from),
-    });
-    return { refusedIn: recorded.id };
+    return { refusedIn: recorded.id, reply: await lapsedReply(tx, businessId, inbound.from) };
   }
 
   /* ENTITLEMENT BEFORE ANY PROVIDER IS TOUCHED (spec §4.3, rules 1 and 2).
@@ -1354,12 +1355,7 @@ async function readReceiptPhoto(
    * long way before the OCR engine: the refusal costs Rekoda nothing and
    * costs the merchant nothing, so there is no unit to give back. */
   if (await entitlementsRepo.requireEntitlement(tx, businessId, 'REKODA_CHAT')) {
-    await deps.replySender.send(tx, {
-      businessId,
-      to: inbound.from,
-      reply: replies.chatNotInPlan(),
-    });
-    return { refusedIn: recorded.id };
+    return { refusedIn: recorded.id, reply: replies.chatNotInPlan() };
   }
 
   /* AUTHORISATION BEFORE ANY PROVIDER IS TOUCHED (G-57, OWN-25). Today a
@@ -1372,12 +1368,7 @@ async function readReceiptPhoto(
     /* A retry whose member was demoted after attempt 1 read the page gives
      * that page back: the request ends refused (Codex P2). */
     await giveBackUnit(deps, businessId, eventId, usagePeriod(receivedAt), 'DOCUMENTS_UNDERSTOOD');
-    await deps.replySender.send(tx, {
-      businessId,
-      to: inbound.from,
-      reply: replies.viewOnlyPhoto(),
-    });
-    return { refusedIn: recorded.id };
+    return { refusedIn: recorded.id, reply: replies.viewOnlyPhoto() };
   }
 
   let image;
@@ -1385,12 +1376,7 @@ async function readReceiptPhoto(
     image = await deps.sender.fetchMedia(inbound.imageId!);
   } catch {
     log.warn('could not fetch a photograph from the provider');
-    await deps.replySender.send(tx, {
-      businessId,
-      to: inbound.from,
-      reply: replies.photoUnavailable(),
-    });
-    return { refusedIn: recorded.id };
+    return { refusedIn: recorded.id, reply: replies.photoUnavailable() };
   }
 
   /**
@@ -1425,15 +1411,13 @@ async function readReceiptPhoto(
     /* The platform backstop refusing is Rekoda's busy day, not the
      * merchant's limit — the sentence must not tell them to wait for
      * midnight when trying again in an hour may work. */
-    await deps.replySender.send(tx, {
-      businessId,
-      to: inbound.from,
+    return {
+      refusedIn: recorded.id,
       reply:
         daily.refusedBy === 'business'
           ? replies.dailyDocumentLimit(dailyLimit)
           : replies.busyRightNow(),
-    });
-    return { refusedIn: recorded.id };
+    };
   }
 
   const period = usagePeriod(receivedAt);
@@ -1470,12 +1454,10 @@ async function readReceiptPhoto(
     // The plan refused after the day allowed: no provider was reached, so
     // the daily slot goes back too.
     await quotaRepo.releaseDocExtraction(deps.db, businessId);
-    await deps.replySender.send(tx, {
-      businessId,
-      to: inbound.from,
+    return {
+      refusedIn: recorded.id,
       reply: await exhaustedReply(deps.db, businessId, allowance, 'DOCUMENTS_UNDERSTOOD', plan),
-    });
-    return { refusedIn: recorded.id };
+    };
   }
 
   let extracted;
@@ -1534,12 +1516,7 @@ async function readReceiptPhoto(
     /* The page this message holds goes back, whichever attempt took it,
      * exactly once. */
     await giveBackUnit(deps, businessId, eventId, period, 'DOCUMENTS_UNDERSTOOD');
-    await deps.replySender.send(tx, {
-      businessId,
-      to: inbound.from,
-      reply: replies.photoUnavailable(),
-    });
-    return { refusedIn: recorded.id };
+    return { refusedIn: recorded.id, reply: replies.photoUnavailable() };
   }
 
   /* WHAT THE READ COST, recorded whatever becomes of the text (item 7 of
@@ -1554,12 +1531,7 @@ async function readReceiptPhoto(
    * the paid document classifier, and the page goes back (Codex P2). */
   if (!(await mayTransact(tx, businessId, inbound.from))) {
     await giveBackUnit(deps, businessId, eventId, period, 'DOCUMENTS_UNDERSTOOD');
-    await deps.replySender.send(tx, {
-      businessId,
-      to: inbound.from,
-      reply: replies.viewOnlyRole(),
-    });
-    return { refusedIn: recorded.id };
+    return { refusedIn: recorded.id, reply: replies.viewOnlyRole() };
   }
 
   /* The caption is what the merchant TYPED, and it says what the photograph
@@ -1616,12 +1588,7 @@ async function transcribeVoiceNote(
 
   const plan = await usageRepo.planFor(tx, businessId);
   if (plan === 'expired') {
-    await deps.replySender.send(tx, {
-      businessId,
-      to: inbound.from,
-      reply: await lapsedReply(tx, businessId, inbound.from),
-    });
-    return { refusedIn: recorded.id };
+    return { refusedIn: recorded.id, reply: await lapsedReply(tx, businessId, inbound.from) };
   }
 
   /* ENTITLEMENT BEFORE ANY PROVIDER IS TOUCHED (spec §4.3, rules 1 and 2).
@@ -1629,12 +1596,7 @@ async function transcribeVoiceNote(
    * refused here never reaches the transcriber. Nothing was reserved, so
    * there is nothing to give back. */
   if (await entitlementsRepo.requireEntitlement(tx, businessId, 'REKODA_CHAT')) {
-    await deps.replySender.send(tx, {
-      businessId,
-      to: inbound.from,
-      reply: replies.chatNotInPlan(),
-    });
-    return { refusedIn: recorded.id };
+    return { refusedIn: recorded.id, reply: replies.chatNotInPlan() };
   }
 
   let audio;
@@ -1642,12 +1604,7 @@ async function transcribeVoiceNote(
     audio = await deps.sender.fetchMedia(inbound.audioId!);
   } catch {
     log.warn('could not fetch a voice note from the provider');
-    await deps.replySender.send(tx, {
-      businessId,
-      to: inbound.from,
-      reply: replies.voiceUnavailable(),
-    });
-    return { refusedIn: recorded.id };
+    return { refusedIn: recorded.id, reply: replies.voiceUnavailable() };
   }
 
   /**
@@ -1672,12 +1629,7 @@ async function transcribeVoiceNote(
      * for free, and the recovery for the two is not the same: this one asks
      * the merchant to send it again, and nothing has been metered or spent. */
     log.warn('a voice note arrived in a container we could not measure');
-    await deps.replySender.send(tx, {
-      businessId,
-      to: inbound.from,
-      reply: replies.voiceUnreadable(),
-    });
-    return { refusedIn: recorded.id };
+    return { refusedIn: recorded.id, reply: replies.voiceUnreadable() };
   }
 
   const maxSeconds = deps.config.voiceNoteMaxDurationSeconds;
@@ -1685,12 +1637,7 @@ async function transcribeVoiceNote(
     /* The commercial limit, enforced where it protects money rather than
      * where it merely reports it. Nothing is metered: the merchant did not
      * use anything, they were told to send it differently. */
-    await deps.replySender.send(tx, {
-      businessId,
-      to: inbound.from,
-      reply: replies.voiceTooLong(maxSeconds),
-    });
-    return { refusedIn: recorded.id };
+    return { refusedIn: recorded.id, reply: replies.voiceTooLong(maxSeconds) };
   }
 
   /**
@@ -1705,13 +1652,11 @@ async function transcribeVoiceNote(
     globalPerDay: deps.config.voiceSecondsGlobalPerDay,
   });
   if (!dailyVoice.ok) {
-    await deps.replySender.send(tx, {
-      businessId,
-      to: inbound.from,
+    return {
+      refusedIn: recorded.id,
       reply:
         dailyVoice.refusedBy === 'business' ? replies.dailyVoiceLimit() : replies.busyRightNow(),
-    });
-    return { refusedIn: recorded.id };
+    };
   }
 
   /**
@@ -1755,12 +1700,10 @@ async function transcribeVoiceNote(
     // The plan refused after the day allowed: no provider was reached, so
     // the daily seconds go back too.
     await quotaRepo.releaseVoiceSeconds(deps.db, businessId, seconds);
-    await deps.replySender.send(tx, {
-      businessId,
-      to: inbound.from,
+    return {
+      refusedIn: recorded.id,
       reply: await exhaustedReply(deps.db, businessId, allowance, 'VOICE_MINUTES', plan),
-    });
-    return { refusedIn: recorded.id };
+    };
   }
 
   let transcript: Transcript;
@@ -1803,12 +1746,7 @@ async function transcribeVoiceNote(
       );
     }
     log.warn('the transcriber could not be reached');
-    await deps.replySender.send(tx, {
-      businessId,
-      to: inbound.from,
-      reply: replies.voiceUnavailable(),
-    });
-    return { refusedIn: recorded.id };
+    return { refusedIn: recorded.id, reply: replies.voiceUnavailable() };
   }
 
   /* WHAT THE TRANSCRIPTION COST (item 7). Only the hosted transcriber
