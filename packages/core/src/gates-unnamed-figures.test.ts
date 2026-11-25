@@ -259,6 +259,102 @@ describe('unnamedFiguresChanged', () => {
       expect(unnamedFiguresChanged('No, 4 not 3', two, read(2))).toBe(false);
     });
 
+    /* Independent review of #437 at 00c0620: a pair answers only for its own change, from the one
+     * figure to the other; "not" may point at its figure past a filler word; a replaced figure never
+     * names a field falling to nothing unless its clause names that field; and a field word belongs
+     * to its own clause. */
+    it('never lets a pair answer for another change', () => {
+      const two = {
+        items: [
+          { name: 'wig', quantity: 3, unitPrice: 5_000 },
+          { name: 'gel', quantity: 2, unitPrice: 1_000 },
+        ],
+      };
+      expect(
+        unnamedFiguresChanged('no, 4 not 3', two, {
+          items: [two.items[0]!, { ...two.items[1]!, quantity: 4 }],
+        }),
+      ).toBe(true);
+      const one = { items: [{ name: 'wig', quantity: 1, unitPrice: 40_000 }], reportedPayment: 0 };
+      expect(
+        unnamedFiguresChanged('no, 50k not 40k', one, { ...one, reportedPayment: 50_000 }),
+      ).toBe(true);
+      expect(unnamedFiguresChanged('no, 50k not 40k', one, { ...one, discount: 50_000 })).toBe(
+        true,
+      );
+    });
+
+    it.each(['it was 60k not that 50k', 'no, 60k, not the 50k', 'no, 60k instead of the 50k'])(
+      'pairs "%s" past its filler word',
+      (text) => {
+        const one = {
+          items: [{ name: 'wig', quantity: 1, unitPrice: 50_000 }],
+          reportedPayment: 0,
+          discount: 50_000,
+        };
+        const sixty = { ...one, items: [{ name: 'wig', quantity: 1, unitPrice: 60_000 }] };
+        expect(unnamedFiguresChanged(text, one, sixty)).toBe(false);
+        expect(unnamedFiguresChanged(text, one, { ...sixty, reportedPayment: 50_000 })).toBe(true);
+        expect(unnamedFiguresChanged(text, one, { ...sixty, discount: 0 })).toBe(true);
+      },
+    );
+
+    it('pairs counts past a filler or a noun, and a replaced count never drops a line', () => {
+      const two = {
+        items: [
+          { name: 'wig', quantity: 3, unitPrice: 5_000 },
+          { name: 'gel', quantity: 2, unitPrice: 1_000 },
+        ],
+      };
+      const four = { name: 'wig', quantity: 4, unitPrice: 5_000 };
+      expect(
+        unnamedFiguresChanged('no, 4, not the 3', two, {
+          items: [four, { ...two.items[1]!, quantity: 3 }],
+        }),
+      ).toBe(true);
+      expect(unnamedFiguresChanged('no, 4, not the 3', two, { items: [four, two.items[1]!] })).toBe(
+        false,
+      );
+      const order = {
+        intent: 'RecordOrder',
+        items: [
+          { name: 'wig', quantity: 3 },
+          { name: 'comb', quantity: 3 },
+        ],
+      };
+      const wigs = { name: 'wig', quantity: 4 };
+      expect(unnamedFiguresChanged('4 wigs not 3', order, { ...order, items: [wigs] })).toBe(true);
+      expect(
+        unnamedFiguresChanged('4 wigs not 3', order, { ...order, items: [wigs, order.items[1]!] }),
+      ).toBe(false);
+    });
+
+    it('lets a replaced figure drop only the field its own clause names', () => {
+      const discounted = { ...sale, discount: 2_000 };
+      expect(
+        unnamedFiguresChanged('no discount, not 2k', discounted, { ...sale, discount: 0 }),
+      ).toBe(false);
+      const fee = { ...sale, deliveryFee: 2_000 };
+      expect(unnamedFiguresChanged('no, not 2k', fee, { ...sale, deliveryFee: 0 })).toBe(true);
+    });
+
+    it('reads a field word only in its own clause', () => {
+      expect(
+        unnamedFiguresChanged('no, 2k delivery fee and 5k discount', sale, {
+          ...sale,
+          deliveryFee: 2_000,
+          discount: 5_000,
+        }),
+      ).toBe(false);
+      expect(
+        unnamedFiguresChanged('no, 60k each and 5k discount', sale, {
+          ...sale,
+          items: [{ name: 'wig', quantity: 3, unitPrice: 60_000 }],
+          discount: 5_000,
+        }),
+      ).toBe(false);
+    });
+
     it('checks the price of a line the reading adds', () => {
       expect(
         unnamedFiguresChanged('No, 4 not 3', sale, {
