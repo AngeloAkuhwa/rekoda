@@ -714,7 +714,11 @@ export function draftFigures(command: Record<string, unknown>): DraftFigures {
       gross = null;
     }
   }
-  if (gross !== null && gross > 0) {
+  /* A sale's preview shows its line totals and `computeMoney`'s total, never the lines' sum or the
+   * sum less discount plus delivery as such (CodeRabbit on #437 at 1ec5a22): those are figures of a
+   * sale only through `saleFigures` below. Other records keep the rebuilt sums. */
+  const isSale = command['intent'] === 'RecordSale' && items.length > 0;
+  if (!isSale && gross !== null && gross > 0) {
     money.push(gross);
     const discount = naira(command['discount']) ?? 0;
     const delivery = naira(command['deliveryFee']) ?? 0;
@@ -753,6 +757,8 @@ export function draftFigures(command: Record<string, unknown>): DraftFigures {
     if (sale && !sale.mismatch && sale.amountPaidK > 0 && sale.balanceDueK > 0) {
       money.push(sale.balanceDueK);
     }
+    /* "Paid over by ₦…" is shown on the preview, so it is a figure the merchant saw. */
+    if (sale && !sale.mismatch && sale.overpaymentK > 0) money.push(sale.overpaymentK);
   }
   /* A stock adjustment's preview shows its count ("Adding 3"), whichever way it moves (Codex on
    * #437 at af169b0). */

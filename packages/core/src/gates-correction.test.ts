@@ -518,3 +518,30 @@ describe('the sale total the preview shows is a figure of the draft', () => {
     expect(figures.moneyKobo).toContain(14_200_000);
   });
 });
+
+/* CodeRabbit on #437 at 1ec5a22: only figures a sale preview DISPLAYS are draft figures. A stated
+ * total within tolerance is what the preview shows, never the lines' sum it was compared with; an
+ * overpayment the preview shows ("Paid over by") is one. */
+describe('a sale preview shows only these aggregates', () => {
+  const LINES = {
+    intent: 'RecordSale',
+    items: [
+      { name: 'wig', quantity: 1, unitPrice: 10_000 },
+      { name: 'weave', quantity: 1, unitPrice: 20_000 },
+    ],
+  };
+
+  it('keeps the stated total and the line totals, never the undisplayed sum', () => {
+    const figures = draftFigures({ ...LINES, statedTotal: 29_900 });
+    expect(figures.moneyKobo).toEqual(expect.arrayContaining([2_990_000, 1_000_000, 2_000_000]));
+    expect(figures.moneyKobo).not.toContain(3_000_000);
+  });
+
+  it('includes a displayed overpayment, and no overpayment when none was shown', () => {
+    /* Paid ₦45,000 on ₦30,000: "Paid over by ₦15,000". */
+    const over = draftFigures({ ...LINES, statedTotal: 30_000, reportedPayment: 45_000 });
+    expect(over.moneyKobo).toContain(1_500_000);
+    const exact = draftFigures({ ...LINES, statedTotal: 30_000, reportedPayment: 30_000 });
+    expect(exact.moneyKobo).not.toContain(1_500_000);
+  });
+});
