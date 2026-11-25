@@ -90,6 +90,7 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   viewOnlyRole: [replies.viewOnlyRole()],
   customerNotRecognised: [replies.customerNotRecognised()],
   correctionFigureNotInDraft: [replies.correctionFigureNotInDraft()],
+  correctionChangedUnnamedFigure: [replies.correctionChangedUnnamedFigure()],
   correctionNotClear: [replies.correctionNotClear()],
   correctionCustomerNotClear: [replies.correctionCustomerNotClear()],
   correctionWithdrawn: [replies.correctionWithdrawn()],
