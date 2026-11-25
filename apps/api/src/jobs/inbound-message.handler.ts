@@ -5679,9 +5679,11 @@ function photoBuyerNamed(
  */
 function captionNamesIssuedCustomer(tokens: LiveTokens, caption: string | null): boolean {
   if (caption === null || !caption.trim()) return false;
+  /* Only a negation that rules a buyer out ("Not sold to Ada", "not for Ada") is taken out here:
+   * "Not paid yet Ada Obi" still names Ada (independent review of 42a2422). */
   const typed = caption
     .split(NON_BUYER_SEGMENT)
-    .flatMap((part) => part.split(NEGATED_SEGMENT))
+    .flatMap((part) => part.split(NEGATED_BUYER))
     .filter((part) => part.trim());
   if (typed.length === 0) return false;
   const issued = new Set([...tokens.displays.keys(), ...(tokens.provisional?.keys() ?? [])]);
@@ -5694,25 +5696,51 @@ function captionNamesIssuedCustomer(tokens: LiveTokens, caption: string | null):
       if (!value.trim()) return false;
       if (facet === 'phone') return typed.some((part) => phoneIn(part, value));
       return typed.some((part) =>
-        value.includes('@') ? addressIn(part, value) : typedIn(part, value),
+        value.includes('@') ? addressWithin(part, value) : typedIn(part, value),
       );
     });
   });
 }
 
+/** A caption clause that rules a buyer out: "not sold to Ada", "wasn’t for Ada". */
+const NEGATED_BUYER =
+  /\b(?:not|never|isn['’]?t|wasn['’]?t|didn['’]?t|no\s+longer)\s+(?:(?:sold|billed|invoiced|delivered)\s+to|bought\s+by|for)\b[^\n,;]*/giu;
+
+/** Whether `text` holds the address `address` between non-address characters ("email:ada@…"). */
+function addressWithin(text: string, address: string): boolean {
+  const hay = text.toLowerCase();
+  const want = address.trim().toLowerCase();
+  if (!want) return false;
+  for (let at = hay.indexOf(want); at >= 0; at = hay.indexOf(want, at + 1)) {
+    const before = at === 0 ? '' : hay[at - 1]!;
+    const after = hay.slice(at + want.length);
+    if (/[\p{L}\p{N}._%+-]/u.test(before)) continue;
+    if (/^(?:[\p{L}\p{N}_%+-]|\.[\p{L}\p{N}])/u.test(after)) continue;
+    return true;
+  }
+  return false;
+}
+
 /**
  * Whether `text` holds the phone `phone`, however it is spaced or prefixed ("0803 555 1234",
  * "+234 803 555 1234"). Neighbouring digit groups ("… 1234 2 wigs") never join it: any run of
- * whole groups may be the phone.
+ * whole groups may be the phone. A run stops growing once it is longer than any written form of
+ * the phone could be, so a caption of many digit groups is read in linear time (independent
+ * review of 42a2422).
  */
 function phoneIn(text: string, phone: string): boolean {
   const want = normaliseFacet('phone', phone);
   if (want.length < 7) return false;
+  /* The longest written form: "+234" or "0234" in front, then the number. */
+  const longest = want.length + 4;
   for (const run of text.matchAll(/\+?\d[\d \t().-]*/gu)) {
-    const groups = run[0].split(/[^\d+]+/u).filter(Boolean);
+    const groups = run[0].split(/[^\d]+/u).filter(Boolean);
     for (let from = 0; from < groups.length; from += 1) {
-      for (let to = from + 1; to <= groups.length; to += 1) {
-        if (normaliseFacet('phone', groups.slice(from, to).join('')) === want) return true;
+      let digits = '';
+      for (let to = from; to < groups.length; to += 1) {
+        digits += groups[to];
+        if (digits.length > longest) break;
+        if (normaliseFacet('phone', digits) === want) return true;
       }
     }
   }
