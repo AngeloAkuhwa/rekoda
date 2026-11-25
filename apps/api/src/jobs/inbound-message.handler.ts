@@ -5659,9 +5659,11 @@ function photoBuyerNamed(
 ): boolean {
   /* A buyer the caption labels must agree with the page's: a caption that labels somebody else
    * contradicts the chosen customer (independent review on #437 at 5e5267c). */
+  /* A caption field the merchant negates ("Not sold to: Ada Obi") rules that person out, so it is no
+   * buyer field (Codex on #437 at 1ec5a22). */
   const fields = [
     ...pageBuyerFields(rawText, caption),
-    ...(caption === null ? [] : buyerFieldsIn(caption)),
+    ...(caption === null ? [] : buyerFieldsIn(caption.replace(NEGATED_BUYER, '\n'))),
   ];
   /* A caption can name the buyer directly. An email must match as a whole address. A name the
    * caption labels as somebody else ("Seller: Ada Obi") is no evidence of the buyer, so those
