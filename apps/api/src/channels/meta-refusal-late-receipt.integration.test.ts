@@ -111,14 +111,23 @@ describe('a late failed receipt for the answer to a refusal (OD-62(o))', () => {
     await drain();
     const before = await footprint(business.id);
 
+    const reads = async () =>
+      [
+        ...(await withBusiness(db, business.id, (tx) =>
+          tx.execute<{ state: string }>(sql`
+            SELECT state FROM command_drafts
+             WHERE business_id = ${business.id}::uuid AND intent = 'Query'`),
+        )),
+      ].map((r) => r.state);
+    expect(await reads()).toEqual(['pending']);
+
     await plain('wamid.LQ4', 'yes');
     expect(stubSender.lastText).toBe(replies.previewBehindRefusal().text);
+    /* The answer retired the question first (CodeRabbit on #437 at 6b3fc05)... */
+    expect(await reads()).toEqual(['superseded']);
     await lateFailure();
-    const reads = await withBusiness(db, business.id, (tx) =>
-      tx.execute<{ state: string }>(sql`
-        SELECT state FROM command_drafts WHERE business_id = ${business.id}::uuid AND intent = 'Query'`),
-    );
-    expect([...reads].map((r) => r.state)).toEqual(['pending']);
+    /* ...and the failed receipt for that answer puts it back. */
+    expect(await reads()).toEqual(['pending']);
 
     await plain('wamid.LQ5', 'yes');
     expect(stubSender.lastText).toBe(replies.previewBehindRefusal().text);
