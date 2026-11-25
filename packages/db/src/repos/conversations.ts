@@ -1662,6 +1662,52 @@ export async function reopenReadsRetiredBy(
 }
 
 /**
+ * Whether a failed-delivery receipt for a POINTER reply is stored and not yet applied
+ * (CodeRabbit on #437, PRRT_kwDOT845J8676qPh).
+ *
+ * A first "yes" to a preview behind a question retires the question and is answered with a pointer
+ * ("a preview is waiting, reply yes"). If WhatsApp accepts that reply and reports it failed, the
+ * receipt's `delivery.status` job puts the question back. A repeated "yes" queued BEFORE that job
+ * is not held up by it (`hasEarlierLiveJob` looks only at earlier jobs), so it would find no
+ * question and book the preview the merchant was never told is waiting, and the later restoration
+ * cannot undo a booking. While such a job is pending or running, the yes must wait for it: the
+ * caller defers, the runner re-queues it without charging an attempt, and the receipt either runs
+ * or dies (`reconcileDeadReceipts` applies a dead one before any yes is read).
+ *
+ * Narrow on purpose: only a receipt naming a reply to a message that retired a Query standing
+ * after `draftId`, so unrelated receipts never hold a yes. Read under the business's inbound lock,
+ * as late as the caller can, just before it claims the draft.
+ */
+export async function hasLivePointerReceipt(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ held: boolean }>(sql`
+    SELECT EXISTS (
+      SELECT 1
+        FROM jobs j
+        JOIN conversation_messages m
+          ON m.business_id = j.business_id
+         AND m.direction = 'outbound'
+         AND m.provider_message_id = j.payload->>'outboundMessageId'
+         AND m.reply_to_message_id IS NOT NULL
+        JOIN command_drafts q
+          ON q.business_id = m.business_id
+         AND q.command->>'retiredBy' = m.reply_to_message_id::text
+       WHERE j.business_id = ${businessId}::uuid
+         AND j.kind = 'delivery.status'
+         AND j.state IN ('pending', 'running')
+         AND q.state = 'superseded'
+         AND q.intent = 'Query'
+         AND q.insertion_seq > (
+           SELECT d.insertion_seq FROM command_drafts d
+            WHERE d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid)
+    ) AS held`);
+  return rows[0]?.held === true;
+}
+
+/**
  * The newest draft in ANY state, by the database ordinal (G-61), every
  * intent counted: the pre-Build-6 rule. No production path reads it now
  * (a "yes" and a "no" read `latestDraftToAnswer`); it stays as the

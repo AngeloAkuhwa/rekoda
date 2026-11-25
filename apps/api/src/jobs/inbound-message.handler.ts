@@ -3055,6 +3055,17 @@ async function confirmPendingDraft(
     }
   }
 
+  /* A failed receipt for the pointer that retired a question in front of this preview is stored
+   * and not yet applied: it will put that question back, and this yes would then have booked a
+   * preview the merchant was never told is waiting. Wait for the receipt (the job is re-queued
+   * without an attempt); a dead one was applied above (CodeRabbit on #437). */
+  if (
+    !NOT_A_FINANCIAL_PREVIEW.has(draft.intent) &&
+    (await conversationsRepo.hasLivePointerReceipt(tx, businessId, draft.id))
+  ) {
+    throw new JobDeferred();
+  }
+
   let command = draft.command as { intent?: string } & Record<string, unknown>;
 
   /**
