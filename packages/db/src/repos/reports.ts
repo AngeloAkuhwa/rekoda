@@ -227,7 +227,9 @@ export async function debtorsFor(
   }>(sql`
     SELECT invoice_number, balance_due_k::bigint AS balance_due_k, created_at AS issued_at,
            due_date,
-           SUM(balance_due_k) OVER ()::bigint AS total_k,
+           -- Exact text, never narrowed to bigint: a total past PostgreSQL's bigint range would fail
+           -- here, before the exact-kobo check below can refuse it (CodeRabbit on #437).
+           SUM(balance_due_k) OVER ()::text AS total_k,
            count(*)  OVER ()::int   AS n
     FROM invoices
     WHERE business_id = ${businessId}::uuid AND status IN ('issued', 'partially_paid')

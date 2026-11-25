@@ -1286,7 +1286,9 @@ export async function openInvoicesForCustomer(
 ): Promise<{ rows: OpenInvoice[]; totalK: number; count: number }> {
   const rows = await tx.execute<OpenInvoiceRow & { open_total_k: string; open_count: number }>(sql`
     SELECT i.id, i.invoice_number, i.balance_due_k::bigint AS balance_due_k,
-           sum(i.balance_due_k) OVER ()::bigint AS open_total_k,
+           -- Exact text, never narrowed to bigint (CodeRabbit on #437): a total past the bigint
+           -- range must reach the exact-kobo check below, not fail inside SQL.
+           sum(i.balance_due_k) OVER ()::text AS open_total_k,
            count(*) OVER ()::int AS open_count
     FROM invoices i
     LEFT JOIN customers c ON c.id = i.customer_id AND c.business_id = i.business_id

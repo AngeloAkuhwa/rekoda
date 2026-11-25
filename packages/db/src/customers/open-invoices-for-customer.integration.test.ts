@@ -265,4 +265,56 @@ describe('what one customer still owes', () => {
       withBusiness(db, businessId, (tx) => reportsRepo.debtorsFor(tx, businessId, 8)),
     ).rejects.toThrow(/integer kobo/);
   });
+
+  /* CodeRabbit on #437 (outside the diff, reports.ts:230): the window sum was cast to bigint, so a
+   * total past PostgreSQL's own bigint range failed inside SQL, before the application could refuse
+   * it exactly. The sum now comes back as exact text and is judged in code: "not stated", never an
+   * unhandled SQL error, and never a rounded figure. Each balance below is a safe integer; only the
+   * total is not (1,100 invoices of 9e15 kobo = 9.9e18, past the 9.22e18 bigint maximum). */
+  async function manyLargeInvoices(businessId: string, ada: { id: string; token: string }) {
+    await invoice(businessId, ada, 100_000);
+    await ownerDb().execute(sql`
+      UPDATE invoices SET balance_due_k = 9000000000000000 WHERE business_id = ${businessId}::uuid`);
+    await ownerDb().execute(sql`
+      INSERT INTO invoices
+      SELECT (jsonb_populate_record(i, jsonb_build_object(
+               'id', gen_random_uuid()::text, 'invoice_number', 'BIG-' || g))).*
+        FROM invoices i, generate_series(1, 1100) g
+       WHERE i.business_id = ${businessId}::uuid AND i.invoice_number NOT LIKE 'BIG-%'`);
+  }
+
+  it('refuses a total past the bigint range as "not stated", never a SQL failure (one customer)', async () => {
+    const businessId = await seedBusiness();
+    const ada = await seedCustomer(businessId, 'ADA7');
+    await manyLargeInvoices(businessId, ada);
+
+    await expect(owed(businessId, ada.token)).rejects.toThrow(/integer kobo/);
+  });
+
+  it('the debtors list refuses a total past the bigint range the same way', async () => {
+    const businessId = await seedBusiness();
+    const ada = await seedCustomer(businessId, 'ADA8');
+    await manyLargeInvoices(businessId, ada);
+
+    await expect(
+      withBusiness(db, businessId, (tx) => reportsRepo.debtorsFor(tx, businessId, 8)),
+    ).rejects.toThrow(/integer kobo/);
+  });
+
+  it('still states an ordinary total exactly, and never counts another business', async () => {
+    const businessId = await seedBusiness();
+    const other = await seedBusiness();
+    const ada = await seedCustomer(businessId, 'ADA9');
+    const stranger = await seedCustomer(other, 'ADA9');
+    await invoice(businessId, ada, 123_456);
+    await invoice(businessId, ada, 7);
+    await invoice(other, stranger, 999_999_999);
+
+    const result = await owed(businessId, ada.token);
+    expect([result.totalK, result.count]).toEqual([123_463, 2]);
+    const debtors = await withBusiness(db, businessId, (tx) =>
+      reportsRepo.debtorsFor(tx, businessId, 8),
+    );
+    expect([debtors.totalK, debtors.count]).toEqual([123_463, 2]);
+  });
 });
