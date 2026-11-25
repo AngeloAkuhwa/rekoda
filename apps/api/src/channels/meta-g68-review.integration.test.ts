@@ -6,10 +6,9 @@
  * webhook.fixtures.ts.
  */
 import { describe, expect, it } from 'vitest';
-import { identity, withBusiness, sql } from '@rekoda/db';
+import { conversationsRepo, customersRepo, identity, withBusiness, sql } from '@rekoda/db';
 import { replies } from '@rekoda/core';
 import { buildRunner } from '../jobs/jobs.module.js';
-import { customersRepo } from '@rekoda/db';
 import {
   db,
   deps,
@@ -529,6 +528,11 @@ describe('G-68 final review: erasure, doubt anywhere, re-asked funding question'
       expect(await footprint(business.id)).toEqual({ invoices: 0, purchases: 0, postings: 0 });
     });
 
+    /* The newest pending draft: each sticker below must leave its sender's refusal (CodeRabbit). */
+    const refusal = async (b: string) => {
+      const d = await withBusiness(db, b, (tx) => conversationsRepo.pendingDraft(tx, b));
+      return { by: d?.requestedBy, refused: (d?.command as { refused?: boolean })?.refused };
+    };
     it("another member's refusal never stops the owner's no from closing their question", async () => {
       const business = await seedMerchant();
       const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
@@ -542,6 +546,7 @@ describe('G-68 final review: erasure, doubt anywhere, re-asked funding question'
         ),
       );
       await drain();
+      expect(await refusal(business.id)).toEqual({ by: delegate.id, refused: true });
       await reply('wamid.F-r6-no', 'no');
       expect(stubSender.lastText).toBe(replies.cancelled().text);
       expect(await purchaseStates(business.id)).toEqual(['superseded']);
@@ -556,6 +561,8 @@ describe('G-68 final review: erasure, doubt anywhere, re-asked funding question'
       const sticker = { type: 'sticker', sticker: { id: 'sticker-1', mime_type: 'image/webp' } };
       await post(mediaMessage('wamid.F-r7-sticker', sticker));
       await drain();
+      const own = await refusal(business.id);
+      expect([own.refused, !!own.by && own.by !== delegate.id]).toEqual([true, true]);
       await say('wamid.F-r7-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, by POS', DELEGATE);
       expect(stubSender.lastText).toContain(POS_QUESTION);
 

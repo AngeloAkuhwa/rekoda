@@ -2,7 +2,7 @@
  * Shared helpers for the meta-continuations suites, split from meta.integration.test.ts.
  * The helpers that hold state or write the plan stay in each suite.
  */
-import { identity, withBusiness, sql } from '@rekoda/db';
+import { createDb, identity, withBusiness, sql } from '@rekoda/db';
 import { replies } from '@rekoda/core';
 import { buildRunner } from '../jobs/jobs.module.js';
 import {
@@ -13,6 +13,7 @@ import {
   stubTransport,
   workerDb,
   knownCustomer,
+  urls,
 } from './meta-webhook.fixtures.js';
 
 export const OWNER = '2348031234567';
@@ -163,4 +164,31 @@ export function mediaMessage(wamid: string, fields: Record<string, unknown>, fro
   delete sent['text'];
   Object.assign(sent, fields);
   return payload;
+}
+
+/**
+ * For each inbound message (by wamid, without the "wamid." prefix): how many replies answer it,
+ * and how many of the business's inbound jobs are not done, so a held message is shown answered
+ * and finished, never dropped or left to retry (CodeRabbit on #437 at c5392f0).
+ */
+export async function answered(businessId: string, ...wamids: string[]) {
+  const { db: owner, close } = createDb(urls.owner, { max: 1 });
+  try {
+    const replies: number[] = [];
+    for (const wamid of wamids) {
+      const [row] = await owner.execute<{ n: number }>(sql`
+        SELECT count(*)::int AS n FROM conversation_messages o
+          JOIN conversation_messages i
+            ON i.id = o.reply_to_message_id AND i.business_id = o.business_id
+         WHERE o.business_id = ${businessId}::uuid AND o.direction = 'outbound'
+           AND i.provider_message_id = ${`wamid.${wamid}`}`);
+      replies.push(Number(row?.n));
+    }
+    const [jobs] = await owner.execute<{ n: number }>(sql`
+      SELECT count(*)::int AS n FROM jobs
+       WHERE business_id = ${businessId}::uuid AND kind = 'inbound.message' AND state <> 'done'`);
+    return { replies, unfinished: Number(jobs?.n) };
+  } finally {
+    await close();
+  }
 }

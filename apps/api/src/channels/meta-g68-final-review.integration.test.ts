@@ -314,6 +314,10 @@ describe('G-68 final review 2: one-shot rebuild, strict erasure pair, answer win
         { ...POS_PURCHASE, paymentMethod: 'cash' },
         'I bought 10 cartons for 180k, paid cash',
       );
+      /* The cash replacement was sent and waits, so the failed receipt below is for it (CodeRabbit
+       * on #437 at c5392f0). */
+      expect(stubSender.lastText).toMatch(/cash/iu);
+      expect((await purchaseStates(business.id)).at(-1)).toBe('pending');
       const sent = lastWamid();
       await receipt(OWNER, sent, 'failed');
       await drain();

@@ -1,9 +1,6 @@
 /**
- * Webhook ingress, end to end (MASTER-PLAN §5.3.1).
- *
- * Meta webhook suite: a preview has a time limit (G-23) (part 3 of 3). Split by concern from
- * meta.integration.test.ts; the shared app, stubs and payload helpers are in meta-
- * webhook.fixtures.ts.
+ * Webhook ingress, end to end (MASTER-PLAN §5.3.1). A preview has a time limit (G-23), part 3 of 3,
+ * split by concern from meta.integration.test.ts; shared helpers are in meta-webhook.fixtures.ts.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -54,7 +51,7 @@ import {
   say as sayR,
   seedMerchant as seedMerchantR,
 } from './meta-customer-token.fixtures.js';
-import { mediaMessage } from './meta-continuations.fixtures.js';
+import { answered, mediaMessage } from './meta-continuations.fixtures.js';
 import { killInboundJob, queueOnly } from './meta-lost-message.fixtures.js';
 
 useMetaWebhookHarness();
@@ -398,6 +395,7 @@ describe('a repeated yes and a failed receipt for the pointer reply (CodeRabbit 
 
     expect(await footprintR(business.id)).toEqual(before);
     expect(stubSender.lastText).toBe(replies.previewBehindQuestion().text);
+    expect(await answered(business.id, 'RC1-yes2')).toEqual({ replies: [1], unfinished: 0 });
     expect(await statesR(business.id)).toEqual(['RecordSale:pending', 'Query:pending']);
   });
 
@@ -457,6 +455,7 @@ describe('a repeated yes and a failed receipt for the pointer reply (CodeRabbit 
     await drainR();
 
     expect(await footprintR(business.id)).toEqual(before);
+    expect((await answered(business.id, 'RC6-yes2', 'RC6-yes3')).replies).toEqual([1, 1]);
   });
 });
 
@@ -573,6 +572,7 @@ describe('a repeated yes and a failed receipt for the refusal pointer', () => {
     await drainR();
 
     expect(await footprintR(business.id)).toEqual(before);
+    expect(await answered(business.id, 'RF4')).toEqual({ replies: [1], unfinished: 0 });
     const refused = await withBusiness(db, business.id, (tx) =>
       tx.execute<{ state: string }>(sql`
         SELECT state FROM command_drafts
@@ -595,5 +595,6 @@ describe('a spoken yes held by a failed pointer receipt', () => {
 
     expect(stubStt.calls).toHaveLength(1);
     expect(await footprintR(business.id)).toEqual(before);
+    expect(await answered(business.id, 'RV-voice')).toEqual({ replies: [1], unfinished: 0 });
   });
 });
