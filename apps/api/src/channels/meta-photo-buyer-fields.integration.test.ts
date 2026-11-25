@@ -27,10 +27,15 @@ describe('buyer fields on a photographed sale', () => {
     /* The value after a contact heading is the buyer field, never the heading itself. */
     ['a phone under a contact heading', 'Buyer:\nTel: 08035551234', true],
     ['an email under a contact heading', 'Customer:\nEmail: ada@example.test', true],
+    /* The same contact heading on the label's own line (CodeRabbit on #437 at 600a155). */
+    ['a phone after a contact heading on the same line', 'Buyer: Tel: 08035551234', true],
+    /* A caption that labels Ada as the seller is no evidence she bought (CodeRabbit, 600a155). */
+    ['a seller named in the caption', 'Buyer: Bola Ige', false, 'Seller: Ada Obi'],
+    ['the buyer typed in the caption', 'Items:', true, 'sold to Ada Obi'],
     ['different customers', 'Buyer: Ada Obi\nClient: bola@example.test', false],
     ['an exact spaced phone', 'Buyer: 0803 555 1234', true],
     ['extra phone digits', 'Buyer: 08035551234 567\nSeller: 08035551234', false],
-  ])('%s', async (_, fields, accepted) => {
+  ] as [string, string, boolean, string?][])('%s', async (_, fields, accepted, caption) => {
     const business = await seedMerchant('+' + OWNER);
     const facets = [
       ['name', 'Ada Obi'],
@@ -63,7 +68,7 @@ describe('buyer fields on a photographed sale', () => {
     stubOcr.answerWith({ text: `RECEIPT\n${fields}\n2 wigs TOTAL 100,000`, confidence: 0.9 });
     stubTransport.replyWith(sale({ kind: 'token', token: TOKEN }));
 
-    await post(photoPayload(OWNER, 'wamid.BUYER-fields'));
+    await post(photoPayload(OWNER, 'wamid.BUYER-fields', caption ? { caption } : {}));
     await drain();
 
     const drafts = await withBusiness(db, business.id, (tx) =>

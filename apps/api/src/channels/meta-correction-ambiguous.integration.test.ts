@@ -5,7 +5,8 @@
  * A message that came between the preview and the correction but is still retrying after a
  * failure has no conversation row yet, so `hasInboundBetween` cannot see it; the queue can.
  * While an earlier inbound message of the same business is pending or running, the correction
- * is asked about and changes nothing. Another business's queue never counts, a message that
+ * is asked about and the preview is withdrawn, so a later yes books nothing from it. Another
+ * business's queue never counts, a message that
  * died retires the preview (OWN-74), and a correction mixed with a new sale is asked about
  * (owner review of #437 at 49f2586).
  */

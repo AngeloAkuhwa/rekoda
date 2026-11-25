@@ -5628,12 +5628,14 @@ function photoBuyerNamed(
   names: readonly string[],
 ): boolean {
   const fields = pageBuyerFields(rawText, caption);
-  /* A caption can name the buyer directly. An email must match as a whole address. */
+  /* A caption can name the buyer directly. An email must match as a whole address. A name the
+   * caption labels as somebody else ("Seller: Ada Obi") is no evidence of the buyer, so those
+   * segments are taken out first (CodeRabbit on #437 at 600a155). */
+  const typed = caption?.replace(NON_BUYER_SEGMENT, ' ');
   if (
-    caption &&
+    typed &&
     names.some(
-      (name) =>
-        name.trim() && (name.includes('@') ? addressIn(caption, name) : typedIn(caption, name)),
+      (name) => name.trim() && (name.includes('@') ? addressIn(typed, name) : typedIn(typed, name)),
     )
   ) {
     return true;
@@ -5670,17 +5672,16 @@ function pageBuyerFields(rawText: string, caption: string | null): string[] {
   for (const label of page.matchAll(BUYER_LABEL)) {
     const lines = page.slice(label.index + label[0].length).split(/\r?\n/u);
     let after = foldField(lines.find((line) => line.trim()) ?? '');
-    if (!lines[0]?.trim()) {
-      if (RECEIPT_HEADING.test(after)) continue;
-      /* A contact heading on the next line ("Buyer:\nTel: 0803…") is not the buyer's value: what
-       * follows it is, and an empty one holds nothing (CodeRabbit and an independent review on
-       * #437 at 6b3fc05). A valued contact still labels a buyer, so a sale read with nobody is
-       * asked about, never booked as anonymous (OWN-103(4)). */
-      const contact = CONTACT_HEADING.exec(after);
-      if (contact) {
-        after = after.slice(contact[0].length).trim();
-        if (!after) continue;
-      }
+    if (!lines[0]?.trim() && RECEIPT_HEADING.test(after)) continue;
+    /* A contact heading after the label, on its line or the next ("Buyer: Tel: 0803…",
+     * "Buyer:\nTel: 0803…"), is not the buyer's value: what follows it is, and an empty one holds
+     * nothing (CodeRabbit and an independent review on #437 at 6b3fc05 and 600a155). A valued
+     * contact still labels a buyer, so a sale read with nobody is asked about, never booked as
+     * anonymous (OWN-103(4)). */
+    const contact = CONTACT_HEADING.exec(after);
+    if (contact) {
+      after = after.slice(contact[0].length).trim();
+      if (!after) continue;
     }
     const first = after.split(/\s/u)[0] ?? '';
     const phone = leadingPhoneDigits(after).length >= 10;
@@ -5721,6 +5722,10 @@ function fieldNames(after: string, name: string): boolean {
 }
 
 /** A field label after a buyer's name on the same line: it ends the name. */
+/** A caption segment that names somebody other than the buyer: "Seller: Ada Obi", "sold by Ada". */
+const NON_BUYER_SEGMENT =
+  /\b(?:seller|supplier|vendor|cashier|sales\s*(?:person|rep)|sold\s+by|served\s+by|issued\s+by)\b\s*[:#\-\u2013]?[^\n,;]*/giu;
+
 /** A contact heading at the start of a line, with its separator: "Tel:", "Email -". */
 const CONTACT_HEADING = /^(?:tel|telephone|phone|mobile|whatsapp|email|e-mail)\b\.?\s*[:#-]\s*/iu;
 
