@@ -243,7 +243,7 @@ describe('CG5: a correction keeps the customer of the draft it corrects', () => 
   });
 
   it('after a cancellation, a correction never revives the old draft or its customer', async () => {
-    const { business, ada } = await seedOwner();
+    const { business } = await seedOwner();
     stubTransport.replyWith(SALE);
     await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.C7-SALE');
     await send('no', 'wamid.C7-NO');
@@ -258,7 +258,7 @@ describe('CG5: a correction keeps the customer of the draft it corrects', () => 
     expect(rows.at(-1)?.customer).toEqual(NAMELESS);
     await send('yes', 'wamid.C7-YES');
     const issued = await invoiceCustomers(business.id);
-    expect(issued.map((i) => i.customer_id !== ada.id)).toEqual([true]);
+    expect(issued).toEqual([{ customer_id: null, total_k: '20000000' }]);
   });
 
   it('after a refusal, a nameless correction is asked about and the preview is left as it was', async () => {

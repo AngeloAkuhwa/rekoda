@@ -94,7 +94,17 @@ describe('buyer fields on a photographed sale', () => {
            AND state = 'pending' AND previewed`),
     );
     expect([...drafts]).toEqual(accepted ? [{ customer: { kind: 'token', token: TOKEN } }] : []);
-    if (!accepted) expect(stubSender.lastText).toContain('could not tell which customer');
+    if (accepted) return;
+    expect(stubSender.lastText).toContain('could not tell which customer');
+    /* A yes afterwards books nothing (CodeRabbit on #437 at c5392f0). */
+    await post(messagePayload(OWNER, 'wamid.BUYER-fields-yes', 'yes'));
+    await drain();
+    const invoices = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ n: number }>(
+        sql`SELECT count(*)::int AS n FROM invoices WHERE business_id = ${business.id}::uuid`,
+      ),
+    );
+    expect(invoices[0]?.n).toBe(0);
   });
 });
 
