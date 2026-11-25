@@ -42,6 +42,11 @@ describe('buyer fields on a photographed sale', () => {
     ['a negated buyer field, curled apostrophe', 'Items:', false, 'Wasn’t sold to: Ada Obi'],
     ['different customers', 'Buyer: Ada Obi\nClient: bola@example.test', false],
     ['an exact spaced phone', 'Buyer: 0803 555 1234', true],
+    /* A caption that offers alternatives selects nobody, so the sale is asked about (OWN-103(4);
+     * CodeRabbit on #437 at c5392f0). One name alone still selects her. */
+    ['the buyer alone typed in the caption', 'Items:', true, 'For Ada Obi'],
+    ['alternative buyers in the caption', 'Items:', false, 'For Ada Obi or Bola Ige'],
+    ['either of two buyers in the caption', 'Items:', false, 'Either Ada Obi or Bola, not sure'],
     ['extra phone digits', 'Buyer: 08035551234 567\nSeller: 08035551234', false],
   ] as [string, string, boolean, string?][])('%s', async (_, fields, accepted, caption) => {
     const business = await seedMerchant('+' + OWNER);
