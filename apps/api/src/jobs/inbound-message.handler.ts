@@ -476,7 +476,8 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
         return;
       }
       if (refusedReading(heard)) {
-        /* Already answered inside, and already marked new-or-not. Nothing to
+        /* Refused inside and already marked new-or-not, but not yet answered:
+         * the refusal is recorded below before its reply is sent. Nothing to
          * interpret and nothing to charge for: whatever an earlier attempt
          * of this message took goes back (G-57 final review B). Still the
          * newest thing this member said, so whatever was open for them is

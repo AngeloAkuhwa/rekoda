@@ -1008,14 +1008,20 @@ export function unnamedFiguresChanged(
         fits(f, field) &&
         fits(f.pair, field),
     );
-  /* Otherwise a change is named by a figure for its new value (never one a "not" replaces), or, when
-   * it falls to nothing, by a lone figure for its old value ("no discount, not 2k"); never by a
-   * pair's figure, which already names its own change. */
+  /* Otherwise a change is named by a lone figure for its new value (never one a "not" replaces), or,
+   * when it falls to nothing, by a lone figure for its old value; a replaced one only when its own
+   * clause names the field ("no discount, not 2k"). Never by a pair's figure, which names only its
+   * own change (independent review of #437 at 00c0620). */
   const loose = (field: FigureField, was: number | null, now: number | null) =>
     now !== null && now !== 0
-      ? (money.find((f) => !f.replaced && f.pair === null && f.kobo === now && fits(f, field)) ??
-        money.find((f) => !f.replaced && f.pair !== null && f.kobo === now && fits(f, field)))
-      : money.find((f) => f.pair === null && f.kobo === was && fits(f, field));
+      ? money.find((f) => !f.replaced && f.pair === null && f.kobo === now && fits(f, field))
+      : money.find(
+          (f) =>
+            f.pair === null &&
+            f.kobo === was &&
+            fits(f, field) &&
+            (!f.replaced || f.field !== null),
+        );
   const useCount = (c: NamedCount | undefined) => {
     if (!c) return false;
     c.used = true;
@@ -1027,13 +1033,14 @@ export function unnamedFiguresChanged(
     namedCounts.find(
       (c) => !c.used && !c.replaced && c.pair && c.value === now && c.pair.value === was,
     );
-  /* Otherwise a count change is named by a count for its new value (never one a "not" replaces), or,
-   * when it falls to nothing, by a lone count for its old value; never by a pair's count. */
+  /* Otherwise a count change is named by a lone count for its new value, or, when it falls to
+   * nothing, by a lone count for its old value; never by a count a "not" replaces, nor by a pair's
+   * count (independent review of #437 at 00c0620). */
   const looseCount = (was: number | null, now: number | null) =>
-    now !== null && now !== 0
-      ? (namedCounts.find((c) => !c.used && !c.replaced && !c.pair && c.value === now) ??
-        namedCounts.find((c) => !c.used && !c.replaced && c.pair && c.value === now))
-      : namedCounts.find((c) => !c.used && !c.pair && c.value === was);
+    namedCounts.find(
+      (c) =>
+        !c.used && !c.replaced && !c.pair && c.value === (now !== null && now !== 0 ? now : was),
+    );
   const kobo = (v: unknown, nullIsZero: boolean): number | null =>
     typeof v === 'number' && Number.isFinite(v) ? nairaToKobo(v) : nullIsZero ? 0 : null;
   /* A purchase with no payment stated is paid in full (`gatePurchase`), so "nothing stated" and ₦0
@@ -1185,15 +1192,28 @@ const FIELD_WORDS: ReadonlyArray<readonly [RegExp, NamedField]> = [
   [/\btotal\b/u, 'total'],
   [/\bamount\b/u, 'amount'],
 ];
-/** The text between two figures that makes the second the one the first replaces. */
-const PAIRED_GAP = /^\s*,?\s*(?:not|instead\s+of|rather\s+than)\s*$/u;
-const NEGATED_GAP = /\b(?:not|instead\s+of|rather\s+than)\s*$/u;
+/* A "not", "instead of" or "rather than" ending the text before a figure, past the words that only
+ * point at it, as `REPLACED_FIGURE` reads them ("not the 50k", "not that 50k", "instead of the 3"). */
+const NEGATION = String.raw`(?:\bnot(?:\s+(?:the|that|this|it|its|it's|was|paid)){0,2}|\binstead\s+of(?:\s+the)?|\brather\s+than(?:\s+the)?)\s*`;
+/** The text between two figures that makes the second the one the first replaces: at most one word
+ * after the first ("60k each not 50k", "4 wigs not 3"), a comma, then the negation (independent
+ * review of #437 at 00c0620). */
+const PAIRED_GAP = new RegExp(String.raw`^\s*(?:[\p{L}]+\s*)?,?\s*${NEGATION}$`, 'u');
+const NEGATED_GAP = new RegExp(String.raw`${NEGATION}$`, 'u');
+/* A clause ends at a comma, a semicolon or an "and": a field word before one belongs to the figure
+ * before it ("2k delivery fee and 5k discount"). */
+const CLAUSE_BREAK = /[,;]|\band\b/u;
+const BARE_NEGATION = new RegExp(String.raw`^\s*${NEGATION}$`, 'u');
 
-/** The field a figure's own clause names: the last field word before it, since the last figure. */
+/** The field a figure's own clause names: the last field word before it in its clause, or, when its
+ * clause is only a negation ("no discount, not 2k"), in the clause before. */
 function fieldOf(gap: string): NamedField | null {
+  const clauses = gap.split(CLAUSE_BREAK);
+  let clause = clauses.pop() ?? '';
+  if (BARE_NEGATION.test(clause) && clauses.length > 0) clause = clauses.pop() ?? '';
   let found: { at: number; field: NamedField } | null = null;
   for (const [pattern, field] of FIELD_WORDS) {
-    for (const m of gap.matchAll(new RegExp(pattern.source, 'gu'))) {
+    for (const m of clause.matchAll(new RegExp(pattern.source, 'gu'))) {
       if (!found || m.index > found.at) found = { at: m.index, field };
     }
   }
