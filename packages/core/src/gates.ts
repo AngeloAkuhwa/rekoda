@@ -917,8 +917,10 @@ export function unnamedFiguresChanged(
     ...after.map((l) => l['quantity']),
     stored['quantity'],
     reading['quantity'],
+    stored['quantityDelta'],
+    reading['quantityDelta'],
   ]) {
-    const q = count(v);
+    const q = count(v) === null ? null : Math.abs(count(v)!);
     if (q !== null) seenQuantities.add(q);
   }
   /* The money figures the merchant wrote, each usable once, with the field its clause names (Codex
@@ -1044,6 +1046,16 @@ export function unnamedFiguresChanged(
   if ('quantity' in stored) {
     counts.push([count(stored['quantity']), count(reading['quantity'])]);
   }
+  /* A stock adjustment's count is its delta (Codex on #437 at e9b1cb4): named by its size, and a
+   * change of direction ("added" read as "removed") is never a figure the words name. */
+  if ('quantityDelta' in stored) {
+    const was = count(stored['quantityDelta']);
+    const now = count(reading['quantityDelta']);
+    if (was !== now && (was === null || now === null || Math.sign(was) !== Math.sign(now))) {
+      return true;
+    }
+    counts.push([was === null ? null : Math.abs(was), now === null ? null : Math.abs(now)]);
+  }
   /* A price and a quantity are checked on every line the draft had: matched one to one, by its
    * exact name, else its name without case or spaces, else its position when the reading has as many
    * lines. A priced line the reading drops or renames past matching cannot be checked, so it is asked
@@ -1065,14 +1077,21 @@ export function unnamedFiguresChanged(
       (after.length === before.length ? pick((_l, j) => j === i) : undefined);
     const price = kobo(line['unitPrice'], false);
     if (!same) {
+      /* A line the reading drops loses its quantity as well as its price, priced or not (an
+       * order's lines carry none): both must be named (Codex on #437 at e9b1cb4). */
       changes.push(['price', price, null]);
+      counts.push([count(line['quantity']), null]);
       continue;
     }
     changes.push(['price', price, kobo(same['unitPrice'], false)]);
     counts.push([count(line['quantity']), count(same['quantity'])]);
   }
   for (const [j, line] of after.entries()) {
-    if (!used.has(j)) changes.push(['price', null, kobo(line['unitPrice'], false)]);
+    if (used.has(j)) continue;
+    /* A line the reading adds: its price and its quantity must both be named (Codex on #437 at
+     * 63cf5fb and e9b1cb4). */
+    changes.push(['price', null, kobo(line['unitPrice'], false)]);
+    counts.push([null, count(line['quantity'])]);
   }
   for (const [was, now] of counts) {
     if (!namedCount(was, now)) return true;
