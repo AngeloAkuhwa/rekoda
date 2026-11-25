@@ -464,8 +464,10 @@ export function looksLikeCorrection(text: string, hasPendingDraft: boolean): boo
  * not clearly a correction and is asked about: listing new-sale wordings can never be complete, so
  * the shape of a correction is allowed and everything else is refused.
  */
-/* A decimal needs a currency sign or a k/m suffix. A bare "4.30" is a time. */
-const FIG = String.raw`(?:(?:₦|NGN|N)\s*\d[\d,]*(?:\.\d+)?(?:\s*[km](?![a-z0-9]))?|\d[\d,]*\.\d+\s*[km](?![a-z0-9])|\d[\d,]*(?:\s*[km](?![a-z0-9]))?)`;
+/* A decimal needs a currency sign, a k/m suffix or a measuring unit after it ("2.5 kg"; CodeRabbit
+ * on #437 at 400ca58). A bare "4.30" is a time. The units are the measuring ones of `UNIT_WORDS`. */
+const MEASURE_UNIT = String.raw`(?:kgs?|g|l|lit(?:re|er)s?|yards?|met(?:re|er)s?)`;
+const FIG = String.raw`(?:(?:₦|NGN|N)\s*\d[\d,]*(?:\.\d+)?(?:\s*[km](?![a-z0-9]))?|\d[\d,]*\.\d+\s*[km](?![a-z0-9])|\d[\d,]*\.\d+(?=\s*${MEASURE_UNIT}\b)|\d[\d,]*(?:\s*[km](?![a-z0-9]))?)`;
 const TIME_WORD = String.raw`(?:am|pm|o'?clock|h|hrs?|hours?|mins?|minutes?|s|secs?|seconds?|days?|weeks?|months?|years?|st|nd|rd|th|today|tomorrow|tonight|noon|midnight|morning|evening|night|jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december|mon|monday|tue|tues|tuesday|wed|wednesday|thu|thur|thurs|thursday|fri|friday|sat|saturday|sun|sunday)`;
 /* A figure, then at most one word that is not a time or a date ("4 wigs", "4pcs", "60k each"). */
 /* Words that add to the draft or start another one ("5 more", "5 also", "another") never fill it,
@@ -642,6 +644,36 @@ export interface DraftFigures {
   readonly quantities: readonly number[];
 }
 
+/* A sale's money as its preview computes it (`gateSale`), or null when its lines are not all
+ * numbers the preview could have shown. */
+function saleFigures(
+  command: Record<string, unknown>,
+  items: readonly unknown[],
+): MoneyBlock | null {
+  const lines: SaleItemLike[] = [];
+  for (const item of items) {
+    if (!item || typeof item !== 'object') return null;
+    const { name, quantity, unitPrice } = item as Record<string, unknown>;
+    if (typeof quantity !== 'number' || typeof unitPrice !== 'number') return null;
+    lines.push({ name: typeof name === 'string' ? name : '', quantity, unitPrice });
+  }
+  const num = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isFinite(v) ? v : null;
+  try {
+    return computeMoney(
+      saleToDraft({
+        items: lines,
+        discount: num(command['discount']),
+        deliveryFee: num(command['deliveryFee']),
+        statedTotal: num(command['statedTotal']),
+        reportedPayment: num(command['reportedPayment']),
+      }),
+    );
+  } catch {
+    return null;
+  }
+}
+
 export function draftFigures(command: Record<string, unknown>): DraftFigures {
   const money: number[] = [];
   const quantities: number[] = [];
@@ -705,6 +737,12 @@ export function draftFigures(command: Record<string, unknown>): DraftFigures {
   } else {
     addQuantity(quantity);
   }
+  /* The balance a part-paid sale preview shows, from the same `computeMoney` the preview uses
+   * (CodeRabbit on #437 at 400ca58). Shown only when something was paid and something is owed. */
+  if (command['intent'] === 'RecordSale' && items.length > 0) {
+    const sale = saleFigures(command, items);
+    if (sale && sale.amountPaidK > 0 && sale.balanceDueK > 0) money.push(sale.balanceDueK);
+  }
   /* A stock adjustment's preview shows its count ("Adding 3"), whichever way it moves (Codex on
    * #437 at af169b0). */
   const delta = command['quantityDelta'];
@@ -735,18 +773,21 @@ const MONEY_FIELD =
   /\b(?:price|total|amount|balance|cost|rate|discount|fee|payment|paid|pay|charge)\b/iu;
 const QUANTITY_FIELD = /\b(?:quantity|qty|pieces|pcs|units|count)\b/iu;
 
-/** A figure's kind from how it is written: money (₦, NGN, "k", "m", "naira", "each", else a
- * decimal), a quantity (a unit after it: "3 pcs", "1.5 kg"), or nothing said ("3", "3 wigs"). A
- * unit wins over a decimal point: "1.5 kg" is a weight, never ₦1.50 (CodeRabbit on #437 at
- * d80426e). */
+/** A figure's kind from how it is written: money (₦, NGN, "k", "m", "naira", "each"), a quantity
+ * (a unit after it: "3 pcs", "1.5 kg"), or nothing said ("3", "3 wigs", "1.5"). A unit wins over a
+ * decimal point: "1.5 kg" is a weight, never ₦1.50 (CodeRabbit on #437 at d80426e). */
 function figureKind(figure: string, word: string | undefined): 'money' | 'quantity' | null {
   const f = figure.toLowerCase();
   if (/^(?:₦|ngn|n)/u.test(f) || /[km]$/u.test(f)) return 'money';
   const w = word?.toLowerCase();
   if (w && MONEY_WORDS.has(w)) return 'money';
   if (w && UNIT_WORDS.has(w) && w !== 'naira') return 'quantity';
-  if (f.includes('.')) return 'money';
   return null;
+}
+
+/** The sense of a figure nothing marks: an unmarked decimal ("1.5") is read as money. */
+function guessedKind(figure: string | undefined): 'money' | null {
+  return figure?.includes('.') ? 'money' : null;
 }
 
 /** A figure as integer kobo, by integer arithmetic only: "50k" is 5,000,000; "1.5m" is
@@ -796,8 +837,14 @@ export function replacedFiguresFit(text: string, draft: DraftFigures): boolean {
       : QUANTITY_FIELD.test(clause)
         ? 'quantity'
         : null;
-    const replacedKind = figureKind(figure, m[2]);
-    const replacementKind = before?.[1] ? figureKind(before[1].trim(), before[2]) : null;
+    const replacementFigure = before?.[1]?.trim();
+    const replacedMarked = figureKind(figure, m[2]);
+    const replacementMarked = replacementFigure ? figureKind(replacementFigure, before?.[2]) : null;
+    /* An unmarked decimal is read as money only when nothing explicit says otherwise: the field
+     * the message names wins over the guess, so "quantity should be 2 not 1.5" is a quantity
+     * (CodeRabbit on #437 at 400ca58). A marked figure still conflicts with the field. */
+    const replacedKind = replacedMarked ?? (field ? null : guessedKind(figure));
+    const replacementKind = replacementMarked ?? (field ? null : guessedKind(replacementFigure));
     /* Both figures written with their own sense must agree: "4 pc not ₦3" puts a count in place
      * of an amount, and is asked about (CodeRabbit on #437 at 6b3fc05). */
     if (replacedKind && replacementKind && replacedKind !== replacementKind) return false;
