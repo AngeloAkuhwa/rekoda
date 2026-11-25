@@ -549,6 +549,14 @@ describe('the document classifier on a photographed record (OD-74)', () => {
     const classifier = stubTransport.requests.filter((r) => r.toolName === 'classify_document');
     expect(classifier).toHaveLength(1);
     expect(classifier[0]!.userText).toContain('Chidi Eze');
+    /* The classifier's one call is not an interpretation call: the interpreter then makes at most
+     * the primary call and one escalation (ADR 0005 cases 3 and 4). */
+    const interpretation = stubTransport.requests.filter(
+      (r) => r.toolName === 'record_business_command',
+    );
+    expect(interpretation.length).toBeGreaterThanOrEqual(1);
+    expect(interpretation.length).toBeLessThanOrEqual(2);
+    expect(stubTransport.requests).toHaveLength(1 + interpretation.length);
     for (const raw of ['08035551234', 'chidi@example.test', '08039998888', 'Ada Obi']) {
       expect(classifier[0]!.userText).not.toContain(raw);
     }
