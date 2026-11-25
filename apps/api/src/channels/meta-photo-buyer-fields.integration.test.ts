@@ -190,6 +190,12 @@ describe('a caption that labels its names', () => {
     ['receives from the chosen customer', 'Received from: Ada Obi', 'RECEIPT', true],
     /* A caption's buyer and the page's must agree (independent review of 5e5267c). */
     ['labels another buyer than the page', 'Buyer: Tunde Bello', 'Buyer: Ada Obi', false],
+    /* A caption that rules a name out is no evidence of the buyer (CodeRabbit on #437 at
+     * 400ca58); the same name typed plainly still is. */
+    ['rules the chosen customer out', 'Not sold to Ada Obi', 'RECEIPT', false],
+    ['says the sale was not for the chosen customer', 'not for Ada Obi', 'RECEIPT', false],
+    ['says the chosen customer did not buy', "Ada Obi didn't buy, Tunde did", 'RECEIPT', false],
+    ['types the chosen customer plainly', 'Sold to Ada Obi', 'RECEIPT', true],
   ])('a caption that %s', async (_, caption, page, accepted) => {
     const business = await seedMerchant('+' + OWNER);
     await seedAda(business.id);

@@ -438,3 +438,36 @@ describe('a superseded preview reported failed after a refusal', () => {
     expect(await footprint(business.id)).toEqual(before);
   });
 });
+
+/* A refusal the member's later question made stale is closed by their next yes, which retires the
+ * question and points at the preview. When that pointer never reaches the member, the refusal and
+ * the question are put back, so a repeated yes is pointed again and never books the preview
+ * unread (CodeRabbit on #437 at 400ca58). */
+describe('a stale refusal closed by a yes whose pointer failed', () => {
+  it.each(['late', 'at once'])(
+    'reported failed %s: the repeated yes books nothing',
+    async (when) => {
+      const business = await saleAndRefusal(when === 'late' ? 'LSL' : 'LSA');
+      await say(`wamid.LS3-${when}`, QUESTION, 'how much did I sell today');
+      const before = await footprint(business.id);
+
+      if (when === 'at once') stubSender.failWith();
+      await plain(`wamid.LS4-${when}`, 'yes');
+      if (when === 'late') {
+        expect(stubSender.lastText).toBe(replies.previewBehindQuestion().text);
+        await lateFailure();
+      }
+      expect(await footprint(business.id)).toEqual(before);
+      expect(await refusalStates(business.id)).toEqual([`+${OWNER}:pending`]);
+      expect(await queryStates(business.id)).toEqual(['pending:']);
+
+      /* Pointed at the preview again, never booking it unread... */
+      await plain(`wamid.LS5-${when}`, 'yes');
+      expect(stubSender.lastText).toBe(replies.previewBehindQuestion().text);
+      expect(await footprint(business.id)).toEqual(before);
+      /* ...and the yes after that delivered pointer saves it, once. */
+      await plain(`wamid.LS6-${when}`, 'yes');
+      expect((await footprint(business.id)).invoices).toBe(before.invoices + 1);
+    },
+  );
+});

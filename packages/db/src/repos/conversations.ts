@@ -1594,7 +1594,8 @@ export async function retireNewestReadAfter(
   tx: TenantDb,
   businessId: string,
   draftId: string,
-  options: { asOf?: Date } = {},
+  /* `retired`, when given, collects the id of the question this retires. */
+  options: { asOf?: Date; forRefusal?: string; retired?: string[] } = {},
 ): Promise<number> {
   const seen = options.asOf
     ? sql`AND created_at <= ${options.asOf.toISOString()}::timestamptz`
@@ -1615,7 +1616,20 @@ export async function retireNewestReadAfter(
        AND business_id = ${businessId}::uuid
        AND state = 'pending'
     RETURNING id`);
-  return [...rows].length;
+  const ids = [...rows].map((r) => r.id);
+  options.retired?.push(...ids);
+  /* Kept on the stale refusal the same yes closed, so a failed reply puts the question back with
+   * it (`retireReadsAfter`; CodeRabbit on #437 at 400ca58). */
+  if (options.forRefusal && ids.length > 0) {
+    await tx.execute(sql`
+      UPDATE command_drafts
+         SET command = command || jsonb_build_object('retiredReads',
+               COALESCE(command->'retiredReads', '[]'::jsonb) || ${JSON.stringify(ids)}::jsonb)
+       WHERE business_id = ${businessId}::uuid
+         AND id = ${options.forRefusal}::uuid
+         AND command ? 'answeredBy'`);
+  }
+  return ids.length;
 }
 
 /**

@@ -1232,7 +1232,10 @@ async function pastRefusals(
   asOf: Date,
   /* `readOnly`: a scan that answers a doubt ("yes?") changes nothing, so the sender's stale refusal
    * is looked past, not closed (CodeRabbit on #437 at b2703e7). */
-  options: { readOnly?: boolean } = {},
+  /* `answer`: the yes or no this scan answers. A stale refusal it closes is closed as answered by
+   * that message and listed with the drafts its reply closed, so a reply that never reaches the
+   * member puts it back, as for the refusal the reply answers (CodeRabbit on #437 at 400ca58). */
+  options: { readOnly?: boolean; answer?: { messageId: string; closed: string[] } } = {},
 ): Promise<{
   draft: conversationsRepo.DraftRow | null;
   ownRefusal: conversationsRepo.DraftRow | null;
@@ -1271,9 +1274,15 @@ async function pastRefusals(
     ) {
       return { draft: first ?? draft, ownRefusal: draft, except };
     }
-    if (mine && !options.readOnly)
-      await conversationsRepo.closeRefusalDraft(tx, businessId, draft.id);
-    else except.push(draft.id);
+    if (mine && !options.readOnly) {
+      const closed = await conversationsRepo.closeRefusalDraft(
+        tx,
+        businessId,
+        draft.id,
+        options.answer ? { answeredBy: options.answer.messageId } : {},
+      );
+      if (closed && options.answer) options.answer.closed.push(draft.id);
+    } else except.push(draft.id);
   }
 }
 
@@ -2025,7 +2034,13 @@ async function deterministicReply(
      * waits behind it, and says so (CodeRabbit on #437). "cancel" still drops
      * everything, the refusal included, and never reports the refusal as
      * cancelled. Another member's refusal is looked past (`pastRefusals`). */
-    const past = await pastRefusals(tx, businessId, ctx.from, ctx.receivedAt);
+    const noAnswer = { messageId: ctx.messageId, closed: [] as string[] };
+    const past = await pastRefusals(tx, businessId, ctx.from, ctx.receivedAt, {
+      answer: noAnswer,
+    });
+    if (ctx.outcome && noAnswer.closed.length) {
+      (ctx.outcome.closedByAnswer ??= []).push(...noAnswer.closed);
+    }
     if (past.ownRefusal) {
       await conversationsRepo.closeRefusalDraft(tx, businessId, past.ownRefusal.id, {
         answeredBy: ctx.messageId,
@@ -2916,12 +2931,19 @@ async function confirmPendingDraft(
   }
 
   let draft: conversationsRepo.DraftRow | null;
+  /* The sender's stale refusals this yes closes (`pastRefusals`): its reply answers them. */
+  const yesAnswer = { messageId: sender.messageId, closed: [] as string[] };
   /* The newest thing waiting is a refusal (`refusedAs`): this yes is about it
    * when it is the sender's own and still the last thing they recorded, so it
    * saves nothing and says whether a preview is still waiting. Another member's
    * refusal is looked past without being touched (`pastRefusals`). */
   {
-    const past = await pastRefusals(tx, businessId, sender.from, receivedAt);
+    const past = await pastRefusals(tx, businessId, sender.from, receivedAt, {
+      answer: yesAnswer,
+    });
+    if (sender.outcome && yesAnswer.closed.length) {
+      (sender.outcome.closedByAnswer ??= []).push(...yesAnswer.closed);
+    }
     if (past.ownRefusal) {
       await conversationsRepo.closeRefusalDraft(tx, businessId, past.ownRefusal.id, {
         answeredBy: sender.messageId,
@@ -3026,7 +3048,16 @@ async function confirmPendingDraft(
    * about, and it is answered as that, writing nothing. */
   if (await conversationsRepo.hasReadsAfter(tx, businessId, draft.id, { asOf: receivedAt })) {
     if (draft.previewed === true && !NOT_A_FINANCIAL_PREVIEW.has(draft.intent)) {
-      await conversationsRepo.retireNewestReadAfter(tx, businessId, draft.id, { asOf: receivedAt });
+      /* With a stale refusal this yes closed, the question goes back with that refusal if the
+       * pointer never reaches the member: their repeated yes is then pointed again, never booking
+       * the preview unread (CodeRabbit on #437 at 400ca58). */
+      const staleRefusal = yesAnswer.closed.at(-1);
+      const retired: string[] = [];
+      await conversationsRepo.retireNewestReadAfter(tx, businessId, draft.id, {
+        asOf: receivedAt,
+        ...(staleRefusal ? { forRefusal: staleRefusal, retired } : {}),
+      });
+      if (sender.outcome && retired.length) (sender.outcome.closedByAnswer ??= []).push(...retired);
       if (retrying) {
         await refundRecordedReservations(tx, businessId, eventId, usagePeriod(receivedAt));
       }
@@ -5637,7 +5668,15 @@ function photoBuyerNamed(
    * caption labels as somebody else ("Seller: Ada Obi") is no evidence of the buyer, so those
    * segments are taken out first, and the words either side of one never join into a name
    * (CodeRabbit on #437 at 600a155; independent review at 5e5267c). */
-  const typed = caption === null ? [] : caption.split(NON_BUYER_SEGMENT);
+  /* A clause that rules a name out ("Not sold to Ada Obi", "Ada didn't buy") is no evidence of
+   * the buyer either, so it is dropped whole (CodeRabbit on #437 at 400ca58). */
+  const typed =
+    caption === null
+      ? []
+      : caption
+          .split(NON_BUYER_SEGMENT)
+          .flatMap((part) => part.split(CLAUSE_BREAK))
+          .filter((part) => !NEGATED_CLAUSE.test(part));
   if (
     names.some(
       (name) =>
@@ -5756,6 +5795,10 @@ function fieldNames(after: string, name: string): boolean {
 /** A caption segment that names somebody other than the buyer: "Seller: Ada Obi", "sold by Ada". */
 const NON_BUYER_SEGMENT =
   /\b(?:seller|supplier|vendor|cashier|sales\s*(?:person|rep)|sold\s+by|served\s+by|issued\s+by|(?:deliver(?:y|ed)?|ship(?:ped)?)\s+to)\b\s*[:#\-\u2013]?[^\n,;]*/giu;
+
+/** Where a caption's clauses break, and a clause that denies something ("not", "never", "n't"). */
+const CLAUSE_BREAK = /[\n,;!?]+/u;
+const NEGATED_CLAUSE = /(?:\b(?:not|never|neither|nor)\b|n['\u2019]t\b)/iu;
 
 /** A contact heading at the start of a line, with its separator: "Tel:", "Email -". */
 const CONTACT_HEADING = /^(?:tel|telephone|phone|mobile|whatsapp|email|e-mail)\b\.?\s*[:#-]\s*/iu;

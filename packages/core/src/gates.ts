@@ -464,8 +464,10 @@ export function looksLikeCorrection(text: string, hasPendingDraft: boolean): boo
  * not clearly a correction and is asked about: listing new-sale wordings can never be complete, so
  * the shape of a correction is allowed and everything else is refused.
  */
-/* A decimal needs a currency sign or a k/m suffix. A bare "4.30" is a time. */
-const FIG = String.raw`(?:(?:₦|NGN|N)\s*\d[\d,]*(?:\.\d+)?(?:\s*[km](?![a-z0-9]))?|\d[\d,]*\.\d+\s*[km](?![a-z0-9])|\d[\d,]*(?:\s*[km](?![a-z0-9]))?)`;
+/* A decimal needs a currency sign, a k/m suffix or a unit of measure after it. A bare "4.30" is a
+ * time; "2.5 kg" is a quantity (CodeRabbit on #437 at 400ca58). */
+const DECIMAL_UNIT = String.raw`(?:kgs?|g|l|litres?|liters?|yards?|metres?|meters?|pcs?|pieces?|units?|items?|packs?|cartons?|dozen|sets?|pairs?)`;
+const FIG = String.raw`(?:(?:₦|NGN|N)\s*\d[\d,]*(?:\.\d+)?(?:\s*[km](?![a-z0-9]))?|\d[\d,]*\.\d+\s*[km](?![a-z0-9])|\d[\d,]*\.\d+(?=\s*${DECIMAL_UNIT}(?![a-z0-9]))|\d[\d,]*(?:\s*[km](?![a-z0-9]))?)`;
 const TIME_WORD = String.raw`(?:am|pm|o'?clock|h|hrs?|hours?|mins?|minutes?|s|secs?|seconds?|days?|weeks?|months?|years?|st|nd|rd|th|today|tomorrow|tonight|noon|midnight|morning|evening|night|jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december|mon|monday|tue|tues|tuesday|wed|wednesday|thu|thur|thurs|thursday|fri|friday|sat|saturday|sun|sunday)`;
 /* A figure, then at most one word that is not a time or a date ("4 wigs", "4pcs", "60k each"). */
 /* Words that add to the draft or start another one ("5 more", "5 also", "another") never fill it,
@@ -692,6 +694,16 @@ export function draftFigures(command: Record<string, unknown>): DraftFigures {
     addMoney(command[key]);
   }
   const quantity = command['quantity'];
+  /* The balance a part-paid sale preview shows ("Balance: ₦40,000"), from the same money block
+   * the preview is built from (CodeRabbit on #437 at 400ca58). */
+  if (command['intent'] === 'RecordSale' && items.length > 0) {
+    try {
+      const block = computeMoney(saleToDraft(command as unknown as SaleLike));
+      if (block.balanceDueK > 0 && block.amountPaidK > 0) money.push(block.balanceDueK);
+    } catch {
+      /* A malformed stored sale adds no balance: a figure it cannot show cannot be replaced. */
+    }
+  }
   if (command['intent'] === 'RecordPurchase') {
     /* The balance the preview shows as "Owing to supplier" is a figure the merchant saw
      * (CodeRabbit on #437 at 600a155). */
@@ -735,19 +747,21 @@ const MONEY_FIELD =
   /\b(?:price|total|amount|balance|cost|rate|discount|fee|payment|paid|pay|charge)\b/iu;
 const QUANTITY_FIELD = /\b(?:quantity|qty|pieces|pcs|units|count)\b/iu;
 
-/** A figure's kind from how it is written: money (₦, NGN, "k", "m", "naira", "each", else a
- * decimal), a quantity (a unit after it: "3 pcs", "1.5 kg"), or nothing said ("3", "3 wigs"). A
- * unit wins over a decimal point: "1.5 kg" is a weight, never ₦1.50 (CodeRabbit on #437 at
- * d80426e). */
+/** A figure's kind from how it is written: money (₦, NGN, "k", "m", "naira", "each"), a quantity
+ * (a unit after it: "3 pcs", "1.5 kg"), or nothing said ("3", "3 wigs", "1.5"). A unit wins over
+ * a decimal point: "1.5 kg" is a weight, never ₦1.50 (CodeRabbit on #437 at d80426e). An unmarked
+ * decimal is read as money only after the field the message names (`decimalFigure`). */
 function figureKind(figure: string, word: string | undefined): 'money' | 'quantity' | null {
   const f = figure.toLowerCase();
   if (/^(?:₦|ngn|n)/u.test(f) || /[km]$/u.test(f)) return 'money';
   const w = word?.toLowerCase();
   if (w && MONEY_WORDS.has(w)) return 'money';
   if (w && UNIT_WORDS.has(w) && w !== 'naira') return 'quantity';
-  if (f.includes('.')) return 'money';
   return null;
 }
+
+/** An unmarked decimal ("1.5") is read as money only when nothing else says what it is. */
+const decimalFigure = (figure: string | undefined): boolean => figure?.includes('.') === true;
 
 /** A figure as integer kobo, by integer arithmetic only: "50k" is 5,000,000; "1.5m" is
  * 150,000,000; "₦4.50" is 450. */
@@ -803,7 +817,12 @@ export function replacedFiguresFit(text: string, draft: DraftFigures): boolean {
     if (replacedKind && replacementKind && replacedKind !== replacementKind) return false;
     const own = replacedKind ?? replacementKind;
     if (own && field && own !== field) return false;
-    let kind = own ?? field;
+    /* The named field reads an unmarked decimal ("quantity should be 2 not 1.5"); with no field,
+     * a decimal is money as before (CodeRabbit on #437 at 400ca58). */
+    let kind =
+      own ??
+      field ??
+      (decimalFigure(figure) || decimalFigure(before?.[1]?.trim()) ? 'money' : null);
     if (!kind) {
       /* Two or more figures with nothing to say which is which: asked about. One alone is read
        * as the draft's quantity when it has any ("4 not 3" beside 3 wigs), else its money. */

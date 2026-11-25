@@ -420,3 +420,51 @@ describe('corrections use displayed figures', () => {
     expect(sale.quantities).toEqual([3.5]);
   });
 });
+
+describe('decimal quantities and the sale balance (CodeRabbit on #437 at 400ca58)', () => {
+  it.each(['change the quantity to 2.5 kg', 'make it 1.5 kg', 'No, 2.5 kg not 2 kg'])(
+    'a decimal figure with its unit is a clear correction: %s',
+    (text) => {
+      expect(clearlyCorrects(text)).toBe(true);
+      expect(looksLikeCorrection(text, true)).toBe(true);
+    },
+  );
+
+  it.each(['make it 4.30', 'change it to 2.5'])(
+    'a bare decimal is still no clear correction (it may be a time): %s',
+    (text) => {
+      expect(clearlyCorrects(text)).toBe(false);
+    },
+  );
+
+  it('reads the balance a part-paid sale preview shows', () => {
+    const partPaid = draftFigures({
+      intent: 'RecordSale',
+      items: [{ name: 'generator', quantity: 1, unitPrice: 150_000 }],
+      reportedPayment: 110_000,
+    });
+    expect(replacedFiguresFit('balance should be 35k not 40k', partPaid)).toBe(true);
+    expect(replacedFiguresFit('balance should be 35k not 99k', partPaid)).toBe(false);
+  });
+
+  it('adds no balance for a sale paid in full or over', () => {
+    const paid = draftFigures({
+      intent: 'RecordSale',
+      items: [{ name: 'generator', quantity: 1, unitPrice: 150_000 }],
+      reportedPayment: 150_000,
+    });
+    expect(paid.moneyKobo).not.toContain(0);
+  });
+
+  it('lets the named quantity field read an unmarked decimal as the quantity', () => {
+    const sale = draftFigures({
+      intent: 'RecordSale',
+      items: [{ name: 'rice', quantity: 1.5, unitPrice: 2_000 }],
+    });
+    expect(replacedFiguresFit('No, quantity should be 2 not 1.5', sale)).toBe(true);
+    /* An explicit currency still never stands for a quantity (OWN-103(3)). */
+    expect(replacedFiguresFit('No, quantity should be 2 not ₦1.50', sale)).toBe(false);
+    /* With no field named, an unmarked decimal is still read as money. */
+    expect(replacedFiguresFit('No, 2 not 1.5', sale)).toBe(false);
+  });
+});
