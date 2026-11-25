@@ -194,6 +194,13 @@ describe('a caption that labels its names', () => {
      * words without the negation are (CodeRabbit on #437 at 400ca58). */
     ['rules the chosen customer out', 'Not sold to Ada Obi', 'RECEIPT', false],
     ['rules the chosen customer out with "not for"', 'Not for Ada Obi', 'RECEIPT', false],
+    /* A typographic apostrophe, as phone keyboards type it (independent review of 55f4e22). */
+    [
+      'rules the chosen customer out with a curly apostrophe',
+      'Wasn’t sold to Ada Obi',
+      'RECEIPT',
+      false,
+    ],
     /* A negation after the buyer's name says something else about the sale. */
     ['names the buyer before "not paid yet"', 'Sold to Ada Obi, not paid yet', 'RECEIPT', true],
     ['names the chosen customer as the buyer', 'Sold to Ada Obi', 'RECEIPT', true],

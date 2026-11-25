@@ -446,7 +446,15 @@ describe('CodeRabbit on #437 at 400ca58', () => {
       items: [{ name: 'generator', quantity: 1, unitPrice: 150_000 }],
       reportedPayment: 150_000,
     });
-    expect(paid.moneyKobo).not.toContain(0);
+    expect(replacedFiguresFit('balance should be 5k not 0', paid)).toBe(false);
+    /* A sale whose figures disagree is asked about (CG1), never shown with a balance. */
+    const mismatched = draftFigures({
+      intent: 'RecordSale',
+      items: [{ name: 'generator', quantity: 1, unitPrice: 150_000 }],
+      statedTotal: 100_000,
+      reportedPayment: 60_000,
+    });
+    expect(replacedFiguresFit('balance should be 30k not 40k', mismatched)).toBe(false);
   });
 
   it('lets the field a correction names classify an unmarked decimal', () => {
