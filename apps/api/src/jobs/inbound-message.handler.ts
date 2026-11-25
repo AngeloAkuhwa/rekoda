@@ -5688,7 +5688,13 @@ function photoBuyerNamed(
     names.some(
       (name) =>
         name.trim() &&
-        typed.some((part) => (name.includes('@') ? addressIn(part, name) : typedIn(part, name))),
+        typed.some(
+          (part) =>
+            /* A clause offering alternatives ("For Ada Obi or Bola Ige") selects nobody: the buyer
+             * is ambiguous and asked about (OWN-103(4); CodeRabbit on #437 at c5392f0). */
+            !ALTERNATIVE_BUYER.test(part) &&
+            (name.includes('@') ? addressIn(part, name) : typedIn(part, name)),
+        ),
     ) &&
     fields.every((field) => names.some((name) => name.trim() && fieldNames(field, name)))
   ) {
@@ -5741,6 +5747,8 @@ function captionNamesIssuedCustomer(tokens: LiveTokens, caption: string | null):
  * "not for" is not one: "Not for credit Ada Obi" still names Ada, and "Not for Ada" is asked
  * about, which fails safe (second review of 42a2422..20a95c4).
  */
+/* A word that offers a choice: "or", "either", "nor". */
+const ALTERNATIVE_BUYER = /(?<![\p{L}\p{N}\p{M}])(?:or|either|nor)(?![\p{L}\p{N}\p{M}])/iu;
 const NEGATED_BUYER =
   /\b(?:not|never|isn['’]?t|wasn['’]?t|didn['’]?t|no\s+longer)\s+(?:(?:sold|billed|invoiced|delivered)\s+to|bought\s+by)\b[^\n,;]*/giu;
 
