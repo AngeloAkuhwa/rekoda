@@ -944,7 +944,18 @@ export function unnamedFiguresChanged(
     end = m.index + (m[1]?.length ?? 0);
     const kind = figureKind(figure, m[2]);
     const plain = Number(figure.replace(/,/gu, ''));
-    const isCount = kind !== 'money' && Number.isFinite(plain);
+    /* A field word after the figure, in its own clause, names it ahead of one before it ("5k
+     * discount"; independent review of #437 at 22aa20a). */
+    const named = fieldAfter(lower.slice(end)) ?? fieldOf(gap);
+    /* A figure its clause names as money is money, even when it equals a quantity ("price should be
+     * 3 not 4"), and so is the one it replaces (Codex on #437 at 00c0620). */
+    const namedMoney =
+      named !== null ||
+      (previous !== null &&
+        previous.field !== null &&
+        previous.pair === null &&
+        PAIRED_GAP.test(gap));
+    const isCount = kind !== 'money' && !(kind === null && namedMoney) && Number.isFinite(plain);
     if (isCount) {
       const replacesCount =
         previousCount !== null && PAIRED_GAP.test(gap) && previousCount.pair === null;
@@ -963,7 +974,10 @@ export function unnamedFiguresChanged(
     } else {
       previousCount = null;
     }
-    if (kind === 'quantity' || (kind === null && isCount && seenQuantities.has(plain))) {
+    if (
+      kind === 'quantity' ||
+      (kind === null && isCount && seenQuantities.has(plain) && !namedMoney)
+    ) {
       previous = null;
       continue;
     }
@@ -975,7 +989,7 @@ export function unnamedFiguresChanged(
     const replaces = previous !== null && PAIRED_GAP.test(gap) && previous.pair === null;
     const own: NamedFigure = {
       kobo: k,
-      field: m[2]?.toLowerCase() === 'each' ? 'price' : fieldOf(gap),
+      field: named,
       replaced: replaces || NEGATED_GAP.test(gap),
       pair: null,
       used: false,
@@ -1028,9 +1042,10 @@ export function unnamedFiguresChanged(
     if (c.pair) c.pair.used = true;
     return true;
   };
-  /* The pair naming exactly this count change ("4 not 3" for 3 to 4). Its replaced count may be the
-   * whole count the preview showed for a fractional one ("Adding to stock: 3" for 3.5). */
-  const exactCount = (was: number | null, now: number | null) =>
+  /* The pair naming exactly this count change ("4 not 3" for 3 to 4). For stock, its replaced count
+   * may be the whole count the preview showed for a fractional one ("Adding to stock: 3" for 3.5);
+   * a sale line's count is shown as stored. */
+  const exactCount = (was: number | null, now: number | null, shownWhole: boolean) =>
     namedCounts.find(
       (c) =>
         !c.used &&
@@ -1038,7 +1053,7 @@ export function unnamedFiguresChanged(
         c.pair &&
         c.value === now &&
         was !== null &&
-        (c.pair.value === was || c.pair.value === Math.trunc(was)),
+        (c.pair.value === was || (shownWhole && c.pair.value === Math.trunc(was))),
     );
   /* Otherwise a count change is named by a lone count for its new value, or, when it falls to
    * nothing, by a lone count for its old value; never by a count a "not" replaces, nor by a pair's
@@ -1058,7 +1073,7 @@ export function unnamedFiguresChanged(
       ? kobo(command['amount'], false)
       : kobo(command['reportedPayment'], true);
   const changes: Array<[FigureField, number | null, number | null]> = [];
-  const counts: Array<[number | null, number | null]> = [];
+  const counts: Array<[number | null, number | null, boolean?]> = [];
   if (purchase) {
     /* Paid in full stays paid in full when only the amount moves: the amount names that change. */
     const wasFull =
@@ -1082,7 +1097,7 @@ export function unnamedFiguresChanged(
     ]);
   }
   if ('quantity' in stored) {
-    counts.push([count(stored['quantity']), count(reading['quantity'])]);
+    counts.push([count(stored['quantity']), count(reading['quantity']), true]);
   }
   /* A stock adjustment's count is its delta (Codex on #437 at e9b1cb4): named by its size, and a
    * change of direction ("added" read as "removed") is never a figure the words name. */
@@ -1092,7 +1107,7 @@ export function unnamedFiguresChanged(
     if (was !== now && (was === null || now === null || Math.sign(was) !== Math.sign(now))) {
       return true;
     }
-    counts.push([was === null ? null : Math.abs(was), now === null ? null : Math.abs(now)]);
+    counts.push([was === null ? null : Math.abs(was), now === null ? null : Math.abs(now), true]);
   }
   /* A price and a quantity are checked on every line the draft had: matched one to one, by its
    * exact name, else its name without case or spaces, else its position when the reading has as many
@@ -1131,7 +1146,9 @@ export function unnamedFiguresChanged(
     changes.push(['price', null, kobo(line['unitPrice'], false)]);
     counts.push([null, count(line['quantity'])]);
   }
-  const openCounts = counts.filter(([was, now]) => was !== now && !useCount(exactCount(was, now)));
+  const openCounts = counts.filter(
+    ([was, now, whole]) => was !== now && !useCount(exactCount(was, now, whole === true)),
+  );
   for (const [was, now] of openCounts) {
     if (!useCount(looseCount(was, now))) return true;
   }
@@ -1211,6 +1228,18 @@ const NEGATED_GAP = new RegExp(String.raw`${NEGATION}$`, 'u');
  * before it ("2k delivery fee and 5k discount"). */
 const CLAUSE_BREAK = /[,;]|\band\b/u;
 const BARE_NEGATION = new RegExp(String.raw`^\s*${NEGATION}$`, 'u');
+
+/** The field a word right after a figure names, before the next clause or figure ("5k discount",
+ * "60k each"). */
+function fieldAfter(rest: string): NamedField | null {
+  const clause = rest.split(CLAUSE_BREAK)[0]?.split(/\d|\b(?:not|instead|rather)\b/u)[0] ?? '';
+  let found: { at: number; field: NamedField } | null = null;
+  for (const [pattern, field] of FIELD_WORDS) {
+    const m = new RegExp(pattern.source, 'u').exec(clause);
+    if (m && (!found || m.index < found.at)) found = { at: m.index, field };
+  }
+  return found?.field ?? null;
+}
 
 /** The field a figure's own clause names: the last field word before it in its clause, or, when its
  * clause is only a negation ("no discount, not 2k"), in the clause before. */
