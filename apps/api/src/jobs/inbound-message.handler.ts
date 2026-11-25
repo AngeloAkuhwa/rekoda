@@ -5637,7 +5637,13 @@ function photoBuyerNamed(
    * caption labels as somebody else ("Seller: Ada Obi") is no evidence of the buyer, so those
    * segments are taken out first, and the words either side of one never join into a name
    * (CodeRabbit on #437 at 600a155; independent review at 5e5267c). */
-  const typed = caption === null ? [] : caption.split(NON_BUYER_SEGMENT);
+  /* A segment that rules somebody out ("Not sold to Ada Obi", "not for Ada") is no evidence
+   * either: from its negation to the end of its clause it is taken out the same way (CodeRabbit on
+   * #437 at 400ca58). A negation after the name ("Sold to Ada Obi, not paid yet") leaves it. */
+  const typed =
+    caption === null
+      ? []
+      : caption.split(NON_BUYER_SEGMENT).flatMap((part) => part.split(NEGATED_SEGMENT));
   if (
     names.some(
       (name) =>
@@ -5756,6 +5762,9 @@ function fieldNames(after: string, name: string): boolean {
 /** A caption segment that names somebody other than the buyer: "Seller: Ada Obi", "sold by Ada". */
 const NON_BUYER_SEGMENT =
   /\b(?:seller|supplier|vendor|cashier|sales\s*(?:person|rep)|sold\s+by|served\s+by|issued\s+by|(?:deliver(?:y|ed)?|ship(?:ped)?)\s+to)\b\s*[:#\-\u2013]?[^\n,;]*/giu;
+
+/** A caption clause from a negation to its end: "not sold to Ada", "never Ada's". */
+const NEGATED_SEGMENT = /\b(?:not|never|isn'?t|wasn'?t|didn'?t|no\s+longer)\b[^\n,;]*/giu;
 
 /** A contact heading at the start of a line, with its separator: "Tel:", "Email -". */
 const CONTACT_HEADING = /^(?:tel|telephone|phone|mobile|whatsapp|email|e-mail)\b\.?\s*[:#-]\s*/iu;
