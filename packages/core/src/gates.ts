@@ -741,6 +741,14 @@ export function draftFigures(command: Record<string, unknown>): DraftFigures {
    * (CodeRabbit on #437 at 400ca58). Shown only when something was paid and something is owed. */
   if (command['intent'] === 'RecordSale' && items.length > 0) {
     const sale = saleFigures(command, items);
+    if (sale) {
+      /* The total the preview shows is `computeMoney`'s, which rounds the unit price to the kobo
+       * first, so it can differ by a kobo from the gross rebuilt above ("1.5 at ₦0.29" is ₦0.44
+       * there, ₦0.43 here). It is a figure the merchant saw whether or not anything was paid, and
+       * a CG1 question shows both the stated and the computed total (CodeRabbit on #437). */
+      money.push(sale.totalK);
+      if (sale.mismatch) money.push(sale.computedTotalK);
+    }
     /* A sale whose figures disagree goes to the CG1 question, which shows no balance. */
     if (sale && !sale.mismatch && sale.amountPaidK > 0 && sale.balanceDueK > 0) {
       money.push(sale.balanceDueK);

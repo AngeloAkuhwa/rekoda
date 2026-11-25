@@ -469,3 +469,40 @@ describe('CodeRabbit on #437 at 400ca58', () => {
     expect(replacedFiguresFit('No, 2 not 1.5', rice)).toBe(false);
   });
 });
+
+/* CodeRabbit on #437 (PRRT_kwDOT845J8676qPN): the total a sale preview shows is the one
+ * `computeMoney` returns, which rounds the unit price to the kobo first. 1.5 at ₦0.29 is ₦0.44
+ * there, though quantity x price x 100 rounds to ₦0.43. A merchant correcting the displayed ₦0.44
+ * must be told it was in the draft, whether or not anything was paid. Integer kobo throughout. */
+describe('the sale total the preview shows is a figure of the draft', () => {
+  const FRACTIONAL = {
+    intent: 'RecordSale',
+    items: [{ name: 'tape', quantity: 1.5, unitPrice: 0.29 }],
+  };
+
+  it.each([
+    ['nothing paid', {}],
+    ['part paid', { reportedPayment: 0.2 }],
+    ['fully paid', { reportedPayment: 0.44 }],
+  ])('includes the 44 kobo total when %s', (_, extra) => {
+    const figures = draftFigures({ ...FRACTIONAL, ...extra });
+    expect(figures.moneyKobo).toContain(44);
+    expect(figures.moneyKobo.every(Number.isInteger)).toBe(true);
+  });
+
+  it('accepts a correction of the displayed total, and still refuses a figure never shown', () => {
+    const figures = draftFigures(FRACTIONAL);
+    expect(figures.moneyKobo).toContain(44);
+    expect(figures.moneyKobo).not.toContain(45);
+  });
+
+  it('carries a discount and a delivery fee into the shown total', () => {
+    const figures = draftFigures({
+      intent: 'RecordSale',
+      items: [{ name: 'wig', quantity: 3, unitPrice: 50_000 }],
+      discount: 10_000,
+      deliveryFee: 2_000,
+    });
+    expect(figures.moneyKobo).toContain(14_200_000);
+  });
+});
