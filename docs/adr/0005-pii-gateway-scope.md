@@ -106,7 +106,11 @@ Rekoda stores.
   model-routed message, every chat reply and every message to a customer (`[text message]`,
   `[voice note]`, `[receipt photo]`, `[customer message]`, `[reply]`). Template sends and document
   deliveries keep their existing bodies, a template name or a document caption (its number and amount),
-  which name no person. The text lives only in the job's memory while it runs.
+  which name no person. The raw conversation body lives only in the job's memory while it runs and is never
+  stored here. That is a statement about conversation bodies only: structured business records a confirmed
+  message produces keep what the merchant authored, such as an expense or item description ("fuel for
+  Emeka's car"), and customers are kept as vaulted identities and tokens. Those are financial data, outside
+  G-136, and Rekoda does not promise that no text of any kind is retained.
 - **The webhook body** stays sealed under the vault key in `external_events.payload`. When the merchant
   sends DELETE MY DATA, it is erased for every message Rekoda has finished processing, whatever outcome
   its handler noted, along with the identities and any conversation text stored before G-136. Messages
