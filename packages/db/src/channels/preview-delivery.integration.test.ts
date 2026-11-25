@@ -275,7 +275,7 @@ describe('an unseen preview can never be confirmed (G-20, owner ruling)', () => 
     expect(await claim(businessId, sent.draftId)).toEqual({ outcome: 'claimed' });
   });
 
-  /* A repeated receipt for a question already marked changes nothing (CodeRabbit, #437 cf96697). */
+  /* A repeated receipt for a marked question changes nothing; its state is kept (CodeRabbit, #437). */
   it.each(['expired', 'superseded'])(
     'a repeated receipt leaves a %s question as it was',
     async (st) => {
@@ -291,11 +291,8 @@ describe('an unseen preview can never be confirmed (G-20, owner ruling)', () => 
                              command = '{"intent":"Query"}'::jsonb WHERE id = ${sent.draftId}::uuid`),
       );
       await undelivered(businessId, sent.wamid);
-      /* The state is kept as well as the reason: an expired Query stays expired (CodeRabbit on #437). */
-      expect(await draftRow(businessId, sent.draftId)).toEqual({
-        state: st,
-        reason: 'preview_not_delivered',
-      });
+      const marked = { state: st, reason: 'preview_not_delivered' };
+      expect(await draftRow(businessId, sent.draftId)).toEqual(marked);
       const first = await stamp();
       expect(await undelivered(businessId, sent.wamid)).toBe(0);
       expect(await stamp()).toBe(first);
