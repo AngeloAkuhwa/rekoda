@@ -163,6 +163,42 @@ describe('unnamedFiguresChanged', () => {
       ).toBe(false);
     });
 
+    /* Codex and CodeRabbit on #437 at 50f1cd9: a figure answers only for the field it was named
+     * for, and the figure a correction replaces never answers for a different change. */
+    it('binds each named figure to its field and its pair', () => {
+      const unpaid = {
+        items: [{ name: 'wig', quantity: 1, unitPrice: 40_000 }],
+        reportedPayment: 0,
+      };
+      const repriced = { ...unpaid, items: [{ name: 'wig', quantity: 1, unitPrice: 50_000 }] };
+      const text = 'no, the price should be 50k not 40k';
+      expect(unnamedFiguresChanged(text, unpaid, { ...repriced, reportedPayment: 40_000 })).toBe(
+        true,
+      );
+      expect(unnamedFiguresChanged(text, unpaid, repriced)).toBe(false);
+      expect(
+        unnamedFiguresChanged(`${text}, she paid 40k`, unpaid, {
+          ...repriced,
+          reportedPayment: 40_000,
+        }),
+      ).toBe(false);
+      const paid = {
+        items: [{ name: 'wig', quantity: 1, unitPrice: 50_000 }],
+        reportedPayment: 50_000,
+      };
+      const sixty = { ...paid, items: [{ name: 'wig', quantity: 1, unitPrice: 60_000 }] };
+      expect(
+        unnamedFiguresChanged('no, 60k each not 50k', paid, { ...sixty, reportedPayment: null }),
+      ).toBe(true);
+      expect(unnamedFiguresChanged('no, 60k each not 50k', paid, sixty)).toBe(false);
+      expect(
+        unnamedFiguresChanged('she paid 50k not 40k', unpaid, {
+          ...unpaid,
+          items: [{ name: 'wig', quantity: 1, unitPrice: 50_000 }],
+        }),
+      ).toBe(true);
+    });
+
     it('checks the price of a line the reading adds', () => {
       expect(
         unnamedFiguresChanged('No, 4 not 3', sale, {
