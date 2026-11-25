@@ -5637,15 +5637,25 @@ function photoBuyerNamed(
             (name.includes('@') ? addressIn(part, name) : typedIn(part, name)),
         ),
     ) &&
-    fields.every((field) => names.some((name) => name.trim() && fieldNames(field, name)))
+    fields.every(
+      (field) =>
+        !ALTERNATIVE_BUYER.test(field.split(/[\n;]/u)[0] ?? '') &&
+        names.some((name) => name.trim() && fieldNames(field, name)),
+    )
   ) {
     return true;
   }
   /* Every field must name the buyer. Recorded names and contacts can be different facets of
-   * the same issued token, while a field belonging to somebody else is contradictory. */
+   * the same issued token, while a field belonging to somebody else is contradictory. A field
+   * offering alternatives ("Buyer: Ada Obi, or Bola Ige") names nobody: asked about (OWN-103(4);
+   * Codex on #437 at e9b1cb4). */
   return (
     fields.length > 0 &&
-    fields.every((field) => names.some((name) => name.trim() && fieldNames(field, name)))
+    fields.every(
+      (field) =>
+        !ALTERNATIVE_BUYER.test(field.split(/[\n;]/u)[0] ?? '') &&
+        names.some((name) => name.trim() && fieldNames(field, name)),
+    )
   );
 }
 
