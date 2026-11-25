@@ -67,8 +67,11 @@ describe('a yes after a refused record', () => {
   it('a no after a refusal alone cancels nothing and says so', async () => {
     await seedMerchant();
     await say('wamid.R10', payment({ kind: 'token', token: 'CUSTOMER_7K2' }), 'Bisi paid 20k');
+    /* The no gets its own reply, not silence behind the refusal's text (CodeRabbit on #437). */
+    const sentBefore = stubSender.sent.length;
     await plain('wamid.R11', 'no');
-    expect(stubSender.lastText).not.toBe('Cancelled.');
+    expect(stubSender.sent.length).toBe(sentBefore + 1);
+    expect(stubSender.lastText).toBe(replies.nothingToDecline().text);
     expect(stubSender.lastText).not.toContain('Cancelled');
   });
 

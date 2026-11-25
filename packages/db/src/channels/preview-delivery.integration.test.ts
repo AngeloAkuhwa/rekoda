@@ -291,7 +291,11 @@ describe('an unseen preview can never be confirmed (G-20, owner ruling)', () => 
                              command = '{"intent":"Query"}'::jsonb WHERE id = ${sent.draftId}::uuid`),
       );
       await undelivered(businessId, sent.wamid);
-      expect((await draftRow(businessId, sent.draftId))?.reason).toBe('preview_not_delivered');
+      /* The state is kept as well as the reason: an expired Query stays expired (CodeRabbit on #437). */
+      expect(await draftRow(businessId, sent.draftId)).toEqual({
+        state: st,
+        reason: 'preview_not_delivered',
+      });
       const first = await stamp();
       expect(await undelivered(businessId, sent.wamid)).toBe(0);
       expect(await stamp()).toBe(first);

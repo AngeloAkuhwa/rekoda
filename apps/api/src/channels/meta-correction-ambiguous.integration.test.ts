@@ -62,6 +62,12 @@ async function send(text: string, wamid: string, from = OWNER) {
   while (worked) worked = await runner.runOnce();
 }
 
+async function drainAll() {
+  const runner = buildRunner(workerDb, db, deps);
+  let worked = await runner.runOnce();
+  while (worked) worked = await runner.runOnce();
+}
+
 const sales = (businessId: string) =>
   withBusiness(db, businessId, (tx) =>
     tx.execute<{ state: string; customer: unknown }>(
@@ -121,6 +127,31 @@ async function expectAdaUntouched(
   expect(await saleDraft(businessId)).toEqual(before);
 }
 
+/* The yes is held behind the earlier live message (OWN-74), so an empty book could mean it never ran.
+ * Finish the earlier message, let the held yes run, and prove it did (CodeRabbit on #437). */
+async function runHeldYes(businessId: string, wamid: string) {
+  await asTenant(
+    businessId,
+    sql`UPDATE jobs SET state = 'done', locked_by = NULL, locked_at = NULL
+         WHERE business_id = ${businessId}::uuid AND kind = 'inbound.message'
+           AND state IN ('pending', 'running')
+           AND payload->>'eventId' <> (SELECT id::text FROM external_events
+                                        WHERE business_id = ${businessId}::uuid
+                                          AND external_id = ${wamid})`,
+  );
+  await asTenant(
+    businessId,
+    sql`UPDATE jobs SET run_at = now() WHERE business_id = ${businessId}::uuid AND state = 'pending'`,
+  );
+  await drainAll();
+  const rows = await withBusiness(db, businessId, (tx) =>
+    tx.execute<{ state: string }>(sql`
+      SELECT j.state FROM jobs j JOIN external_events e ON e.id::text = j.payload->>'eventId'
+       WHERE j.business_id = ${businessId}::uuid AND e.external_id = ${wamid}`),
+  );
+  expect([...rows].map((r) => r.state)).toEqual(['done']);
+}
+
 describe('CG5: a correction sent while an earlier message is still live', () => {
   it('is asked about while the earlier message backs off, and the preview is withdrawn', async () => {
     const { business } = await seedOwner();
@@ -137,6 +168,7 @@ describe('CG5: a correction sent while an earlier message is still live', () => 
     await expectAdaWithdrawn(business.id);
     /* Withdrawn, so a yes now books nothing of it. */
     await send('yes', 'wamid.R1-YES');
+    await runHeldYes(business.id, 'wamid.R1-YES');
     expect(await invoiceTotals(business.id)).toEqual([]);
   });
 
@@ -161,6 +193,7 @@ describe('CG5: a correction sent while an earlier message is still live', () => 
     await expectAdaWithdrawn(business.id);
     /* Withdrawn, so a yes now books nothing of it. */
     await send('yes', 'wamid.R2-YES');
+    await runHeldYes(business.id, 'wamid.R2-YES');
     expect(await invoiceTotals(business.id)).toEqual([]);
   });
 

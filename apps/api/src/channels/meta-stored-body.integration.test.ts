@@ -284,7 +284,19 @@ async function logsDuring(run: () => Promise<void>): Promise<string> {
   const lines: string[] = [];
   for (const level of ['log', 'warn', 'error', 'debug', 'verbose'] as const) {
     vi.spyOn(Logger.prototype, level).mockImplementation((...args: unknown[]) => {
-      lines.push(args.map(String).join(' '));
+      /* Structured arguments are serialised, never coerced to "[object Object]", so a name inside
+       * a logged object is seen too (CodeRabbit on #437). */
+      lines.push(
+        args
+          .map((a) =>
+            typeof a === 'string'
+              ? a
+              : (JSON.stringify(a, (_k, v: unknown) =>
+                  v instanceof Error ? { message: v.message, stack: v.stack } : v,
+                ) ?? String(a)),
+          )
+          .join(' '),
+      );
     });
   }
   await run();
@@ -301,6 +313,13 @@ const usageMeta = async (businessId: string): Promise<string[]> => {
 };
 
 describe('a first-mentioned customer name in a record (OD-73, OWN-106)', () => {
+  it('the log capture sees a name inside a structured argument', async () => {
+    const seen = await logsDuring(async () => {
+      new Logger('Probe').warn({ customer: 'Ada Obi' });
+    });
+    expect(seen).toContain('Ada Obi');
+  });
+
   it('reaches the interpreter as typed once, then only as a token, and is never stored, logged or metered', async () => {
     const business = await seedMerchantN();
     stubTransport.requests.length = 0;
