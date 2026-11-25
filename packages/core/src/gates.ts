@@ -930,10 +930,21 @@ export function unnamedFiguresChanged(
     typeof line['name'] === 'string' ? line['name'].trim().toLowerCase() : '';
   const before = lines(stored['items']);
   const after = lines(reading['items']);
+  /* One to one: each corrected line answers for one draft line at most, by its exact name, else its
+   * name without case or spaces, else its position, so two lines alike but for case are both checked
+   * (Codex on #437 at c5392f0). */
+  const used = new Set<number>();
+  const take = (pick: (l: Record<string, unknown>, j: number) => boolean) => {
+    const j = after.findIndex((l, k) => !used.has(k) && pick(l, k));
+    if (j < 0) return undefined;
+    used.add(j);
+    return after[j];
+  };
   for (const [i, line] of before.entries()) {
     const same =
-      after.find((l) => key(l) !== '' && key(l) === key(line)) ??
-      (after.length === before.length ? after[i] : undefined);
+      take((l) => typeof l['name'] === 'string' && l['name'] === line['name']) ??
+      take((l) => key(l) !== '' && key(l) === key(line)) ??
+      (after.length === before.length ? take((_l, j) => j === i) : undefined);
     const price = kobo(line['unitPrice'], false);
     if (!same) {
       if (price !== null && !named.has(price)) return true;
