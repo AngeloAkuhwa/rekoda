@@ -930,9 +930,12 @@ export function unnamedFiguresChanged(
    * to the other, so "price 50k not 40k" names the price change and the 40k never names a payment. */
   const lower = text.toLowerCase();
   const money: NamedFigure[] = [];
-  const namedCounts: number[] = [];
+  /* Counts pair the same way ("4 not 3"): the 3 answers only with the 4, for the one change from 3
+   * to 4, never for another line's count (Codex on #437 at 1f99af5). */
+  const namedCounts: NamedCount[] = [];
   let end = 0;
   let previous: NamedFigure | null = null;
+  let previousCount: NamedCount | null = null;
   for (const m of lower.matchAll(ANY_FIGURE)) {
     const figure = m[1]?.trim();
     if (!figure) continue;
@@ -942,7 +945,24 @@ export function unnamedFiguresChanged(
     const kind = figureKind(figure, m[2]);
     const plain = Number(figure.replace(/,/gu, ''));
     const isCount = kind !== 'money' && Number.isFinite(plain);
-    if (isCount) namedCounts.push(plain);
+    if (isCount) {
+      const replacesCount =
+        previousCount !== null && PAIRED_GAP.test(gap) && previousCount.pair === null;
+      const own: NamedCount = {
+        value: plain,
+        replaced: replacesCount || NEGATED_GAP.test(gap),
+        pair: null,
+        used: false,
+      };
+      if (replacesCount && previousCount) {
+        own.pair = previousCount;
+        previousCount.pair = own;
+      }
+      namedCounts.push(own);
+      previousCount = own;
+    } else {
+      previousCount = null;
+    }
     if (kind === 'quantity' || (kind === null && isCount && seenQuantities.has(plain))) {
       previous = null;
       continue;
@@ -996,20 +1016,24 @@ export function unnamedFiguresChanged(
       ? (money.find((f) => !f.replaced && f.pair === null && f.kobo === now && fits(f, field)) ??
         money.find((f) => !f.replaced && f.pair !== null && f.kobo === now && fits(f, field)))
       : money.find((f) => f.pair === null && f.kobo === was && fits(f, field));
-  const take = (pool: number[], value: number) => {
-    const i = pool.indexOf(value);
-    if (i < 0) return false;
-    pool.splice(i, 1);
+  const useCount = (c: NamedCount | undefined) => {
+    if (!c) return false;
+    c.used = true;
+    if (c.pair) c.pair.used = true;
     return true;
   };
-  /* Whether a change of a count from `was` to `now` is one the merchant named: by its new value, or
-   * by its old one when it falls to nothing. Unchanged is always fine. */
-  const namedCount = (was: number | null, now: number | null) => {
-    if (was === now) return true;
-    if (now !== null && now !== 0) return take(namedCounts, now);
-    if (was !== null && was !== 0) return take(namedCounts, was);
-    return true;
-  };
+  /* The pair naming exactly this count change ("4 not 3" for 3 to 4). */
+  const exactCount = (was: number | null, now: number | null) =>
+    namedCounts.find(
+      (c) => !c.used && !c.replaced && c.pair && c.value === now && c.pair.value === was,
+    );
+  /* Otherwise a count change is named by a count for its new value (never one a "not" replaces), or,
+   * when it falls to nothing, by a lone count for its old value; never by a pair's count. */
+  const looseCount = (was: number | null, now: number | null) =>
+    now !== null && now !== 0
+      ? (namedCounts.find((c) => !c.used && !c.replaced && !c.pair && c.value === now) ??
+        namedCounts.find((c) => !c.used && !c.replaced && c.pair && c.value === now))
+      : namedCounts.find((c) => !c.used && !c.pair && c.value === was);
   const kobo = (v: unknown, nullIsZero: boolean): number | null =>
     typeof v === 'number' && Number.isFinite(v) ? nairaToKobo(v) : nullIsZero ? 0 : null;
   /* A purchase with no payment stated is paid in full (`gatePurchase`), so "nothing stated" and ₦0
@@ -1093,8 +1117,9 @@ export function unnamedFiguresChanged(
     changes.push(['price', null, kobo(line['unitPrice'], false)]);
     counts.push([null, count(line['quantity'])]);
   }
-  for (const [was, now] of counts) {
-    if (!namedCount(was, now)) return true;
+  const openCounts = counts.filter(([was, now]) => was !== now && !useCount(exactCount(was, now)));
+  for (const [was, now] of openCounts) {
+    if (!useCount(looseCount(was, now))) return true;
   }
   /* Exact pairs first, so a pair answers for its own change before any looser reading. */
   const open = changes.filter(
@@ -1134,6 +1159,13 @@ interface NamedFigure {
   replaced: boolean;
   /** Its other half in "50k not 40k"; the two answer for one change, together. */
   pair: NamedFigure | null;
+  used: boolean;
+}
+/** A count the correction's words hold, paired like a money figure. */
+interface NamedCount {
+  value: number;
+  replaced: boolean;
+  pair: NamedCount | null;
   used: boolean;
 }
 /** What a figure named for one field may answer for. */
