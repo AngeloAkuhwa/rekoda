@@ -53,7 +53,9 @@ async function lateFailure(): Promise<void> {
 async function refusalStates(businessId: string): Promise<string[]> {
   const phones = new Map<string, string>();
   for (const phone of [OWNER, DELEGATE]) {
-    phones.set((await identity.upsertUserByPhone(db, `+${phone}`)).id, `+${phone}`);
+    /* Read-only: the probe never creates or touches a member (CodeRabbit on #437 at c5392f0). */
+    const user = await identity.findUserByPhone(db, `+${phone}`);
+    if (user) phones.set(user.id, `+${phone}`);
   }
   const rows = await withBusiness(db, businessId, (tx) =>
     tx.execute<{ state: string; by: string | null }>(sql`
@@ -403,8 +405,12 @@ describe("an undelivered clarification before another member's preview", () => {
       await drain();
       const before = await footprint(business.id);
 
+      /* The yes answers the owner's refusal, not just books nothing (CodeRabbit on #437 at
+       * c5392f0). */
+      expect(await refusalStates(business.id)).toEqual([`+${OWNER}:pending`]);
       await plain(`wamid.UC4-${when}`, 'yes');
       expect(await footprint(business.id)).toEqual(before);
+      expect(await refusalStates(business.id)).toEqual([`+${OWNER}:superseded`]);
     },
   );
 });
@@ -434,8 +440,10 @@ describe('a superseded preview reported failed after a refusal', () => {
     await drain();
     const before = await footprint(business.id);
 
+    expect(await refusalStates(business.id)).toEqual([`+${OWNER}:pending`]);
     await plain('wamid.SP4', 'yes');
     expect(await footprint(business.id)).toEqual(before);
+    expect(await refusalStates(business.id)).toEqual([`+${OWNER}:superseded`]);
   });
 });
 

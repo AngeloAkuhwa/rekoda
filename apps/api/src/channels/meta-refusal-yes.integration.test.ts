@@ -181,7 +181,10 @@ describe('a yes after a refused record', () => {
     await plain('wamid.R22', 'yes');
     expect(stubSender.lastText).toContain('Saved');
 
+    /* R23 gets a reply of its own, which is then checked (CodeRabbit on #437 at c5392f0). */
+    const sent = stubSender.sent.length;
     await plain('wamid.R23', 'yes');
+    expect(stubSender.sent.length).toBeGreaterThan(sent);
     expect(stubSender.lastText).not.toContain('Nothing was saved from your last message');
   });
 

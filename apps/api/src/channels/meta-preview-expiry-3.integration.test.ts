@@ -439,7 +439,7 @@ describe('a repeated yes and a failed receipt for the pointer reply (CodeRabbit 
     expect(await statesR(business.id)).toEqual(['RecordSale:pending', 'Query:pending']);
   });
 
-  it('a pointer WhatsApp delivered: the second yes books once', async () => {
+  it('a pointer WhatsApp accepted, no failure reported: the second yes books once', async () => {
     const { business, before } = await pointedAt('RC5');
 
     await post(messagePayload(OWNER, 'wamid.RC5-yes2', 'yes'));
