@@ -438,3 +438,50 @@ describe('a superseded preview reported failed after a refusal', () => {
     expect(await footprint(business.id)).toEqual(before);
   });
 });
+
+/**
+ * A yes after a preview and a question is pointed back at the preview, retiring the question. A
+ * pointer that never reached the merchant retires nothing: the question is put back, so their
+ * repeated yes is pointed again and never books a preview they were not told is waiting. With a
+ * refusal before the question, that refusal is stale and the question is the guard (CodeRabbit on
+ * #437 at 400ca58).
+ */
+describe('a pointer to a preview behind a question that never arrived', () => {
+  it.each([
+    ['fails at send', false],
+    ['fails at send after a stale refusal', true],
+    ['fails late', false],
+    ['fails late after a stale refusal', true],
+  ] as const)('%s: the repeated yes books nothing', async (how, refusal) => {
+    const tag = `PQ${how.length}${refusal ? 'r' : ''}`;
+    const business = await seedMerchant();
+    const ada = await deps.gateway.resolveMention(business.id, 'Ada Obi');
+    await say(
+      `wamid.${tag}1`,
+      sale({ kind: 'token', token: ada.token }),
+      'sold Ada Obi 2 wigs for 100k',
+    );
+    if (refusal) {
+      await post(mediaMessage(`wamid.${tag}2`, STICKER, OWNER));
+      await drain();
+    }
+    await say(`wamid.${tag}3`, QUESTION, 'how much did I sell today');
+    const before = await footprint(business.id);
+
+    const late = how.startsWith('fails late');
+    if (!late) stubSender.failWith();
+    await plain(`wamid.${tag}4`, 'yes');
+    if (late) {
+      /* WhatsApp accepted the pointer, then reported it failed. */
+      expect(stubSender.lastText).toBe(replies.previewBehindQuestion().text);
+      await lateFailure();
+    }
+
+    await plain(`wamid.${tag}5`, 'yes');
+    expect(stubSender.lastText).toBe(replies.previewBehindQuestion().text);
+    expect(await footprint(business.id)).toEqual(before);
+    /* Read this time: the yes after it saves the preview, once. */
+    await plain(`wamid.${tag}6`, 'yes');
+    expect((await footprint(business.id)).invoices).toBe(before.invoices + 1);
+  });
+});
