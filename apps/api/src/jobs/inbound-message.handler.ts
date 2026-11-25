@@ -5770,7 +5770,8 @@ const NON_BUYER_SEGMENT =
   /\b(?:seller|supplier|vendor|cashier|sales\s*(?:person|rep)|sold\s+by|served\s+by|issued\s+by|(?:deliver(?:y|ed)?|ship(?:ped)?)\s+to)\b\s*[:#\-\u2013]?[^\n,;]*/giu;
 
 /** A caption clause from a negation to its end: "not sold to Ada", "never Ada's". */
-const NEGATED_SEGMENT = /\b(?:not|never|isn'?t|wasn'?t|didn'?t|no\s+longer)\b[^\n,;]*/giu;
+/* The apostrophe as typed or as phone keyboards curl it ("wasn’t"; independent review of 55f4e22). */
+const NEGATED_SEGMENT = /\b(?:not|never|isn['’]?t|wasn['’]?t|didn['’]?t|no\s+longer)\b[^\n,;]*/giu;
 
 /** A contact heading at the start of a line, with its separator: "Tel:", "Email -". */
 const CONTACT_HEADING = /^(?:tel|telephone|phone|mobile|whatsapp|email|e-mail)\b\.?\s*[:#-]\s*/iu;

@@ -741,7 +741,10 @@ export function draftFigures(command: Record<string, unknown>): DraftFigures {
    * (CodeRabbit on #437 at 400ca58). Shown only when something was paid and something is owed. */
   if (command['intent'] === 'RecordSale' && items.length > 0) {
     const sale = saleFigures(command, items);
-    if (sale && sale.amountPaidK > 0 && sale.balanceDueK > 0) money.push(sale.balanceDueK);
+    /* A sale whose figures disagree goes to the CG1 question, which shows no balance. */
+    if (sale && !sale.mismatch && sale.amountPaidK > 0 && sale.balanceDueK > 0) {
+      money.push(sale.balanceDueK);
+    }
   }
   /* A stock adjustment's preview shows its count ("Adding 3"), whichever way it moves (Codex on
    * #437 at af169b0). */
