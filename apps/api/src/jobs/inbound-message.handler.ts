@@ -5669,11 +5669,19 @@ function pageBuyerFields(rawText: string, caption: string | null): string[] {
   const fields: string[] = [];
   for (const label of page.matchAll(BUYER_LABEL)) {
     const lines = page.slice(label.index + label[0].length).split(/\r?\n/u);
-    const after = foldField(lines.find((line) => line.trim()) ?? '');
-    /* An empty label followed by another field's heading ("Buyer:\nTel: 0803…") holds nothing: the
-     * heading is not the buyer's value (CodeRabbit on #437 at 6b3fc05). */
-    if (!lines[0]?.trim() && (RECEIPT_HEADING.test(after) || NEXT_FIELD.test(` ${after}`)))
-      continue;
+    let after = foldField(lines.find((line) => line.trim()) ?? '');
+    if (!lines[0]?.trim()) {
+      if (RECEIPT_HEADING.test(after)) continue;
+      /* A contact heading on the next line ("Buyer:\nTel: 0803…") is not the buyer's value: what
+       * follows it is, and an empty one holds nothing (CodeRabbit and an independent review on
+       * #437 at 6b3fc05). A valued contact still labels a buyer, so a sale read with nobody is
+       * asked about, never booked as anonymous (OWN-103(4)). */
+      const contact = CONTACT_HEADING.exec(after);
+      if (contact) {
+        after = after.slice(contact[0].length).trim();
+        if (!after) continue;
+      }
+    }
     const first = after.split(/\s/u)[0] ?? '';
     const phone = leadingPhoneDigits(after).length >= 10;
     if (/^[\p{L}]/u.test(after) || first.includes('@') || phone) fields.push(after);
@@ -5713,6 +5721,9 @@ function fieldNames(after: string, name: string): boolean {
 }
 
 /** A field label after a buyer's name on the same line: it ends the name. */
+/** A contact heading at the start of a line, with its separator: "Tel:", "Email -". */
+const CONTACT_HEADING = /^(?:tel|telephone|phone|mobile|whatsapp|email|e-mail)\b\.?\s*[:#-]\s*/iu;
+
 const NEXT_FIELD =
   /^\s+(?:tel|telephone|phone|mobile|whatsapp|email|e-mail|address|addr|date|invoice|inv|receipt|ref)\b\.?\s*[:#-]/iu;
 

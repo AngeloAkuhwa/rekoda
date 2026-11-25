@@ -171,10 +171,10 @@ export default function PrivacyPage() {
                         enabled for your account
                       </td>
                       <td className="rk-wrap">
-                        Kept while Rekoda processes a message. DELETE MY DATA erases the ones
-                        already processed. A message delivered before our latest privacy change in
-                        the same batch as another business&apos;s message can still have a copy
-                        stored with that business&apos;s message.
+                        Kept while Rekoda processes a message. Where it is enabled, DELETE MY DATA
+                        erases the ones already processed. A message delivered before our latest
+                        privacy change in the same batch as another business&apos;s message can
+                        still have a copy stored with that business&apos;s message.
                       </td>
                     </tr>
                     <tr>
