@@ -905,7 +905,8 @@ const unappliedFailedReceipt = (draft: SQL) => sql`EXISTS (
       ON m.business_id = j.business_id
      AND m.direction = 'outbound'
      AND m.provider_message_id = j.payload->>'outboundMessageId'
-   WHERE j.business_id = ${draft}.business_id
+   WHERE j.business_id = nullif(current_setting('app.business_id', true), '')::uuid
+     AND j.business_id = ${draft}.business_id
      AND j.kind = 'delivery.status'
      AND m.reply_to_message_id = ${draft}.conversation_message_id
      AND (j.state IN ('pending', 'running')
