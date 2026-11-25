@@ -363,6 +363,40 @@ describe('unnamedFiguresChanged', () => {
       ).toBe(false);
     });
 
+    /* Independent review of #437 at 22aa20a: a field word after its figure ("5k discount") names
+     * that figure's field, so the figure answers for nothing else. */
+    it.each([
+      [
+        'no, 60k each and 5k discount',
+        { items: [{ name: 'wig', quantity: 3, unitPrice: 60_000 }], reportedPayment: 5_000 },
+      ],
+      [
+        'no, 60k each, 5k discount',
+        { items: [{ name: 'wig', quantity: 3, unitPrice: 60_000 }], reportedPayment: 5_000 },
+      ],
+      ['no, 2k delivery fee and 5k discount', { deliveryFee: 5_000, discount: 2_000 }],
+      ['no, 5k discount', { reportedPayment: 5_000 }],
+      ['paid 20k, 5k discount', { reportedPayment: 20_000, deliveryFee: 5_000 }],
+    ] as const)('"%s" names no other field', (text, change) => {
+      const unpaid = { ...sale, reportedPayment: 0 };
+      expect(unnamedFiguresChanged(text, unpaid, { ...unpaid, ...change })).toBe(true);
+    });
+
+    /* Codex on #437 at 00c0620: a figure its clause names as money is money, even when it equals a
+     * quantity; the whole-count reading of a fractional quantity is only for stock the preview shows
+     * whole. */
+    it('reads a named price as money and a sale line count as stored', () => {
+      const sweets = { items: [{ name: 'sweet', quantity: 3, unitPrice: 4 }] };
+      const three = { items: [{ name: 'sweet', quantity: 3, unitPrice: 3 }] };
+      expect(unnamedFiguresChanged('No, price should be 3 not 4', sweets, three)).toBe(false);
+      const cloth = { items: [{ name: 'cloth', quantity: 3.5, unitPrice: 1_000 }] };
+      expect(
+        unnamedFiguresChanged('no, 4 not 3', cloth, {
+          items: [{ ...cloth.items[0]!, quantity: 4 }],
+        }),
+      ).toBe(true);
+    });
+
     it('checks the price of a line the reading adds', () => {
       expect(
         unnamedFiguresChanged('No, 4 not 3', sale, {
