@@ -343,8 +343,19 @@ it('corrects the whole stock count shown for a fractional purchase quantity', as
     'RecordPurchase:superseded',
     'RecordPurchase:pending',
   ]);
+  /* The stock that moved, not only the draft states (CodeRabbit on #437 at 600a155). */
+  const arrived = async () =>
+    [
+      ...(await withBusiness(db, business.id, (tx) =>
+        tx.execute<{ delta: number }>(sql`
+          SELECT delta FROM inventory_movements
+           WHERE business_id = ${business.id}::uuid ORDER BY created_at`),
+      )),
+    ].map((r) => r.delta);
   await send('yes', 'wamid.CQ-confirm');
+  expect(await arrived()).toEqual([4]);
   await send('yes', 'wamid.CQ-repeat');
+  expect(await arrived()).toEqual([4]);
   expect(await drafts(business.id)).toEqual([
     'RecordPurchase:superseded',
     'RecordPurchase:confirmed',

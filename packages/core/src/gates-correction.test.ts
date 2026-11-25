@@ -389,6 +389,18 @@ describe('a replaced figure and its replacement agree on what they are', () => {
 });
 
 describe('corrections use displayed figures', () => {
+  it('reads the balance a part-paid purchase preview shows (CodeRabbit on #437 at 600a155)', () => {
+    const partPaid = draftFigures({
+      intent: 'RecordPurchase',
+      description: 'ankara fabric',
+      amount: 50_000,
+      reportedPayment: 20_000,
+    });
+    expect(replacedFiguresFit('No, balance should be 25k not 30k', partPaid)).toBe(true);
+    expect(replacedFiguresFit('No, amount 60k not 50k', partPaid)).toBe(true);
+    expect(replacedFiguresFit('No, balance should be 25k not 35k', partPaid)).toBe(false);
+  });
+
   it('recognises a decimal million suffix in the inheritance check', () => {
     expect(correctionWordsExplained('change the price to 1.6m', ['wig'])).toBe(true);
     expect(correctionWordsExplained('1.6m Price not 1.5m', ['Price'])).toBe(false);

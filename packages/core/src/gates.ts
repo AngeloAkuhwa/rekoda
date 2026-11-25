@@ -693,6 +693,11 @@ export function draftFigures(command: Record<string, unknown>): DraftFigures {
   }
   const quantity = command['quantity'];
   if (command['intent'] === 'RecordPurchase') {
+    /* The balance the preview shows as "Owing to supplier" is a figure the merchant saw
+     * (CodeRabbit on #437 at 600a155). */
+    const amountK = naira(command['amount']);
+    const paidK = naira(command['reportedPayment']);
+    if (amountK !== null && paidK !== null && amountK > paidK) money.push(amountK - paidK);
     const productMention = command['productMention'];
     if (typeof productMention === 'string' && typeof quantity === 'number') {
       addQuantity(stockArrival(productMention, quantity)?.quantity);
