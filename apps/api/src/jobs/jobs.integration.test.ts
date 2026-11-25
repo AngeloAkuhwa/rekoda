@@ -343,7 +343,7 @@ describe('a customer name never reaches the model twice', () => {
    * exception to spec Appendix C.3. A name first met in a record reaches the approved Anthropic
    * interpreter as typed ("Ada" below) until it is tokenised; a known identity never does
    * (CUSTOMER_ADA). The permitted and forbidden cases are pinned in
-   * `channels/meta-record-name-exception.integration.test.ts`. */
+   * `channels/meta-stored-body.integration.test.ts`. */
   /* Was "never rewrites a token while scrubbing a name": the after-model scrub is gone
    * with G-136 (the history keeps a placeholder, so there is nothing to scrub). What
    * stays true: the model reads the known phone as its token, untouched, and the
