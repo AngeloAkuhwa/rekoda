@@ -47,6 +47,9 @@ describe('buyer fields on a photographed sale', () => {
     ['the buyer alone typed in the caption', 'Items:', true, 'For Ada Obi'],
     ['alternative buyers in the caption', 'Items:', false, 'For Ada Obi or Bola Ige'],
     ['either of two buyers in the caption', 'Items:', false, 'Either Ada Obi or Bola, not sure'],
+    /* A labelled field offering alternatives selects nobody either (Codex on #437 at e9b1cb4). */
+    ['alternative buyers in a caption field', 'Items:', false, 'Buyer: Ada Obi, or Bola Ige'],
+    ['alternative buyers in a page field', 'Buyer: Ada Obi or Bola Ige', false],
     ['extra phone digits', 'Buyer: 08035551234 567\nSeller: 08035551234', false],
   ] as [string, string, boolean, string?][])('%s', async (_, fields, accepted, caption) => {
     const business = await seedMerchant('+' + OWNER);
