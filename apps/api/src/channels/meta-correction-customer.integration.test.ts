@@ -254,10 +254,14 @@ describe('CG5: a correction keeps the customer of the draft it corrects', () => 
     const rows = await drafts(business.id);
     // A "no" closes the preview as superseded; nothing brings it back.
     expect(rows[0]?.state).toBe('superseded');
+    /* With no draft waiting, the correction is a new nameless request, previewed and booked once
+     * (CodeRabbit on #437 at c5392f0). */
+    expect(rows.map((r) => r.state)).toEqual(['superseded', 'pending']);
     expect(rows.at(-1)?.customer).toEqual(NAMELESS);
     await send('yes', 'wamid.C7-YES');
     const issued = await invoiceCustomers(business.id);
-    expect(issued.every((i) => i.customer_id !== ada.id)).toBe(true);
+    expect(issued).toHaveLength(1);
+    expect(issued[0]?.customer_id).not.toBe(ada.id);
   });
 
   it('after a refusal, a nameless correction is asked about and the preview is left as it was', async () => {

@@ -365,6 +365,14 @@ it('corrects the whole stock count shown for a fractional purchase quantity', as
 /* OD-76 Option A (owner ruling OWN-107): a correction changes only the figures the merchant names.
  * "No, 4 not 3" read with a different payment, price or delivery fee is asked about and changes
  * nothing; read with only the named figure (and the total that follows from it) it corrects. */
+const waitingCommand = async (businessId: string) => [
+  ...(await withBusiness(db, businessId, (tx) =>
+    tx.execute<{ id: string; command: unknown }>(sql`
+      SELECT id, command FROM command_drafts
+       WHERE business_id = ${businessId}::uuid AND state = 'pending' AND intent = 'RecordSale'`),
+  )),
+];
+
 describe('a correction whose reading changes a figure the merchant did not name', () => {
   const PAID = { ...SALE, reportedPayment: 100_000 };
   const FOUR = {
@@ -383,10 +391,13 @@ describe('a correction whose reading changes a figure the merchant did not name'
   ])('%s: asked about, the waiting sale unchanged, nothing booked', async (_, reading) => {
     const { business } = await seedOwner();
     await send('sold Ada 3 wigs for 150k, paid 100k', 'wamid.UF1', PAID);
+    const waiting = await waitingCommand(business.id);
     await send('No, 4 not 3', 'wamid.UF2', reading);
 
     expect(stubSender.lastText).toBe(replies.correctionChangedUnnamedFigure().text);
     expect(await drafts(business.id)).toEqual(['RecordSale:pending']);
+    /* The same draft, its command untouched (CodeRabbit on #437 at c5392f0). */
+    expect(await waitingCommand(business.id)).toEqual(waiting);
     expect((await books(business.id)).invoices).toEqual([]);
   });
 

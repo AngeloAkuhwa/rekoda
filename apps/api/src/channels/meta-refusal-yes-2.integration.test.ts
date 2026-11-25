@@ -59,6 +59,8 @@ describe('the yes the refusal reply promises saves the preview behind it', () =>
 
     await plain(`wamid.RP4-${answer}`, answer);
     expect(stubSender.lastText).toBe(replies.previewBehindRefusal().text);
+    /* The refusal answer itself books nothing (CodeRabbit on #437 at c5392f0). */
+    expect(await footprint(business.id)).toEqual(before);
     await plain(`wamid.RP5-${answer}`, 'yes');
     expect((await footprint(business.id)).invoices).toBe(before.invoices + 1);
   });

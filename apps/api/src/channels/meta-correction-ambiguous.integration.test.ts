@@ -240,7 +240,10 @@ describe('CG5: a correction sent while an earlier message is still live', () => 
     /* OWN-74: the preview pending when the lost message arrived is withdrawn, never confirmable,
      * and no draft of this business names Ada any more except that withdrawn one. */
     const rows = await sales(business.id);
-    expect(rows[0]?.state).not.toBe('pending');
+    /* Withdrawn, never booked: superseded, and no invoice was issued (CodeRabbit on #437 at
+     * c5392f0). */
+    expect(rows[0]?.state).toBe('superseded');
+    expect(await invoiceTotals(business.id)).toEqual([]);
     const live = rows.filter((r) => r.state === 'pending');
     expect(
       live.every(

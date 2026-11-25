@@ -288,8 +288,13 @@ describe('G-68 final review 2: one-shot rebuild, strict erasure pair, answer win
       );
       expect(stubSender.lastText).toContain('Paid in full by cash');
       await reply('wamid.F2c-f-yes-3', 'yes');
+      /* The first yes books it; the second changes nothing, postings included (CodeRabbit on #437
+       * at c5392f0). */
+      const booked = await written(business.id);
+      expect(booked).toMatchObject({ purchases: 1, arrivals: 1 });
+      expect(booked.postings).toBeGreaterThan(0);
       await reply('wamid.F2c-f-yes-4', 'yes');
-      expect(await written(business.id)).toMatchObject({ purchases: 1, arrivals: 1 });
+      expect(await written(business.id)).toEqual(booked);
       expect(await purchaseStates(business.id)).toEqual([
         'superseded',
         'superseded',
