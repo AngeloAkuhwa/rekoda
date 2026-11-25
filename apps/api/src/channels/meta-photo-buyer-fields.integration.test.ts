@@ -4,6 +4,7 @@ import { encryptFacet, matchKeyFor, normaliseFacet } from '@rekoda/core/vault';
 import {
   db,
   deps,
+  messagePayload,
   photoPayload,
   post,
   stubOcr,
@@ -235,4 +236,102 @@ describe('a caption that labels its names', () => {
       expect(stubSender.lastText).toContain('could not tell which customer');
     },
   );
+});
+
+/* OD-72 Option A (owner ruling 25 Nov 2026): a caption that carries a customer token this message
+ * was issued (a recorded customer's name, phone or email, or a new phone or email) is evidence of
+ * a buyer. Read by the model as nobody, the sale is asked about, never previewed as anonymous, and
+ * nobody is created. A caption with no issued token, or whose only token sits in a clause naming
+ * another party or ruling the person out, leaves an ordinary anonymous sale. No capitalised-name
+ * detector: an unrecorded name typed without a label issues no token. */
+describe('a caption that names an issued customer, read with no customer (OD-72)', () => {
+  const footprint = (businessId: string) =>
+    withBusiness(db, businessId, (tx) =>
+      tx.execute<{ customers: number; invoices: number; postings: number }>(sql`
+        SELECT (SELECT count(*)::int FROM customers WHERE business_id = ${businessId}::uuid) AS customers,
+               (SELECT count(*)::int FROM invoices WHERE business_id = ${businessId}::uuid) AS invoices,
+               (SELECT count(*)::int FROM ledger_transactions
+                 WHERE business_id = ${businessId}::uuid) AS postings`),
+    ).then((rows) => rows[0]!);
+
+  async function seedBola(businessId: string) {
+    await customersRepo.createCustomerWithIdentities(db, businessId, 'CUSTOMER_8K2', [
+      {
+        facet: 'email',
+        ciphertext: encryptFacet('bola@example.test', deps.config.vaultKey, `${businessId}:email`),
+        matchKey: matchKeyFor(businessId, 'email', 'bola@example.test', deps.config.matchKey),
+      },
+    ]);
+  }
+
+  async function photographed(caption: string, page = 'RECEIPT') {
+    const business = await seedMerchant('+' + OWNER);
+    await seedAda(business.id);
+    await seedBola(business.id);
+    arrangePhoto();
+    stubOcr.answerWith({ text: `${page}\n2 wigs TOTAL 100,000`, confidence: 0.9 });
+    stubTransport.replyWith(sale({ kind: 'none' }));
+    await post(photoPayload(OWNER, 'wamid.OD72', { caption }));
+    await drain();
+    return business;
+  }
+
+  it.each([
+    ['a recorded customer by name', 'Ada Obi 2 wigs'],
+    ['a recorded customer by a spaced phone', 'for 0803 555 1234'],
+    ['a recorded customer by email', 'ada@example.test'],
+    ['a new phone, issued a provisional token', '08099998888 took 2 wigs'],
+    ['two different people', 'Ada Obi and bola@example.test'],
+    /* The caption's customer contradicts the page's labelled buyer. */
+    ['a customer the page contradicts', 'Ada Obi', 'Buyer: Bola Ige'],
+  ] as [string, string, string?][])('is asked about when the caption names %s', async (_, caption, page) => {
+    const business = await photographed(caption, page);
+
+    expect(await previewedSales(business.id)).toEqual([]);
+    expect(stubSender.lastText).toContain('could not tell which customer');
+    /* Nobody created (Ada and Bola were seeded), nothing invoiced or posted. */
+    expect(await footprint(business.id)).toEqual({ customers: 2, invoices: 0, postings: 0 });
+    /* A generic yes afterwards books nothing. */
+    await post(messagePayload(OWNER, 'wamid.OD72-yes', 'yes'));
+    await drain();
+    expect(await footprint(business.id)).toEqual({ customers: 2, invoices: 0, postings: 0 });
+  });
+
+  it.each([
+    ['names nobody', '2 wigs'],
+    ['names only the supplier', 'Supplier: Ada Obi'],
+    ['names only the delivery contact', 'Deliver to ada@example.test'],
+    ['rules the customer out', 'Not sold to Ada Obi'],
+  ])('leaves an anonymous sale when the caption %s', async (_, caption) => {
+    const business = await photographed(caption);
+
+    expect(await previewedSales(business.id)).toEqual([{ customer: { kind: 'none' } }]);
+    expect(await footprint(business.id)).toEqual({ customers: 2, invoices: 0, postings: 0 });
+  });
+
+  it('books the sale to the buyer once the merchant says who it is for', async () => {
+    const business = await photographed('Ada Obi 2 wigs');
+    expect(await previewedSales(business.id)).toEqual([]);
+
+    /* The merchant sends the photo again and labels the buyer; the model now names her. */
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'RECEIPT\n2 wigs TOTAL 100,000', confidence: 0.9 });
+    stubTransport.replyWith(sale({ kind: 'token', token: TOKEN }));
+    await post(photoPayload(OWNER, 'wamid.OD72-again', { caption: 'Buyer: Ada Obi' }));
+    await drain();
+    expect(await previewedSales(business.id)).toEqual([
+      { customer: { kind: 'token', token: TOKEN } },
+    ]);
+    expect(await footprint(business.id)).toEqual({ customers: 2, invoices: 0, postings: 0 });
+
+    await post(messagePayload(OWNER, 'wamid.OD72-again-yes', 'yes'));
+    await drain();
+    const invoices = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ token: string | null }>(sql`
+        SELECT c.token FROM invoices i LEFT JOIN customers c ON c.id = i.customer_id
+         WHERE i.business_id = ${business.id}::uuid`),
+    ).then((rows) => [...rows]);
+    expect(invoices).toEqual([{ token: TOKEN }]);
+    expect((await footprint(business.id)).customers).toBe(2);
+  });
 });
