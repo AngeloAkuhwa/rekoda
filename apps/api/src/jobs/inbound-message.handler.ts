@@ -5361,6 +5361,9 @@ async function continueConversation(
       format: null,
     },
     model: null,
+    /* The member who asked, as for an interpreted read, so their own refusal answer retires it
+     * (CodeRabbit on #437 at c5392f0). */
+    requestedBy: actorId,
   });
   await continuationsRepo.openContinuation(tx, {
     businessId,
