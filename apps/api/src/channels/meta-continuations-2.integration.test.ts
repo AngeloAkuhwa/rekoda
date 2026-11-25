@@ -230,6 +230,24 @@ describe('a short reply continues what Rekoda just asked (Build 6)', () => {
     await reply('wamid.B6-x-answer', 'last month', OWNER);
     expect(stubSender.lastText).toContain('sales');
     expect(modelCalls()).toBe(0);
+    /* The resumed read is the owner's own, so the owner's refusal answer retires it (CodeRabbit on
+     * #437 at c5392f0). */
+    const [read] = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ by: string | null }>(sql`
+        SELECT d.requested_by::text AS by FROM command_drafts d
+          JOIN conversation_messages m ON m.id = d.conversation_message_id
+         WHERE d.business_id = ${business.id}::uuid AND d.intent = 'Query'
+           AND m.provider_message_id = 'wamid.B6-x-answer'`),
+    );
+    const [member] = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ id: string }>(sql`
+        SELECT requested_by::text AS id FROM command_drafts
+         WHERE business_id = ${business.id}::uuid AND intent = 'Query'
+         ORDER BY insertion_seq LIMIT 1`),
+    );
+    /* The owner's first question ("How much did I sell?") was recorded with the owner as asker. */
+    expect(member?.id).toBeTruthy();
+    expect(read?.by).toBe(member?.id);
 
     /* "correct" is about the figure just read, never the older preview. */
     await reply('wamid.B6-x-correct', 'correct', OWNER);
