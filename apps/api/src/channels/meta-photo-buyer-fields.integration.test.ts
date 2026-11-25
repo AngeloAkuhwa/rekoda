@@ -35,6 +35,10 @@ describe('buyer fields on a photographed sale', () => {
     ['the buyer typed in the caption', 'Items:', true, 'sold to Ada Obi'],
     /* A labelled field the caption negates rules the buyer out (Codex on #437 at 1ec5a22). */
     ['a negated buyer field in the caption', 'Items:', false, 'Not sold to: Ada Obi'],
+    /* A whole address in quotes is the buyer; a longer address it prefixes is not (CodeRabbit on
+     * #437 at 1ec5a22). */
+    ['a quoted email typed in the caption', 'Items:', true, 'For "ada@example.test"'],
+    ['a longer address the email only prefixes', 'Items:', false, 'For ada@example.test.ng'],
     ['a negated buyer field, curled apostrophe', 'Items:', false, 'Wasn’t sold to: Ada Obi'],
     ['different customers', 'Buyer: Ada Obi\nClient: bola@example.test', false],
     ['an exact spaced phone', 'Buyer: 0803 555 1234', true],

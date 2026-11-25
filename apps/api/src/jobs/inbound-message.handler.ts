@@ -5894,7 +5894,9 @@ function addressIn(text: string, address: string): boolean {
   const want = address.trim().toLowerCase();
   return text
     .toLowerCase()
-    .split(/[\s,;()<>]+/u)
+    /* Quotes delimit an address too ('For "ada@example.test"'); a longer address it only prefixes
+     * still differs (CodeRabbit on #437 at 1ec5a22). */
+    .split(/[\s,;()<>"'\u2018\u2019\u201C\u201D]+/u)
     .some((word) => word.replace(/[.:!?]+$/u, '') === want);
 }
 
