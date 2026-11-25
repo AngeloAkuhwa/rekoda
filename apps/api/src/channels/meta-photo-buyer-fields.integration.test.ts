@@ -126,6 +126,10 @@ describe('a contact under an empty buyer label is evidence of a buyer', () => {
     'Customer: Tel:\nAda Obi 08035551234',
     'Customer:\nTel:\nAda Obi 08035551234',
     'Customer: Tel:\nAda Obi',
+    /* A value below that is no usable field keeps the same-line heading (third review). */
+    'Customer: Tel:\n• 08035551234',
+    'Customer: Tel:\n1 Wig 2 5000000000',
+    'Customer: Email:\n- ada@example.test',
   ])('a sale read with no customer under %j is asked about', async (contact) => {
     const business = await seedMerchant('+' + OWNER);
     arrangePhoto();
