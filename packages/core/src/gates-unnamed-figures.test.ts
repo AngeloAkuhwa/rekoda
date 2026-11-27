@@ -397,13 +397,112 @@ describe('unnamedFiguresChanged', () => {
       ).toBe(true);
     });
 
+    /* CodeRabbit on #437 at ddba9a7: the added line's count is named ("add 1 cap"), so only its
+     * unnamed price can refuse it, and the control names that price. */
     it('checks the price of a line the reading adds', () => {
+      const added = {
+        ...four,
+        items: [...four.items, { name: 'cap', quantity: 1, unitPrice: 10_000 }],
+      };
+      expect(unnamedFiguresChanged('No, 4 not 3, add 1 cap', sale, added)).toBe(true);
+      expect(unnamedFiguresChanged('No, 4 not 3, add 1 cap at 10k', sale, added)).toBe(false);
+    });
+  });
+
+  /* CodeRabbit on #437 at ddba9a7 (OD-76 Option A, owner ruling OWN-107). */
+  describe('CodeRabbit on #437 at ddba9a7', () => {
+    const discounted = { ...sale, discount: 2_000 };
+    const cleared = { ...sale, discount: 0 };
+
+    it('never reads the value a field should keep as its removal', () => {
+      expect(unnamedFiguresChanged('No, discount should be 2k', discounted, cleared)).toBe(true);
+      expect(unnamedFiguresChanged('No, the discount is 2k', discounted, cleared)).toBe(true);
+      /* Explicit removal still names it. */
+      expect(unnamedFiguresChanged('no discount, not 2k', discounted, cleared)).toBe(false);
+      expect(unnamedFiguresChanged('remove the 2k discount', discounted, cleared)).toBe(false);
+    });
+
+    it('never reads a count that should stay as the removal of its line', () => {
+      const two = {
+        items: [
+          { name: 'wig', quantity: 3, unitPrice: 50_000 },
+          { name: 'cap', quantity: 2 },
+        ],
+      };
+      const capless = { items: [two.items[0]!] };
+      expect(unnamedFiguresChanged('No, 2 caps', two, capless)).toBe(true);
+      expect(unnamedFiguresChanged('remove the 2 caps', two, capless)).toBe(false);
+    });
+
+    it('changes only the line a count names', () => {
+      const pair = {
+        items: [
+          { name: 'wig', quantity: 3, unitPrice: 50_000 },
+          { name: 'cap', quantity: 3, unitPrice: 10_000 },
+        ],
+      };
+      const wigs = {
+        items: [{ ...pair.items[0]!, quantity: 4 }, pair.items[1]!],
+      };
+      const caps = {
+        items: [pair.items[0]!, { ...pair.items[1]!, quantity: 4 }],
+      };
+      expect(unnamedFiguresChanged('No, 4 wigs not 3', pair, caps)).toBe(true);
+      expect(unnamedFiguresChanged('No, 4 wigs not 3', pair, wigs)).toBe(false);
+      expect(unnamedFiguresChanged('No, 4 caps not 3', pair, caps)).toBe(false);
+      /* Two lines held 3 and the words name neither: which one is asked about. */
+      expect(unnamedFiguresChanged('No, 4 not 3', pair, wigs)).toBe(true);
+      expect(unnamedFiguresChanged('No, 4 not 3', pair, caps)).toBe(true);
+    });
+
+    it('matches exact line names before names without case or spaces', () => {
+      const two = {
+        items: [
+          { name: 'wig', quantity: 3, unitPrice: 50_000 },
+          { name: 'Wig', quantity: 1, unitPrice: 40_000 },
+        ],
+      };
+      const reordered = {
+        items: [
+          { name: 'Wig', quantity: 1, unitPrice: 40_000 },
+          { name: 'WIG ', quantity: 4, unitPrice: 50_000 },
+        ],
+      };
+      expect(unnamedFiguresChanged('No, 4 not 3', two, reordered)).toBe(false);
       expect(
-        unnamedFiguresChanged('No, 4 not 3', sale, {
-          ...four,
-          items: [...four.items, { name: 'cap', quantity: 1, unitPrice: 10_000 }],
-        }),
-      ).toBe(true);
+        unnamedFiguresChanged('No, 4 not 3', two, { items: [...reordered.items].reverse() }),
+      ).toBe(false);
+    });
+
+    it('needs the replaced half of a total pair to be the total before', () => {
+      const stated = {
+        items: [
+          { name: 'wig', quantity: 1, unitPrice: 10_000 },
+          { name: 'cap', quantity: 1, unitPrice: 19_900 },
+        ],
+        statedTotal: 29_900,
+      };
+      const lower = { ...stated, statedTotal: 29_800 };
+      expect(unnamedFiguresChanged('No, total should be 29.8k not 10k', stated, lower)).toBe(true);
+      expect(unnamedFiguresChanged('No, total should be 29.8k not 29.9k', stated, lower)).toBe(
+        false,
+      );
+    });
+
+    it('ends a field word at the end of its sentence', () => {
+      const pricedDiscount = { ...sale, reportedPayment: 0, discount: 2_000 };
+      const both = {
+        ...pricedDiscount,
+        items: [{ name: 'wig', quantity: 3, unitPrice: 60_000 }],
+        discount: 5_000,
+      };
+      expect(
+        unnamedFiguresChanged(
+          'No, price should be 60k not 50k. Discount should be 5k not 2k',
+          pricedDiscount,
+          both,
+        ),
+      ).toBe(false);
     });
   });
 });

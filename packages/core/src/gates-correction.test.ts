@@ -338,6 +338,10 @@ describe('a replaced figure the waiting draft does not hold', () => {
       'No, 2 kg not 1.5 kg',
       draftFigures({ items: [{ name: 'rice', quantity: 1.5, unitPrice: 1.5 }] }),
     ],
+    /* One marked half gives the unmarked half its sense before a decimal guess (CodeRabbit on #437
+     * at ddba9a7). */
+    ['No, 2 kg not 1.5', draftFigures({ items: [{ name: 'rice', quantity: 1.5, unitPrice: 1_000 }] })],
+    ['No, 2 not 1.5 kg', draftFigures({ items: [{ name: 'rice', quantity: 1.5, unitPrice: 1_000 }] })],
     /* A stock adjustment's count is one of its figures (Codex on #437 at af169b0). */
     ['No, 4 not 3', draftFigures({ productMention: 'wig', quantityDelta: 3 })],
     ['No, 4 not 3', draftFigures({ productMention: 'wig', quantityDelta: -3 })],
@@ -366,6 +370,11 @@ describe('a replaced figure the waiting draft does not hold', () => {
     [
       'No, 2 kg not 1.5 kg',
       draftFigures({ items: [{ name: 'rice', quantity: 3, unitPrice: 1.5 }] }),
+    ],
+    /* Two halves marked with different senses are still refused (CodeRabbit on #437 at ddba9a7). */
+    [
+      'No, 2 kg not ₦1.50',
+      draftFigures({ items: [{ name: 'rice', quantity: 1.5, unitPrice: 1.5 }] }),
     ],
   ])('%j does not fit', (t, figures) => {
     expect(replacedFiguresFit(t, figures)).toBe(false);
