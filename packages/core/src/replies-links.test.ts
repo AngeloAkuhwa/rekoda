@@ -108,6 +108,14 @@ describe('links into the web app', () => {
     expect(text).toContain('"Delete my data" page');
   });
 
+  /* CodeRabbit on #437 at ddba9a7: the completion names the older copies erasure does not reach
+   * (ADR 0005 Amendment 1), as the confirmation the merchant agreed to does. */
+  it('names the older copies the confirmation said are kept', () => {
+    const kept = 'some older copies the data deletion page describes';
+    expect(replies.confirmErasure().text).toContain(kept);
+    expect(replies.erasureDone(2, null).text).toContain(kept);
+  });
+
   it('still says where Payments is, with no link', () => {
     const text = replies.paymentLinkNeedsConnection(null).text;
     expect(text).toContain('add your settlement account');
