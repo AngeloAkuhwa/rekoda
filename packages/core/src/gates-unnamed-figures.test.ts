@@ -399,6 +399,28 @@ describe('unnamedFiguresChanged', () => {
 
     /* CodeRabbit on #437 at ddba9a7: the added line's count is named ("add 1 cap"), so only its
      * unnamed price can refuse it, and the control names that price. */
+    /* Independent review of #437 at ddba9a7: the field word before a figure in its clause wins, and
+     * only the one word right after it counts, so the next figure's field never moves onto it. */
+    it.each([
+      ['she paid 50k delivery 2k', { deliveryFee: 50_000 }, true],
+      ['she paid 50k delivery 2k', { reportedPayment: 50_000, deliveryFee: 2_000 }, false],
+      ['she paid 50k for delivery', { deliveryFee: 50_000 }, true],
+      ['price 40k discount 5k', { discount: 40_000 }, true],
+      [
+        'price 40k discount 5k',
+        { items: [{ name: 'wig', quantity: 3, unitPrice: 40_000 }], discount: 5_000 },
+        false,
+      ],
+      [
+        'No, 4 wigs at the price of 50k',
+        { items: [{ name: 'wig', quantity: 4, unitPrice: 50_000 }] },
+        false,
+      ],
+    ] as const)('"%s", reading %j: %s', (text, change, expected) => {
+      const unpaid = { ...sale, reportedPayment: 0 };
+      expect(unnamedFiguresChanged(text, unpaid, { ...unpaid, ...change })).toBe(expected);
+    });
+
     it('checks the price of a line the reading adds', () => {
       const added = {
         ...four,
