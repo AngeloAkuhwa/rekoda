@@ -505,6 +505,24 @@ describe('unnamedFiguresChanged', () => {
       expect(unnamedFiguresChanged(text, discounted, cleared)).toBe(expected);
     });
 
+    /* Independent review of #437 at 4621600: a field word between figures names the one nothing
+     * else names, and one past "for the" still names its figure. */
+    it.each([
+      ['No, 5k discount 2k delivery', { discount: 2_000 }, true],
+      ['No, 5k discount 2k delivery', { discount: 5_000, deliveryFee: 2_000 }, false],
+      ['No, 2k delivery 5k discount', { deliveryFee: 5_000 }, true],
+      ['No, 2k delivery 5k discount', { deliveryFee: 2_000, discount: 5_000 }, false],
+      ['No, 5k for the discount', { reportedPayment: 5_000 }, true],
+      ['No, 5k for the discount', { discount: 5_000 }, false],
+      ['No, 2k for delivery', { reportedPayment: 2_000 }, true],
+      ['No, 40k for each one', { discount: 40_000 }, true],
+      ['abeg no remove the 2k discount', { discount: 0, was: 2_000 }, true],
+      ['who told you to remove the 2k discount', { discount: 0, was: 2_000 }, true],
+    ] as const)('"%s", reading %j: %s', (text, { was, ...change }, expected) => {
+      const stored = { ...sale, reportedPayment: 0, discount: was ?? 0 };
+      expect(unnamedFiguresChanged(text, stored, { ...stored, ...change })).toBe(expected);
+    });
+
     it('places a lone or mismatched qualifier only on one line', () => {
       const caps = lines(['cap', 3, 10_000], ['red cap', 2, 10_000]);
       const red4 = lines(['cap', 3, 10_000], ['red cap', 4, 10_000]);
@@ -517,6 +535,10 @@ describe('unnamedFiguresChanged', () => {
       /* On a one-line sale a word that names no line is a filler, not a qualifier. */
       expect(unnamedFiguresChanged('No, 4 only not 3', sale, four)).toBe(false);
       expect(unnamedFiguresChanged('No, 4 o not 3', sale, four)).toBe(false);
+      /* Not when the reading has another line, nor for halves naming different lines. */
+      const hat = { items: [...sale.items, { name: 'hat', quantity: 4 }] };
+      expect(unnamedFiguresChanged('add 4 caps', sale, hat)).toBe(true);
+      expect(unnamedFiguresChanged('No, 4 wigs not 3 caps', sale, four)).toBe(true);
     });
 
     it('matches exact line names before names without case or spaces', () => {
