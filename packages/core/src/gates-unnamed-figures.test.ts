@@ -455,6 +455,55 @@ describe('unnamedFiguresChanged', () => {
       expect(unnamedFiguresChanged('No, 4 not 3', pair, caps)).toBe(true);
     });
 
+    /* Independent review of #437 at 8b7d2c8. */
+    it('never reads a negated removal as removal', () => {
+      expect(unnamedFiguresChanged('No, do not remove the 2k discount', discounted, cleared)).toBe(
+        true,
+      );
+      expect(unnamedFiguresChanged("No, don't drop the 2k discount", discounted, cleared)).toBe(
+        true,
+      );
+      const two = {
+        items: [
+          { name: 'wig', quantity: 3 },
+          { name: 'cap', quantity: 2 },
+        ],
+      };
+      expect(
+        unnamedFiguresChanged("don't remove the 2 caps", two, { items: [two.items[0]!] }),
+      ).toBe(true);
+    });
+
+    it('asks when a count names no single line', () => {
+      const caps = {
+        items: [
+          { name: 'cap', quantity: 3, unitPrice: 10_000 },
+          { name: 'red cap', quantity: 3, unitPrice: 10_000 },
+        ],
+      };
+      const plain = { items: [{ ...caps.items[0]!, quantity: 4 }, caps.items[1]!] };
+      const red = { items: [caps.items[0]!, { ...caps.items[1]!, quantity: 4 }] };
+      expect(unnamedFiguresChanged('No, 4 caps not 3', caps, plain)).toBe(true);
+      expect(unnamedFiguresChanged('No, 4 caps not 3', caps, red)).toBe(true);
+      const mixed = {
+        items: [
+          { name: 'wig', quantity: 3, unitPrice: 50_000 },
+          { name: 'cap', quantity: 2, unitPrice: 10_000 },
+        ],
+      };
+      const wig4 = { items: [{ ...mixed.items[0]!, quantity: 4 }, mixed.items[1]!] };
+      const cap4 = { items: [mixed.items[0]!, { ...mixed.items[1]!, quantity: 4 }] };
+      /* The qualifier on the replaced half names the line too. */
+      expect(unnamedFiguresChanged('No, 4 not 3 caps', mixed, wig4)).toBe(true);
+      expect(unnamedFiguresChanged('No, 4 not 3 wigs', mixed, wig4)).toBe(false);
+      /* A qualifier that names no line, or a lone count beside several lines, is asked about. */
+      expect(unnamedFiguresChanged('No, 4 hats not 3', mixed, wig4)).toBe(true);
+      expect(unnamedFiguresChanged('No, 4', mixed, cap4)).toBe(true);
+      expect(unnamedFiguresChanged('No, 4 caps', mixed, cap4)).toBe(false);
+      /* A unit after the count is no qualifier. */
+      expect(unnamedFiguresChanged('No, 4 pcs not 3', mixed, wig4)).toBe(false);
+    });
+
     it('matches exact line names before names without case or spaces', () => {
       const two = {
         items: [
