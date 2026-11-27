@@ -274,7 +274,11 @@ describe("a questioned yes finds the sender's refusal behind another member's pr
       ),
     );
     expect([...refusals].map((r) => r.state)).toEqual(['pending']);
+    /* The plain yes gets its own reply, not the one left from "na so?" (CodeRabbit on #437 at
+     * ddba9a7). */
+    const sent = stubSender.sent.length;
     await plain('wamid.RY4', 'yes');
+    expect(stubSender.sent.length).toBe(sent + 1);
     expect(stubSender.lastText).toBe(replies.previewWaitingForAnotherMember().text);
     expect(await footprint(business.id)).toEqual(before);
   });

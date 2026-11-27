@@ -161,14 +161,19 @@ describe('a forwarded order', () => {
     expect(stubSender.lastText).toContain('For: The same customer as before');
 
     await send('yes', 'wamid.ORDFIX3');
-    const [row] = [
+    /* Exactly one invoice, for the corrected three bales, so a yes that confirmed the original
+     * order fails here (CodeRabbit on #437 at ddba9a7). */
+    const rows = [
       ...(await withBusiness(db, business.id, (tx) =>
-        tx.execute<{ token: string | null }>(sql`
-          SELECT c.token FROM invoices i LEFT JOIN customers c ON c.id = i.customer_id
+        tx.execute<{ token: string | null; total_k: string }>(sql`
+          SELECT c.token, i.total_k::text AS total_k
+            FROM invoices i LEFT JOIN customers c ON c.id = i.customer_id
            WHERE i.business_id = ${business.id}::uuid`),
       )),
     ];
-    expect(row?.token).toBe('CUSTOMER_7K2');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.token).toBe('CUSTOMER_7K2');
+    expect(rows[0]?.total_k).toBe('2550000');
   });
 
   /**

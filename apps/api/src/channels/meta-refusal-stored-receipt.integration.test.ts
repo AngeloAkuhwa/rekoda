@@ -10,7 +10,7 @@
  * dead, counts as applied for this purpose.
  */
 import { expect, it } from 'vitest';
-import { identity } from '@rekoda/db';
+import { identity, sql, withBusiness } from '@rekoda/db';
 import {
   db,
   messagePayload,
@@ -20,7 +20,7 @@ import {
   useMetaWebhookHarness,
 } from './meta-webhook.fixtures.js';
 import { drain } from './meta-voice-note.fixtures.js';
-import { mediaMessage } from './meta-continuations.fixtures.js';
+import { answered, mediaMessage } from './meta-continuations.fixtures.js';
 import { lastWamid, receipt } from './meta-preview-expiry.fixtures.js';
 import {
   DELEGATE,
@@ -34,6 +34,18 @@ import {
 useMetaWebhookHarness();
 
 const STICKER = { type: 'sticker', sticker: { id: 'sticker-1', mime_type: 'image/webp' } };
+
+/** Each refusal's state, by the member who made it. */
+async function refusalStates(businessId: string): Promise<string[]> {
+  const owner = await identity.findUserByPhone(db, `+${OWNER}`);
+  const rows = await withBusiness(db, businessId, (tx) =>
+    tx.execute<{ state: string; by: string | null }>(sql`
+      SELECT state, requested_by::text AS by FROM command_drafts
+       WHERE business_id = ${businessId}::uuid AND command->>'refused' = 'true'
+       ORDER BY insertion_seq`),
+  );
+  return [...rows].map((r) => `${r.by === owner?.id ? 'owner' : 'other'}:${r.state}`);
+}
 
 it("a clarification's failed receipt stored after the yes was queued: the yes books nothing", async () => {
   const business = await seedMerchant();
@@ -52,6 +64,8 @@ it("a clarification's failed receipt stored after the yes was queued: the yes bo
   await drain();
   const before = await footprint(business.id);
   const sent = stubSender.sent.length;
+  /* CodeRabbit on #437 at ddba9a7: the owner's refusal is waiting, and the held yes answers it. */
+  expect(await refusalStates(business.id)).toEqual(['owner:pending']);
 
   /* The yes is queued first, so the receipt's job, queued after it, does not hold it up
    * (`hasEarlierLiveJob`), and the yes is read while the receipt is stored and not yet applied. */
@@ -61,4 +75,9 @@ it("a clarification's failed receipt stored after the yes was queued: the yes bo
 
   expect(stubSender.sent.length).toBeGreaterThan(sent);
   expect(await footprint(business.id)).toEqual(before);
+  expect(await refusalStates(business.id)).toEqual(['owner:superseded']);
+  const { replies, unfinished } = await answered(business.id, 'SR4');
+  expect(replies[0]).toHaveLength(1);
+  expect(replies[0]?.[0]).not.toBe('unsent');
+  expect(unfinished).toBe(0);
 });
