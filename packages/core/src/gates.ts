@@ -981,6 +981,10 @@ export function unnamedFiguresChanged(
       if (replacesCount && previousCount) {
         own.pair = previousCount;
         previousCount.pair = own;
+        /* Halves naming different lines name none: asked about (independent review at 8559e79). */
+        if (own.item !== null && previousCount.item !== null && own.item !== previousCount.item) {
+          own.item = previousCount.item = CONFLICTING_ITEMS;
+        }
         own.item ??= previousCount.item;
         previousCount.item ??= own.item;
       }
@@ -1178,11 +1182,20 @@ export function unnamedFiguresChanged(
   function countNamesLine(c: NamedCount, was: number | null, line: string | null): boolean {
     if (line === null) return true;
     const replaced = c.pair?.value ?? was;
-    if (c.item !== null && !UNIT_WORDS.has(c.item)) {
+    /* On a one-line draft, a word naming no line is a filler ("4 only not 3", "4 o"). */
+    const filler =
+      c.item !== null &&
+      before.length <= 1 &&
+      ![...before, ...after].some((l) => sameItem(c.item!, key(l)));
+    if (c.item !== null && !UNIT_WORDS.has(c.item) && !filler) {
       if (!sameItem(c.item, line)) return false;
+      /* The count narrows the lines only when the merchant stated the old one ("4 caps not 2");
+       * a lone "4 caps" beside "cap" and "red cap" names neither (independent review at 8559e79). */
+      const stated = c.pair !== null || c.removal;
       const alike = before.filter(
         (l) =>
-          sameItem(c.item!, key(l)) && (replaced === null || count(l['quantity']) === replaced),
+          sameItem(c.item!, key(l)) &&
+          (!stated || replaced === null || count(l['quantity']) === replaced),
       );
       return alike.length <= 1;
     }
@@ -1312,10 +1325,13 @@ const CLAUSE_BREAK = /[,;]|[.!?](?=\s|$)|\band\b/u;
 /* Wording that removes what follows it ("remove the 2k discount", "take off the 2 caps"). */
 const REMOVAL =
   /\b(?:remove|removed|delete|deleted|drop|dropped|cancel|cancelled|without|take\s+off|took\s+off|no\s+more)\b/u;
-/* A negation before the removal word reverses it ("do not remove the 2k discount"; independent
- * review of #437 at 8b7d2c8). */
+/* A negation or question before the removal word means no removal ("do not remove the 2k discount",
+ * "you can't remove it", "why did you remove it"); any "-n't" form counts, so a missed form asks
+ * rather than removes (independent review of #437 at 8b7d2c8 and 8559e79). */
 const NEGATION_WORD =
-  /\b(?:not|never|don['’]?t|doesn['’]?t|didn['’]?t|shouldn['’]?t|mustn['’]?t|no\s+need\s+to)\b/u;
+  /\b(?:not|never|cannot|no\s+need\s+to|why|[a-z]+n['’]t|(?:do|does|did|ca|wo|is|was|should|would|could|must)nt)\b/u;
+/* The item of a pair whose halves name different lines: it names no line. */
+const CONFLICTING_ITEMS = '\u0000';
 /* Words that follow a count without naming its line ("4 not 3", "4 and 5k discount"). */
 const NOT_AN_ITEM = new Set([
   'not',
