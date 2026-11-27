@@ -435,6 +435,10 @@ describe('unnamedFiguresChanged', () => {
   describe('CodeRabbit on #437 at ddba9a7', () => {
     const discounted = { ...sale, discount: 2_000 };
     const cleared = { ...sale, discount: 0 };
+    /** A draft of lines, each [name, quantity, unit price?]. */
+    const lines = (...l: Array<readonly [string, number, number?]>) => ({
+      items: l.map(([name, quantity, unitPrice]) => ({ name, quantity, unitPrice })),
+    });
 
     it('never reads the value a field should keep as its removal', () => {
       expect(unnamedFiguresChanged('No, discount should be 2k', discounted, cleared)).toBe(true);
@@ -445,30 +449,18 @@ describe('unnamedFiguresChanged', () => {
     });
 
     it('never reads a count that should stay as the removal of its line', () => {
-      const two = {
-        items: [
-          { name: 'wig', quantity: 3, unitPrice: 50_000 },
-          { name: 'cap', quantity: 2 },
-        ],
-      };
+      const two = lines(['wig', 3, 50_000], ['cap', 2]);
       const capless = { items: [two.items[0]!] };
       expect(unnamedFiguresChanged('No, 2 caps', two, capless)).toBe(true);
       expect(unnamedFiguresChanged('remove the 2 caps', two, capless)).toBe(false);
+      /* A negated removal is none (independent review of #437 at 8b7d2c8). */
+      expect(unnamedFiguresChanged("don't remove the 2 caps", two, capless)).toBe(true);
     });
 
     it('changes only the line a count names', () => {
-      const pair = {
-        items: [
-          { name: 'wig', quantity: 3, unitPrice: 50_000 },
-          { name: 'cap', quantity: 3, unitPrice: 10_000 },
-        ],
-      };
-      const wigs = {
-        items: [{ ...pair.items[0]!, quantity: 4 }, pair.items[1]!],
-      };
-      const caps = {
-        items: [pair.items[0]!, { ...pair.items[1]!, quantity: 4 }],
-      };
+      const pair = lines(['wig', 3, 50_000], ['cap', 3, 10_000]);
+      const wigs = lines(['wig', 4, 50_000], ['cap', 3, 10_000]);
+      const caps = lines(['wig', 3, 50_000], ['cap', 4, 10_000]);
       expect(unnamedFiguresChanged('No, 4 wigs not 3', pair, caps)).toBe(true);
       expect(unnamedFiguresChanged('No, 4 wigs not 3', pair, wigs)).toBe(false);
       expect(unnamedFiguresChanged('No, 4 caps not 3', pair, caps)).toBe(false);
@@ -478,43 +470,15 @@ describe('unnamedFiguresChanged', () => {
     });
 
     /* Independent review of #437 at 8b7d2c8. */
-    it('never reads a negated removal as removal', () => {
-      expect(unnamedFiguresChanged('No, do not remove the 2k discount', discounted, cleared)).toBe(
-        true,
-      );
-      expect(unnamedFiguresChanged("No, don't drop the 2k discount", discounted, cleared)).toBe(
-        true,
-      );
-      const two = {
-        items: [
-          { name: 'wig', quantity: 3 },
-          { name: 'cap', quantity: 2 },
-        ],
-      };
-      expect(
-        unnamedFiguresChanged("don't remove the 2 caps", two, { items: [two.items[0]!] }),
-      ).toBe(true);
-    });
-
     it('asks when a count names no single line', () => {
-      const caps = {
-        items: [
-          { name: 'cap', quantity: 3, unitPrice: 10_000 },
-          { name: 'red cap', quantity: 3, unitPrice: 10_000 },
-        ],
-      };
-      const plain = { items: [{ ...caps.items[0]!, quantity: 4 }, caps.items[1]!] };
-      const red = { items: [caps.items[0]!, { ...caps.items[1]!, quantity: 4 }] };
+      const caps = lines(['cap', 3, 10_000], ['red cap', 3, 10_000]);
+      const plain = lines(['cap', 4, 10_000], ['red cap', 3, 10_000]);
+      const red = lines(['cap', 3, 10_000], ['red cap', 4, 10_000]);
       expect(unnamedFiguresChanged('No, 4 caps not 3', caps, plain)).toBe(true);
       expect(unnamedFiguresChanged('No, 4 caps not 3', caps, red)).toBe(true);
-      const mixed = {
-        items: [
-          { name: 'wig', quantity: 3, unitPrice: 50_000 },
-          { name: 'cap', quantity: 2, unitPrice: 10_000 },
-        ],
-      };
-      const wig4 = { items: [{ ...mixed.items[0]!, quantity: 4 }, mixed.items[1]!] };
-      const cap4 = { items: [mixed.items[0]!, { ...mixed.items[1]!, quantity: 4 }] };
+      const mixed = lines(['wig', 3, 50_000], ['cap', 2, 10_000]);
+      const wig4 = lines(['wig', 4, 50_000], ['cap', 2, 10_000]);
+      const cap4 = lines(['wig', 3, 50_000], ['cap', 4, 10_000]);
       /* The qualifier on the replaced half names the line too. */
       expect(unnamedFiguresChanged('No, 4 not 3 caps', mixed, wig4)).toBe(true);
       expect(unnamedFiguresChanged('No, 4 not 3 wigs', mixed, wig4)).toBe(false);
@@ -524,6 +488,35 @@ describe('unnamedFiguresChanged', () => {
       expect(unnamedFiguresChanged('No, 4 caps', mixed, cap4)).toBe(false);
       /* A unit after the count is no qualifier. */
       expect(unnamedFiguresChanged('No, 4 pcs not 3', mixed, wig4)).toBe(false);
+    });
+
+    /* Independent review of #437 at 8b7d2c8 and 8559e79: a negated or questioned removal is none. */
+    it.each([
+      ['No, do not remove the 2k discount', true],
+      ["No, don't drop the 2k discount", true],
+      ["you can't remove the 2k discount", true],
+      ['you cannot remove the 2k discount', true],
+      ["I won't drop the 2k discount", true],
+      ["it wasn't meant to drop the 2k discount", true],
+      ['why did you remove the 2k discount', true],
+      /* A word ending in "nt" is no negation. */
+      ['discount: remove the 2k', false],
+    ] as const)('"%s" clearing the discount: %s', (text, expected) => {
+      expect(unnamedFiguresChanged(text, discounted, cleared)).toBe(expected);
+    });
+
+    it('places a lone or mismatched qualifier only on one line', () => {
+      const caps = lines(['cap', 3, 10_000], ['red cap', 2, 10_000]);
+      const red4 = lines(['cap', 3, 10_000], ['red cap', 4, 10_000]);
+      expect(unnamedFiguresChanged('No, 4 caps', caps, red4)).toBe(true);
+      expect(unnamedFiguresChanged('No, 4 caps not 2', caps, red4)).toBe(false);
+      /* Halves naming different lines are asked about. */
+      const mixed = lines(['wig', 3, 50_000], ['cap', 3, 10_000]);
+      const wig4 = lines(['wig', 4, 50_000], ['cap', 3, 10_000]);
+      expect(unnamedFiguresChanged('No, 4 wigs not 3 caps', mixed, wig4)).toBe(true);
+      /* On a one-line sale a word that names no line is a filler, not a qualifier. */
+      expect(unnamedFiguresChanged('No, 4 only not 3', sale, four)).toBe(false);
+      expect(unnamedFiguresChanged('No, 4 o not 3', sale, four)).toBe(false);
     });
 
     it('matches exact line names before names without case or spaces', () => {
