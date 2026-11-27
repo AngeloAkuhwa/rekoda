@@ -178,12 +178,14 @@ export function viewOnlyPhoto(): Reply {
  */
 export function erasureDone(erasedFacets: number, webUrl: string | null): Reply {
   /* The stored copies of finished chat messages are erased too (G-136), so the reply says so; the
-   * conversation history and the account are what the page covers (CodeRabbit on #437 at 9c587bd). */
+   * conversation history and the account are what the page covers (CodeRabbit on #437 at 9c587bd).
+   * The older batched copies ADR 0005 Amendment 1 keeps are named, as `confirmErasure` names them
+   * (CodeRabbit on #437 at ddba9a7). */
   const done =
     `Done. Your customers' saved details are deleted (${erasedFacets} ` +
     `record${erasedFacets === 1 ? '' : 's'}), and the stored copies of your chat messages that ` +
-    'Rekoda had finished processing are erased. Your invoices and books keep only their ' +
-    'reference numbers.';
+    'Rekoda had finished processing are erased, apart from some older copies the data deletion ' +
+    'page describes. Your invoices and books keep only their reference numbers.';
   const page = webLink(webUrl, '/data-deletion');
   return reply(
     page

@@ -68,8 +68,9 @@ export default function AiPrivacyPage() {
               </p>
               <p>
                 <strong>Someone new.</strong> When you record a sale, invoice, payment or order for
-                someone you have not recorded before, the model reads that message to understand it,
-                and Rekoda then stores the new customer encrypted with their own token, so later
+                someone you have not recorded before, the model reads that message to understand it
+                (for a record you send as a photo, the Anthropic model that checks what kind of
+                document it is reads it first), and Rekoda then stores the new customer encrypted with their own token, so later
                 messages that name them are protected before they leave. When you only ask about
                 someone you have not recorded, Rekoda does not create a customer for them, so the
                 model reads the name you typed each time you ask. That name goes only to Anthropic,

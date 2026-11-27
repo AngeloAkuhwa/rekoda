@@ -48,7 +48,8 @@ retention rules only via the documented erasure procedure.
 
 **Precedence (owner ruling OWN-102(5), 22 Nov 2026):** case 3 below is an explicit exception to the
 canonical spec's Appendix C.3, for the read-only unknown-name question only and to the Anthropic
-interpretation processor only. It does not extend to OpenAI, any other provider, the high-value
+interpretation processor and, when the question is a photographed document, the Anthropic document
+classifier (OWN-103(5), the "Processors" paragraph below) only. It does not extend to OpenAI, any other provider, the high-value
 document verifier, general customer extraction, logs, telemetry, any identity store or any other
 message. Appendix C.3 carries a pointer to this amendment.
 
