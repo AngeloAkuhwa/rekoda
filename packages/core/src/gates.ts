@@ -860,8 +860,12 @@ export function replacedFiguresFit(text: string, draft: DraftFigures): boolean {
     /* An unmarked decimal is read as money only when nothing explicit says otherwise: the field
      * the message names wins over the guess, so "quantity should be 2 not 1.5" is a quantity
      * (CodeRabbit on #437 at 400ca58). A marked figure still conflicts with the field. */
-    const replacedKind = replacedMarked ?? (field ? null : guessedKind(figure));
-    const replacementKind = replacementMarked ?? (field ? null : guessedKind(replacementFigure));
+    /* One half marked ("2 kg not 1.5") gives the other half its sense before any decimal guess;
+     * two halves marked differently still conflict below (CodeRabbit on #437 at ddba9a7). */
+    const replacedKind =
+      replacedMarked ?? (field || replacementMarked ? null : guessedKind(figure));
+    const replacementKind =
+      replacementMarked ?? (field || replacedMarked ? null : guessedKind(replacementFigure));
     /* Both figures written with their own sense must agree: "4 pc not ₦3" puts a count in place
      * of an amount, and is asked about (CodeRabbit on #437 at 6b3fc05). */
     if (replacedKind && replacementKind && replacedKind !== replacementKind) return false;
@@ -944,6 +948,10 @@ export function unnamedFiguresChanged(
     end = m.index + (m[1]?.length ?? 0);
     const kind = figureKind(figure, m[2]);
     const plain = Number(figure.replace(/,/gu, ''));
+    /* Removal wording in the figure's own clause ("remove the 2k discount"): only then, or after a
+     * "not" with its field named, may an old value name a figure falling to nothing (CodeRabbit on
+     * #437 at ddba9a7). */
+    const removal = REMOVAL.test(gap.split(CLAUSE_BREAK).at(-1) ?? '');
     /* A field word after the figure, in its own clause, names it ahead of one before it ("5k
      * discount"; independent review of #437 at 22aa20a). */
     const named = fieldAfter(lower.slice(end)) ?? fieldOf(gap);
@@ -962,12 +970,18 @@ export function unnamedFiguresChanged(
       const own: NamedCount = {
         value: plain,
         replaced: replacesCount || NEGATED_GAP.test(gap),
+        removal,
+        /* The word after a count may name its line ("4 wigs not 3"); resolved against the lines
+         * below, and shared by both halves of a pair (CodeRabbit on #437 at ddba9a7). */
+        item: m[2] ?? null,
         pair: null,
         used: false,
       };
       if (replacesCount && previousCount) {
         own.pair = previousCount;
         previousCount.pair = own;
+        own.item ??= previousCount.item;
+        previousCount.item ??= own.item;
       }
       namedCounts.push(own);
       previousCount = own;
@@ -991,6 +1005,7 @@ export function unnamedFiguresChanged(
       kobo: k,
       field: named,
       replaced: replaces || NEGATED_GAP.test(gap),
+      removal,
       pair: null,
       used: false,
     };
@@ -1034,7 +1049,7 @@ export function unnamedFiguresChanged(
             f.pair === null &&
             f.kobo === was &&
             fits(f, field) &&
-            (!f.replaced || f.field !== null),
+            ((f.replaced && f.field !== null) || f.removal),
         );
   const useCount = (c: NamedCount | undefined) => {
     if (!c) return false;
@@ -1045,7 +1060,12 @@ export function unnamedFiguresChanged(
   /* The pair naming exactly this count change ("4 not 3" for 3 to 4). For stock, its replaced count
    * may be the whole count the preview showed for a fractional one ("Adding to stock: 3" for 3.5);
    * a sale line's count is shown as stored. */
-  const exactCount = (was: number | null, now: number | null, shownWhole: boolean) =>
+  const exactCount = (
+    was: number | null,
+    now: number | null,
+    shownWhole: boolean,
+    line: string | null,
+  ) =>
     namedCounts.find(
       (c) =>
         !c.used &&
@@ -1053,15 +1073,20 @@ export function unnamedFiguresChanged(
         c.pair &&
         c.value === now &&
         was !== null &&
-        (c.pair.value === was || (shownWhole && c.pair.value === Math.trunc(was))),
+        (c.pair.value === was || (shownWhole && c.pair.value === Math.trunc(was))) &&
+        countNamesLine(c, was, line),
     );
   /* Otherwise a count change is named by a lone count for its new value, or, when it falls to
    * nothing, by a lone count for its old value; never by a count a "not" replaces, nor by a pair's
    * count (independent review of #437 at 00c0620). */
-  const looseCount = (was: number | null, now: number | null) =>
+  const looseCount = (was: number | null, now: number | null, line: string | null) =>
     namedCounts.find(
       (c) =>
-        !c.used && !c.replaced && !c.pair && c.value === (now !== null && now !== 0 ? now : was),
+        !c.used &&
+        !c.replaced &&
+        !c.pair &&
+        (now !== null && now !== 0 ? c.value === now : c.value === was && c.removal) &&
+        countNamesLine(c, was, line),
     );
   const kobo = (v: unknown, nullIsZero: boolean): number | null =>
     typeof v === 'number' && Number.isFinite(v) ? nairaToKobo(v) : nullIsZero ? 0 : null;
@@ -1073,7 +1098,8 @@ export function unnamedFiguresChanged(
       ? kobo(command['amount'], false)
       : kobo(command['reportedPayment'], true);
   const changes: Array<[FigureField, number | null, number | null]> = [];
-  const counts: Array<[number | null, number | null, boolean?]> = [];
+  /* Each count change: its old and new count, whether the preview showed it whole, and its line. */
+  const counts: Array<[number | null, number | null, boolean, string | null]> = [];
   if (purchase) {
     /* Paid in full stays paid in full when only the amount moves: the amount names that change. */
     const wasFull =
@@ -1097,7 +1123,7 @@ export function unnamedFiguresChanged(
     ]);
   }
   if ('quantity' in stored) {
-    counts.push([count(stored['quantity']), count(reading['quantity']), true]);
+    counts.push([count(stored['quantity']), count(reading['quantity']), true, null]);
   }
   /* A stock adjustment's count is its delta (Codex on #437 at e9b1cb4): named by its size, and a
    * change of direction ("added" read as "removed") is never a figure the words name. */
@@ -1107,7 +1133,12 @@ export function unnamedFiguresChanged(
     if (was !== now && (was === null || now === null || Math.sign(was) !== Math.sign(now))) {
       return true;
     }
-    counts.push([was === null ? null : Math.abs(was), now === null ? null : Math.abs(now), true]);
+    counts.push([
+      was === null ? null : Math.abs(was),
+      now === null ? null : Math.abs(now),
+      true,
+      null,
+    ]);
   }
   /* A price and a quantity are checked on every line the draft had: matched one to one, by its
    * exact name, else its name without case or spaces, else its position when the reading has as many
@@ -1123,34 +1154,59 @@ export function unnamedFiguresChanged(
     used.add(j);
     return after[j];
   };
+  /* Exact names are matched across every line before any name without case or spaces, and those
+   * before any position, so a looser match never takes a later line's exact one (CodeRabbit on #437
+   * at ddba9a7). */
+  const matched: Array<Record<string, unknown> | undefined> = before.map((line) =>
+    pick((l) => typeof l['name'] === 'string' && l['name'] === line['name']),
+  );
   for (const [i, line] of before.entries()) {
-    const same =
-      pick((l) => typeof l['name'] === 'string' && l['name'] === line['name']) ??
-      pick((l) => key(l) !== '' && key(l) === key(line)) ??
-      (after.length === before.length ? pick((_l, j) => j === i) : undefined);
+    matched[i] ??= pick((l) => key(l) !== '' && key(l) === key(line));
+  }
+  if (after.length === before.length) {
+    for (const i of before.keys()) matched[i] ??= pick((_l, j) => j === i);
+  }
+  /* The lines' names, for a count that names its line, and the counts more than one line held. */
+  const lineKeys = [...before, ...after].map(key).filter((k) => k !== '');
+  const heldBy = (value: number) => before.filter((l) => count(l['quantity']) === value).length;
+  const itemOf = (c: NamedCount) =>
+    c.item !== null && lineKeys.some((k) => sameItem(c.item!, k)) ? c.item : null;
+  /* A count names a line only if its item word names that line, or it names no line and no other
+   * line held the count it replaces, so "4 not 3" beside 3 wigs and 3 caps is asked about
+   * (CodeRabbit on #437 at ddba9a7). A count not on a line (a purchase, a stock adjustment) has no
+   * line to check. */
+  function countNamesLine(c: NamedCount, was: number | null, line: string | null): boolean {
+    if (line === null) return true;
+    const item = itemOf(c);
+    if (item !== null) return sameItem(item, line);
+    const replaced = c.pair?.value ?? was;
+    return replaced === null || heldBy(replaced) <= 1;
+  }
+  for (const [i, line] of before.entries()) {
+    const same = matched[i];
     const price = kobo(line['unitPrice'], false);
     if (!same) {
       /* A line the reading drops loses its quantity as well as its price, priced or not (an
        * order's lines carry none): both must be named (Codex on #437 at e9b1cb4). */
       changes.push(['price', price, null]);
-      counts.push([count(line['quantity']), null]);
+      counts.push([count(line['quantity']), null, false, key(line)]);
       continue;
     }
     changes.push(['price', price, kobo(same['unitPrice'], false)]);
-    counts.push([count(line['quantity']), count(same['quantity'])]);
+    counts.push([count(line['quantity']), count(same['quantity']), false, key(line)]);
   }
   for (const [j, line] of after.entries()) {
     if (used.has(j)) continue;
     /* A line the reading adds: its price and its quantity must both be named (Codex on #437 at
      * 63cf5fb and e9b1cb4). */
     changes.push(['price', null, kobo(line['unitPrice'], false)]);
-    counts.push([null, count(line['quantity'])]);
+    counts.push([null, count(line['quantity']), false, key(line)]);
   }
   const openCounts = counts.filter(
-    ([was, now, whole]) => was !== now && !useCount(exactCount(was, now, whole === true)),
+    ([was, now, whole, line]) => was !== now && !useCount(exactCount(was, now, whole, line)),
   );
-  for (const [was, now] of openCounts) {
-    if (!useCount(looseCount(was, now))) return true;
+  for (const [was, now, , line] of openCounts) {
+    if (!useCount(looseCount(was, now, line))) return true;
   }
   /* Exact pairs first, so a pair answers for its own change before any looser reading. */
   const open = changes.filter(
@@ -1159,19 +1215,31 @@ export function unnamedFiguresChanged(
   for (const [field, was, now] of open) {
     if (!use(loose(field, was, now))) return true;
   }
-  const namesTotal = (value: number) =>
-    money.some((f) => !f.replaced && f.kobo === value && fits(f, 'total'));
+  /* A total named by a pair ("29.8k not 29.9k") needs its replaced half to be the total before,
+   * stated or computed from the lines (CodeRabbit on #437 at ddba9a7). */
+  const totalBefore = [
+    kobo(stored['statedTotal'], false),
+    before.length > 0 ? (saleFigures(stored, before)?.computedTotalK ?? null) : null,
+  ];
+  const namesTotal = (value: number, pairChecked: boolean) =>
+    money.some(
+      (f) =>
+        !f.replaced &&
+        f.kobo === value &&
+        fits(f, 'total') &&
+        (!pairChecked || f.pair === null || totalBefore.includes(f.pair.kobo)),
+    );
   /* A stated total the correction does not name must follow from the corrected figures: within
    * `computeMoney`'s tolerance a different one would become the invoice total unasked (Codex on #437
    * at 0bf9298). One the reading drops must have been the total the draft's lines computed, or the
    * invoice total moves unasked (CodeRabbit on #437 at c5392f0). */
   const statedBefore = kobo(stored['statedTotal'], false);
   const statedAfter = kobo(reading['statedTotal'], false);
-  if (statedBefore !== statedAfter && !(statedAfter !== null && namesTotal(statedAfter))) {
+  if (statedBefore !== statedAfter && !(statedAfter !== null && namesTotal(statedAfter, true))) {
     if (statedAfter !== null) {
       const figures = after.length > 0 ? saleFigures(reading, after) : null;
       if (!figures || figures.computedTotalK !== statedAfter) return true;
-    } else if (statedBefore !== null && !namesTotal(statedBefore)) {
+    } else if (statedBefore !== null && !namesTotal(statedBefore, false)) {
       const figures = before.length > 0 ? saleFigures(stored, before) : null;
       if (!figures || figures.computedTotalK !== statedBefore) return true;
     }
@@ -1188,6 +1256,8 @@ interface NamedFigure {
   field: NamedField | null;
   /** Written after a "not", "instead of" or "rather than": the value being corrected away. */
   replaced: boolean;
+  /** Removal wording in its own clause ("remove the 2k discount"). */
+  removal: boolean;
   /** Its other half in "50k not 40k"; the two answer for one change, together. */
   pair: NamedFigure | null;
   used: boolean;
@@ -1196,6 +1266,9 @@ interface NamedFigure {
 interface NamedCount {
   value: number;
   replaced: boolean;
+  removal: boolean;
+  /** The word after it, which may name its line ("4 wigs"). */
+  item: string | null;
   pair: NamedCount | null;
   used: boolean;
 }
@@ -1226,7 +1299,20 @@ const PAIRED_GAP = new RegExp(String.raw`^\s*(?:[\p{L}]+\s*)?,?\s*${NEGATION}$`,
 const NEGATED_GAP = new RegExp(String.raw`${NEGATION}$`, 'u');
 /* A clause ends at a comma, a semicolon or an "and": a field word before one belongs to the figure
  * before it ("2k delivery fee and 5k discount"). */
-const CLAUSE_BREAK = /[,;]|\band\b/u;
+/* A sentence end is a clause end too ("60k not 50k. Discount should be 5k"; CodeRabbit on #437 at
+ * ddba9a7); a decimal point is not, as a digit follows it. */
+const CLAUSE_BREAK = /[,;]|[.!?](?=\s|$)|\band\b/u;
+/* Wording that removes what follows it ("remove the 2k discount", "take off the 2 caps"). */
+const REMOVAL =
+  /\b(?:remove|removed|delete|deleted|drop|dropped|cancel|cancelled|without|take\s+off|took\s+off|no\s+more)\b/u;
+
+/** Whether the word after a count names a line: its name, its last word, or either with an "s" or
+ * "es" ("wigs" for "wig", "boxes" for "box"). */
+function sameItem(word: string, line: string): boolean {
+  const w = word.toLowerCase();
+  const last = line.split(/\s+/u).at(-1) ?? '';
+  return [line, last].some((x) => x !== '' && (w === x || w === `${x}s` || w === `${x}es`));
+}
 const BARE_NEGATION = new RegExp(String.raw`^\s*${NEGATION}$`, 'u');
 
 /** The field a word right after a figure names, before the next clause or figure ("5k discount",
