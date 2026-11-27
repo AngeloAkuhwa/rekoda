@@ -516,6 +516,10 @@ describe('unnamedFiguresChanged', () => {
       ['No, 5k for the discount', { discount: 5_000 }, false],
       ['No, 2k for delivery', { reportedPayment: 2_000 }, true],
       ['No, 40k for each one', { discount: 40_000 }, true],
+      /* A figure after a word the one before it claimed keeps that word (review at 9d3cbe4). */
+      ['No, 5k discount 2k', { discount: 5_000, reportedPayment: 2_000 }, true],
+      ['No, 5k delivery 2k', { deliveryFee: 5_000, reportedPayment: 2_000 }, true],
+      ['No, 5k discount 2k', { discount: 5_000 }, false],
       ['abeg no remove the 2k discount', { discount: 0, was: 2_000 }, true],
       ['who told you to remove the 2k discount', { discount: 0, was: 2_000 }, true],
     ] as const)('"%s", reading %j: %s', (text, reading, expected) => {
