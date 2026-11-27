@@ -951,7 +951,7 @@ export function unnamedFiguresChanged(
     /* Removal wording in the figure's own clause ("remove the 2k discount"): only then, or after a
      * "not" with its field named, may an old value name a figure falling to nothing (CodeRabbit on
      * #437 at ddba9a7). */
-    const removal = REMOVAL.test(gap.split(CLAUSE_BREAK).at(-1) ?? '');
+    const removal = removes(gap.split(CLAUSE_BREAK).at(-1) ?? '');
     /* A field word after the figure, in its own clause, names it ahead of one before it ("5k
      * discount"; independent review of #437 at 22aa20a). */
     const named = fieldAfter(lower.slice(end)) ?? fieldOf(gap);
@@ -973,7 +973,7 @@ export function unnamedFiguresChanged(
         removal,
         /* The word after a count may name its line ("4 wigs not 3"); resolved against the lines
          * below, and shared by both halves of a pair (CodeRabbit on #437 at ddba9a7). */
-        item: m[2] ?? null,
+        item: m[2] && !NOT_AN_ITEM.has(m[2]) ? m[2] : null,
         pair: null,
         used: false,
       };
@@ -1166,20 +1166,26 @@ export function unnamedFiguresChanged(
   if (after.length === before.length) {
     for (const i of before.keys()) matched[i] ??= pick((_l, j) => j === i);
   }
-  /* The lines' names, for a count that names its line, and the counts more than one line held. */
-  const lineKeys = [...before, ...after].map(key).filter((k) => k !== '');
+  /* How many of the draft's lines held a count. */
   const heldBy = (value: number) => before.filter((l) => count(l['quantity']) === value).length;
-  const itemOf = (c: NamedCount) =>
-    c.item !== null && lineKeys.some((k) => sameItem(c.item!, k)) ? c.item : null;
-  /* A count names a line only if its item word names that line, or it names no line and no other
-   * line held the count it replaces, so "4 not 3" beside 3 wigs and 3 caps is asked about
-   * (CodeRabbit on #437 at ddba9a7). A count not on a line (a purchase, a stock adjustment) has no
-   * line to check. */
+  /* A count names a line only if its item word names that line and no other line holding the count
+   * it replaces, or it has no item word and no other line held that count, so "4 not 3" beside 3
+   * wigs and 3 caps, and "4 caps not 3" beside 3 caps and 3 red caps, are asked about (CodeRabbit on
+   * #437 at ddba9a7; independent review at 8b7d2c8). An item word that names no line and is no unit
+   * ("4 hats" beside wigs and caps), or a lone count beside several lines, cannot be placed either.
+   * A count not on a line (a purchase, a stock adjustment) has no line to check. */
   function countNamesLine(c: NamedCount, was: number | null, line: string | null): boolean {
     if (line === null) return true;
-    const item = itemOf(c);
-    if (item !== null) return sameItem(item, line);
     const replaced = c.pair?.value ?? was;
+    if (c.item !== null && !UNIT_WORDS.has(c.item)) {
+      if (!sameItem(c.item, line)) return false;
+      const alike = before.filter(
+        (l) =>
+          sameItem(c.item!, key(l)) && (replaced === null || count(l['quantity']) === replaced),
+      );
+      return alike.length <= 1;
+    }
+    if (!c.pair && before.length > 1) return false;
     return replaced === null || heldBy(replaced) <= 1;
   }
   for (const [i, line] of before.entries()) {
@@ -1305,6 +1311,28 @@ const CLAUSE_BREAK = /[,;]|[.!?](?=\s|$)|\band\b/u;
 /* Wording that removes what follows it ("remove the 2k discount", "take off the 2 caps"). */
 const REMOVAL =
   /\b(?:remove|removed|delete|deleted|drop|dropped|cancel|cancelled|without|take\s+off|took\s+off|no\s+more)\b/u;
+/* A negation before the removal word reverses it ("do not remove the 2k discount"; independent
+ * review of #437 at 8b7d2c8). */
+const NEGATION_WORD =
+  /\b(?:not|never|don['’]?t|doesn['’]?t|didn['’]?t|shouldn['’]?t|mustn['’]?t|no\s+need\s+to)\b/u;
+/* Words that follow a count without naming its line ("4 not 3", "4 and 5k discount"). */
+const NOT_AN_ITEM = new Set([
+  'not',
+  'instead',
+  'rather',
+  'and',
+  'then',
+  'at',
+  'for',
+  'of',
+  'please',
+]);
+
+/** Whether a clause removes what follows: removal wording with no negation before it. */
+function removes(clause: string): boolean {
+  const m = REMOVAL.exec(clause);
+  return m !== null && !NEGATION_WORD.test(clause.slice(0, m.index));
+}
 
 /** Whether the word after a count names a line: its name, its last word, or either with an "s" or
  * "es" ("wigs" for "wig", "boxes" for "box"). */
