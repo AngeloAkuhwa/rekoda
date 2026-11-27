@@ -952,9 +952,10 @@ export function unnamedFiguresChanged(
      * "not" with its field named, may an old value name a figure falling to nothing (CodeRabbit on
      * #437 at ddba9a7). */
     const removal = removes(gap.split(CLAUSE_BREAK).at(-1) ?? '');
-    /* A field word after the figure, in its own clause, names it ahead of one before it ("5k
-     * discount"; independent review of #437 at 22aa20a). */
-    const named = fieldAfter(lower.slice(end)) ?? fieldOf(gap);
+    /* A field word before the figure in its clause names it; failing that, the one word right after
+     * it ("5k discount", "60k each"), never a later figure's field word (independent review of #437
+     * at 22aa20a and ddba9a7). */
+    const named = fieldOf(gap) ?? wordField(m[2]);
     /* A figure its clause names as money is money, even when it equals a quantity ("price should be
      * 3 not 4"), and so is the one it replaces (Codex on #437 at 00c0620). */
     const namedMoney =
@@ -1343,16 +1344,12 @@ function sameItem(word: string, line: string): boolean {
 }
 const BARE_NEGATION = new RegExp(String.raw`^\s*${NEGATION}$`, 'u');
 
-/** The field a word right after a figure names, before the next clause or figure ("5k discount",
- * "60k each"). */
-function fieldAfter(rest: string): NamedField | null {
-  const clause = rest.split(CLAUSE_BREAK)[0]?.split(/\d|\b(?:not|instead|rather)\b/u)[0] ?? '';
-  let found: { at: number; field: NamedField } | null = null;
-  for (const [pattern, field] of FIELD_WORDS) {
-    const m = new RegExp(pattern.source, 'u').exec(clause);
-    if (m && (!found || m.index < found.at)) found = { at: m.index, field };
-  }
-  return found?.field ?? null;
+/** The field the one word right after a figure names, if it is a field word. */
+function wordField(word: string | undefined): NamedField | null {
+  const w = word?.toLowerCase() ?? '';
+  return (
+    FIELD_WORDS.find(([pattern]) => new RegExp(`^(?:${pattern.source})$`, 'u').test(w))?.[1] ?? null
+  );
 }
 
 /** The field a figure's own clause names: the last field word before it in its clause, or, when its
