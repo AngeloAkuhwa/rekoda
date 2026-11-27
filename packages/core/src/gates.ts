@@ -962,7 +962,9 @@ export function unnamedFiguresChanged(
      * 4621600). */
     const ownField = fieldOf(fieldGap);
     const nextWord = ownField === null ? fieldAfter(lower.slice(end)) : null;
-    const named = ownField ?? nextWord?.field ?? null;
+    /* A figure with no field word of its own, after one the figure before it claimed ("5k discount
+     * 2k"), keeps that word's field rather than fitting any (independent review of #437 at 9d3cbe4). */
+    const named = ownField ?? nextWord?.field ?? fieldOf(gap);
     fieldStart = nextWord ? end + nextWord.end : end;
     /* A figure its clause names as money is money, even when it equals a quantity ("price should be
      * 3 not 4"), and so is the one it replaces (Codex on #437 at 00c0620). */
