@@ -518,7 +518,8 @@ describe('unnamedFiguresChanged', () => {
       ['No, 40k for each one', { discount: 40_000 }, true],
       ['abeg no remove the 2k discount', { discount: 0, was: 2_000 }, true],
       ['who told you to remove the 2k discount', { discount: 0, was: 2_000 }, true],
-    ] as const)('"%s", reading %j: %s', (text, { was, ...change }, expected) => {
+    ] as const)('"%s", reading %j: %s', (text, reading, expected) => {
+      const { was, ...change } = reading as { was?: number };
       const stored = { ...sale, reportedPayment: 0, discount: was ?? 0 };
       expect(unnamedFiguresChanged(text, stored, { ...stored, ...change })).toBe(expected);
     });

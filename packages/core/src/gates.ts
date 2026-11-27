@@ -938,6 +938,8 @@ export function unnamedFiguresChanged(
    * to 4, never for another line's count (Codex on #437 at 1f99af5). */
   const namedCounts: NamedCount[] = [];
   let end = 0;
+  /* Where the next figure's own field words start: past a word the figure before claimed. */
+  let fieldStart = 0;
   let previous: NamedFigure | null = null;
   let previousCount: NamedCount | null = null;
   for (const m of lower.matchAll(ANY_FIGURE)) {
@@ -946,16 +948,22 @@ export function unnamedFiguresChanged(
     /* The gap runs to the figure itself: the word after the last figure ("50k not") is in it. */
     const gap = lower.slice(end, m.index);
     end = m.index + (m[1]?.length ?? 0);
+    const fieldGap = lower.slice(fieldStart, m.index);
     const kind = figureKind(figure, m[2]);
     const plain = Number(figure.replace(/,/gu, ''));
     /* Removal wording in the figure's own clause ("remove the 2k discount"): only then, or after a
      * "not" with its field named, may an old value name a figure falling to nothing (CodeRabbit on
      * #437 at ddba9a7). */
     const removal = removes(gap.split(CLAUSE_BREAK).at(-1) ?? '');
-    /* A field word before the figure in its clause names it; failing that, the one word right after
-     * it ("5k discount", "60k each"), never a later figure's field word (independent review of #437
-     * at 22aa20a and ddba9a7). */
-    const named = fieldOf(gap) ?? wordField(m[2]);
+    /* A field word before the figure in its clause names it; failing that, the first word after it
+     * past "for", "the" and the like ("5k discount", "60k each", "5k for the discount"), which it
+     * then claims, so a word between two figures names the one nothing else names ("price 40k
+     * discount 5k", "5k discount 2k delivery"; independent review of #437 at 22aa20a, ddba9a7 and
+     * 4621600). */
+    const ownField = fieldOf(fieldGap);
+    const nextWord = ownField === null ? fieldAfter(lower.slice(end)) : null;
+    const named = ownField ?? nextWord?.field ?? null;
+    fieldStart = nextWord ? end + nextWord.end : end;
     /* A figure its clause names as money is money, even when it equals a quantity ("price should be
      * 3 not 4"), and so is the one it replaces (Codex on #437 at 00c0620). */
     const namedMoney =
@@ -1185,7 +1193,9 @@ export function unnamedFiguresChanged(
     /* On a one-line draft, a word naming no line is a filler ("4 only not 3", "4 o"). */
     const filler =
       c.item !== null &&
+      c.item !== CONFLICTING_ITEMS &&
       before.length <= 1 &&
+      after.length <= 1 &&
       ![...before, ...after].some((l) => sameItem(c.item!, key(l)));
     if (c.item !== null && !UNIT_WORDS.has(c.item) && !filler) {
       if (!sameItem(c.item, line)) return false;
@@ -1348,7 +1358,11 @@ const NOT_AN_ITEM = new Set([
 /** Whether a clause removes what follows: removal wording with no negation before it. */
 function removes(clause: string): boolean {
   const m = REMOVAL.exec(clause);
-  return m !== null && !NEGATION_WORD.test(clause.slice(0, m.index));
+  if (m === null) return false;
+  const lead = clause.slice(0, m.index);
+  /* Pidgin "no remove", and a question about a removal ("who told you to remove"), are no removal
+   * (independent review of #437 at 4621600). */
+  return !NEGATION_WORD.test(lead) && !/\bno\s+$|\b(?:who|what|how)\b/u.test(lead);
 }
 
 /** Whether the word after a count names a line: its name, its last word, or either with an "s" or
@@ -1360,12 +1374,33 @@ function sameItem(word: string, line: string): boolean {
 }
 const BARE_NEGATION = new RegExp(String.raw`^\s*${NEGATION}$`, 'u');
 
-/** The field the one word right after a figure names, if it is a field word. */
-function wordField(word: string | undefined): NamedField | null {
-  const w = word?.toLowerCase() ?? '';
-  return (
-    FIELD_WORDS.find(([pattern]) => new RegExp(`^(?:${pattern.source})$`, 'u').test(w))?.[1] ?? null
-  );
+/* Words between a figure and the field word that names it ("5k for the discount"). */
+const FUNCTION_WORDS = new Set([
+  'for',
+  'the',
+  'as',
+  'on',
+  'of',
+  'a',
+  'an',
+  'to',
+  'in',
+  'my',
+  'your',
+]);
+
+/** The field the first word after a figure names, past function words and before the next clause,
+ * figure or negation, with where that word ends in `rest`. */
+function fieldAfter(rest: string): { field: NamedField; end: number } | null {
+  for (const w of rest.matchAll(/[\p{L}'’]+|\d|[,;.!?]/gu)) {
+    const word = w[0];
+    if (FUNCTION_WORDS.has(word)) continue;
+    const field = FIELD_WORDS.find(([pattern]) =>
+      new RegExp(`^(?:${pattern.source})$`, 'u').test(word),
+    )?.[1];
+    return field ? { field, end: w.index + word.length } : null;
+  }
+  return null;
 }
 
 /** The field a figure's own clause names: the last field word before it in its clause, or, when its
