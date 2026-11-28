@@ -6,15 +6,14 @@
 > where it names a document, that document may since have been archived
 > (see `REKODA_REFERENCE_MANIFEST.md`).
 
-## Autopilot run, 28 Nov 2026 (read first)
+## PR #437 closeout, 28 Nov 2026 (read first)
 
-- **main:** `dbe99b7`. **Active PR:** #437 (owner merges, OWN-99), head `156621f`; exact-head CI green on `156621f`; Codex last reviewed `73038f8`; CodeRabbit was rate-limited on `156621f`.
-- **Remediation branch:** `angelo/magical-bell-5r9wet` = `156621f` + 8 commits (`74b6e1a`..`8d6965d`) answering the 33 CodeRabbit threads left unanswered on #437. It is a fast-forward of the PR head; the owner brings it in (playbook "Release-candidate verification", item 3). No second PR was opened (single flight).
-  - Fixed with RED first: replaced-figure sentence scope; item-bound counts and unit prices; a purchase's stock arrival kept; a stated total kept on a payment-only correction (`gates-correction-scope.test.ts`); a correction mixed with another sale is asked about for an anonymous draft too (`correctionHoldsOtherFigures`, `meta-correction-anonymous-mixed.integration.test.ts`).
-  - Test strengthening for 11 threads (the retry cases moved to `meta-correction-retry.integration.test.ts`); a subprocessor-register wording fix and a log wording fix.
-  - Verified locally on the branch head: core unit 4,362+ pass, `pnpm turbo typecheck lint build test` green, api integration 213 files / 3,242 tests pass, layout/boundary/copy/claims guards pass. db integration not rerun (no db or migration change).
-- **Threads:** 14 resolved (already fixed at `156621f`, evidence on each); 19 answered as fixed on the branch and left open until it is in #437; the 2 owner-deferred threads (#440, #441) unchanged.
-- **Next safe step:** owner fast-forwards `angelo/magical-bell-5r9wet` into #437 (`git merge-base --is-ancestor 156621f <branch>` holds); then exact-head CI, `@codex review` and `@coderabbitai review` once, then resolve the 19 threads.
+- **main:** `dbe99b7`. **Active PR:** #437 (owner merges, OWN-99). The remediation branch `angelo/magical-bell-5r9wet` (`b51fc0c`) was fast-forwarded into the PR branch on the owner's instruction, with these commits on top:
+  - `a9b955a`: the three new test files folded into existing #437 test files, every case kept (the owner's limit of 100 changed files; the PR is at 100). The retry cases and the anonymous mixed correction are in `meta-correction-item-word.integration.test.ts`; the core correction-scope cases are a table in `gates-correction.test.ts`.
+  - `c2fcd82` (RED), `f39710b` (fix), from an independent review of `a9b955a`: an anonymous sale's correction whose other sale reuses the draft's figures is asked about; a price binds to the item its clause names before or after it ("No, wigs price 60k not 50k"); a purchase's arrival product is matched as whole words ("rice" is not in "price").
+  - `8a9cab4` (RED), `ea1fe66` (fix), from a review of `f39710b`: a plain anonymous-sale correction with a spoken particle or "it's" still replaces the draft.
+- **Open:** OD-79 (a correction mixed with another record outside the anonymous-sale path; pre-existing at `156621f`; recommendation B, after OD-57), and the two owner-deferred threads (#440, #441).
+- **Next:** exact-head CI, one Codex and one CodeRabbit review on the final head, the 19 threads answered and resolved, then the owner's merge decision. After merge: staging deployment and acceptance testing (OWN-104(2) hold until #438 still applies to real merchants).
 
 ## Current state at a glance
 
