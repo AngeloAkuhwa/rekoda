@@ -847,6 +847,17 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
        * proposal goes, so a yes to what the merchant read never joins two
        * customers (G-60, Codex on #271). */
       if (sent.delivered) {
+        /* #439 (OD-70 Option B): the identity question this reply asked or re-asked is now the
+         * held purchase's latest, the only one whose late failed receipt withdraws it. */
+        for (const heldId of new Set(
+          [
+            ...(outcome.heldDrafts ?? []),
+            outcome.heldQuestion,
+            outcome.refusedHeld?.draftId,
+          ].filter((id): id is string => Boolean(id)),
+        )) {
+          await conversationsRepo.setHeldQuestionMessage(tx, businessId, heldId, message.id);
+        }
         const proposal = identityLinkOf(
           await conversationsRepo.draftIdentityLink(tx, businessId, message.id),
         );
@@ -1078,6 +1089,10 @@ type RebuildOutcome = {
    * draft. A draft a yes was refused for is put back as a preview if its
    * question is never delivered (`unholdRefusedPurchase`), not withdrawn. */
   heldDrafts?: string[];
+  /** The held purchase this message's reply asked about again (any re-ask: after a no, a yes,
+   * doubt or a "separate" that found a new match). Once WhatsApp accepts the reply it is the
+   * hold's latest question (#439). */
+  heldQuestion?: string;
   /** The held purchase this message's "separate" answer closed (G-81). */
   separatedFrom?: { heldId: string; expiresAt: Date };
   /** The held purchase this message asked about again, and what it was (G-81). */
@@ -2052,10 +2067,13 @@ async function deterministicReply(
 
   switch (intent.kind) {
     case 'unsure':
+      /* The outcome too, so a re-ask from doubt is recorded as the hold's latest question and
+       * undone like any other re-ask if it is never delivered (#439; CodeRabbit on #437). */
       return unsureReply(tx, businessId, ctx.receivedAt, {
         messageId: ctx.messageId,
         from: ctx.from,
         receivedAt: ctx.receivedAt,
+        ...(ctx.outcome ? { outcome: ctx.outcome } : {}),
       });
     /* G-65: the ordinary greeting and help list Chat commands. A plan
      * without Chat is refused every one of them, so it is told what works. */
@@ -4381,6 +4399,7 @@ async function reaskPurchaseIdentity(
       expiresAt: held.expiresAt,
     });
   }
+  if (sender.outcome) sender.outcome.heldQuestion = heldId;
   return replies.purchaseIdentityReask({
     ...options,
     kind: spendKindOf(held.command) ?? 'purchase',
@@ -4509,7 +4528,10 @@ async function answerPurchaseIdentity(
       verdict.asked.map((r) => r.self),
     );
     if (!again) return identityClosedReply(tx, businessId);
-    if (message.outcome) message.outcome.reaskedHeld = { heldId, previous: again.previous };
+    if (message.outcome) {
+      message.outcome.heldQuestion = heldId;
+      message.outcome.reaskedHeld = { heldId, previous: again.previous };
+    }
     await continuationsRepo.openContinuation(tx, {
       businessId,
       userId: actorId,
@@ -4633,7 +4655,7 @@ async function unsureReply(
   tx: TenantDb,
   businessId: string,
   receivedAt: Date,
-  sender: { messageId: string; from: string; receivedAt: Date },
+  sender: { messageId: string; from: string; receivedAt: Date; outcome?: RebuildOutcome },
 ): Promise<Reply> {
   /* The yes it is not would carry the role rule; so does this answer. A
    * view-only member is never told "reply yes to save it". */

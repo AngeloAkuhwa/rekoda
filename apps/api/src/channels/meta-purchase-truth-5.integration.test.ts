@@ -259,57 +259,160 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
     });
 
     /*
-     * OD-70 Option B: linking a hold to its latest identity question (migration 0247) is its own
-     * PR after #437. Until then a late failed receipt for an earlier question can withdraw a hold
-     * whose re-ask is still live, and a failed re-ask can leave the hold waiting. Either way the
-     * merchant's answer books nothing they did not confirm: this pins that safety floor, not the
-     * finished behaviour.
+     * OD-70 Option B, issue #439 (migration 0249): a late failed receipt withdraws a held purchase
+     * only when it is for the hold's LATEST accepted identity question. A failure of an earlier
+     * question leaves the live re-ask answerable; a failure of the current one withdraws the hold
+     * and closes its question, as a send that fails at once withdraws a hold nobody was asked
+     * about (OWN-102(4)). Every way a question is asked again is covered: after a "no", after a
+     * doubtful answer ("same?", read as an uncertain identity answer), after a doubtful yes ("yes?",
+     * the `unsureReply` path, which passed no outcome before #439, so its re-ask was never recorded;
+     * CodeRabbit on #437), and after a "separate" that found a new match.
+     * Each case receives the failed receipt twice: a duplicate converges.
      */
-    it.each([
-      ['initial', false],
-      ['current', false],
-      ['initial', true],
-      ['current', true],
-    ] as const)(
-      'a late failure of the %s identity question books nothing unconfirmed (new match: %s)',
-      async (failed, newMatch) => {
-        const business = await seedMerchant();
-        await addDelegate(business.id);
-        await bookMilo(business.id, 'late-reask');
-        await say('wamid.LS-first', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+    const lateFailure = async (
+      failed: 'initial' | 'current',
+      how: 'no' | 'doubt' | 'yes?' | 'separate',
+      newMatch: boolean,
+      tag: string,
+    ) => {
+      const business = await seedMerchant();
+      const delegate = await addDelegate(business.id);
+      await bookMilo(business.id, `late-${tag}`);
+      await say(`wamid.${tag}-first`, MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+      expect(stubSender.lastText).toContain(QUESTION);
+      const initial = lastWamid();
+
+      if (newMatch) {
+        await say(`wamid.${tag}-new`, MILO, 'I bought 10 cartons of Milo for 100k cash');
+        await reply(`wamid.${tag}-new-separate`, 'separate');
+        await reply(`wamid.${tag}-new-yes`, 'yes');
+      }
+      if (how === 'separate') {
+        await reply(`wamid.${tag}-reask`, 'separate', DELEGATE);
         expect(stubSender.lastText).toContain(QUESTION);
-        const initial = lastWamid();
+      } else {
+        const text = how === 'no' ? 'no' : how === 'doubt' ? 'same?' : 'yes?';
+        await reply(`wamid.${tag}-reask`, text, DELEGATE);
+        expect(stubSender.lastText).toContain(REASK);
+      }
+      const current = lastWamid();
+      expect(current).not.toBe(initial);
+      const before = await footprint(business.id);
+      const confirmed = async () =>
+        (await purchaseStates(business.id)).filter((state) => state === 'confirmed').length;
+      const confirmedBefore = await confirmed();
 
-        if (newMatch) {
-          await say('wamid.LS-new', MILO, 'I bought 10 cartons of Milo for 100k cash');
-          await reply('wamid.LS-new-separate', 'separate');
-          await reply('wamid.LS-new-yes', 'yes');
-          await reply('wamid.LS-reask', 'separate', DELEGATE);
-          expect(stubSender.lastText).toContain(QUESTION);
+      const failedWamid = failed === 'initial' ? initial : current;
+      await receipt(DELEGATE, failedWamid, 'failed');
+      await receipt(DELEGATE, failedWamid, 'failed');
+      await drain();
+      expect(await footprint(business.id)).toEqual(before);
+      return { business, delegate, before, confirmed, confirmedBefore, tag };
+    };
+
+    const identityQuestion = async (businessId: string, userId: string) =>
+      (
+        await withBusiness(db, businessId, (tx) =>
+          tx.execute<{ state: string }>(sql`
+            SELECT state FROM conversation_continuations
+             WHERE business_id = ${businessId}::uuid AND user_id = ${userId}::uuid
+               AND expects = 'purchase_identity'
+             ORDER BY insertion_seq DESC LIMIT 1`),
+        )
+      )[0]?.state;
+
+    it.each([
+      ['initial', 'no', false],
+      ['current', 'no', false],
+      ['initial', 'doubt', false],
+      ['current', 'doubt', false],
+      ['initial', 'doubt', true],
+      ['current', 'doubt', true],
+      ['initial', 'yes?', false],
+      ['current', 'yes?', false],
+      ['initial', 'separate', true],
+      ['current', 'separate', true],
+    ] as const)(
+      'a late failure of the %s identity question, re-asked after %s (new match: %s), withdraws only the latest',
+      async (failed, how, newMatch) => {
+        const tag = `LF-${failed}-${how}-${newMatch}`;
+        const { business, delegate, before, confirmed, confirmedBefore } = await lateFailure(
+          failed,
+          how,
+          newMatch,
+          tag,
+        );
+        const held = await purchaseStates(business.id);
+        if (failed === 'initial') {
+          /* The re-ask the member can read is still the question, and their "same" answers it. */
+          expect(await identityQuestion(business.id, delegate)).toBe('open');
+          expect(held).toContain('held');
+          await reply(`wamid.${tag}-same`, 'same', DELEGATE);
+          expect(stubSender.lastText).toContain(SAME_DONE);
         } else {
-          await reply('wamid.LS-no', 'no', DELEGATE);
-          expect(stubSender.lastText).toContain(REASK);
+          /* The question nobody received asked nobody: the hold is withdrawn and its question
+           * closed, so a "same" is about nothing and the merchant sends the purchase again. */
+          expect(await identityQuestion(business.id, delegate)).toBe('superseded');
+          expect(held).not.toContain('held');
+          expect(held).toContain('superseded');
+          await reply(`wamid.${tag}-same`, 'same', DELEGATE);
+          expect(stubSender.lastText).not.toContain(SAME_DONE);
         }
-        const current = lastWamid();
-        expect(current).not.toBe(initial);
-        const before = await footprint(business.id);
-        const confirmed = async () =>
-          (await purchaseStates(business.id)).filter((state) => state === 'confirmed').length;
-        const confirmedBefore = await confirmed();
-
-        const failedWamid = failed === 'initial' ? initial : current;
-        await receipt(DELEGATE, failedWamid, 'failed');
-        await receipt(DELEGATE, failedWamid, 'failed');
-        await drain();
-        expect(await footprint(business.id)).toEqual(before);
-
-        await reply('wamid.LS-same', 'same', DELEGATE);
-        /* "same" books no second purchase, and nothing posts unseen. */
+        /* Either way nothing is booked that the merchant did not confirm. */
         expect(await purchases(business.id)).toBe(newMatch ? 2 : 1);
         expect((await footprint(business.id)).postings).toBe(before.postings);
         expect(await confirmed()).toBe(confirmedBefore);
       },
     );
+
+    /*
+     * Holds asked or re-asked before 0249 carry no link. One never re-asked is matched by the
+     * message that drafted it (the initial question), as before. One already marked re-asked is
+     * never withdrawn by a receipt for its initial question: that question is no longer the one
+     * the member can answer.
+     */
+    const unlink = async (businessId: string) =>
+      withBusiness(db, businessId, (tx) =>
+        tx.execute(sql`
+          UPDATE command_drafts SET held_question_message_id = NULL
+           WHERE business_id = ${businessId}::uuid AND state = 'held'`),
+      );
+
+    it('a legacy hold never re-asked is withdrawn by its initial question failing', async () => {
+      const business = await seedMerchant();
+      const delegate = await addDelegate(business.id);
+      await bookMilo(business.id, 'LG1');
+      await say('wamid.LG1-first', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+      expect(stubSender.lastText).toContain(QUESTION);
+      const initial = lastWamid();
+      await unlink(business.id);
+      await receipt(DELEGATE, initial, 'failed');
+      await drain();
+      expect(await identityQuestion(business.id, delegate)).toBe('superseded');
+      expect(await purchaseStates(business.id)).not.toContain('held');
+      expect(await purchases(business.id)).toBe(1);
+    });
+
+    it('a legacy hold already re-asked keeps its live question when the initial one fails', async () => {
+      const business = await seedMerchant();
+      const delegate = await addDelegate(business.id);
+      await bookMilo(business.id, 'LG2');
+      await say('wamid.LG2-first', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+      const initial = lastWamid();
+      await say('wamid.LG2-new', MILO, 'I bought 10 cartons of Milo for 100k cash');
+      await reply('wamid.LG2-new-separate', 'separate');
+      await reply('wamid.LG2-new-yes', 'yes');
+      await reply('wamid.LG2-reask', 'separate', DELEGATE);
+      expect(stubSender.lastText).toContain(QUESTION);
+      await unlink(business.id);
+      await receipt(DELEGATE, initial, 'failed');
+      await drain();
+      expect(await identityQuestion(business.id, delegate)).toBe('open');
+      expect(await purchaseStates(business.id)).toContain('held');
+      await reply('wamid.LG2-same', 'same', DELEGATE);
+      expect(stubSender.lastText).toContain(SAME_DONE);
+      expect(await purchases(business.id)).toBe(2);
+    });
 
     it('the re-ask after a no never offers cancel', async () => {
       const business = await seedMerchant();

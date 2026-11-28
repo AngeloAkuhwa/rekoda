@@ -1,0 +1,14 @@
+-- A held purchase records which inbound message its LATEST accepted identity question answered
+-- (OD-70 Option B, OWN-104(1), issue #439).
+--
+-- A late `failed` receipt found the hold to withdraw by `conversation_message_id`, the message that
+-- drafted it, which is only the INITIAL question. A failure of that question withdrew a hold whose
+-- re-ask was live; a failure of the re-ask left the hold waiting until it expired. Now the reply
+-- that asks or re-asks the question, once WhatsApp accepts it, stores the request it answered, and
+-- `markPreviewUndelivered` matches only that one.
+--
+-- A message id only: no name, token, figure or text. Nullable and additive: the running release
+-- neither reads nor writes it, and every hold asked before this migration has none (matched by the
+-- legacy rule in `markPreviewUndelivered`). No backfill: the latest question of an existing hold
+-- cannot be recovered from stored rows. `IF NOT EXISTS` so a replay is a no-op.
+ALTER TABLE command_drafts ADD COLUMN IF NOT EXISTS held_question_message_id uuid;
