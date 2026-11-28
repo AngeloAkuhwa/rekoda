@@ -13,8 +13,10 @@ import { describe, expect, it } from 'vitest';
 import { withBusiness, sql } from '@rekoda/db';
 import { db, stubSender, useMetaWebhookHarness } from './meta-webhook.fixtures.js';
 import {
+  ALIGN,
   DELEGATE,
   MILO,
+  RACE,
   QUESTION,
   SAME_DONE,
   REASK,
@@ -23,13 +25,24 @@ import {
   drain,
   say,
   reply,
-  purchaseStates,
   purchases,
+  footprint,
   bookMilo,
 } from './meta-purchase-truth.fixtures.js';
 import { lastWamid, receipt } from './meta-preview-expiry.fixtures.js';
 
 useMetaWebhookHarness();
+
+const OWNER_PHONE = '2348031234567';
+
+/** Holds withdrawn because the question they asked was reported undelivered. */
+const withdrawnUndelivered = (businessId: string) =>
+  withBusiness(db, businessId, (tx) =>
+    tx.execute<{ n: number }>(sql`
+      SELECT count(*)::int AS n FROM command_drafts
+       WHERE business_id = ${businessId}::uuid AND withdrawn
+         AND retired_reason = 'preview_not_delivered'`),
+  ).then((rows) => [...rows][0]?.n ?? 0);
 
 const latestQuestionState = (businessId: string, userId: string) =>
   withBusiness(db, businessId, (tx) =>
@@ -92,10 +105,11 @@ describe('a held purchase follows its latest identity question (#439)', () => {
         if (failed === 'initial') {
           // The live re-ask still stands: "same" is answered.
           expect(stubSender.lastText).toContain(SAME_DONE);
+          expect(await withdrawnUndelivered(business.id)).toBe(0);
         } else {
           // The question they would be answering never arrived: the hold was withdrawn.
           expect(stubSender.lastText).not.toContain(SAME_DONE);
-          expect(await purchaseStates(business.id)).toContain('superseded');
+          expect(await withdrawnUndelivered(business.id)).toBe(1);
         }
         // Nothing is booked that the merchant did not confirm.
         expect(await purchases(business.id)).toBe(newMatch ? 2 : 1);
@@ -116,10 +130,53 @@ describe('a held purchase follows its latest identity question (#439)', () => {
     await receipt(DELEGATE, initial, 'failed');
     await drain();
 
-    // The earlier rule fails safe: the hold is withdrawn and nothing is booked.
-    expect(await purchaseStates(business.id)).toContain('superseded');
+    // The earlier rule (the drafting message) fails safe: withdrawn, nothing booked. A hold
+    // re-asked after a "no" or doubt before 0249 keeps this rule (OD-80).
+    expect(await withdrawnUndelivered(business.id)).toBe(1);
     await reply('wamid.H-legacy-same', 'same', DELEGATE);
     expect(stubSender.lastText).not.toContain(SAME_DONE);
     expect(await purchases(business.id)).toBe(1);
+  });
+
+  /*
+   * A yes refused because a matching purchase was booked since its preview (G-81): the member is
+   * asked "same or separate" in reply to the yes. That question is the hold's latest, so its late
+   * failure withdraws the hold, as a late failure of any current question does (OD-80; at send
+   * time the preview is put back instead). Nothing is booked.
+   */
+  it('a late failure of the question asked at a refused yes withdraws the hold (OD-80)', async () => {
+    const business = await seedMerchant();
+    await addDelegate(business.id);
+    await say(
+      'wamid.H-ry-o',
+      { ...MILO, supplierReference: 'invoice 0101' },
+      'Milo 100k, receipt EMK-0101',
+    );
+    await say(
+      'wamid.H-ry-d',
+      { ...MILO, amount: 100_001, reportedPayment: 100_001 },
+      'Milo 100k, receipt EMK-0202',
+      DELEGATE,
+    );
+    await withBusiness(db, business.id, (tx) =>
+      tx.execute(sql`
+        UPDATE command_drafts SET command = (command - 'supplierReference') || ${ALIGN}::jsonb
+         WHERE business_id = ${business.id}::uuid`),
+    );
+    await reply('wamid.H-ry-yes-1', 'yes');
+    expect(await purchases(business.id)).toBe(1);
+    await reply('wamid.H-ry-yes-2', 'yes');
+    expect(stubSender.lastText).toContain(RACE);
+    expect(stubSender.lastText).toContain(QUESTION);
+    const before = await footprint(business.id);
+
+    await receipt(OWNER_PHONE, lastWamid(), 'failed');
+    await drain();
+
+    expect(await withdrawnUndelivered(business.id)).toBe(1);
+    await reply('wamid.H-ry-same', 'same');
+    expect(stubSender.lastText).not.toContain(SAME_DONE);
+    expect(await purchases(business.id)).toBe(1);
+    expect(await footprint(business.id)).toEqual(before);
   });
 });

@@ -1243,8 +1243,10 @@ export async function markPreviewUndelivered(
       -- (OWN-102(4)), so it never closes its member's refusal (hasDraftsAfterBy) and is never
       -- answered (CodeRabbit on #437 at aff3f63). Only the LATEST accepted identity question
       -- counts (0249, #439): an earlier question's late failure leaves a live re-ask standing.
-      -- A hold with no recorded question keeps the earlier rule (its drafting message), unless
-      -- it was re-asked since, when that earlier message is no longer its question.
+      -- A hold with no recorded question keeps the earlier rule (its drafting message, which
+      -- asked the first question), except one re-asked by reaskHeld (reasked_at set), whose
+      -- drafting message is no longer its question. A hold re-asked after a "no" or doubt before
+      -- 0249 has no link and keeps the earlier rule: fail-safe, as before (OD-80).
       UPDATE command_drafts d SET state = 'superseded', withdrawn = true,
              retired_reason = 'preview_not_delivered', updated_at = clock_timestamp()
         FROM reply

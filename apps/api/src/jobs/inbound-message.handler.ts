@@ -848,7 +848,8 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
        * customers (G-60, Codex on #271). */
       if (sent.delivered) {
         /* #439: the identity question WhatsApp accepted is now the one this hold answers to,
-         * so only its late failure withdraws the hold (`markPreviewUndelivered`). */
+         * so only its late failure withdraws the hold (`markPreviewUndelivered`). A FIRST
+         * question needs no link: the hold is drafted by the message it answers. */
         const heldId = outcome.heldQuestion ?? outcome.refusedHeld?.draftId;
         if (heldId) {
           await conversationsRepo.setHeldQuestionMessage(tx, businessId, heldId, message.id);
