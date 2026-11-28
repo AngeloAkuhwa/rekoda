@@ -1,3 +1,4 @@
+import { normaliseFacet } from '@rekoda/core/vault';
 import { Logger } from '@nestjs/common';
 import {
   gateExpense,
@@ -13,6 +14,13 @@ import {
   purchaseArrival,
   isSaleSource,
   looksLikeCorrection,
+  clearlyCorrects,
+  draftFigures,
+  explicitlyCorrects,
+  replacedFiguresFit,
+  unnamedFiguresChanged,
+  correctionHoldsOtherFigures,
+  correctionWordsExplained,
   orderPreview,
   orderQuestion,
   postCostOfSale,
@@ -64,6 +72,7 @@ import {
   type RequestKind,
   type Route,
   type UsageUnit,
+  MoneyError,
 } from '@rekoda/core';
 import { normalisePhone, InvalidPhoneError } from '@rekoda/core/identity';
 import { extractInboundEvents, metaWebhookBody } from '@rekoda/contracts';
@@ -102,14 +111,10 @@ import type {
   ResolvedCustomer,
   PrivacyGateway,
 } from '../privacy/gateway.service.js';
-import type { ReplySender } from '../replies/reply.service.js';
+import type { ReplySender, SendReplyInput } from '../replies/reply.service.js';
 import type { PaymentIntentsService } from '../payments/payment-intents.service.js';
 import { openPayload } from '../privacy/payload-vault.js';
-import {
-  redactForLog,
-  redactStructuralPiiAroundTokens,
-  replaceOutsideTokens,
-} from '@rekoda/core/privacy';
+import { neutraliseTokens, protectedSpans, redactForLog, STORED_BODY } from '@rekoda/core/privacy';
 import { describeFailure, JobDeferred, type JobContext, type JobHandler } from './runner.js';
 import { JobKind } from './queue.service.js';
 import { TranscriptionUnavailable, type SpeechToText, type Transcript } from '../ai/stt.js';
@@ -153,6 +158,93 @@ const authorisationLog = new Logger('InboundMessageJob');
  * stays charged; only "nothing delivered" gives units back (final review).
  */
 const ALREADY_ANSWERED = Symbol('already answered');
+
+/**
+ * Every string in a command with each provisional token swapped for the stored
+ * one it became (G-135). The model may copy a token into any free-text field (a
+ * description, a note), and a record must never keep a provisional token that
+ * names nobody once this job ends.
+ */
+function withTokensReplaced<T>(value: T, replaced: ReadonlyMap<string, string>): T {
+  if (replaced.size === 0) return value;
+  if (typeof value === 'string') {
+    let out: string = value;
+    for (const [from, to] of replaced) out = out.split(from).join(to);
+    return out as T;
+  }
+  if (Array.isArray(value)) return value.map((v) => withTokensReplaced(v, replaced)) as T;
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [k, withTokensReplaced(v, replaced)]),
+    ) as T;
+  }
+  return value;
+}
+
+/** The records that have a customer: the only ones a phone or email may become one for. */
+const CUSTOMER_BEARING: ReadonlySet<string> = new Set([
+  'RecordSale',
+  'RecordPayment',
+  'RecordOrder',
+]);
+
+/** Every string of a record except its `customer`, which is a reference, not words. */
+function wordsOf(value: unknown, top = true): string[] {
+  if (typeof value === 'string') return [value];
+  if (Array.isArray(value)) return value.flatMap((v) => wordsOf(v, false));
+  if (value && typeof value === 'object') {
+    return Object.entries(value).flatMap(([k, v]) =>
+      top && k === 'customer' ? [] : wordsOf(v, false),
+    );
+  }
+  return [];
+}
+
+/** Which of `candidates` appear in a record's words (owner review of #437). */
+function tokensInWords(command: StructuredBusinessCommand, candidates: string[]): Set<string> {
+  const words = wordsOf(command);
+  return new Set(candidates.filter((t) => words.some((w) => w.includes(t))));
+}
+
+/** A record with `neutraliseTokens` applied to every string except its `customer`. */
+function withWordsNeutralised<T>(
+  value: T,
+  keep: ReadonlySet<string>,
+  placeholders: ReadonlyMap<string, string>,
+  top = true,
+): T {
+  if (typeof value === 'string') return neutraliseTokens(value, keep, placeholders) as T;
+  if (Array.isArray(value)) {
+    return value.map((v) => withWordsNeutralised(v, keep, placeholders, false)) as T;
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [
+        k,
+        top && k === 'customer' ? v : withWordsNeutralised(v, keep, placeholders, false),
+      ]),
+    ) as T;
+  }
+  return value;
+}
+
+/**
+ * A balance read whose figures would not survive as exact kobo (a bigint past
+ * 2^53: `MoneyError` from the repository) is answered, never rounded and
+ * never left to kill the job: a retried job would buy the interpretation again
+ * and the merchant would hear nothing (owner directive on #437).
+ */
+async function exactOrRefused<T>(read: () => Promise<T>): Promise<T | null> {
+  try {
+    return await read();
+  } catch (error) {
+    if (error instanceof MoneyError) {
+      paymentLog.error(`a balance could not be stated exactly: ${error.message}`);
+      return null;
+    }
+    throw error;
+  }
+}
 
 export interface InboundMessageDeps {
   gateway: PrivacyGateway;
@@ -368,7 +460,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
      * two would drift until one of them lost a conversation gate.
      */
     let spoken: { transcript: Transcript; messageId: string } | null = null;
-    let read: { text: string; messageId: string } | null = null;
+    let read: { text: string; messageId: string; caption: string | null } | null = null;
     if (isVoiceNote(inbound)) {
       const heard = await transcribeVoiceNote(
         deps,
@@ -384,18 +476,29 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
         await events.markProcessed(tx, eventId, null, businessId);
         return;
       }
-      spoken = heard;
-      if (!spoken) {
-        /* Already answered inside, and already marked new-or-not. Nothing to
+      if (refusedReading(heard)) {
+        /* Refused inside and already marked new-or-not, but not yet answered:
+         * the refusal is recorded below before its reply is sent. Nothing to
          * interpret and nothing to charge for: whatever an earlier attempt
          * of this message took goes back (G-57 final review B). Still the
          * newest thing this member said, so whatever was open for them is
          * retired (Build 6). */
         await releaseHeldUnits(deps, businessId, eventId, usagePeriod(event.receivedAt));
         await retireSenderContinuation(tx, businessId, inbound.from, event.receivedAt);
+        await recordRefusal(
+          deps,
+          tx,
+          businessId,
+          heard.refusedIn,
+          await actorOf(tx, businessId, inbound.from),
+          '[voice note not read]',
+          inbound.from,
+        );
+        await deps.replySender.send(tx, { businessId, to: inbound.from, reply: heard.reply });
         await events.markProcessed(tx, eventId, null, businessId);
         return;
       }
+      spoken = heard;
     } else if (isReceiptPhoto(inbound)) {
       const seen = await readReceiptPhoto(
         deps,
@@ -411,15 +514,25 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
         await events.markProcessed(tx, eventId, null, businessId);
         return;
       }
-      read = seen;
-      if (!read) {
+      if (refusedReading(seen)) {
         /* Refused or failed before anything was delivered: whatever an
          * earlier attempt of this message took goes back. */
         await releaseHeldUnits(deps, businessId, eventId, usagePeriod(event.receivedAt));
         await retireSenderContinuation(tx, businessId, inbound.from, event.receivedAt);
+        await recordRefusal(
+          deps,
+          tx,
+          businessId,
+          seen.refusedIn,
+          await actorOf(tx, businessId, inbound.from),
+          '[photo not read]',
+          inbound.from,
+        );
+        await deps.replySender.send(tx, { businessId, to: inbound.from, reply: seen.reply });
         await events.markProcessed(tx, eventId, null, businessId);
         return;
       }
+      read = seen;
     } else if (inbound.messageType !== 'text') {
       const recorded = await conversationsRepo.recordInbound(
         tx,
@@ -434,6 +547,18 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
       );
       if (recorded.isNew) {
         await retireSenderContinuation(tx, businessId, inbound.from, event.receivedAt);
+        /* Recorded before the send, never after it: the send cannot be rolled back, and a write
+         * after it that fails would roll this message back and answer it again on the retry
+         * (CodeRabbit on #437 at ebeeadb). */
+        await recordRefusal(
+          deps,
+          tx,
+          businessId,
+          recorded.id,
+          await actorOf(tx, businessId, inbound.from),
+          replies.onlyText().text,
+          inbound.from,
+        );
         await deps.replySender.send(tx, {
           businessId,
           to: inbound.from,
@@ -451,7 +576,11 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
      * router and goes to the model path as an ordinary message. */
     const route: Route = read ? { route: 'model', reason: 'unrecognised' } : routeMessage(text);
     const tokenised =
-      route.route === 'deterministic' ? null : await deps.gateway.tokenise(businessId, text);
+      route.route === 'deterministic'
+        ? null
+        : /* Provisional (G-135): a phone or email nobody recorded creates no
+           * customer until a record needs one, so a question never does. */
+          await deps.gateway.tokenise(businessId, text, undefined, { provisional: true });
 
     /**
      * A deterministic message is stored as WHAT IT WAS, not what it said.
@@ -471,16 +600,34 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
      * and silently return without answering the merchant. The body is filled
      * in now that there is something to store.
      */
+    /**
+     * What the history keeps of a model-routed message: what it WAS, never
+     * what it said (G-136, owner directive on #437, 20 Nov 2026).
+     *
+     * The tokenised text still holds any name nobody recorded, and the only
+     * thing that could take one out was a scrub after a successful
+     * interpretation, which replaced only the words the model returned and
+     * never ran on a refusal, a failure, an `Unclear` or a supplier. Nothing
+     * in production reads this column (the model is given only the current
+     * message, in memory), so the text is not kept at all: a structural
+     * placeholder, written in the job's own transaction, is all that ever
+     * commits. The words live only in `safeText` while this job runs.
+     */
+    const stored =
+      route.route === 'deterministic'
+        ? describeIntent(route.intent)
+        : tokenised!.unread
+          ? tokenised!.text
+          : spoken
+            ? STORED_BODY.voice
+            : read
+              ? STORED_BODY.photo
+              : STORED_BODY.text;
     const claimed = spoken?.messageId ?? read?.messageId ?? null;
     const message = claimed
       ? {
           id: claimed,
-          isNew: await conversationsRepo.setInboundBody(
-            tx,
-            businessId,
-            claimed,
-            route.route === 'deterministic' ? describeIntent(route.intent) : tokenised!.text,
-          ),
+          isNew: await conversationsRepo.setInboundBody(tx, businessId, claimed, stored),
         }
       : await conversationsRepo.recordInbound(
           tx,
@@ -488,7 +635,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
             businessId,
             channel: 'meta',
             kind: 'text',
-            body: route.route === 'deterministic' ? describeIntent(route.intent) : tokenised!.text,
+            body: stored,
             providerMessageId: inbound.externalId,
           },
           merchantThread(businessId),
@@ -513,6 +660,17 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
     if (tokenised?.unread) {
       await releaseHeldUnits(deps, businessId, eventId, usagePeriod(event.receivedAt));
       await retireSenderContinuation(tx, businessId, inbound.from, event.receivedAt);
+      /* Recorded before the send: a write after it that failed would answer again on the retry
+       * (independent review of #437 at 4480bc2). */
+      await recordRefusal(
+        deps,
+        tx,
+        businessId,
+        message.id,
+        await actorOf(tx, businessId, inbound.from),
+        '[message not read]',
+        inbound.from,
+      );
       await deps.replySender.send(tx, {
         businessId,
         to: inbound.from,
@@ -567,6 +725,16 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
           await giveBackUnit(deps, businessId, eventId, period, 'AI_ACTIONS');
         }
         await retireSenderContinuation(tx, businessId, inbound.from, event.receivedAt);
+        /* Recorded before the send, as above (independent review of #437 at 4480bc2). */
+        await recordRefusal(
+          deps,
+          tx,
+          businessId,
+          message.id,
+          await actorOf(tx, businessId, inbound.from),
+          '[photo not read]',
+          inbound.from,
+        );
         await deps.replySender.send(tx, {
           businessId,
           to: inbound.from,
@@ -583,6 +751,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
       ? {
           displays: new Map(tokenised.tokens),
           facets: new Map([...tokenised.facets].map(([token, typed]) => [token, [...typed]])),
+          provisional: new Map(tokenised.provisional),
         }
       : null;
 
@@ -651,6 +820,8 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
             // Extracted-document text qualifies for dual extraction (item 9).
             read !== null,
             outcome,
+            jobId,
+            read?.caption ?? null,
           );
 
     if (answer) {
@@ -691,6 +862,14 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
         }
       }
       if (!sent.delivered) {
+        /* The answer to a refusal never arrived: the refusal and the questions it closed are
+         * put back, so the merchant's repeated yes is about the refusal again (Codex on #437). */
+        if (outcome.closedByAnswer?.length) {
+          await conversationsRepo.reopenClosedDrafts(tx, businessId, outcome.closedByAnswer);
+        }
+        /* The pointer back at a preview never arrived either: the question it retired is put
+         * back, so the repeated yes is pointed again (CodeRabbit on #437 at 400ca58). */
+        await conversationsRepo.reopenReadsRetiredBy(tx, businessId, message.id);
         await conversationsRepo.markDraftUnseen(tx, businessId, message.id);
         /* Build 6: nor was the question or the answer a continuation holds
          * on to. A member who never saw "Which period?" is not answering it
@@ -828,12 +1007,8 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
           if (outcome.rebuiltFrom) {
             await conversationsRepo.undoRebuild(tx, businessId, outcome.rebuiltFrom, message.id);
           }
-          await conversationsRepo.undoReplacement(
-            tx,
-            businessId,
-            message.id,
-            outcome.replacedRebuilds,
-          );
+          /* Withdraws the replacement only: what it replaced stays superseded (OD-63(b)). */
+          await conversationsRepo.undoReplacement(tx, businessId, message.id);
         }
         if (outcome.rebuiltFrom) {
           await conversationsRepo.undoRebuild(tx, businessId, outcome.rebuiltFrom, message.id);
@@ -890,6 +1065,9 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
  */
 type RebuildOutcome = {
   retiredQuestion: boolean;
+  /** A refusal this answer closed and the questions it retired: put back if the reply never
+   * reached the merchant, so a repeated yes is still about the refusal (Codex on #437). */
+  closedByAnswer?: string[];
   rebuiltFrom?: string;
   retiredHolders?: { userId: string; expiresAt: Date }[];
   /** Pending rebuilds this message's preview replaced (same member, total). */
@@ -1011,6 +1189,133 @@ async function recordVisionRead(
  * failure path answers with a sentence rather than a second attempt at an
  * engine the privacy page never named.
  */
+/**
+ * A refusal or a failed reading, recorded as the sender's newest draft (owner
+ * review of #437 at 3a60b0f): a pending `Unclear` marked `refused`, holding the
+ * sentence only. A "yes" or a "no" right after it is about it, never about an
+ * older preview (`isRefusalDraft`, `closeRefusalDraft`). Not a preview, and no
+ * words of the merchant's or token is kept.
+ */
+async function recordRefusal(
+  deps: InboundMessageDeps,
+  tx: TenantDb,
+  businessId: string,
+  conversationMessageId: string,
+  requestedBy: string | null,
+  text: string,
+  /** The sender, when the caller has not already established they may transact. */
+  from?: string,
+): Promise<void> {
+  /* A member who may not change the books has nothing a "yes" could post, and
+   * their refusal must touch nothing (G-57): no draft. */
+  if (from !== undefined && !(await mayTransact(tx, businessId, from))) return;
+  await conversationsRepo.recordDraft(tx, {
+    businessId,
+    conversationMessageId,
+    intent: 'Unclear',
+    command: { intent: 'Unclear', clarification: text, refused: true },
+    model: deps.config.aiModelDefault,
+    identityLink: null,
+    previewed: false,
+    confirmationContext: null,
+    requestedBy,
+    held: false,
+    separateFrom: null,
+  });
+}
+
+/**
+ * The newest pending draft a "yes" or "no" from `from` can be about, past refusals that are
+ * not theirs to answer (owner review of #437; CodeRabbit and Qodo on it):
+ *  - another member's refusal is looked past and LEFT as it is, so it still guards that
+ *    member's own older preview when they answer it;
+ *  - the sender's own refusal is theirs to answer only while it is the last thing they
+ *    recorded (`ownRefusal`); once they have recorded anything since, it is stale and is
+ *    closed here.
+ */
+async function pastRefusals(
+  tx: TenantDb,
+  businessId: string,
+  from: string,
+  asOf: Date,
+  /* `readOnly`: a scan that answers a doubt ("yes?") changes nothing, so the sender's stale refusal
+   * is looked past, not closed (CodeRabbit on #437 at b2703e7). */
+  options: { readOnly?: boolean } = {},
+): Promise<{
+  draft: conversationsRepo.DraftRow | null;
+  ownRefusal: conversationsRepo.DraftRow | null;
+  except: string[];
+}> {
+  const actor = await actorOf(tx, businessId, from);
+  const except: string[] = [];
+  /* The newest request a "yes" or "no" would reach, kept while the scan looks further back for the
+   * sender's own refusal: another member's newer preview never stands in front of the refusal this
+   * sender was last shown (CodeRabbit on #437). The scan stops at the sender's own request, which
+   * is newer than any refusal of theirs behind it. */
+  let first: conversationsRepo.DraftRow | null = null;
+  for (;;) {
+    const draft = await conversationsRepo.pendingDraftToAnswer(tx, businessId, { asOf, except });
+    if (!draft) return { draft: first, ownRefusal: null, except };
+    if (!conversationsRepo.isRefusalDraft(draft)) {
+      first ??= draft;
+      /* The sender's own request stops the scan only if they read it: one whose preview never
+       * reached them is no answer to their refusal (the rule `hasDraftsAfterBy` applies), so the
+       * scan goes on to that refusal and another member's newer preview is never booked by this
+       * sender's yes (CodeRabbit on #437 at cacc734). */
+      /* Nor is one whose reply's failed receipt is stored and not yet applied: it was never read
+       * either (CodeRabbit on #437 at c5392f0). */
+      if (
+        actor !== null &&
+        draft.requestedBy === actor &&
+        (unseenRecord(draft) ||
+          (await conversationsRepo.hasUnappliedFailedReceipt(tx, businessId, draft.id)))
+      ) {
+        except.push(draft.id);
+        continue;
+      }
+      if (actor === null || draft.requestedBy === actor) {
+        return { draft: first, ownRefusal: null, except };
+      }
+      except.push(draft.id);
+      continue;
+    }
+    const mine = actor !== null && draft.requestedBy === actor;
+    if (
+      mine &&
+      !(await conversationsRepo.hasDraftsAfterBy(tx, businessId, draft.id, actor, { asOf }))
+    ) {
+      return { draft: first ?? draft, ownRefusal: draft, except };
+    }
+    if (mine && !options.readOnly)
+      await conversationsRepo.closeRefusalDraft(tx, businessId, draft.id);
+    else except.push(draft.id);
+  }
+}
+
+/** A record's preview the member never read (`hasDraftsAfterBy`'s rule): not previewed, not held. */
+function unseenRecord(draft: conversationsRepo.DraftRow): boolean {
+  return (
+    !['Query', 'Unclear', 'EraseData'].includes(draft.intent) &&
+    draft.previewed !== true &&
+    draft.state !== 'held'
+  );
+}
+
+/** What DELETE MY DATA erases, as recorded with the merchant's two asks (Appendix D). */
+const ERASURE_CONSEQUENCE =
+  'Every customer contact detail for this business, and the stored copies of its chat messages that Rekoda has finished processing, will be permanently deleted.';
+
+/** What a voice note or photo reader answered instead of reading: a refusal, NOT yet sent. The
+ * caller records the refusal first and sends `reply` after it: the send cannot be rolled back, and a
+ * failed write after it would roll the message back and answer it again on the retry (CodeRabbit on
+ * #437 at c5392f0). */
+interface RefusedReading {
+  readonly refusedIn: string;
+  readonly reply: SendReplyInput['reply'];
+}
+const refusedReading = (value: unknown): value is RefusedReading =>
+  typeof value === 'object' && value !== null && 'refusedIn' in value;
+
 async function readReceiptPhoto(
   deps: InboundMessageDeps,
   tx: TenantDb,
@@ -1022,14 +1327,18 @@ async function readReceiptPhoto(
   receivedAt: Date,
   /** The stored event, where the page's unit is recorded. */
   eventId: string,
-): Promise<{ text: string; messageId: string } | null | typeof ALREADY_ANSWERED> {
+): Promise<
+  | { text: string; messageId: string; caption: string | null }
+  | RefusedReading
+  | typeof ALREADY_ANSWERED
+> {
   const recorded = await conversationsRepo.recordInbound(
     tx,
     {
       businessId,
       channel: 'meta',
       kind: 'media',
-      body: '[receipt photo]',
+      body: STORED_BODY.photo,
       providerMessageId: inbound.externalId,
     },
     merchantThread(businessId),
@@ -1039,12 +1348,7 @@ async function readReceiptPhoto(
 
   const plan = await usageRepo.planFor(tx, businessId);
   if (plan === 'expired') {
-    await deps.replySender.send(tx, {
-      businessId,
-      to: inbound.from,
-      reply: await lapsedReply(tx, businessId, inbound.from),
-    });
-    return null;
+    return { refusedIn: recorded.id, reply: await lapsedReply(tx, businessId, inbound.from) };
   }
 
   /* ENTITLEMENT BEFORE ANY PROVIDER IS TOUCHED (spec §4.3, rules 1 and 2).
@@ -1053,12 +1357,7 @@ async function readReceiptPhoto(
    * long way before the OCR engine: the refusal costs Rekoda nothing and
    * costs the merchant nothing, so there is no unit to give back. */
   if (await entitlementsRepo.requireEntitlement(tx, businessId, 'REKODA_CHAT')) {
-    await deps.replySender.send(tx, {
-      businessId,
-      to: inbound.from,
-      reply: replies.chatNotInPlan(),
-    });
-    return null;
+    return { refusedIn: recorded.id, reply: replies.chatNotInPlan() };
   }
 
   /* AUTHORISATION BEFORE ANY PROVIDER IS TOUCHED (G-57, OWN-25). Today a
@@ -1071,12 +1370,7 @@ async function readReceiptPhoto(
     /* A retry whose member was demoted after attempt 1 read the page gives
      * that page back: the request ends refused (Codex P2). */
     await giveBackUnit(deps, businessId, eventId, usagePeriod(receivedAt), 'DOCUMENTS_UNDERSTOOD');
-    await deps.replySender.send(tx, {
-      businessId,
-      to: inbound.from,
-      reply: replies.viewOnlyPhoto(),
-    });
-    return null;
+    return { refusedIn: recorded.id, reply: replies.viewOnlyPhoto() };
   }
 
   let image;
@@ -1084,12 +1378,7 @@ async function readReceiptPhoto(
     image = await deps.sender.fetchMedia(inbound.imageId!);
   } catch {
     log.warn('could not fetch a photograph from the provider');
-    await deps.replySender.send(tx, {
-      businessId,
-      to: inbound.from,
-      reply: replies.photoUnavailable(),
-    });
-    return null;
+    return { refusedIn: recorded.id, reply: replies.photoUnavailable() };
   }
 
   /**
@@ -1124,15 +1413,13 @@ async function readReceiptPhoto(
     /* The platform backstop refusing is Rekoda's busy day, not the
      * merchant's limit — the sentence must not tell them to wait for
      * midnight when trying again in an hour may work. */
-    await deps.replySender.send(tx, {
-      businessId,
-      to: inbound.from,
+    return {
+      refusedIn: recorded.id,
       reply:
         daily.refusedBy === 'business'
           ? replies.dailyDocumentLimit(dailyLimit)
           : replies.busyRightNow(),
-    });
-    return null;
+    };
   }
 
   const period = usagePeriod(receivedAt);
@@ -1169,12 +1456,10 @@ async function readReceiptPhoto(
     // The plan refused after the day allowed: no provider was reached, so
     // the daily slot goes back too.
     await quotaRepo.releaseDocExtraction(deps.db, businessId);
-    await deps.replySender.send(tx, {
-      businessId,
-      to: inbound.from,
+    return {
+      refusedIn: recorded.id,
       reply: await exhaustedReply(deps.db, businessId, allowance, 'DOCUMENTS_UNDERSTOOD', plan),
-    });
-    return null;
+    };
   }
 
   let extracted;
@@ -1233,12 +1518,7 @@ async function readReceiptPhoto(
     /* The page this message holds goes back, whichever attempt took it,
      * exactly once. */
     await giveBackUnit(deps, businessId, eventId, period, 'DOCUMENTS_UNDERSTOOD');
-    await deps.replySender.send(tx, {
-      businessId,
-      to: inbound.from,
-      reply: replies.photoUnavailable(),
-    });
-    return null;
+    return { refusedIn: recorded.id, reply: replies.photoUnavailable() };
   }
 
   /* WHAT THE READ COST, recorded whatever becomes of the text (item 7 of
@@ -1253,12 +1533,7 @@ async function readReceiptPhoto(
    * the paid document classifier, and the page goes back (Codex P2). */
   if (!(await mayTransact(tx, businessId, inbound.from))) {
     await giveBackUnit(deps, businessId, eventId, period, 'DOCUMENTS_UNDERSTOOD');
-    await deps.replySender.send(tx, {
-      businessId,
-      to: inbound.from,
-      reply: replies.viewOnlyRole(),
-    });
-    return null;
+    return { refusedIn: recorded.id, reply: replies.viewOnlyRole() };
   }
 
   /* The caption is what the merchant TYPED, and it says what the photograph
@@ -1266,7 +1541,7 @@ async function readReceiptPhoto(
    * reaches the interpreter as the instruction it is. */
   const caption = inbound.caption?.trim();
   const text = caption ? `${caption}\n${extracted.text}` : extracted.text;
-  return { text, messageId: recorded.id };
+  return { text, messageId: recorded.id, caption: caption || null };
 }
 
 /**
@@ -1295,14 +1570,16 @@ async function transcribeVoiceNote(
   receivedAt: Date,
   /** The stored event, where the note's seconds are recorded. */
   eventId: string,
-): Promise<{ transcript: Transcript; messageId: string } | null | typeof ALREADY_ANSWERED> {
+): Promise<
+  { transcript: Transcript; messageId: string } | RefusedReading | typeof ALREADY_ANSWERED
+> {
   const recorded = await conversationsRepo.recordInbound(
     tx,
     {
       businessId,
       channel: 'meta',
       kind: 'voice',
-      body: '[voice note]',
+      body: STORED_BODY.voice,
       providerMessageId: inbound.externalId,
     },
     merchantThread(businessId),
@@ -1313,12 +1590,7 @@ async function transcribeVoiceNote(
 
   const plan = await usageRepo.planFor(tx, businessId);
   if (plan === 'expired') {
-    await deps.replySender.send(tx, {
-      businessId,
-      to: inbound.from,
-      reply: await lapsedReply(tx, businessId, inbound.from),
-    });
-    return null;
+    return { refusedIn: recorded.id, reply: await lapsedReply(tx, businessId, inbound.from) };
   }
 
   /* ENTITLEMENT BEFORE ANY PROVIDER IS TOUCHED (spec §4.3, rules 1 and 2).
@@ -1326,12 +1598,7 @@ async function transcribeVoiceNote(
    * refused here never reaches the transcriber. Nothing was reserved, so
    * there is nothing to give back. */
   if (await entitlementsRepo.requireEntitlement(tx, businessId, 'REKODA_CHAT')) {
-    await deps.replySender.send(tx, {
-      businessId,
-      to: inbound.from,
-      reply: replies.chatNotInPlan(),
-    });
-    return null;
+    return { refusedIn: recorded.id, reply: replies.chatNotInPlan() };
   }
 
   let audio;
@@ -1339,12 +1606,7 @@ async function transcribeVoiceNote(
     audio = await deps.sender.fetchMedia(inbound.audioId!);
   } catch {
     log.warn('could not fetch a voice note from the provider');
-    await deps.replySender.send(tx, {
-      businessId,
-      to: inbound.from,
-      reply: replies.voiceUnavailable(),
-    });
-    return null;
+    return { refusedIn: recorded.id, reply: replies.voiceUnavailable() };
   }
 
   /**
@@ -1369,12 +1631,7 @@ async function transcribeVoiceNote(
      * for free, and the recovery for the two is not the same: this one asks
      * the merchant to send it again, and nothing has been metered or spent. */
     log.warn('a voice note arrived in a container we could not measure');
-    await deps.replySender.send(tx, {
-      businessId,
-      to: inbound.from,
-      reply: replies.voiceUnreadable(),
-    });
-    return null;
+    return { refusedIn: recorded.id, reply: replies.voiceUnreadable() };
   }
 
   const maxSeconds = deps.config.voiceNoteMaxDurationSeconds;
@@ -1382,12 +1639,7 @@ async function transcribeVoiceNote(
     /* The commercial limit, enforced where it protects money rather than
      * where it merely reports it. Nothing is metered: the merchant did not
      * use anything, they were told to send it differently. */
-    await deps.replySender.send(tx, {
-      businessId,
-      to: inbound.from,
-      reply: replies.voiceTooLong(maxSeconds),
-    });
-    return null;
+    return { refusedIn: recorded.id, reply: replies.voiceTooLong(maxSeconds) };
   }
 
   /**
@@ -1402,13 +1654,11 @@ async function transcribeVoiceNote(
     globalPerDay: deps.config.voiceSecondsGlobalPerDay,
   });
   if (!dailyVoice.ok) {
-    await deps.replySender.send(tx, {
-      businessId,
-      to: inbound.from,
+    return {
+      refusedIn: recorded.id,
       reply:
         dailyVoice.refusedBy === 'business' ? replies.dailyVoiceLimit() : replies.busyRightNow(),
-    });
-    return null;
+    };
   }
 
   /**
@@ -1452,12 +1702,10 @@ async function transcribeVoiceNote(
     // The plan refused after the day allowed: no provider was reached, so
     // the daily seconds go back too.
     await quotaRepo.releaseVoiceSeconds(deps.db, businessId, seconds);
-    await deps.replySender.send(tx, {
-      businessId,
-      to: inbound.from,
+    return {
+      refusedIn: recorded.id,
       reply: await exhaustedReply(deps.db, businessId, allowance, 'VOICE_MINUTES', plan),
-    });
-    return null;
+    };
   }
 
   let transcript: Transcript;
@@ -1500,12 +1748,7 @@ async function transcribeVoiceNote(
       );
     }
     log.warn('the transcriber could not be reached');
-    await deps.replySender.send(tx, {
-      businessId,
-      to: inbound.from,
-      reply: replies.voiceUnavailable(),
-    });
-    return null;
+    return { refusedIn: recorded.id, reply: replies.voiceUnavailable() };
   }
 
   /* WHAT THE TRANSCRIPTION COST (item 7). Only the hosted transcriber
@@ -1666,8 +1909,11 @@ async function deterministicReply(
      * it still closes past a read asked since (Build 6), exactly as a "yes"
      * there still re-asks it. A question answered long ago by a resend is
      * not what this "no" is about. */
+    /* Another member's refusal is looked past, as for a "yes" (CodeRabbit on #437 at ebeeadb). */
+    const answering = await actorOf(tx, businessId, ctx.from);
     let latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, {
       asOf: ctx.receivedAt,
+      skipRefusalsNotBy: answering,
     });
     /* G-81: to the member asked "Is this the same purchase?", a "no" could
      * mean "no, not the same" or "no, do not save it", so it is asked
@@ -1689,6 +1935,7 @@ async function deterministicReply(
       await continuationsRepo.retireContinuationsForDraft(tx, businessId, asking.heldId);
       latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, {
         asOf: ctx.receivedAt,
+        skipRefusalsNotBy: answering,
       });
     }
     if (latest?.state === 'held') {
@@ -1705,6 +1952,7 @@ async function deterministicReply(
       latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, {
         asOf: ctx.receivedAt,
         skipHeld: true,
+        skipRefusalsNotBy: answering,
       });
     }
     /* The last thing the merchant saw had already expired: this "no" is
@@ -1719,18 +1967,72 @@ async function deterministicReply(
       if (ctx.outcome) ctx.outcome.toldEarlierMessageLost = true;
       return replies.earlierMessageLostNo();
     }
-    const closedQuestion =
-      latest?.state === 'abandoned'
-        ? await conversationsRepo.closeRetiredDraft(tx, businessId, latest.id)
-        : false;
     /* Build 6: every pending draft is still dropped, a question's included,
      * but only a request the merchant could have confirmed is reported as
      * cancelled. A "no" after nothing but a read gets what a "no" after
      * nothing gets. */
-    const cancellable = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
+    /* A refusal is not a request (`refusedAs`). A bare "no" straight after the
+     * sender's own refusal is about the refusal: it closes it, keeps whatever
+     * waits behind it, and says so (CodeRabbit on #437). "cancel" still drops
+     * everything, the refusal included, and never reports the refusal as
+     * cancelled. Another member's refusal is looked past (`pastRefusals`). */
+    const past = await pastRefusals(tx, businessId, ctx.from, ctx.receivedAt);
+    if (past.ownRefusal) {
+      /* Only a bare "no" is recoverable: its acknowledgement that never reached the merchant puts
+       * the refusal back (OD-62(o)). "cancel" dismisses the refusal for good (owner rule, CodeRabbit
+       * on #437), so it carries no recovery marker and is never offered to a send-failure restore:
+       * neither a failed send nor a late failed receipt may reopen what the merchant cancelled. */
+      if (intent.kind === 'deny') {
+        await conversationsRepo.closeRefusalDraft(tx, businessId, past.ownRefusal.id, {
+          answeredBy: ctx.messageId,
+        });
+        if (ctx.outcome) (ctx.outcome.closedByAnswer ??= []).push(past.ownRefusal.id);
+      } else {
+        await conversationsRepo.closeRefusalDraft(tx, businessId, past.ownRefusal.id);
+      }
+      if (intent.kind === 'deny') {
+        const behind = await pastRefusals(tx, businessId, ctx.from, ctx.receivedAt);
+        /* Pointing at a preview only a "yes" could save, and only while Chat stands (G-65). */
+        if (behind.draft?.previewed === true && !(await withoutChat(tx, businessId))) {
+          const member = await actorOf(tx, businessId, ctx.from);
+          if (behind.draft.requestedBy !== member) {
+            return replies.previewWaitingForAnotherMember();
+          }
+          /* As for a yes: the next yes is the one the reply promises saves it. */
+          const retired = await conversationsRepo.retireReadsAfter(
+            tx,
+            businessId,
+            behind.draft.id,
+            { asOf: ctx.receivedAt, askedBy: member, forRefusal: past.ownRefusal.id },
+          );
+          if (ctx.outcome) (ctx.outcome.closedByAnswer ??= []).push(...retired);
+          return (await conversationsRepo.hasReadsAfter(tx, businessId, behind.draft.id, {
+            asOf: ctx.receivedAt,
+          }))
+            ? replies.previewBehindQuestion()
+            : replies.previewBehindRefusal();
+        }
+        return (await withoutChat(tx, businessId))
+          ? replies.nothingToDeclineWithoutChat()
+          : replies.nothingToDecline();
+      }
+    }
+    /* A retired question is closed only once the sender's own refusal has had its answer: a bare
+     * "no" after it is about it (returned above), never about another member's funding question
+     * asked since (CodeRabbit on #437 at ccdcc8e). "cancel" still drops everything. */
+    const closedQuestion =
+      latest?.state === 'abandoned'
+        ? await conversationsRepo.closeRetiredDraft(tx, businessId, latest.id)
+        : false;
+    const cancellable = past.ownRefusal
+      ? (await pastRefusals(tx, businessId, ctx.from, ctx.receivedAt)).draft
+      : past.draft;
+    /* Every pending draft, but never another member's refusal: it is theirs to answer and still
+     * guards what they were shown (CodeRabbit on #437 at 3d66867). */
+    await conversationsRepo.supersedePendingDrafts(tx, businessId, {
       asOf: ctx.receivedAt,
+      skipRefusalsNotBy: await actorOf(tx, businessId, ctx.from),
     });
-    await conversationsRepo.supersedePendingDrafts(tx, businessId, { asOf: ctx.receivedAt });
     const dropped = (cancellable ? 1 : 0) + (closedQuestion ? 1 : 0) + (closedHeld ? 1 : 0);
     /* A bare "no" or "cancel" with nothing to refuse is answered, never met
      * with silence, and never told something was cancelled (G-68). */
@@ -1833,9 +2135,32 @@ async function deterministicReply(
           pending.id,
           ctx.eventId,
         )) === 0;
-      const claim = paired
-        ? await conversationsRepo.claimDraft(tx, pending.id, { now: ctx.receivedAt })
-        : null;
+      /* The first ask must have shown the consequence that runs now, judged at this message's
+       * arrival as the draft window is, never at a late worker's clock (CodeRabbit on #437 at
+       * 0114957 and ce75a9e). One recorded with an older,
+       * narrower one (before the erasure reached stored chat copies) is no agreement to this: this
+       * ask becomes a new first ask below, shown and recorded under the current consequence, and
+       * nothing is erased (CodeRabbit on #437 at 3d66867). */
+      const askedBefore = paired
+        ? (await riskRepo.openConfirmationsFor(tx, businessId, ctx.receivedAt)).filter(
+            (c) => c.command === 'EraseData' && c.subject === `draft:${pending.id}`,
+          )
+        : [];
+      /* And the first ask's prompt must have reached WhatsApp: a prompt whose send failed showed
+       * the merchant nothing, so this ask is a new first ask (CodeRabbit on #437 at 58dd68b). */
+      /* A first ask with no recorded consequence proves nothing was shown: one parked before the
+       * recording became mandatory, or whose record is gone, is a new first ask too (CodeRabbit on
+       * #437 at 56c4140). */
+      const shownBefore =
+        (!paired || askedBefore.some((c) => c.consequence === ERASURE_CONSEQUENCE)) &&
+        (!paired ||
+          (await conversationsRepo.draftReplyWasSent(tx, businessId, pending.id, {
+            before: ctx.receivedAt,
+          })));
+      const claim =
+        paired && shownBefore
+          ? await conversationsRepo.claimDraft(tx, pending.id, { now: ctx.receivedAt })
+          : null;
       if (claim?.outcome === 'not_pending') return replies.alreadyConfirmed();
       /* Only a claim inside the window erases. A first ask that expired (even
        * between the line above and the claim) is no confirmation: this ask
@@ -1852,21 +2177,18 @@ async function deterministicReply(
          * now recording the same consequence and claimed in the same
          * transaction: the two-message mechanism already did the waiting. */
         const subject = `draft:${pending.id}`;
-        const open = (await riskRepo.openConfirmationsFor(tx, businessId)).find(
-          (c) => c.command === 'EraseData' && c.subject === subject,
+        /* Judged at this message's arrival, as `askedBefore` was (OWN-102(7); CodeRabbit on #437 at
+         * cacc734). A confirmation that lapsed by then authorises nothing, and none is opened in its
+         * place: nothing is erased, and the merchant may ask again. */
+        const confirmation = (
+          await riskRepo.openConfirmationsFor(tx, businessId, ctx.receivedAt)
+        ).find(
+          (c) =>
+            c.command === 'EraseData' &&
+            c.subject === subject &&
+            c.consequence === ERASURE_CONSEQUENCE,
         );
-        const confirmation =
-          open ??
-          (await deps.commandBus.riskPolicy.ask(tx, {
-            businessId,
-            command: 'EraseData',
-            subject,
-            actor: 'system',
-            ingress: 'CHAT',
-            consequence:
-              'Every customer contact detail for this business will be permanently deleted.',
-            reason: 'merchant asked by exact phrase, twice',
-          }));
+        if (!confirmation) return replies.erasureKept();
         const run = await deps.commandBus.run(
           tx,
           {
@@ -1878,15 +2200,21 @@ async function deterministicReply(
             actor: 'system',
             ingress: 'CHAT',
             memberPhone: ctx.from,
+            now: ctx.receivedAt,
           },
           () => eraseDataWork(tx, { businessId, sourceType: 'chat' }),
         );
         if (run.outcome !== 'done') return replies.erasureKept();
         return replies.erasureDone(run.result.erased, deps.config.webUrl);
       }
-      const discarded = await conversationsRepo.supersedePendingDrafts(tx, businessId, {
-        asOf: ctx.receivedAt,
-      });
+      /* A first ask asked again under the current consequence is not a preview the merchant
+       * loses: it is not counted as discarded. Another member's refusal is left theirs to answer,
+       * as a bare "no" and a correction leave it (CodeRabbit on #437 at aff3f63). */
+      const discarded =
+        (await conversationsRepo.supersedePendingDrafts(tx, businessId, {
+          asOf: ctx.receivedAt,
+          skipRefusalsNotBy: await actorOf(tx, businessId, ctx.from),
+        })) - (paired && !shownBefore ? 1 : 0);
       const parked = await conversationsRepo.recordDraft(tx, {
         businessId,
         conversationMessageId: ctx.messageId,
@@ -1903,8 +2231,7 @@ async function deterministicReply(
           subject: `draft:${parked.id}`,
           actor: 'system',
           ingress: 'CHAT',
-          consequence:
-            'Every customer contact detail for this business will be permanently deleted.',
+          consequence: ERASURE_CONSEQUENCE,
           reason: 'merchant asked by exact phrase',
         });
       }
@@ -1917,19 +2244,22 @@ async function deterministicReply(
     case 'debtors': {
       // Answered from the same SQL the dashboard uses. Invoice numbers, not
       // customer names: this text crosses WhatsApp in the clear.
-      const debtors = await reportsRepo.debtorsFor(tx, businessId, 8);
+      const debtors = await exactOrRefused(() => reportsRepo.debtorsFor(tx, businessId, 8));
+      if (!debtors) return replies.balanceNotStated();
       /* Oldest promise first, with how late each one is: a debtors list is a
        * work queue, and a merchant standing in a shop needs to know who to
        * call before they need the total. */
       const now = new Date();
-      return replies.debtorList(
-        debtors.rows.map((r) => ({
-          invoiceNumber: r.invoiceNumber,
-          balanceDueK: r.balanceDueK,
-          daysOverdue: daysOverdue(r.dueDate, r.balanceDueK, now),
-        })),
-        debtors.totalK,
-        debtors.count,
+      return replies.wholeBusiness(
+        replies.debtorList(
+          debtors.rows.map((r) => ({
+            invoiceNumber: r.invoiceNumber,
+            balanceDueK: r.balanceDueK,
+            daysOverdue: daysOverdue(r.dueDate, r.balanceDueK, now),
+          })),
+          debtors.totalK,
+          debtors.count,
+        ),
       );
     }
     case 'payment_details':
@@ -1960,7 +2290,7 @@ async function deterministicReply(
     case 'records': {
       // The same SQL the dashboard overview runs — totals only, no customer.
       const overview = await reportsRepo.overviewFor(tx, businessId);
-      return replies.recordsSummary(overview);
+      return replies.wholeBusiness(replies.recordsSummary(overview));
     }
     case 'stock': {
       /* Free and deterministic, because a merchant checks stock several times
@@ -2470,8 +2800,12 @@ async function confirmPendingDraft(
     }
     return reaskPurchaseIdentity(tx, businessId, asking.heldId, asking.actorId, sender);
   }
+  /* Another member's refusal is looked past here exactly as `pastRefusals` looks past it below:
+   * it never hides this member's own retired question (CodeRabbit on #437 at ebeeadb). */
+  const answering = await actorOf(tx, businessId, sender.from);
   let latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, {
     asOf: receivedAt,
+    skipRefusalsNotBy: answering,
   });
   /* G-81: a purchase held for its identity question. The yes of the member
    * who was asked is about that question: it is asked again, and nothing
@@ -2497,11 +2831,17 @@ async function confirmPendingDraft(
     latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, {
       asOf: receivedAt,
       skipHeld: true,
+      skipRefusalsNotBy: answering,
     });
   }
   /* `abandoned` is only ever a retired purchase question; a draft the
-   * merchant cancelled is `superseded` and is never asked again. */
-  if (latest?.state === 'abandoned') {
+   * merchant cancelled is `superseded` and is never asked again. Another member's question waits
+   * behind the sender's own standing refusal: that refusal is what this yes is about, and it is
+   * answered below (CodeRabbit on #437 at aff3f63). */
+  if (
+    latest?.state === 'abandoned' &&
+    !(await ownRefusalBehindAnothers(tx, businessId, latest, answering, sender))
+  ) {
     const reasked = await reaskRetiredQuestion(tx, businessId, latest, sender);
     if (reasked) return reasked;
     /* Never fall through to an older preview behind the question, even if
@@ -2534,9 +2874,51 @@ async function confirmPendingDraft(
     );
   }
 
-  let draft = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
-    asOf: receivedAt,
-  });
+  let draft: conversationsRepo.DraftRow | null;
+  /* The newest thing waiting is a refusal (`refusedAs`): this yes is about it
+   * when it is the sender's own and still the last thing they recorded, so it
+   * saves nothing and says whether a preview is still waiting. Another member's
+   * refusal is looked past without being touched (`pastRefusals`). */
+  {
+    const past = await pastRefusals(tx, businessId, sender.from, receivedAt);
+    if (past.ownRefusal) {
+      await conversationsRepo.closeRefusalDraft(tx, businessId, past.ownRefusal.id, {
+        answeredBy: sender.messageId,
+      });
+      if (sender.outcome) (sender.outcome.closedByAnswer ??= []).push(past.ownRefusal.id);
+      if (retrying) {
+        await refundRecordedReservations(tx, businessId, eventId, usagePeriod(receivedAt));
+      }
+      const behind = await pastRefusals(tx, businessId, sender.from, receivedAt);
+      if (behind.draft?.previewed !== true) return replies.nothingToConfirm();
+      /* A preview no "yes" could save while Chat is lapsed is never pointed at, whoever asked for
+       * it (G-65; CodeRabbit on #437). */
+      const access = chatDraftAccess(await chatStandingOf(tx, businessId));
+      if (access !== 'allow') return chatRefusal(tx, businessId, access, 'draft');
+      /* Another member's preview is theirs, never described as one this sender saw before their
+       * refusal (CodeRabbit on #437). */
+      const member = await actorOf(tx, businessId, sender.from);
+      if (behind.draft.requestedBy !== member) {
+        return replies.previewWaitingForAnotherMember();
+      }
+      /* The reply points at the preview and says a yes saves it, so it must: a question asked
+       * before the refusal would otherwise take that next yes (CodeRabbit on #437 at 96b1b52).
+       * Only this member's questions: another member's stays the barrier it is to their own next
+       * yes, and the reply then says a question stands in the way (CodeRabbit at 0e12742). */
+      const retired = await conversationsRepo.retireReadsAfter(tx, businessId, behind.draft.id, {
+        asOf: receivedAt,
+        askedBy: member,
+        forRefusal: past.ownRefusal.id,
+      });
+      if (sender.outcome) (sender.outcome.closedByAnswer ??= []).push(...retired);
+      return (await conversationsRepo.hasReadsAfter(tx, businessId, behind.draft.id, {
+        asOf: receivedAt,
+      }))
+        ? replies.previewBehindQuestion()
+        : replies.previewBehindRefusal();
+    }
+    draft = past.draft;
+  }
   if (!draft) {
     /* Nothing existed for this yes to agree to. If a preview has been
      * written since (the yes was typed before it arrived, or its job was
@@ -2603,14 +2985,46 @@ async function confirmPendingDraft(
    * about, and it is answered as that, writing nothing. */
   if (await conversationsRepo.hasReadsAfter(tx, businessId, draft.id, { asOf: receivedAt })) {
     if (draft.previewed === true && !NOT_A_FINANCIAL_PREVIEW.has(draft.intent)) {
-      await conversationsRepo.retireNewestReadAfter(tx, businessId, draft.id, { asOf: receivedAt });
+      await conversationsRepo.retireNewestReadAfter(tx, businessId, draft.id, {
+        asOf: receivedAt,
+        retiredBy: sender.messageId,
+      });
       if (retrying) {
         await refundRecordedReservations(tx, businessId, eventId, usagePeriod(receivedAt));
       }
       return replies.previewBehindQuestion();
     }
-    const newest = await conversationsRepo.pendingDraft(tx, businessId, { asOf: receivedAt });
-    if (newest) draft = newest;
+    /* Another member's refusal is theirs to answer, never claimed by this yes: looked past and
+     * left as it is, exactly as `pastRefusals` does (independent review of #437 at ebeeadb). */
+    const lookedPast: string[] = [];
+    for (;;) {
+      const newest = await conversationsRepo.pendingDraft(tx, businessId, {
+        asOf: receivedAt,
+        except: lookedPast,
+      });
+      if (newest && conversationsRepo.isRefusalDraft(newest) && newest.requestedBy !== answering) {
+        lookedPast.push(newest.id);
+        continue;
+      }
+      if (newest) draft = newest;
+      break;
+    }
+  }
+
+  /* A failed receipt is stored, not yet applied, for the pointer that stood in front of this preview
+   * (past a question it retired, or past the member's own refusal it answered): it will put that
+   * guard back, so this yes books nothing and is pointed again (CodeRabbit on #437). Answered, never
+   * deferred: a deferred spoken yes would be transcribed and metered again on every re-run. */
+  const pointerHeld = NOT_A_FINANCIAL_PREVIEW.has(draft.intent)
+    ? null
+    : await conversationsRepo.hasLivePointerReceipt(tx, businessId, draft.id, answering);
+  if (pointerHeld) {
+    if (retrying) {
+      await refundRecordedReservations(tx, businessId, eventId, usagePeriod(receivedAt));
+    }
+    return pointerHeld === 'refusal'
+      ? replies.previewBehindRefusal()
+      : replies.previewBehindQuestion();
   }
 
   let command = draft.command as { intent?: string } & Record<string, unknown>;
@@ -3346,6 +3760,20 @@ async function confirmPurchase(
 }
 
 /**
+ * The subject left by a question about a customer that was not answered with
+ * figures (G-135): a balance with nobody in it. It supersedes any older open
+ * read, and a balance has no period, so "last month" next resumes nothing
+ * (`resumedRead`) and is read afresh, never widened to the business's totals.
+ */
+const NO_PERIOD_TO_RESUME: ContinuationState = {
+  kind: 'query',
+  topic: 'customer_balance',
+  period: null,
+  customerToken: null,
+  documentRef: null,
+};
+
+/**
  * What the books say, in answer to a spoken question.
  *
  * The model decided WHICH question was asked and over what period. It
@@ -3373,13 +3801,26 @@ async function answerQuery(
     customerToken: string | null = null,
   ): ContinuationState => ({
     kind: 'query',
-    topic: command.topic,
+    topic,
     period,
     customerToken,
     documentRef: null,
   });
 
-  switch (command.topic) {
+  /* A customer named on a topic that has no figures per customer (G-135, owner
+   * review of #437): "how much did Ada buy this month" must not be answered with
+   * the whole business's sales as if they were hers. Only a balance is kept per
+   * customer; anything else is asked again, never widened to the business. */
+  /* "Who owes me, Ada?" filed as the debtors list is her balance. */
+  const topic =
+    command.topic === 'debtors' && command.customer?.kind === 'token'
+      ? 'customer_balance'
+      : command.topic;
+  if (topic !== 'customer_balance' && command.customer?.kind === 'token') {
+    return { reply: replies.customerFiguresNotKept(), continuation: NO_PERIOD_TO_RESUME };
+  }
+
+  switch (topic) {
     case 'sales_summary':
     case 'expenses_summary': {
       /* The window the merchant named: one of the model's three, or their
@@ -3403,7 +3844,7 @@ async function answerQuery(
             ? fromWords
             : null;
       if (!period) {
-        const subject = command.topic === 'sales_summary' ? 'sales' : 'spending';
+        const subject = topic === 'sales_summary' ? 'sales' : 'spending';
         /* A window the merchant NAMED that core cannot draw ("yesterday",
          * "in March") gets its own honest sentence, never the bare question
          * that reads as if they said nothing. Either way the question stays
@@ -3411,26 +3852,29 @@ async function answerQuery(
         const uncountable = words !== '' && fromWords === null;
         return {
           reply: uncountable ? replies.periodNotCountable(subject) : replies.whichPeriod(subject),
-          continuation: { kind: 'clarification', expects: 'period', topic: command.topic },
+          continuation: { kind: 'clarification', expects: 'period', topic: topic },
         };
       }
       return {
-        reply: await answerPeriodQuery(tx, businessId, command.topic, period, now),
+        reply: await answerPeriodQuery(tx, businessId, topic, period, now),
         continuation: subject(period),
       };
     }
 
     case 'debtors': {
-      const debtors = await reportsRepo.debtorsFor(tx, businessId, 8);
+      const debtors = await exactOrRefused(() => reportsRepo.debtorsFor(tx, businessId, 8));
+      if (!debtors) return { reply: replies.balanceNotStated(), continuation: subject(null) };
       return {
-        reply: replies.debtorList(
-          debtors.rows.map((r) => ({
-            invoiceNumber: r.invoiceNumber,
-            balanceDueK: r.balanceDueK,
-            daysOverdue: daysOverdue(r.dueDate, r.balanceDueK, now),
-          })),
-          debtors.totalK,
-          debtors.count,
+        reply: replies.wholeBusiness(
+          replies.debtorList(
+            debtors.rows.map((r) => ({
+              invoiceNumber: r.invoiceNumber,
+              balanceDueK: r.balanceDueK,
+              daysOverdue: daysOverdue(r.dueDate, r.balanceDueK, now),
+            })),
+            debtors.totalK,
+            debtors.count,
+          ),
         ),
         continuation: subject(null),
       };
@@ -3442,11 +3886,15 @@ async function answerQuery(
        * anybody we know. Asking is better than answering about the wrong
        * person, or about everybody. */
       if (!token) return { reply: replies.paymentNoOpenInvoice(), continuation: subject(null) };
-      const owed = await issueRepo.openInvoicesForCustomer(tx, businessId, token);
+      const owed = await exactOrRefused(() =>
+        issueRepo.openInvoicesForCustomer(tx, businessId, token),
+      );
+      if (!owed) return { reply: replies.balanceNotStated(), continuation: subject(null) };
       return {
         reply: replies.customerBalanceAnswer(
-          owed.map((r) => ({ invoiceNumber: r.invoiceNumber, balanceDueK: r.balanceDueK })),
-          owed.reduce((n, r) => n + r.balanceDueK, 0),
+          owed.rows.map((r) => ({ invoiceNumber: r.invoiceNumber, balanceDueK: r.balanceDueK })),
+          owed.totalK,
+          owed.count,
         ),
         /* The subject as its vault token, never the name: what a later
          * build needs to continue ("send it as PDF") about the same person,
@@ -3457,13 +3905,16 @@ async function answerQuery(
 
     case 'supplier_balances': {
       const overview = await reportsRepo.overviewFor(tx, businessId);
-      return { reply: replies.suppliersAnswer(overview.youOweK), continuation: subject(null) };
+      return {
+        reply: replies.wholeBusiness(replies.suppliersAnswer(overview.youOweK)),
+        continuation: subject(null),
+      };
     }
 
     case 'unreconciled': {
       const overview = await reportsRepo.overviewFor(tx, businessId);
       return {
-        reply: replies.unreconciledAnswer(overview.exceptionsOpen),
+        reply: replies.wholeBusiness(replies.unreconciledAnswer(overview.exceptionsOpen)),
         continuation: subject(null),
       };
     }
@@ -3483,9 +3934,12 @@ async function answerPeriodQuery(
 ): Promise<Reply> {
   const period = resolvePeriod(name, now);
   const summary = await reportsRepo.summaryFor(tx, businessId, period.from, period.to);
-  return topic === 'sales_summary'
-    ? replies.salesAnswer({ label: period.label, ...summary })
-    : replies.expensesAnswer({ label: period.label, ...summary });
+  /* The whole business's figures, and the reply says so (OD-66 Option C, OWN-103(2)). */
+  return replies.wholeBusiness(
+    topic === 'sales_summary'
+      ? replies.salesAnswer({ label: period.label, ...summary })
+      : replies.expensesAnswer({ label: period.label, ...summary }),
+  );
 }
 
 /**
@@ -4231,7 +4685,13 @@ async function unsureReply(
       : replies.nothingToConfirmWithoutChat();
   }
 
-  let latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, { asOf: receivedAt });
+  /* Read-only, and member-aware as a yes is: another member's refusal is looked past, never
+   * touched (CodeRabbit on #437 at 96b1b52). */
+  const doubting = await actorOf(tx, businessId, sender.from);
+  let latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, {
+    asOf: receivedAt,
+    skipRefusalsNotBy: doubting,
+  });
   /* G-81: doubt about the identity question asks it again, from the member
    * who was asked; nobody else is held up by it. */
   if (latest?.state === 'held') {
@@ -4240,9 +4700,13 @@ async function unsureReply(
     latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, {
       asOf: receivedAt,
       skipHeld: true,
+      skipRefusalsNotBy: doubting,
     });
   }
-  if (latest?.state === 'abandoned') {
+  if (
+    latest?.state === 'abandoned' &&
+    !(await ownRefusalBehindAnothers(tx, businessId, latest, doubting, sender, { readOnly: true }))
+  ) {
     return (
       (await reaskRetiredQuestion(tx, businessId, latest, sender)) ?? replies.nothingToConfirm()
     );
@@ -4250,9 +4714,49 @@ async function unsureReply(
   if (latest?.state === 'expired') {
     return expiredAnswer(latest.command, latest.previewed, 'yes') ?? replies.nothingToConfirm();
   }
-  const pending = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
+  /* Close to the scan a plain yes makes (`pastRefusals`), read-only: another member's refusal is
+   * looked past, and so is another member's newer request while the sender's own refusal may stand
+   * behind it. Found behind another member's preview and still the last thing the sender recorded,
+   * that refusal is what a plain yes would be about, so this answers as that yes does, never as an
+   * invitation to send it (CodeRabbit on #437 at 0e12742). Where a plain yes would close the
+   * sender's own refusal and point at a preview behind it, this still answers "nothing waiting"
+   * (OD-62(p)); nothing is saved either way. */
+  const lookedPast: string[] = [];
+  let first: conversationsRepo.DraftRow | null = null;
+  let pending = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
     asOf: receivedAt,
   });
+  /* No bound the plain yes's scan lacks: each pass looks past one more draft, so it ends, and it
+   * reaches the refusal `pastRefusals` reaches (CodeRabbit on #437 at 503acf3). */
+  while (pending) {
+    if (conversationsRepo.isRefusalDraft(pending)) {
+      if (
+        doubting !== null &&
+        pending.requestedBy === doubting &&
+        !(await conversationsRepo.hasDraftsAfterBy(tx, businessId, pending.id, doubting, {
+          asOf: receivedAt,
+        }))
+      ) {
+        if (first?.previewed === true) return replies.previewWaitingForAnotherMember();
+        break;
+      }
+      if (pending.requestedBy === doubting && first === null) break;
+    } else {
+      first ??= pending;
+      /* The sender's own record whose preview never reached them hides no refusal of theirs, as in
+       * `pastRefusals`: the scan goes on, so this answers as a plain yes would (CodeRabbit on #437
+       * at b2703e7). */
+      const ownUnseen =
+        doubting !== null && pending.requestedBy === doubting && unseenRecord(pending);
+      if (!ownUnseen && (doubting === null || pending.requestedBy === doubting)) break;
+    }
+    lookedPast.push(pending.id);
+    pending = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
+      asOf: receivedAt,
+      except: lookedPast,
+    });
+  }
+  pending = first ?? pending;
   if (!pending?.previewed) return replies.nothingToConfirm();
   /* A question to the books asked since the preview: point back at the
    * preview, as a yes would, without retiring anything. */
@@ -4260,6 +4764,23 @@ async function unsureReply(
     return replies.previewBehindQuestion();
   }
   return replies.plainYesNeeded();
+}
+
+/**
+ * Whether `retired` is another member's question with the sender's own refusal standing behind it,
+ * so a yes or a doubt is about that refusal and never re-asks their question for the sender
+ * (CodeRabbit on #437 at aff3f63).
+ */
+async function ownRefusalBehindAnothers(
+  tx: TenantDb,
+  businessId: string,
+  retired: { requestedBy: string | null },
+  sender: string | null,
+  at: { from: string; receivedAt: Date },
+  options: { readOnly?: boolean } = {},
+): Promise<boolean> {
+  if (!sender || retired.requestedBy === null || retired.requestedBy === sender) return false;
+  return (await pastRefusals(tx, businessId, at.from, at.receivedAt, options)).ownRefusal !== null;
 }
 
 /**
@@ -4780,6 +5301,9 @@ async function continueConversation(
       format: null,
     },
     model: null,
+    /* The member who asked, as for an interpreted read, so their own refusal answer retires it
+     * (CodeRabbit on #437 at c5392f0). */
+    requestedBy: actorId,
   });
   await continuationsRepo.openContinuation(tx, {
     businessId,
@@ -5004,9 +5528,650 @@ async function confirmPayment(
   );
 }
 
+/**
+ * The words a draft holds about what it records: its items' names, never who and never the
+ * model's free text (a `dueDescription` of "when Tunde comes" must not explain "make it 5
+ * Tunde"; independent review of #437 at 4480bc2). What a correction's one free word may be.
+ */
+function draftVocabulary(command: Record<string, unknown>): string[] {
+  const items = command['items'];
+  if (!Array.isArray(items)) return [];
+  return items
+    .map((item) => (item && typeof item === 'object' ? (item as { name?: unknown }).name : null))
+    .filter((name): name is string => typeof name === 'string' && !/[A-Z]+_[0-9A-Z]+/u.test(name));
+}
+
+/** Whether `name` appears in `text` as whole words, ignoring case, spacing and composition. */
+function typedIn(text: string, name: string): boolean {
+  const fold = (v: string) => v.normalize('NFKC').toLocaleLowerCase().replace(/\s+/gu, ' ').trim();
+  const needle = fold(name);
+  if (!needle) return false;
+  /* A contact is not a name the merchant typed: an email (its local part included) and a link
+   * are taken out first, so "ada@example.com" never counts as typing "Ada" (CodeRabbit on #437).
+   * A removed contact also separates the words either side of it: each segment is searched on
+   * its own, so "Ada ada@example.test Obi" never counts as typing "Ada Obi" (CodeRabbit on #437
+   * at b497318). */
+  return text
+    .split(/\S+@\S+|https?:\/\/\S+/gu)
+    .some((segment) => typedWithin(fold(segment), needle));
+}
+
+/** Whether the folded `needle` occurs in the folded `hay` as whole words. */
+function typedWithin(hay: string, needle: string): boolean {
+  let from = 0;
+  for (;;) {
+    const at = hay.indexOf(needle, from);
+    if (at < 0) return false;
+    const before = at === 0 ? '' : hay[at - 1]!;
+    const after = hay[at + needle.length] ?? '';
+    /* A combining mark continues the word it follows (CodeRabbit on #437 at 56c4140). */
+    /* A hyphen joins a name ("Ada-Bola" is one name, as the gateway reads it), so a fragment of it
+     * is no name typed (CodeRabbit on #437 at cacc734). */
+    if (!/[\p{L}\p{N}\p{M}-]/u.test(before) && !/[\p{L}\p{N}\p{M}-]/u.test(after)) return true;
+    from = at + 1;
+  }
+}
+
+/** Whether a waiting draft names a customer or an invoice, so its clarification says it is kept. */
+function draftNamesSomeone(
+  stored: Record<string, unknown>,
+  target: conversationsRepo.DraftRow,
+): boolean {
+  if (customerTokenOf(stored) !== null) return true;
+  const ref = stored['documentRef'];
+  return target.intent === 'RecordPayment' && typeof ref === 'string' && ref.length > 0;
+}
+
+/**
+ * The labels a page puts in front of its buyer. Never a seller, supplier or delivery label: a
+ * "Deliver to" contact or the merchant's own header is not who bought.
+ */
+/* A prepositional label ("Sold to", "Bill to") is a field only at the start of a line, or followed
+ * by its colon or dash: "Not sold to Ada" inside a sentence labels nobody (CodeRabbit on #437 at
+ * 9c587bd). The whole label: "Sold today" is no "Sold to" (CodeRabbit on #437 at b8330cd). */
+const PREP_LABEL = String.raw`(?:(?:bill(?:ed)?|invoice(?:d)?|sold)\s+to|received\s+from)(?![\p{L}\p{N}\p{M}])`;
+const BUYER_LABEL = new RegExp(
+  String.raw`(?:(?:^|\n)[^\S\n]*${PREP_LABEL}[^\S\n]*[:\-\u2013]?|\b${PREP_LABEL}[^\S\n]*[:\-\u2013]|\b(?:customer(?:\s+name)?|buyer|client)\s*[:\-\u2013])[^\S\r\n]*`,
+  'giu',
+);
+/* A single-word label ("Customer", "Buyer", "Client") counts only with its colon or dash: a heading
+ * such as "Customer Support Ltd" labels nobody (CodeRabbit on #437 at ccdcc8e). */
+
+/**
+ * Whether a photographed page names `name` as its buyer: the caption the merchant typed names
+ * them, or `name` opens the words right after one of the page's buyer labels ("Bill to: Bola Ige").
+ * Any other name on the page (its header, the merchant's own business name, a supplier, a
+ * delivery contact) is not the buyer, so the record is asked about (owner ruling 22 Nov 2026).
+ */
+function photoBuyerNamed(
+  rawText: string,
+  caption: string | null,
+  names: readonly string[],
+): boolean {
+  /* A buyer the caption labels must agree with the page's: a caption that labels somebody else
+   * contradicts the chosen customer (independent review on #437 at 5e5267c). */
+  /* A caption field the merchant negates ("Not sold to: Ada Obi") rules that person out, so it is no
+   * buyer field (Codex on #437 at 1ec5a22). */
+  const fields = [
+    ...pageBuyerFields(rawText, caption),
+    ...(caption === null ? [] : buyerFieldsIn(caption.replace(NEGATED_BUYER, '\n'))),
+  ];
+  /* A caption can name the buyer directly. An email must match as a whole address. A name the
+   * caption labels as somebody else ("Seller: Ada Obi") is no evidence of the buyer, so those
+   * segments are taken out first, and the words either side of one never join into a name
+   * (CodeRabbit on #437 at 600a155; independent review at 5e5267c). */
+  /* A segment that rules somebody out ("Not sold to Ada Obi", "not for Ada") is no evidence
+   * either: from its negation to the end of its clause it is taken out the same way (CodeRabbit on
+   * #437 at 400ca58). A negation after the name ("Sold to Ada Obi, not paid yet") leaves it. */
+  const typed =
+    caption === null
+      ? []
+      : caption.split(NON_BUYER_SEGMENT).flatMap((part) => part.split(NEGATED_SEGMENT));
+  if (
+    names.some(
+      (name) =>
+        name.trim() &&
+        typed.some(
+          (part) =>
+            /* A clause offering alternatives ("For Ada Obi or Bola Ige") selects nobody: the buyer
+             * is ambiguous and asked about (OWN-103(4); CodeRabbit on #437 at c5392f0). */
+            !ALTERNATIVE_BUYER.test(part) &&
+            (name.includes('@') ? addressIn(part, name) : typedIn(part, name)),
+        ),
+    ) &&
+    fields.every(
+      (field) =>
+        !ALTERNATIVE_BUYER.test(field.split(/[\n;]/u)[0] ?? '') &&
+        names.some((name) => name.trim() && fieldNames(field, name)),
+    )
+  ) {
+    return true;
+  }
+  /* Every field must name the buyer. Recorded names and contacts can be different facets of
+   * the same issued token, while a field belonging to somebody else is contradictory. A field
+   * offering alternatives ("Buyer: Ada Obi, or Bola Ige") names nobody: asked about (OWN-103(4);
+   * Codex on #437 at e9b1cb4). */
+  return (
+    fields.length > 0 &&
+    fields.every(
+      (field) =>
+        !ALTERNATIVE_BUYER.test(field.split(/[\n;]/u)[0] ?? '') &&
+        names.some((name) => name.trim() && fieldNames(field, name)),
+    )
+  );
+}
+
+/**
+ * Whether the caption the merchant typed carries a customer token this message was issued: a
+ * recorded customer's name, phone or email, or a new phone or email (OD-72 Option A, owner ruling
+ * 25 Nov 2026). Read with no customer, such a sale is asked about, never previewed as anonymous,
+ * and nobody is created or attached. Only issued tokens count: an unrecorded name typed without a
+ * label issues none, so no capitalised word is ever taken for a person (OD-66). A clause naming
+ * another party ("Supplier: Ada Obi", "Deliver to …") or ruling the person out ("Not sold to Ada
+ * Obi") is taken out first, as in `photoBuyerNamed`.
+ */
+function captionNamesIssuedCustomer(tokens: LiveTokens, caption: string | null): boolean {
+  if (caption === null || !caption.trim()) return false;
+  /* Only a negation that rules a buyer out ("Not sold to Ada", "not for Ada") is taken out here:
+   * "Not paid yet Ada Obi" still names Ada (independent review of 42a2422). */
+  const typed = caption
+    .split(NON_BUYER_SEGMENT)
+    .flatMap((part) => part.split(NEGATED_BUYER))
+    .filter((part) => part.trim());
+  if (typed.length === 0) return false;
+  const issued = new Set([...tokens.displays.keys(), ...(tokens.provisional?.keys() ?? [])]);
+  return [...issued].some((token) => {
+    const facets = [
+      ...(tokens.facets.get(token) ?? []),
+      ...(tokens.provisional?.get(token) ? [tokens.provisional.get(token)!] : []),
+    ];
+    return facets.some(({ facet, value }) => {
+      if (!value.trim()) return false;
+      if (facet === 'phone') return typed.some((part) => phoneIn(part, value));
+      return typed.some((part) =>
+        value.includes('@') ? addressWithin(part, value) : typedIn(part, value),
+      );
+    });
+  });
+}
+
+/**
+ * A caption clause that rules a buyer out: "not sold to Ada", "wasn’t bought by Ada". A bare
+ * "not for" is not one: "Not for credit Ada Obi" still names Ada, and "Not for Ada" is asked
+ * about, which fails safe (second review of 42a2422..20a95c4).
+ */
+/* A word that offers a choice: "or", "either", "nor". */
+const ALTERNATIVE_BUYER = /(?<![\p{L}\p{N}\p{M}])(?:or|either|nor)(?![\p{L}\p{N}\p{M}])/iu;
+const NEGATED_BUYER =
+  /\b(?:not|never|isn['’]?t|wasn['’]?t|didn['’]?t|no\s+longer)\s+(?:(?:sold|billed|invoiced|delivered)\s+to|bought\s+by)\b[^\n,;]*/giu;
+
+/** Whether `text` holds the address `address` between non-address characters ("email:ada@…"). */
+function addressWithin(text: string, address: string): boolean {
+  const hay = text.toLowerCase();
+  const want = address.trim().toLowerCase();
+  if (!want) return false;
+  for (let at = hay.indexOf(want); at >= 0; at = hay.indexOf(want, at + 1)) {
+    const before = at === 0 ? '' : hay[at - 1]!;
+    const after = hay.slice(at + want.length);
+    if (/[\p{L}\p{N}._%+-]/u.test(before)) continue;
+    if (/^(?:[\p{L}\p{N}_%+-]|\.[\p{L}\p{N}])/u.test(after)) continue;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Whether `text` holds the phone `phone`, however it is spaced or prefixed ("0803 555 1234",
+ * "+234 803 555 1234"). Neighbouring digit groups ("… 1234 2 wigs") never join it: any run of
+ * whole groups may be the phone. A run stops growing once it is longer than any written form of
+ * the phone could be, so a caption of many digit groups is read in linear time (independent
+ * review of 42a2422).
+ */
+function phoneIn(text: string, phone: string): boolean {
+  const want = normaliseFacet('phone', phone);
+  if (want.length < 7) return false;
+  /* The longest written form: "+234" or "0234" in front, then the number. */
+  const longest = want.length + 4;
+  for (const run of text.matchAll(/\+?\d[\d \t().-]*/gu)) {
+    const groups = run[0].split(/[^\d]+/u).filter(Boolean);
+    for (let from = 0; from < groups.length; from += 1) {
+      let digits = '';
+      for (let to = from; to < groups.length; to += 1) {
+        digits += groups[to];
+        if (digits.length > longest) break;
+        if (normaliseFacet('phone', digits) === want) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** The page without the caption the merchant typed in front of it. */
+function pageOf(rawText: string, caption: string | null): string {
+  return caption && rawText.startsWith(`${caption}\n`)
+    ? rawText.slice(caption.length + 1)
+    : rawText;
+}
+
+const foldField = (v: string) => v.normalize('NFKC').toLowerCase().replace(/\s+/gu, ' ').trim();
+
+/* A section or column heading just below an empty field is not its value. */
+const RECEIPT_HEADING =
+  /^(?:(?:(?:#|no\.?)\s+)?(?:items?|description|product)\s+(?:qty|quantity|unit|price|amount)\b|(?:(?:line )?items?|subtotal|total)\s*(?::|$|(?=\d))|(?:buyer|client|customer(?: name)?|(?:bill(?:ed)?|invoice(?:d)?|sold) to|received from|receipt|invoice|seller|supplier|merchant|date|payment)\s*[:#\-\u2013])/u;
+
+/**
+ * What each of a page's buyer labels holds: the first line with words after the label ("Bill
+ * to:\nBola Ige" too). A heading on a following line belongs to a new receipt section.
+ * A field can name a buyer by name, address or phone.
+ */
+function pageBuyerFields(rawText: string, caption: string | null): string[] {
+  return buyerFieldsIn(pageOf(rawText, caption));
+}
+
+/** What each buyer label in `page` holds (see `pageBuyerFields`). */
+function buyerFieldsIn(page: string): string[] {
+  const fields: string[] = [];
+  for (const label of page.matchAll(BUYER_LABEL)) {
+    const lines = page.slice(label.index + label[0].length).split(/\r?\n/u);
+    let after = foldField(lines.find((line) => line.trim()) ?? '');
+    if (!lines[0]?.trim() && RECEIPT_HEADING.test(after)) continue;
+    /* A contact heading after the label, on its line or the next ("Buyer: Tel: 0803…",
+     * "Buyer:\nTel: 0803…"), is not the buyer's value: what follows it is, and an empty one holds
+     * nothing (CodeRabbit and an independent review on #437 at 6b3fc05 and 600a155). A valued
+     * contact still labels a buyer, so a sale read with nobody is asked about, never booked as
+     * anonymous (OWN-103(4)). */
+    const contact = CONTACT_HEADING.exec(after);
+    if (contact) {
+      after = after.slice(contact[0].length).trim();
+      if (!after) {
+        /* An empty heading's value may sit on the line below it ("Buyer: Tel:\n0803…", with or
+         * without a name beside it): a line holding a phone or an address is that contact. On
+         * the label's own line, an empty heading with nothing of the kind below still labels a
+         * buyer, as it did before the heading was read there, so a sale read with nobody is
+         * asked about; on the next line it leaves the field empty (independent reviews on #437
+         * at 5e5267c and a4ba72d). */
+        const at = lines.findIndex((line) => line.trim());
+        const below = foldField(lines.slice(at + 1).find((line) => line.trim()) ?? '');
+        const valued = /^e-?mail/u.test(contact[0])
+          ? /\S@\S/u.test(below)
+          : (/\+?\d[\d\s\-().]*\d/u.exec(below)?.[0] ?? '').replace(/\D/gu, '').length >= 10;
+        /* A value that is no usable field ("• 0803…") falls back like no value at all. */
+        if (valued && isFieldValue(below)) after = below;
+        else if (lines[0]?.trim()) after = contact[0].trim();
+        else continue;
+      }
+    }
+    if (isFieldValue(after)) fields.push(after);
+  }
+  return fields;
+}
+
+/** Whether a folded field value can name a buyer: a word, an address or a phone. */
+function isFieldValue(after: string): boolean {
+  const first = after.split(/\s/u)[0] ?? '';
+  return /^[\p{L}]/u.test(after) || first.includes('@') || leadingPhoneDigits(after).length >= 10;
+}
+
+/** Read the whole leading phone run, including any extra digits after separators. */
+function leadingPhoneDigits(text: string): string {
+  return (/^\+?[\d\s\-().]+/u.exec(text)?.[0] ?? '').replace(/\D/gu, '');
+}
+
+/** Whether one buyer field names `name`. */
+function fieldNames(after: string, name: string): boolean {
+  /* An address is the whole address in the field, never a prefix of a longer one
+   * ("sales@example.test" is not "sales@example.test.ng"; CodeRabbit on #437 at cacc734). */
+  if (name.includes('@')) return addressIn(after.split(/\s/u)[0] ?? '', name);
+  /* An address is no name: "Ada" never names the buyer "ada@example.test" (CodeRabbit on #437 at
+   * b2703e7). */
+  if ((after.split(/\s/u)[0] ?? '').includes('@')) return false;
+  const needle = foldField(name);
+  if (/^\+?[\d\s\-().]+$/u.test(needle)) {
+    const digits = leadingPhoneDigits(needle);
+    return digits.length >= 10 && digits.length <= 15 && leadingPhoneDigits(after) === digits;
+  }
+  /* The whole name, not its first word: after it the field ends, or what follows is no more of a
+   * name (a phone, a comma, the items). "Ada" is not the buyer "Ada Obi" (CodeRabbit on #437 at
+   * aff3f63). */
+  return (
+    after.startsWith(needle) &&
+    !/[\p{L}\p{N}\p{M}-]/u.test(after[needle.length] ?? '') &&
+    (!/^\s+[\p{L}\p{M}]/u.test(after.slice(needle.length)) ||
+      /* …unless it is the next field's label ("Bill to: Bola Ige Tel: …"; CodeRabbit on #437
+       * at 88258dc). */
+      NEXT_FIELD.test(after.slice(needle.length)))
+  );
+}
+
+/** A caption segment that names somebody other than the buyer: "Seller: Ada Obi", "sold by Ada". */
+const NON_BUYER_SEGMENT =
+  /\b(?:seller|supplier|vendor|cashier|sales\s*(?:person|rep)|sold\s+by|served\s+by|issued\s+by|(?:deliver(?:y|ed)?|ship(?:ped)?)\s+to)\b\s*[:#\-\u2013]?[^\n,;]*/giu;
+
+/** A caption clause from a negation to its end: "not sold to Ada", "never Ada's". */
+/* The apostrophe as typed or as phone keyboards curl it ("wasn’t"; independent review of 55f4e22). */
+const NEGATED_SEGMENT = /\b(?:not|never|isn['’]?t|wasn['’]?t|didn['’]?t|no\s+longer)\b[^\n,;]*/giu;
+
+/** A contact heading at the start of a line, with its separator: "Tel:", "Email -". */
+const CONTACT_HEADING = /^(?:tel|telephone|phone|mobile|whatsapp|email|e-mail)\b\.?\s*[:#-]\s*/iu;
+
+/** A field label after a buyer's name on the same line: it ends the name. */
+const NEXT_FIELD =
+  /^\s+(?:tel|telephone|phone|mobile|whatsapp|email|e-mail|address|addr|date|invoice|inv|receipt|ref)\b\.?\s*[:#-]/iu;
+
+/** Whether `text` holds the whole address `address`, ignoring case. */
+function addressIn(text: string, address: string): boolean {
+  const want = address.trim().toLowerCase();
+  return (
+    text
+      .toLowerCase()
+      /* Quotes delimit an address too ('For "ada@example.test"'); a longer address it only prefixes
+       * still differs (CodeRabbit on #437 at 1ec5a22). */
+      .split(/[\s,;()<>"'\u2018\u2019\u201C\u201D]+/u)
+      .some((word) => word.replace(/[.:!?]+$/u, '') === want)
+  );
+}
+
+/** Every value this message holds for `token`: its typed facets and any provisional contact. */
+function facetValuesOf(tokens: LiveTokens, token: string): string[] {
+  const values = (tokens.facets.get(token) ?? []).map((f) => f.value);
+  const provisional = tokens.provisional?.get(token);
+  return provisional ? [...values, provisional.value] : values;
+}
+
 function customerTokenOf(command: Record<string, unknown>): string | null {
   const customer = command['customer'] as { kind?: string; token?: string } | undefined;
   return customer?.kind === 'token' ? (customer.token ?? null) : null;
+}
+
+/**
+ * What a correction carries over from the draft it corrects (CG5). Customer inheritance is
+ * OWN-100 (owner ruling 21 Nov 2026); the `correctionMayChange` eligibility gate is OD-60 Option
+ * A, implemented provisionally while that ruling is still to be recorded (CodeRabbit on #437 at
+ * 56c4140).
+ *
+ * The model reads a correction from its own words and never sees an earlier turn, so "No, 4
+ * not 3" names nobody. The customer comes from the TRUSTED pending draft, never from a token
+ * the model wrote: a token this message was not issued is still refused by the G-137 guard
+ * after this, so no earlier token is ever whitelisted.
+ *
+ * Every record read as a correction of a live waiting draft first passes `correctionMayChange`
+ * (OD-60): one draft waiting, of the same kind, the member's own, nothing in front of it or since
+ * its preview. Failing it, the correction is `unclear`: asked about,
+ * superseding nothing. Passing it, the correction supersedes the draft. Only a sale, a payment or
+ * an order the model read with no customer at all also keeps the draft's customer, and then the
+ * draft must also be:
+ *  - clearly corrected (`clearlyCorrects`: says what replaces what), not merely "no" or a "not";
+ *  - previewed to the merchant;
+ *  - with every word of the correction explained (`correctionWordsExplained`) and no customer
+ *    token issued to the message;
+ *  - with no earlier message of the business still retrying (`hasEarlierLiveJobByArrival`);
+ *  - naming a customer this business holds (or, for a payment, an invoice).
+ * Then the customer (and a payment's invoice reference, when the correction gives none) is
+ * kept, the draft is superseded by the ordinary CG5 path, and the new preview needs its own
+ * "yes". When a draft with a customer is waiting but any of that fails, the correction is
+ * `unclear`: asked about, changing nothing. With nothing live waiting it is a new request
+ * and inherits nobody. Read-only.
+ */
+type Inherited =
+  /** Not a correction of anything waiting: a new request, superseding nothing. */
+  | { readonly kind: 'none' }
+  /** A correction of the waiting draft that keeps no customer: it supersedes that draft. */
+  | { readonly kind: 'supersede' }
+  /** A correction that supersedes the waiting draft but cannot keep its customer yet: asked. */
+  | { readonly kind: 'withdraw' }
+  /** Read as a correction, but which draft it changes, or how, is unclear: asked about. */
+  | { readonly kind: 'unclear'; readonly ask: 'customer' | 'figure' | 'unnamed' | CorrectionBlock }
+  | {
+      readonly kind: 'inherit';
+      readonly customer: { readonly token: string; readonly customerId: string } | null;
+      readonly documentRef: string | null;
+    };
+
+/**
+ * The one CG5 contract (OD-60): whether a message read as a correction may change the draft it is
+ * about at all. Both outcomes of a correction, superseding the draft and keeping its customer, pass
+ * it first, so the two can never disagree. The draft must be:
+ *  - the only one waiting in the business (`answerableDraftCount`);
+ *  - of the kind the model read this message as (a "No, 4 not 3" read as an expense never
+ *    replaces a waiting sale);
+ *  - this member's own (`requestedBy`), never another member's or an unattributed one;
+ *  - with no refusal in front of it, and no question, refusal or other message since its preview
+ *    (`hasReadsAfter`, `hasRefusalOrQuestionSince`, `hasInboundBetween`).
+ * An earlier message still retrying does not stop a supersession: a "yes" retried after the
+ * merchant corrected its preview then finds it superseded and books nothing (G-23). It does stop
+ * a correction keeping the draft's customer (`correctionInheritance`). Read-only.
+ */
+/**
+ * Why `correctionMayChange` refused, which decides what the merchant is told (independent review
+ * of #437 at 42ed8bb): several requests waiting, another member's request, or anything else about
+ * the member's one waiting request.
+ */
+type CorrectionBlock = 'several' | 'another' | 'correction';
+
+async function correctionMayChange(
+  tx: TenantDb,
+  businessId: string,
+  target: conversationsRepo.DraftRow,
+  input: {
+    command: StructuredBusinessCommand;
+    actorId: string | null;
+    receivedAt: Date;
+    refusalInFront: boolean;
+    messageId: string;
+  },
+): Promise<CorrectionBlock | null> {
+  const { receivedAt } = input;
+  /* Two or more previews waiting: which one this corrects is a question (OWN-100). Checked
+   * first, so the reply never advises a "cancel" that would drop more than one request. */
+  if ((await conversationsRepo.answerableDraftCount(tx, businessId, { asOf: receivedAt })) > 1) {
+    return 'several';
+  }
+  if (input.actorId === null || target.requestedBy !== input.actorId) return 'another';
+  const may =
+    !input.refusalInFront &&
+    /* A live draft the merchant was shown (OWN-102(1)): a preview that never reached them is no
+     * request they can be correcting (CodeRabbit on #437 at cacc734). */
+    target.previewed === true &&
+    target.intent === input.command.intent &&
+    !(await conversationsRepo.hasReadsAfter(tx, businessId, target.id, { asOf: receivedAt })) &&
+    /* A refusal or a question since the preview, in any state: a "yes" that closed or retired it
+     * leaves the preview waiting, never the barrier gone (CodeRabbit on #437). */
+    !(await conversationsRepo.hasRefusalOrQuestionSince(tx, businessId, target.id, {
+      asOf: receivedAt,
+    })) &&
+    /* Any message since the preview, a free question ("who owes me") included, which writes no
+     * draft: the merchant thread shows it, whichever member sent it (CodeRabbit on #437). */
+    !(await conversationsRepo.hasInboundBetween(tx, businessId, target.id, input.messageId));
+  return may ? null : 'correction';
+}
+
+async function correctionInheritance(
+  tx: TenantDb,
+  businessId: string,
+  input: {
+    rawText: string;
+    command: StructuredBusinessCommand;
+    actorId: string | null;
+    receivedAt: Date;
+    fromDocument: boolean;
+    /** This correction's own stored message. */
+    messageId: string;
+    /** This correction's own job; null only where no job runs it. */
+    jobId: string | null;
+    /** Whether the gateway issued this message any customer token, recorded or provisional. */
+    namesSomeone: boolean;
+  },
+): Promise<Inherited> {
+  const none = { kind: 'none' } as const;
+  const { command, receivedAt } = input;
+  /* G-78: words on a photograph are never a correction. Only a record corrects a record: a
+   * reading the model could not make (`Unclear`) or a question is answered and leaves the preview
+   * as it was (independent review of #437, OWN-100). */
+  if (input.fromDocument || command.intent === 'Unclear' || command.intent === 'Query') return none;
+  /* Wording first: it needs no draft, so an ordinary record skips the draft scan below while the
+   * business lock is held (CodeRabbit on #437 at 56c4140). */
+  if (!looksLikeCorrection(input.rawText, true)) return none;
+
+  const except: string[] = [];
+  let refusalInFront = false;
+  let target: conversationsRepo.DraftRow | null = null;
+  for (;;) {
+    const draft = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
+      asOf: receivedAt,
+      except,
+    });
+    if (!draft || !conversationsRepo.isRefusalDraft(draft)) {
+      target = draft;
+      break;
+    }
+    refusalInFront = true;
+    except.push(draft.id);
+  }
+  /* Nothing waiting, or its window closed (G-23): a new request, with nobody inherited. */
+  if (!target || !target.expiresAt || target.expiresAt.getTime() <= receivedAt.getTime()) {
+    return none;
+  }
+
+  const stored = (target.command ?? {}) as Record<string, unknown>;
+  const bearing = CUSTOMER_BEARING.has(command.intent);
+  const named = bearing && 'customer' in command ? command.customer : null;
+  /* What the waiting draft holds that a correction naming nobody would keep. */
+  const token = bearing && !(named && named.kind !== 'none') ? customerTokenOf(stored) : null;
+  const ref = stored['documentRef'];
+  const draftRef =
+    /* The waiting draft's own reference, whatever the correction reads as: a sale correction to a
+     * payment preview then fails the same-kind check and is asked about (CodeRabbit). */
+    bearing &&
+    !(named && named.kind !== 'none') &&
+    target.intent === 'RecordPayment' &&
+    typeof ref === 'string' &&
+    ref.length > 0
+      ? ref
+      : null;
+
+  const blocked = await correctionMayChange(tx, businessId, target, {
+    command,
+    actorId: input.actorId,
+    receivedAt,
+    refusalInFront,
+    messageId: input.messageId,
+  });
+  /* Which request it changes, or whether it is a new one, is the question (OD-60). */
+  if (blocked) return { kind: 'unclear', ask: blocked };
+
+  /* Only a message that says it is a correction may replace the draft (OD-60 A+, owner ruling
+   * OWN-102(2)): "no, it was Bola not Ada" and "No, 4 not 3" go on to the rules below. One whose only
+   * cue is a hesitation ("Wait, I also sold 2 bags for 20k") is asked whether it changes the waiting
+   * request or is a new record, and supersedes nothing, whatever the draft holds. */
+  if (!explicitlyCorrects(input.rawText)) {
+    return { kind: 'unclear', ask: draftNamesSomeone(stored, target) ? 'customer' : 'correction' };
+  }
+
+  /* A figure the correction says was wrong must be one the draft holds, read as money or as a
+   * quantity (OD-67 Option B, fail closed; owner ruling OWN-103(3)): "4 not 3" beside a ₦5,000
+   * expense says nothing about it, so it is asked about and changes nothing, whatever kind. */
+  if (!replacedFiguresFit(input.rawText, draftFigures(stored))) {
+    return { kind: 'unclear', ask: 'figure' };
+  }
+  /* Nor may it change a financial figure the merchant did not name (OD-76 Option A, OWN-107): a
+   * reading of "No, 4 not 3" that also moves the payment is asked about, never previewed. */
+  if (unnamedFiguresChanged(input.rawText, stored, command as unknown as Record<string, unknown>)) {
+    return { kind: 'unclear', ask: 'unnamed' };
+  }
+  /* Nor may it carry a figure that belongs to something else (OWN-102(2)): "No, 4 not 3. Sold 2 bags
+   * at 10k to someone else" holds a sale the replacement would drop, whether or not the waiting
+   * draft names a customer, so it is asked about and nothing is replaced (CodeRabbit on #437 at
+   * 156621f). */
+  if (
+    correctionHoldsOtherFigures(
+      input.rawText,
+      stored,
+      command as unknown as Record<string, unknown>,
+    )
+  ) {
+    return { kind: 'unclear', ask: draftNamesSomeone(stored, target) ? 'customer' : 'correction' };
+  }
+
+  /* A customer the correction names, by a name or by any token, is its own: a different one
+   * is never overridden, and an unissued token is the G-137 guard's to refuse. */
+  if (!bearing || (named && named.kind !== 'none')) return { kind: 'supersede' };
+
+  const customerId = token ? await customerIdFor(tx, businessId, token) : null;
+  /* The draft named a customer this business no longer holds by that token (merged since): asked
+   * about, never turned into a sale to nobody. */
+  if (token && !customerId) return { kind: 'unclear', ask: 'customer' };
+  /* The draft named nobody: nothing to carry. An anonymous sale's correction is still held to the
+   * words it may use: one whose words the draft does not explain ("No, 4 not 3. Sold 4 caps at 50k
+   * to someone else") is asked about, so another sale it carries is never dropped when its figures
+   * happen to be the draft's (independent review of #437 at a9b955a). With no customer to carry, a
+   * spoken particle ("abeg", "please", "o") is no one's name and is set aside (review at f39710b). */
+  if (!customerId && !draftRef) {
+    const spoken = input.rawText.replace(
+      /(?<![\p{L}\p{N}])(?:abeg|please|pls|plz|o|oh)(?![\p{L}\p{N}])/giu,
+      ' ',
+    );
+    if (
+      command.intent === 'RecordSale' &&
+      !correctionWordsExplained(spoken, draftVocabulary(stored))
+    ) {
+      return { kind: 'unclear', ask: 'correction' };
+    }
+    return { kind: 'supersede' };
+  }
+
+  /* The model's own invoice number on a payment correction that names nobody cannot have come
+   * from its words ("no, 60k not 50k"): only the draft's own, or none, is kept (independent review
+   * of #437 at ebeeadb). Another one may be another customer's invoice. */
+  const modelRef =
+    command.intent === 'RecordPayment' && typeof command.documentRef === 'string'
+      ? command.documentRef
+      : null;
+  const eligible =
+    /* An explicit correction that is not clearly one of this draft ("No, I also sold 2 bags"): never
+     * given the draft's customer. */
+    clearlyCorrects(input.rawText) &&
+    /* Somebody named in the correction's own words, recorded (a token) or not (a word the draft
+     * does not hold), is never overridden by the draft's customer (OWN-100; CodeRabbit and the
+     * independent review of #437 at ebeeadb). */
+    !input.namesSomeone &&
+    correctionWordsExplained(input.rawText, draftVocabulary(stored)) &&
+    (modelRef === null || modelRef.length === 0 || modelRef === draftRef) &&
+    target.previewed === true;
+  /* An earlier message still retrying has no row for the checks in `correctionMayChange` to see,
+   * so while one is live (or with no job to ask) the correction never inherits (owner review of
+   * #437 at 49f2586). It still supersedes the draft it corrects, so a "yes" retried after it books
+   * nothing the merchant corrected, and the merchant is asked for the record with its customer
+   * (CodeRabbit on #437 at 1db1a0a). */
+  /* Only a correction that is otherwise eligible: one that is not clearly a correction of this
+   * draft ("No, I also sold 2 bags") is asked about below and leaves the preview alone, so a yes
+   * the merchant sent before it still books what they confirmed (independent review of e40b95d). */
+  if (
+    eligible &&
+    (input.jobId === null || (await jobsRepo.hasEarlierLiveJobByArrival(tx, input.jobId)))
+  ) {
+    return { kind: 'withdraw' };
+  }
+  /* Any draft that reaches here names a customer or an invoice: an ineligible correction is asked
+   * about and never supersedes it (CodeRabbit on #437). */
+  if (!eligible) return { kind: 'unclear', ask: 'customer' };
+  return {
+    kind: 'inherit',
+    customer: token && customerId ? { token, customerId } : null,
+    documentRef: draftRef,
+  };
+}
+
+/**
+ * What a customer the trusted draft named reads as in this reply: "The same customer as before",
+ * never their stored name. Rehydrating a vault identity outside the authorised output layer is
+ * forbidden (R12, `docs/safety-review.md`; CLAUDE.md invariant 4), and Rekoda's replies already
+ * name stored customers by what the merchant typed or not at all ("who owes me" lists invoice
+ * numbers). Nothing is decrypted, stored or sent to a model.
+ */
+export const INHERITED_CUSTOMER_DISPLAY = 'The same customer as before';
+
+function noteInheritedCustomer(tokens: LiveTokens, token: string): void {
+  tokens.displays.set(token, INHERITED_CUSTOMER_DISPLAY);
 }
 
 /** The model path: a draft when it worked, an honest sentence when it did not. */
@@ -5041,6 +6206,10 @@ async function interpretedReply(
   fromDocument = false,
   /** What this reply did that a failed send must undo (G-68). */
   outcome?: RebuildOutcome,
+  /** This message's own job, for the CG5 check that no earlier message is still live. */
+  jobId: string | null = null,
+  /** A photo's caption, the only words of a photo the merchant typed; null for any other. */
+  documentCaption: string | null = null,
 ): Promise<Reply> {
   /**
    * The MONTHLY meter (docs/metering-v1.md), checked before the model is
@@ -5139,10 +6308,39 @@ async function interpretedReply(
   /* A retry is granted only when the message holds its unit: attempt 1
    * took it. One refused at the allowance, or that took nothing, is metered
    * now (G-57 final review B). */
+  /**
+   * A message that was not turned into a record is answered with a sentence,
+   * and that sentence is the last thing the merchant read. It stands as their
+   * newest draft, a pending `Unclear` marked `refused`, so a "yes" now is
+   * about it and never confirms an older preview behind it (owner review of
+   * #437: before this a "yes" after "I am very busy right now" or "I could not
+   * tell which customer" posted the sale previewed before it). That "yes"
+   * closes it, saves nothing and says whether a preview is still waiting; the
+   * next "yes" is about that preview (`answerRefusal`). It carries the
+   * sentence only, never the merchant's words or a token, and it is not a
+   * preview.
+   */
+  const refusedAs = async (refusal: Reply): Promise<Reply> => {
+    await recordRefusal(
+      deps,
+      tx,
+      businessId,
+      conversationMessageId,
+      actorId ?? null,
+      refusal.text,
+      from,
+    );
+    return refusal;
+  };
+
   const granted =
     (retrying && (await holdsUnit(deps, businessId, eventId, 'AI_ACTIONS'))) ||
     (await consumeMessage(deps, businessId, eventId, period, monthlyMessages));
-  if (!granted) return exhaustedReply(deps.db, businessId, monthlyMessages, 'AI_ACTIONS', plan);
+  if (!granted) {
+    return refusedAs(
+      await exhaustedReply(deps.db, businessId, monthlyMessages, 'AI_ACTIONS', plan),
+    );
+  }
 
   const interpreted = await deps.interpreter.interpret(businessId, safeText, {
     ...(fromDocument ? { document: true } : {}),
@@ -5170,19 +6368,21 @@ async function interpretedReply(
    * send it again" call for completely different things from them.
    */
   if (interpreted.outcome === 'refused') {
-    return interpreted.refusedBy === 'business'
-      ? replies.quotaReachedForBusiness()
-      : replies.busyRightNow();
+    return refusedAs(
+      interpreted.refusedBy === 'business'
+        ? replies.quotaReachedForBusiness()
+        : replies.busyRightNow(),
+    );
   }
-  if (interpreted.outcome === 'unavailable') return replies.busyRightNow();
-  if (interpreted.outcome === 'unusable') return replies.couldNotRead();
+  if (interpreted.outcome === 'unavailable') return refusedAs(replies.busyRightNow());
+  if (interpreted.outcome === 'unusable') return refusedAs(replies.couldNotRead());
   /* Two independent readers disagreed on a high-value document (item 9).
    * Nothing was drafted from either reading; the merchant states the
    * figures and the typed sentence walks the ordinary confirm gate. The
    * message unit was already refunded above with the other non-command
    * outcomes. */
   if (interpreted.outcome === 'disagreement') {
-    return replies.extractionDisagreement(interpreted.fields);
+    return refusedAs(replies.extractionDisagreement(interpreted.fields));
   }
 
   /**
@@ -5229,13 +6429,353 @@ async function interpretedReply(
    * made mechanical.
    */
   let command = interpreted.command;
+  let nameNotKnown = false;
+  /** The second facet PR #77 asks about, created only once the question is asked. */
+  let pendingBeside: string | null = null;
+  /**
+   * A phone or email nobody recorded stood as a provisional token (G-135).
+   *
+   * A question names nobody by it: it is answered as unknown and creates
+   * nothing (BA-OD-3). A record is checked first (G-137: a provisional token is
+   * one this message issued, an invented one is refused below and creates
+   * nobody). Only a record that names a customer, or carries a provisional
+   * token in any of its fields, needs them: those are found or created now,
+   * exactly as the gateway used to do for every message, and every field of
+   * the command carries the stored token instead: a number a record keeps in
+   * its words is kept in the vault, never as plaintext in the books. A record
+   * whose fields never carry the token (the model wrote "plumber", not the
+   * number), a question and an unclear message create nobody.
+   */
+  if (tokens.provisional?.size) {
+    const asked = command.intent === 'Query' ? command.customer : null;
+    if (asked?.kind === 'token' && tokens.provisional.has(asked.token)) {
+      nameNotKnown = true;
+      command = { ...command, customer: { kind: 'none' } } as StructuredBusinessCommand;
+    }
+  }
+  /**
+   * CG5: a correction that names nobody keeps the customer of the draft it corrects, taken
+   * from that trusted draft and never from the model (owner ruling 21 Nov 2026,
+   * `correctionInheritance`). Decided before the G-137 guard below, which still refuses any
+   * token this message was not issued. An unclear correction is asked about: nothing is
+   * superseded or drafted, and the unit goes back as for any refused request.
+   */
+  /* Carried from the trusted draft for the record's `customer` only, never allowed in its words. */
+  let inheritedToken: string | null = null;
+  /* Whether this message corrects, and so supersedes, the waiting draft (CG5, OD-60): decided once,
+   * by `correctionInheritance`, so supersession and inheritance can never disagree. */
+  let correcting = false;
+  {
+    const carried = await correctionInheritance(tx, businessId, {
+      rawText,
+      command,
+      actorId,
+      receivedAt,
+      fromDocument,
+      messageId: conversationMessageId,
+      jobId,
+      namesSomeone: tokens.displays.size > 0 || (tokens.provisional?.size ?? 0) > 0,
+    });
+    if (carried.kind === 'unclear') {
+      await refundMessage(tx, businessId, eventId, period);
+      return refusedAs(
+        carried.ask === 'customer'
+          ? replies.correctionCustomerNotClear()
+          : carried.ask === 'several'
+            ? replies.correctionNotClearSeveral()
+            : carried.ask === 'another'
+              ? replies.correctionForAnotherMember()
+              : carried.ask === 'figure'
+                ? replies.correctionFigureNotInDraft()
+                : carried.ask === 'unnamed'
+                  ? replies.correctionChangedUnnamedFigure()
+                  : replies.correctionNotClear(),
+      );
+    }
+    if (carried.kind === 'withdraw') {
+      /* A window that closed is closed first, so a later yes about it is told it expired (G-23). */
+      await conversationsRepo.expireStaleDrafts(tx, businessId, { now: receivedAt });
+      await conversationsRepo.supersedePendingDrafts(tx, businessId, {
+        asOf: receivedAt,
+        skipRefusalsNotBy: actorId,
+      });
+      await refundMessage(tx, businessId, eventId, period);
+      return refusedAs(replies.correctionWithdrawn());
+    }
+    correcting = carried.kind !== 'none';
+    if (carried.kind === 'inherit') {
+      if (carried.customer) {
+        noteInheritedCustomer(tokens, carried.customer.token);
+        inheritedToken = carried.customer.token;
+        command = {
+          ...command,
+          customer: { kind: 'token', token: carried.customer.token },
+        } as StructuredBusinessCommand;
+      }
+      if (carried.documentRef && command.intent === 'RecordPayment' && !command.documentRef) {
+        command = { ...command, documentRef: carried.documentRef };
+      }
+    }
+  }
+  /**
+   * A record names a customer only by a token this message was issued (G-137).
+   *
+   * The model sees tokens as opaque and only ever this message's: the
+   * gateway's output (stored or provisional), or a name resolved below. Any
+   * other well-formed token is one the model made up or copied, and it may
+   * belong to another real customer of this business, so a payment preview
+   * would point at their invoice and a "yes" would post it there. Token syntax
+   * is not authority: nothing is drafted or created, the unit goes back as for
+   * any refused request, and the merchant is asked to say who.
+   */
+  if (
+    command.intent !== 'Query' &&
+    'customer' in command &&
+    command.customer?.kind === 'token' &&
+    !tokens.displays.has(command.customer.token)
+  ) {
+    authorisationLog.warn(`${command.intent} carried a customer token this message was not issued`);
+    await refundMessage(tx, businessId, eventId, period);
+    return refusedAs(replies.customerNotRecognised());
+  }
+  /* A recorded customer, or a phone or email, found anywhere on a photographed page is issued a
+   * token, but being on the page does not make them the buyer: only one the caption types or the
+   * page labels as the buyer is (owner ruling 22 Nov 2026 on photo-extracted customer names). */
+  if (
+    fromDocument &&
+    command.intent !== 'Query' &&
+    'customer' in command &&
+    command.customer?.kind === 'token' &&
+    !photoBuyerNamed(rawText, documentCaption, facetValuesOf(tokens, command.customer.token))
+  ) {
+    authorisationLog.warn(`${command.intent} named a buyer the photo does not label`);
+    await refundMessage(tx, businessId, eventId, period);
+    return refusedAs(replies.customerNotRecognised());
+  }
+  /* A page that labels a buyer, read with no customer, is not an anonymous sale: the receivable
+   * would lose its owner. Only a page that labels nobody is (OWN-103(4); CodeRabbit on #437 at
+   * 4a5fd80). */
+  if (
+    fromDocument &&
+    CUSTOMER_BEARING.has(command.intent) &&
+    'customer' in command &&
+    command.customer?.kind === 'none' &&
+    (pageBuyerFields(rawText, documentCaption).length > 0 ||
+      /* A buyer the caption labels is as much a buyer as one the page labels (CodeRabbit on #437
+       * at 600a155). */
+      (documentCaption !== null && buyerFieldsIn(documentCaption).length > 0) ||
+      /* A caption that carries a customer token this message was issued names a buyer the
+       * model left out (OD-72 Option A, owner ruling 25 Nov 2026). */
+      captionNamesIssuedCustomer(tokens, documentCaption))
+  ) {
+    authorisationLog.warn(`${command.intent} named no buyer on a page that labels one`);
+    await refundMessage(tx, businessId, eventId, period);
+    return refusedAs(replies.customerNotRecognised());
+  }
+  /**
+   * Which of this message's provisional phones and emails become customers
+   * follows what the record MEANS, never where the model put the token (owner
+   * review of #437 at 3a60b0f). Only a sale, a payment and an order have a
+   * customer, and only their `customer` is one:
+   *  - the record's own customer, typed as a phone or email, is created;
+   *  - a second facet typed beside that customer, and placed in none of the
+   *    record's words, is created only where PR #77's owner rule asks about it
+   *    in the preview ("same customer?"): a real split, exactly two people in
+   *    the message, at least one of them new, and only once the preview that
+   *    carries the question is really the answer (`pendingBeside`, after
+   *    `acknowledge`). An arithmetic question, a "which invoice?" or any other
+   *    answer asks nothing, so it creates nothing (independent review of the
+   *    owner review's fixes). Anywhere else nobody would be asked, so nobody
+   *    is created;
+   *  - every other phone or email (an expense's plumber, a supplier, a
+   *    contact in an order's note, forwarded text) creates nobody, and the
+   *    record's words keep "[phone]" or "[email]" in its place: no number in
+   *    the books, no token that would mean nothing once this job ends.
+   * A customer token in a record's words that this message was not issued
+   * reads "[customer]" (`neutraliseTokens`): it may be another real
+   * customer's, and must never resolve to them later.
+   */
+  const customer = 'customer' in command ? command.customer : null;
+  /* Count identities before any provisional contact is materialised or dropped. A third
+   * contact still rules out a link even if the record will never need that contact. */
+  const people =
+    referenced.length + (tokens.provisional?.size ?? 0) + (customer?.kind === 'mention' ? 1 : 0);
+  if (command.intent !== 'Query' && command.intent !== 'Unclear') {
+    const provisional = tokens.provisional ?? new Map();
+    const bearing = CUSTOMER_BEARING.has(command.intent) && customer && customer.kind !== 'none';
+    const own =
+      bearing && customer.kind === 'token' && provisional.has(customer.token)
+        ? customer.token
+        : null;
+    const inWords = tokensInWords(command, [...provisional.keys()]);
+    const beside = bearing
+      ? [...provisional.keys()].filter((t) => t !== own && !inWords.has(t))
+      : [];
+    const besideFacet = beside.length === 1 ? provisional.get(beside[0]!)?.facet : undefined;
+    /* PR #77's rule as `proposeLink` and `linkAfterMention` apply it: beside a
+     * name the merchant typed, only a phone can be asked about (the new name is
+     * the orphan, a phone the survivor), and only when the name is new. */
+    /* On a photo, a phone or email printed on the page beside the buyer (the seller's own, a
+     * delivery contact's) is nobody's until the page labels it as the buyer's or the caption types
+     * it: never asked about, so never created (owner ruling OWN-102(6); independent review of #437
+     * at ccdcc8e). It stays a placeholder in the record's words. */
+    const besideValue = beside.length === 1 ? provisional.get(beside[0]!)?.value : undefined;
+    const asked =
+      besideFacet !== undefined &&
+      people === 2 &&
+      (!fromDocument ||
+        (besideValue !== undefined && photoBuyerNamed(rawText, documentCaption, [besideValue]))) &&
+      (customer?.kind !== 'mention' ||
+        (besideFacet === 'phone' &&
+          !(await deps.gateway.findMention(businessId, customer.mention))));
+    const needed = new Set<string>(own ? [own] : []);
+    const placeholders = new Map<string, string>(
+      [...provisional]
+        .filter(([t]) => !needed.has(t) && !(asked && t === beside[0]))
+        .map(([t, { facet }]) => [t, facet === 'email' ? '[email]' : '[phone]']),
+    );
+    let recordCustomer: ResolvedCustomer | undefined;
+    if (needed.size > 0) {
+      const made = await deps.gateway.materialise(businessId, tokens, needed);
+      const fresh = made.resolved.filter(
+        (c) => !referenced.some((r) => r.customerId === c.customerId),
+      );
+      referenced = [...referenced, ...fresh];
+      recordCustomer = made.resolved[0];
+      if (!asked && people === 2) link ??= deps.gateway.linkFor(referenced);
+      command = withTokensReplaced(command, made.replaced);
+    } else if (customer?.kind === 'token') {
+      recordCustomer = referenced.find((r) => r.token === customer.token);
+    }
+    for (const t of [...provisional.keys()]) if (!(asked && t === beside[0])) provisional.delete(t);
+    if (asked) {
+      const asking = beside[0]!;
+      pendingBeside = asking;
+      /* The question names the beside facet by its provisional token, which the
+       * reply reads back as what the merchant typed; it becomes a customer, and
+       * the link its ids, only if the question is really asked (below). */
+      if (customer?.kind === 'token' && recordCustomer) {
+        const besideSurvives =
+          recordCustomer.created && recordCustomer.facet !== 'phone' && besideFacet === 'phone';
+        link ??= besideSurvives
+          ? {
+              survivorId: '',
+              survivorToken: asking,
+              orphanId: recordCustomer.customerId,
+              orphanToken: recordCustomer.token,
+            }
+          : {
+              survivorId: recordCustomer.customerId,
+              survivorToken: recordCustomer.token,
+              orphanId: '',
+              orphanToken: asking,
+            };
+      }
+    }
+    command = withWordsNeutralised(
+      command,
+      new Set([...tokens.displays.keys()].filter((t) => t !== inheritedToken)),
+      placeholders,
+    );
+  }
+  /**
+   * A question resolves a name by LOOKUP only (OD-3, owner ruling 20 Nov 2026).
+   *
+   * A read must not add a customer: find-or-create below is for records the
+   * merchant will confirm. A known name becomes its token, exactly as a sale
+   * would find it. An unknown one names nobody: the question is answered
+   * honestly, and the stored message never held the name (G-136).
+   */
+  if (command.intent === 'Query' && command.customer?.kind === 'mention') {
+    const mention = command.customer.mention;
+    const found = await deps.gateway.findMention(businessId, mention);
+    /* Only a name the merchant typed, or a customer this message was issued, is the one asked
+     * about: a recorded name the model wrote is unknown here, never answered with that customer's
+     * balance (CodeRabbit on #437 at 3d66867; the record path's rule, G-137). */
+    const known =
+      found && (typedIn(rawText, mention) || tokens.displays.has(found.token)) ? found : null;
+    if (known) deps.gateway.noteMention(tokens, known.token, mention);
+    /* Answered through the ordinary path, not by returning here: a question
+     * leaves its read-only Query draft, which is what stops a later "yes"
+     * reaching past it to an older preview (`hasReadsAfter`, Codex on #437). */
+    /* Whatever the topic: an unknown name is said to be unknown, never
+     * answered with the whole business's figures as if they were theirs. */
+    nameNotKnown = !known;
+    command = {
+      ...command,
+      customer: known ? { kind: 'token', token: known.token } : { kind: 'none' },
+    };
+  }
+  /* A question's token must be one this message was issued (G-135): the model
+   * sees tokens as opaque and only ever this message's. Any other names nobody
+   * here, so it is answered as unknown, never "nothing outstanding". */
+  if (
+    command.intent === 'Query' &&
+    command.customer?.kind === 'token' &&
+    !tokens.displays.has(command.customer.token)
+  ) {
+    nameNotKnown = true;
+    command = { ...command, customer: { kind: 'none' } };
+  }
   if ('customer' in command && command.customer && command.customer.kind === 'mention') {
     const mention = command.customer.mention;
+    /* A mention nowhere in the merchant's words is the model's, not theirs: refused like an
+     * unissued token, and whether or not the vault holds that name (G-137; OD-62(n), CodeRabbit
+     * on #437 at ebeeadb and 58dd68b). A recorded name the merchant typed was tokenised before
+     * the model read the message; a new one they typed keeps the vault path (ADR 0005 case 4). A
+     * photo's words are its caption and the page's extracted text, so a buyer the model names
+     * that the receipt never shows is refused the same way (CodeRabbit on #437 at 56c4140). */
+    /* On a photo, the page names many people (the seller, the merchant, a supplier, a delivery
+     * contact): a buyer is one the caption types or the page labels as the buyer, never any name
+     * on it, recorded or not (owner ruling 22 Nov 2026 on photo-extracted customer names). */
+    /* The same customer can be named through several buyer fields (`Buyer: Ada Obi`,
+     * `Client: ada@example.test`). When the mention is a recorded customer this message was
+     * issued, it is judged by that customer's observed facets, as a returned token is, so a field
+     * that names them another way is not a contradiction. Read-only lookup, before anything is
+     * created; a mention that is nobody recorded, or whose token this message was not issued, is
+     * judged by its own words alone, and the complete name is still required (CodeRabbit on #437). */
+    const photoNames = async (): Promise<string[]> => {
+      const recorded = await deps.gateway.findMention(businessId, mention);
+      const observed =
+        recorded && tokens.displays.has(recorded.token)
+          ? facetValuesOf(tokens, recorded.token)
+          : [];
+      return observed.length > 0 ? [mention, ...observed] : [mention];
+    };
+    if (fromDocument && !photoBuyerNamed(rawText, documentCaption, await photoNames())) {
+      authorisationLog.warn(`${command.intent} named a buyer the photo does not label`);
+      await refundMessage(tx, businessId, eventId, period);
+      return refusedAs(replies.customerNotRecognised());
+    }
+    if (!typedIn(rawText, mention)) {
+      const recorded = await deps.gateway.findMention(businessId, mention);
+      /* Unless this message was issued that recorded customer's token, by a phone or an email of
+       * theirs ("sold 3 wigs to 0803…" composes with their name, G-60). */
+      if (!recorded || !tokens.displays.has(recorded.token)) {
+        authorisationLog.warn(`${command.intent} named a customer the message did not`);
+        await refundMessage(tx, businessId, eventId, period);
+        return refusedAs(replies.customerNotRecognised());
+      }
+    }
     const named = await deps.gateway.resolveMention(businessId, mention);
     /* A name that is new beside a customer the message already named (a
      * storefront buyer's phone) may be one person: asked, never joined
      * (G-60 owner decision, 14 Oct 2026). */
-    link ??= await deps.gateway.linkAfterMention(businessId, referenced, named);
+    const asking = pendingBeside;
+    if (asking && named.created) {
+      /* A new name beside a new phone: the phone survives, the name is the
+       * orphan, exactly as `linkAfterMention` would propose it. */
+      link ??= {
+        survivorId: '',
+        survivorToken: asking,
+        orphanId: named.customerId,
+        orphanToken: named.token,
+      };
+    } else {
+      pendingBeside = null;
+      tokens.provisional?.clear();
+    }
+    if (people === 2) link ??= await deps.gateway.linkAfterMention(businessId, referenced, named);
     /* Composed with whatever the merchant typed for the same customer, so a
      * phone and the name the model resolved read as one person (G-60). */
     deps.gateway.noteMention(tokens, named.token, mention);
@@ -5244,21 +6784,8 @@ async function interpretedReply(
       customer: { kind: 'token', token: named.token },
     } as StructuredBusinessCommand;
 
-    /* The inbound row was stored BEFORE the model named this customer, so it
-     * still carries the name. Scrubbed now, in the same transaction: the
-     * conversation history must not hold a customer's real name, and "we
-     * only learned it was a name a moment ago" is not an exemption. */
-    /* However it was spaced, and never inside a token (G-60). */
-    /* And what then reads as PII is not stored either (final review on
-     * #273): "send to <new name> 0123456789" held no account number until
-     * the name became a short token within reach of "send to". */
-    const scrubbed = redactStructuralPiiAroundTokens(
-      replaceOutsideTokens(safeText, mention, named.token, tokens.displays.keys()),
-      tokens.displays.keys(),
-    );
-    if (scrubbed !== safeText) {
-      await conversationsRepo.setInboundBody(tx, businessId, conversationMessageId, scrubbed);
-    }
+    /* Nothing to scrub from the stored message: it holds a placeholder, never
+     * the text (G-136), so the name the model just resolved was never kept. */
   }
 
   /**
@@ -5271,15 +6798,17 @@ async function interpretedReply(
   /* G-23: an expired preview is not there to be corrected; a "sorry, 3 not
    * 4" after it is a new request with its own fresh window. */
   await conversationsRepo.expireStaleDrafts(tx, businessId, { now: receivedAt });
-  /* A correction is about something a "yes" could confirm, never a read:
-   * "sorry, 3 not 4" after only a question is a new request (Build 6). */
-  const existing = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
-    asOf: receivedAt,
-  });
-  /* G-78: words on a photograph are never a correction. */
-  const correcting = !fromDocument && looksLikeCorrection(rawText, existing !== null);
+  /* A correction is about something a "yes" could confirm, never a read: "sorry, 3 not 4" after
+   * only a question is a new request (Build 6). Whether this is one was decided above, against the
+   * same draft and the same window (`correctionInheritance`, OD-60). */
   if (correcting) {
-    await conversationsRepo.supersedePendingDrafts(tx, businessId, { asOf: receivedAt });
+    /* Another member's refusal stays theirs to answer, as a bare "no" leaves it (CodeRabbit on
+     * #437 at 0e12742): superseded here, their next yes would confirm this replacement preview,
+     * which was never sent to them. */
+    await conversationsRepo.supersedePendingDrafts(tx, businessId, {
+      asOf: receivedAt,
+      skipRefusalsNotBy: actorId,
+    });
   }
 
   /**
@@ -5291,19 +6820,122 @@ async function interpretedReply(
    * question, and storing the proposal anyway would mean a later `yes` joining
    * two customer records nobody was ever asked about.
    */
-  const answered = await acknowledge(tx, businessId, command, correcting, link, receivedAt);
+  /* A question about a name the books do not hold reads nothing: answering it
+   * through `acknowledge` would read the business's own figures only to throw
+   * them away, and a failure of that read would leave no reply (CodeRabbit on
+   * #437). The answer is the one set just below. */
+  /* A period total asked by a message that names a customer is never answered with the whole
+   * business's figures: the model leaving `customer` empty is no proof the merchant named nobody
+   * (OWN-102(3)). Only a balance is kept per customer, so this is told as that is (G-135; CodeRabbit
+   * on #437 at b2703e7). A question that names nobody keeps the business-wide answer. */
+  /* "Who owes me, Ada?" read as the debtors list with no customer: the one recorded customer this
+   * message was issued is the one asked about, as when the model returns her token, never widened to
+   * every debtor; one nobody recorded is unknown (CodeRabbit on #437 at 88258dc). Several are asked
+   * about below. */
+  const issuedCustomers = [...tokens.displays.keys()].filter((t) => t.startsWith('CUSTOMER_'));
+  if (
+    command.intent === 'Query' &&
+    /* A balance question too, never answered "no unpaid invoice" (CodeRabbit on #437 at 9c587bd). */
+    (command.topic === 'debtors' || command.topic === 'customer_balance') &&
+    (command.customer?.kind ?? 'none') === 'none' &&
+    issuedCustomers.length === 1
+  ) {
+    const only = issuedCustomers[0]!;
+    if (tokens.provisional?.has(only)) nameNotKnown = true;
+    else command = { ...command, customer: { kind: 'token', token: only } };
+  }
+  /* Every topic, as `acknowledge` refuses a customer token on any topic but a balance: payables
+   * ("how much do I owe Ada") included (CodeRabbit on #437 at cf96697). A balance question with one
+   * issued customer was taken as hers above, so only one naming several reaches here (fadc878). */
+  const namedButUnscoped =
+    command.intent === 'Query' &&
+    (command.customer?.kind ?? 'none') === 'none' &&
+    /* A customer token, recorded or provisional: an `ACCOUNT_n` names nobody (independent review
+     * of #437 at 81d0b03). */
+    issuedCustomers.length > 0;
+  const acknowledged =
+    nameNotKnown && command.intent === 'Query'
+      ? { reply: replies.customerNotKnown(), linkAsked: false, continuation: NO_PERIOD_TO_RESUME }
+      : namedButUnscoped
+        ? {
+            reply: replies.customerFiguresNotKept(),
+            linkAsked: false,
+            continuation: NO_PERIOD_TO_RESUME,
+          }
+        : await acknowledge(
+            tx,
+            businessId,
+            /* The preview names the supplier the stored draft will carry, never a token or placeholder
+             * the stored draft drops (CodeRabbit on #437 at 0e12742). */
+            command.intent === 'RecordPurchase'
+              ? ({
+                  ...command,
+                  supplierMention: supplierNameOf(command, tokens.displays.keys()) || null,
+                } as StructuredBusinessCommand)
+              : command,
+            correcting,
+            link,
+            receivedAt,
+          );
+  /* A balance question about a name the books do not hold is answered honestly above, never
+   * "they owe nothing" (G-135), and never with a subject a later "last month" could resume into
+   * the business's totals (independent review of #437). */
+  let answered = acknowledged;
+
+  /* The beside facet is created now, and only because the preview really asks
+   * about it; the reply and the link then carry its stored token and id. When
+   * the answer asks nothing, it is never created and the link is dropped. */
+  if (pendingBeside) {
+    const beside = pendingBeside;
+    if (answered.linkAsked && link) {
+      const made = await deps.gateway.materialise(businessId, tokens, new Set([beside]));
+      const created = made.resolved[0];
+      if (created) {
+        referenced = [...referenced, created];
+        link = {
+          survivorId: link.survivorId || created.customerId,
+          survivorToken: made.replaced.get(link.survivorToken) ?? link.survivorToken,
+          orphanId: link.orphanId || created.customerId,
+          orphanToken: made.replaced.get(link.orphanToken) ?? link.orphanToken,
+        };
+        answered = {
+          ...answered,
+          reply: {
+            ...answered.reply,
+            text: withTokensReplaced(answered.reply.text, made.replaced),
+          },
+        };
+      }
+    } else if (link && (link.survivorToken === beside || link.orphanToken === beside)) {
+      link = null;
+    }
+    tokens.provisional?.clear();
+    pendingBeside = null;
+  }
 
   /* Supplier names are never persisted (ADR 0005): the preview above
    * already said "From: ...". What the stored draft keeps instead is the
    * VAULT ROW the mention resolved to (migration 0050) — an opaque id the
    * confirm can stamp on the purchase, never the name itself. */
   let stored: Record<string, unknown> = command;
+  /* A model's clarifying question may repeat a name nobody recorded. It is sent once, from the
+   * reply above, and nothing reads it back from the draft, so the draft keeps a placeholder
+   * (independent review of #437 at ebeeadb; ADR 0005 Amendment 1: never what Rekoda stores). */
+  if (command.intent === 'Unclear') {
+    stored = { ...command, clarification: STORED_BODY.clarification };
+  }
   if (command.intent === 'RecordPurchase') {
-    const mention = (command as { supplierMention?: unknown }).supplierMention;
+    /* What the record's words keep in place of a phone, an email or a foreign
+     * token names nobody, so it is never part of a supplier's name: "[phone]"
+     * alone would vault ONE supplier called "[phone]" for every supplier known
+     * only by number, merging their payables (independent review of the owner
+     * review's fixes). What remains, if anything, is the name. */
+    /* Nor is a customer token: a supplier named after a pseudonym would take
+     * that customer's token into the supplier vault (CodeRabbit on #437). Every
+     * token span is found the way the gateway finds them (`protectedSpans`). */
+    const mention = supplierNameOf(command, tokens.displays.keys());
     const supplier =
-      typeof mention === 'string' && mention.trim().length > 0
-        ? await deps.gateway.resolveSupplierMention(businessId, mention)
-        : null;
+      mention.length > 0 ? await deps.gateway.resolveSupplierMention(businessId, mention) : null;
     stored = { ...command, supplierMention: null, supplierId: supplier?.supplierId ?? null };
   }
 
@@ -5429,7 +7061,13 @@ async function interpretedReply(
     /* Only on the first delivery: a replayed message changes nothing. The
      * question becomes the conversation, so a preview left waiting from
      * before it is closed, not left pending and never confirmable. */
-    if (draft.isNew) await conversationsRepo.supersedeDraftsBefore(tx, businessId, draft.id);
+    if (draft.isNew) {
+      /* Never another member's refusal: it still guards what they were shown (CodeRabbit on #437
+       * at ce75a9e), as the correction path keeps it. */
+      await conversationsRepo.supersedeDraftsBefore(tx, businessId, draft.id, {
+        skipRefusalsNotBy: actorId,
+      });
+    }
     /* The newest question wins, business-wide (Codex review): a NEW
      * purchase question closes every older one, and every member's short
      * answer naming one is retired, in this transaction. Nobody can then
@@ -5496,6 +7134,35 @@ async function interpretedReply(
  * prevent: claiming something happened before it has. The preview belongs to
  * CG2 and the document to the transaction engine.
  */
+/**
+ * The supplier name a purchase's `supplierMention` leaves once every token span (found the way the
+ * gateway finds them, `protectedSpans`) and every placeholder for a phone, an email or a customer
+ * is taken out: what is vaulted as the supplier, and what its preview shows. Empty when nothing
+ * names a supplier.
+ */
+function supplierNameOf(command: StructuredBusinessCommand, displays: Iterable<string>): string {
+  const raw = (command as { supplierMention?: unknown }).supplierMention;
+  const words = typeof raw === 'string' ? raw : '';
+  let untokened = '';
+  let cursor = 0;
+  for (const span of protectedSpans(words, displays)) {
+    untokened += `${words.slice(cursor, span.start)} `;
+    cursor = Math.max(cursor, span.end);
+  }
+  untokened += words.slice(cursor);
+  const name = untokened
+    .replace(/\[(?:phone|email|customer)\]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  /* What is left of "[phone], [email]" is punctuation, which names nobody: no "From:" line and no
+   * supplier row (CodeRabbit on #437 at ce75a9e). A name keeps its own punctuation. */
+  /* And only a name the supplier lookup accepts, so the preview never shows a supplier the record
+   * would drop ("From: K"; CodeRabbit on #437 at cacc734). */
+  return /[\p{L}\p{N}]/u.test(name) && normaliseFacet('supplier_name', name).length >= 2
+    ? name
+    : '';
+}
+
 async function acknowledge(
   tx: TenantDb,
   businessId: string,
@@ -5633,7 +7300,7 @@ async function acknowledge(
     return withLink(
       replies.preview(
         correcting
-          ? `${replies.correctionTaken().text}\n\n${orderPreview(order, command.note)}`
+          ? `${replies.correctionTaken().text}\n\n${orderPreview(order, command.note, customerTokenOf(command as never))}`
           : orderPreview(order, command.note),
       ),
     );

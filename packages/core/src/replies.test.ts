@@ -88,6 +88,15 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   ],
   erasureKept: [replies.erasureKept()],
   viewOnlyRole: [replies.viewOnlyRole()],
+  customerNotRecognised: [replies.customerNotRecognised()],
+  correctionFigureNotInDraft: [replies.correctionFigureNotInDraft()],
+  correctionChangedUnnamedFigure: [replies.correctionChangedUnnamedFigure()],
+  correctionNotClear: [replies.correctionNotClear()],
+  correctionCustomerNotClear: [replies.correctionCustomerNotClear()],
+  correctionWithdrawn: [replies.correctionWithdrawn()],
+  correctionNotClearSeveral: [replies.correctionNotClearSeveral()],
+  correctionForAnotherMember: [replies.correctionForAnotherMember()],
+  balanceNotStated: [replies.balanceNotStated()],
   viewOnlyAskAQuestion: [replies.viewOnlyAskAQuestion()],
   viewOnlyPhoto: [replies.viewOnlyPhoto()],
   strayNumber: [replies.strayNumber()],
@@ -284,7 +293,9 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   documentNotReadSafely: [replies.documentNotReadSafely()],
   voiceUnreadable: [replies.voiceUnreadable()],
   whichPeriod: [replies.whichPeriod('sales'), replies.whichPeriod('spending')],
+  wholeBusiness: [replies.wholeBusiness(replies.suppliersAnswer(NAIRA_MILLIONS))],
   previewBehindQuestion: [replies.previewBehindQuestion()],
+  previewBehindRefusal: [replies.previewBehindRefusal()],
   periodNotCountable: [replies.periodNotCountable('sales'), replies.periodNotCountable('spending')],
   salesAnswer: [
     replies.salesAnswer({
@@ -300,7 +311,10 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   customerBalanceAnswer: [
     replies.customerBalanceAnswer([], 0),
     replies.customerBalanceAnswer(debtors, NAIRA_MILLIONS),
+    replies.customerBalanceAnswer(debtors, NAIRA_MILLIONS, debtors.length + 3),
   ],
+  customerNotKnown: [replies.customerNotKnown()],
+  customerFiguresNotKept: [replies.customerFiguresNotKept()],
   suppliersAnswer: [replies.suppliersAnswer(0), replies.suppliersAnswer(NAIRA_MILLIONS)],
   unreconciledAnswer: [replies.unreconciledAnswer(0), replies.unreconciledAnswer(412)],
   reportRequestAnswer: [replies.reportRequestAnswer()],
@@ -428,6 +442,7 @@ describe('every reply', () => {
     replies.expiredNothingToCancel(),
     replies.whichPeriod('sales'),
     replies.previewBehindQuestion(),
+    replies.previewBehindRefusal(),
     replies.periodNotCountable('spending'),
     replies.nothingToDecline(),
     replies.nothingToCancel(),
@@ -563,6 +578,8 @@ describe('erasure', () => {
     // The one place a second message is worth the friction: an accidental
     // deletion cannot be undone by any amount of apology.
     expect(text).toMatch(/again to confirm/i);
+    /* R4 (OWN-100) also erases the stored copies of chat messages: the merchant is told. */
+    expect(text).toMatch(/chat messages/i);
   });
 });
 
@@ -1215,5 +1232,32 @@ describe('allowanceExhausted names the period the allowance covers', () => {
       expect(text).toContain('free trial');
       expect(text).toContain('Nothing is lost');
     }
+  });
+});
+
+describe('a customer balance names what it did not list honestly (owner directive on #437)', () => {
+  /* A partly paid invoice is outstanding, not "unpaid": the line counts what is
+   * still due on every open invoice, whatever has been paid on it. */
+  it('calls the invoices beyond the listed ones outstanding, never unpaid', () => {
+    const one = replies.customerBalanceAnswer(debtors, NAIRA_MILLIONS, debtors.length + 1).text;
+    expect(one).toContain('…and 1 additional outstanding invoice, included in the total.');
+    const three = replies.customerBalanceAnswer(debtors, NAIRA_MILLIONS, debtors.length + 3).text;
+    expect(three).toContain('…and 3 additional outstanding invoices, included in the total.');
+    expect(three).not.toContain('unpaid');
+  });
+});
+
+/* OD-66 Option C (owner ruling OWN-103(2)): a whole-business total says it is the business's. */
+describe('a whole-business answer', () => {
+  it('keeps the answer and says it is for the whole business, not one customer', () => {
+    const answer = replies.salesAnswer({
+      label: 'this month',
+      salesK: 150_000,
+      invoices: 1,
+      moneyInK: 0,
+    });
+    expect(replies.wholeBusiness(answer).text).toBe(
+      `${answer.text}\n\nThis is for your whole business, not for one customer.`,
+    );
   });
 });

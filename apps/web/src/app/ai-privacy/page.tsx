@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { LegalPage } from '@/components/legal/LegalPage';
+import { PRIVACY_PAGES_LAST_UPDATED } from '@/lib/legal';
 import { canonical } from '@/lib/site';
 
 export const metadata: Metadata = {
@@ -13,6 +14,7 @@ export default function AiPrivacyPage() {
   return (
     <LegalPage
       title="AI & privacy"
+      updated={PRIVACY_PAGES_LAST_UPDATED}
       intro="Rekoda uses AI to understand what you say. It does not use AI to decide what your money did. That distinction is the whole design."
       sections={[
         {
@@ -60,10 +62,48 @@ export default function AiPrivacyPage() {
                 before the bookkeeping AI reads it.
               </p>
               <p>
-                The first time you mention a new customer by name, the model reads that one message
-                to understand it. The name is then stored encrypted with its own token, nothing
-                keeps a readable copy, and every later message that names them is protected before
-                it leaves.
+                <strong>Customers you have recorded.</strong> When Rekoda recognises their name,
+                phone number or email address in a message, it is replaced with a token before the
+                message is sent to the model, in questions and in records alike.
+              </p>
+              <p>
+                <strong>Someone new.</strong> When you record a sale, invoice, payment or order for
+                someone you have not recorded before, the model reads that message to understand it
+                (for a record you send as a photo, the Anthropic model that checks what kind of
+                document it is reads it first), and Rekoda then stores the new customer encrypted
+                with their own token, so later messages that name them are protected before they
+                leave. When you only ask about someone you have not recorded, Rekoda does not create
+                a customer for them, so the model reads the name you typed each time you ask. That
+                name goes only to Anthropic, the AI provider Rekoda uses: to the bookkeeping model
+                and, when you ask by sending a photo, first to the Anthropic model that checks what
+                kind of document it is. It goes under the same terms as every other message.
+              </p>
+              <p>
+                <strong>Phone numbers and email addresses.</strong> One that Rekoda detects is
+                replaced with a token before the model sees it, whether or not you have recorded
+                that person. It becomes a customer only when it is the customer of a sale, invoice,
+                payment or order, or when Rekoda asks you in the preview whether it belongs to the
+                customer you named. Anywhere else in a record, such as a plumber&rsquo;s number in
+                an expense, it is saved as &ldquo;[phone]&rdquo; or &ldquo;[email]&rdquo;, not as
+                the number.
+              </p>
+              <p>
+                <strong>What the chat history keeps.</strong> For your ordinary messages and
+                Rekoda&rsquo;s ordinary replies, it records that a message was sent and what kind it
+                was, not what it said. A document Rekoda sends you is recorded by its number and
+                amount, and a template message by its name. Messages from before this change can
+                still hold their text until your account is deleted, or until you send{' '}
+                <strong>DELETE MY DATA</strong> where WhatsApp deletion is enabled for your account.
+              </p>
+              <p>
+                <strong>The original WhatsApp message.</strong> It is kept encrypted, separately
+                from the chat history, and is not yet deleted on a fixed schedule. Where WhatsApp
+                deletion is enabled for your account, when you send <strong>DELETE MY DATA</strong>{' '}
+                and confirm, the originals of the messages Rekoda has finished processing are erased
+                along with your customers&rsquo; details. Messages still being processed at that
+                moment, delivery receipts and your books are kept. A message delivered before this
+                change in the same batch as another business&rsquo;s message can still have an
+                encrypted copy stored with that other business&rsquo;s message.
               </p>
               <p>
                 The substitution runs on the way out and is reversed on the way back, so your

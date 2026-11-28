@@ -328,16 +328,27 @@ describe('a customer name never reaches the model twice', () => {
     expect(stubSender.sent[stubSender.sent.length - 1]?.text ?? '').toContain('Ada Obi');
   });
 
-  it('scrubs the name from the stored message however it was spaced', async () => {
+  /* There is nothing left to scrub (G-136): the history keeps a placeholder for the message
+   * and the reply, however the name was spaced (independent review of #437 at ebeeadb). */
+  it('keeps no word of a name however it was spaced: the history holds placeholders', async () => {
     const businessId = await seedBusiness('Names Spaced Ltd', '+2348140020010');
     await saleMention(businessId, '+2348140020010', 'sold 3 wigs to Ada   Obi for 150k, paid');
     const messages = await withBusiness(appDb, businessId, (tx) =>
       tx.select().from(schema.conversationMessages),
     );
-    for (const m of messages) expect(m.body ?? '').not.toMatch(/Obi/);
+    expect(messages.map((m) => m.body).sort()).toEqual(['[reply]', '[text message]']);
   });
 
-  it('never rewrites a token while scrubbing a name', async () => {
+  /* OD-73 Option A (owner ruling OWN-106, 25 Nov 2026): ADR 0005 Amendment 1 case 4, the record-intent
+   * exception to spec Appendix C.3. A name first met in a record reaches the approved Anthropic
+   * interpreter as typed ("Ada" below) until it is tokenised; a known identity never does
+   * (CUSTOMER_ADA). The permitted and forbidden cases are pinned in
+   * `channels/meta-stored-body.integration.test.ts`. */
+  /* Was "never rewrites a token while scrubbing a name": the after-model scrub is gone
+   * with G-136 (the history keeps a placeholder, so there is nothing to scrub). What
+   * stays true: the model reads the known phone as its token, untouched, and the
+   * history keeps no word of the message. */
+  it('hands the model a known token untouched beside a new name, and keeps no words', async () => {
     const businessId = await seedBusiness('Names Token Ltd', '+2348140020011');
     await customersRepo.createCustomerWithIdentities(appDb, businessId, 'CUSTOMER_ADA', [
       {
@@ -358,8 +369,11 @@ describe('a customer name never reaches the model twice', () => {
     const messages = await withBusiness(appDb, businessId, (tx) =>
       tx.select().from(schema.conversationMessages),
     );
-    const inbound = messages.find((m) => (m.body ?? '').includes('referred'));
-    expect(inbound?.body ?? '').toMatch(/^CUSTOMER_ADA referred CUSTOMER_[0-9A-Z]+, sold/);
+    const request = stubTransport.requests[stubTransport.requests.length - 1]!;
+    expect(request.userText).toMatch(/^CUSTOMER_ADA referred Ada, sold 3 wigs/);
+    expect(messages.filter((m) => m.direction === 'inbound').map((m) => m.body)).toEqual([
+      '[text message]',
+    ]);
   });
 
   it('tokenises the SECOND message before the model ever sees it', async () => {

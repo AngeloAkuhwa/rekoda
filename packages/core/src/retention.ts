@@ -20,8 +20,6 @@ export const RETENTION = {
   financialYears: 6,
   /** A trial nobody converted, after it ends. */
   abandonedTrialDays: 90,
-  /** Chat history and drafts, after an account closes. Not financial records. */
-  conversationDays: 90,
   /** Warning before anything is deleted on this schedule. */
   noticeDays: 30,
   /**

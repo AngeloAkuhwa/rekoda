@@ -26,7 +26,7 @@ import {
   type ShelfItem,
 } from '@rekoda/core';
 import { normaliseParticipant, InvalidPhoneError } from '@rekoda/core/identity';
-import { redactForLog } from '@rekoda/core/privacy';
+import { redactForLog, STORED_BODY } from '@rekoda/core/privacy';
 import {
   matchKeyFor,
   normaliseFacet,
@@ -146,12 +146,16 @@ export function customerMessageHandler(deps: CustomerMessageDeps): JobHandler {
       participantIndexKeyVersion: PARTICIPANT_INDEX_KEY_VERSION,
     };
 
-    /* Same storage discipline as the merchant path: text is tokenised
-     * before it lands, anything else is stored as what it was. A cart is
-     * stored as the FACT of a cart — its contents live on the order. */
+    /* Same storage discipline as the merchant path: stored as what it was,
+     * never what it said (G-136). A customer's text can name anybody, and the
+     * gateway recognises only names the business recorded, so the words are
+     * not kept; nothing reads them back. Not tokenised either: tokenising a
+     * phone or email the customer typed could create a customer from a
+     * message nobody acted on (G-135). A cart is stored as the FACT of a
+     * cart; its contents live on the order. */
     const stored =
       inbound.messageType === 'text'
-        ? (await deps.gateway.tokenise(businessId, inbound.text ?? '')).text
+        ? STORED_BODY.customerText
         : `[${inbound.messageType} message]`;
 
     await conversationsRepo.recordInbound(

@@ -28,6 +28,7 @@ import {
   stubTransport,
   useMetaWebhookHarness,
   workerDb,
+  knownCustomer,
 } from './meta-webhook.fixtures.js';
 import { setPlanForTest } from '@rekoda/db/testing';
 
@@ -44,11 +45,15 @@ useMetaWebhookHarness();
 describe('a forwarded order', () => {
   async function seedMerchant(phone: string) {
     const user = await identity.upsertUserByPhone(db, phone);
-    return identity.createBusinessWithOwner(db, {
+    const business = await identity.createBusinessWithOwner(db, {
       name: 'Ada Fashion',
       businessType: null,
       ownerUserId: user.id,
     });
+    /* The customer the stubbed model names as CUSTOMER_7K2, recorded so a message
+     * naming Ada is issued that token (G-137). */
+    await knownCustomer(business.id);
+    return business;
   }
 
   async function drain() {
@@ -81,7 +86,9 @@ describe('a forwarded order', () => {
 
   const THE_ORDER = {
     intent: 'RecordOrder',
-    customer: { kind: 'token', token: 'CUSTOMER_7K2' },
+    /* The forwarded message names Ada ("Ada: ..."); she is recorded as CUSTOMER_7K2 (G-137: a
+     * stubbed model names a customer by mention or by a token the message carried). */
+    customer: { kind: 'mention', mention: 'Ada' },
     items: [{ name: 'Ankara bale', quantity: 2 }],
     note: 'deliver to Lekki on Friday',
   };
@@ -91,7 +98,7 @@ describe('a forwarded order', () => {
     await seedCatalogue(business.id);
     stubTransport.replyWith(THE_ORDER);
 
-    await send('please I want 2 ankara bale', 'wamid.ORDER');
+    await send('Ada: please I want 2 ankara bale', 'wamid.ORDER');
 
     /* Priced by Rekoda, from the merchant's own list. Nothing the customer
      * or the model said about money reached this figure. */
@@ -134,6 +141,41 @@ describe('a forwarded order', () => {
     expect(stock.rows.find((p) => p.name === 'Ankara bale')?.onHand).toBe(8);
   });
 
+  /* CodeRabbit on #437 at 1ec5a22: a corrected order that inherits its customer (CG5, OWN-100) says
+   * who it is for, since nothing in the correction's own words names them; the confirmed order keeps
+   * that customer. An order quote that names nobody stays anonymous. */
+  it('a corrected order shows the customer it inherits, and the confirmed order keeps them', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await seedCatalogue(business.id);
+    stubTransport.replyWith(THE_ORDER);
+    await send('Ada: please I want 2 ankara bale', 'wamid.ORDFIX1');
+    expect(stubSender.lastText).not.toContain('For: ');
+
+    stubTransport.replyWith({
+      ...THE_ORDER,
+      customer: { kind: 'none' },
+      items: [{ name: 'Ankara bale', quantity: 3 }],
+    });
+    await send('No, 3 not 2', 'wamid.ORDFIX2');
+    expect(stubSender.lastText).toContain('3 × Ankara bale at ₦8,500');
+    expect(stubSender.lastText).toContain('For: The same customer as before');
+
+    await send('yes', 'wamid.ORDFIX3');
+    /* Exactly one invoice, for the corrected three bales, so a yes that confirmed the original
+     * order fails here (CodeRabbit on #437 at ddba9a7). */
+    const rows = [
+      ...(await withBusiness(db, business.id, (tx) =>
+        tx.execute<{ token: string | null; total_k: string }>(sql`
+          SELECT c.token, i.total_k::text AS total_k
+            FROM invoices i LEFT JOIN customers c ON c.id = i.customer_id
+           WHERE i.business_id = ${business.id}::uuid`),
+      )),
+    ];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.token).toBe('CUSTOMER_7K2');
+    expect(rows[0]?.total_k).toBe('2550000');
+  });
+
   /**
    * The persistence boundary (launch remediation R5): the customer's
    * delivery words are echoed to the merchant ONCE and never stored. The
@@ -146,7 +188,7 @@ describe('a forwarded order', () => {
     await seedCatalogue(business.id);
     stubTransport.replyWith(THE_ORDER);
 
-    await send('please I want 2 ankara bale, deliver to Lekki on Friday', 'wamid.ORDERNOTE');
+    await send('Ada: please I want 2 ankara bale, deliver to Lekki on Friday', 'wamid.ORDERNOTE');
 
     // Said once, to the merchant, from the LIVE command.
     expect(stubSender.lastText).toContain('They also said: deliver to Lekki on Friday');
@@ -173,7 +215,7 @@ describe('a forwarded order', () => {
     await seedCatalogue(business.id);
     stubTransport.replyWith(THE_ORDER);
 
-    await send('please I want 2 ankara bale', 'wamid.METER');
+    await send('Ada: please I want 2 ankara bale', 'wamid.METER');
     await send('yes', 'wamid.METERYES');
 
     const rows = await withBusiness(db, business.id, (tx) =>
@@ -196,7 +238,7 @@ describe('a forwarded order', () => {
 
     /* The quote itself is free and still works: refusing to PRICE would
      * punish the merchant before they even hit the gate. */
-    await send('please I want 2 ankara bale', 'wamid.CHATORDER');
+    await send('Ada: please I want 2 ankara bale', 'wamid.CHATORDER');
     expect(stubSender.lastText).toContain('Total: ₦17,000');
 
     await send('yes', 'wamid.CHATORDERYES');
@@ -242,7 +284,7 @@ describe('a forwarded order', () => {
     }
 
     stubTransport.replyWith(THE_ORDER);
-    await send('please I want 2 ankara bale', 'wamid.ORDERCAP');
+    await send('Ada: please I want 2 ankara bale', 'wamid.ORDERCAP');
     await send('yes', 'wamid.ORDERCAPYES');
 
     expect(stubSender.lastText).toContain(`You have used all ${orderAllowance} orders`);
@@ -272,7 +314,7 @@ describe('a forwarded order', () => {
       ],
     });
 
-    await send('they want a bale and 2 head ties', 'wamid.UNPRICED');
+    await send('Ada: they want a bale and 2 head ties', 'wamid.UNPRICED');
     expect(stubSender.lastText).toContain('I do not have a price for Head tie');
     /* And nothing was quoted, so there is nothing to say yes to. */
     expect(stubSender.lastText).not.toContain('Total:');
@@ -300,7 +342,7 @@ describe('a forwarded order', () => {
     });
     stubTransport.replyWith({ ...THE_ORDER, items: [{ name: 'Zobo drink', quantity: 4 }] });
 
-    await send('customer wants 4 zobo', 'wamid.PASTCAP');
+    await send('Ada: customer wants 4 zobo', 'wamid.PASTCAP');
 
     expect(stubSender.lastText).toContain('4 × Zobo drink at ₦500');
     expect(stubSender.lastText).toContain('Total: ₦2,000');
@@ -317,7 +359,7 @@ describe('a forwarded order', () => {
     await seedCatalogue(business.id);
     stubTransport.replyWith({ ...THE_ORDER, items: [{ name: 'gele', quantity: 1 }] });
 
-    await send('customer wants a gele', 'wamid.UNKNOWN');
+    await send('Ada: customer wants a gele', 'wamid.UNKNOWN');
     expect(stubSender.lastText).toContain('I cannot find gele in what you sell');
     expect(await invoiceCount(business.id)).toBe(0);
   });
@@ -333,7 +375,7 @@ describe('a forwarded order', () => {
     await seedCatalogue(business.id);
     stubTransport.replyWith(THE_ORDER);
 
-    await send('please I want 2 ankara bale', 'wamid.STALE');
+    await send('Ada: please I want 2 ankara bale', 'wamid.STALE');
     expect(stubSender.lastText).toContain('Total: ₦17,000');
 
     await withBusiness(db, business.id, async (tx) => {
@@ -375,20 +417,15 @@ describe('a forwarded order', () => {
 
     /* The customer the gateway would have resolved, with an email on file:
      * the forwarded message named them, and Rekoda never invents an address. */
-    await customersRepo.createCustomerWithIdentities(db, business.id, 'CUSTOMER_7K2', [
-      {
-        facet: 'email',
-        ciphertext: encryptFacet(
-          'adaeze@example.com',
-          deps.config.vaultKey,
-          `${business.id}:email`,
-        ),
-        matchKey: null,
-      },
-    ]);
+    const ada = await knownCustomer(business.id);
+    await customersRepo.addIdentityFacet(db, business.id, ada.id, {
+      facet: 'email',
+      ciphertext: encryptFacet('adaeze@example.com', deps.config.vaultKey, `${business.id}:email`),
+      matchKey: null,
+    });
 
     stubTransport.replyWith(THE_ORDER);
-    await send('please I want 2 ankara bale', 'wamid.LINK');
+    await send('Ada: please I want 2 ankara bale', 'wamid.LINK');
     await send('yes', 'wamid.LINKYES');
 
     expect(stubSender.lastText).toMatch(/Payment link for INV-\d{4}-000001: ₦17,000 outstanding/);
@@ -403,7 +440,7 @@ describe('a forwarded order', () => {
     await seedCatalogue(business.id);
     stubTransport.replyWith(THE_ORDER);
 
-    await send('please I want 2 ankara bale', 'wamid.NOLINK');
+    await send('Ada: please I want 2 ankara bale', 'wamid.NOLINK');
     await send('yes', 'wamid.NOLINKYES');
 
     /* The last thing they heard is the confirmation itself, not an apology. */
@@ -416,7 +453,7 @@ describe('a forwarded order', () => {
     await seedCatalogue(business.id);
     stubTransport.replyWith(THE_ORDER);
 
-    await send('please I want 2 ankara bale', 'wamid.LINKED');
+    await send('Ada: please I want 2 ankara bale', 'wamid.LINKED');
     await send('yes', 'wamid.LINKEDYES');
 
     const [order] = (
@@ -433,7 +470,7 @@ describe('a forwarded order', () => {
     await seedCatalogue(business.id);
     stubTransport.replyWith(THE_ORDER);
 
-    await send('please I want 2 ankara bale', 'wamid.DUE');
+    await send('Ada: please I want 2 ankara bale', 'wamid.DUE');
     await send('yes', 'wamid.DUEYES');
 
     const invoices = await withBusiness(db, business.id, (tx) =>

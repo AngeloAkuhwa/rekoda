@@ -2,7 +2,7 @@
  * Shared helpers for the meta-continuations suites, split from meta.integration.test.ts.
  * The helpers that hold state or write the plan stay in each suite.
  */
-import { identity, withBusiness, sql } from '@rekoda/db';
+import { createDb, identity, withBusiness, sql } from '@rekoda/db';
 import { replies } from '@rekoda/core';
 import { buildRunner } from '../jobs/jobs.module.js';
 import {
@@ -10,8 +10,11 @@ import {
   deps,
   messagePayload,
   post,
+  stubSender,
   stubTransport,
   workerDb,
+  knownCustomer,
+  urls,
 } from './meta-webhook.fixtures.js';
 
 export const OWNER = '2348031234567';
@@ -63,11 +66,15 @@ export const A_SALE = {
 
 export async function seedMerchant(phone = `+${OWNER}`) {
   const user = await identity.upsertUserByPhone(db, phone);
-  return identity.createBusinessWithOwner(db, {
+  const business = await identity.createBusinessWithOwner(db, {
     name: 'Ada Fashion',
     businessType: null,
     ownerUserId: user.id,
   });
+  /* The customer the stubbed model names as CUSTOMER_7K2, recorded so a message
+   * naming Ada is issued that token (G-137). */
+  await knownCustomer(business.id);
+  return business;
 }
 
 export async function drain() {
@@ -158,4 +165,39 @@ export function mediaMessage(wamid: string, fields: Record<string, unknown>, fro
   delete sent['text'];
   Object.assign(sent, fields);
   return payload;
+}
+
+/**
+ * For each inbound message (by wamid, without the "wamid." prefix): the text of each reply that
+ * answers it and was actually sent (a row recorded before a send that never happened reads
+ * 'unsent'), and how many of the business's inbound jobs are not done, so a held message is shown
+ * answered and finished, never dropped or left to retry (CodeRabbit on #437 at c5392f0 and 00c0620).
+ */
+export async function answered(businessId: string, ...wamids: string[]) {
+  const { db: owner, close } = createDb(urls.owner, { max: 1 });
+  try {
+    const replies: string[][] = [];
+    for (const wamid of wamids) {
+      const rows = await owner.execute<{ sent: string | null }>(sql`
+        SELECT o.provider_message_id AS sent FROM conversation_messages o
+          JOIN conversation_messages i
+            ON i.id = o.reply_to_message_id AND i.business_id = o.business_id
+         WHERE o.business_id = ${businessId}::uuid AND o.direction = 'outbound'
+           AND i.provider_message_id = ${`wamid.${wamid}`}
+         ORDER BY o.created_at`);
+      /* The stub sender numbers what it sends: wamid.STUB<n> is its nth message. */
+      replies.push(
+        [...rows].map(
+          ({ sent }) =>
+            stubSender.sent[Number(sent?.replace('wamid.STUB', '') ?? 0) - 1]?.text ?? 'unsent',
+        ),
+      );
+    }
+    const [jobs] = await owner.execute<{ n: number }>(sql`
+      SELECT count(*)::int AS n FROM jobs
+       WHERE business_id = ${businessId}::uuid AND kind = 'inbound.message' AND state <> 'done'`);
+    return { replies, unfinished: Number(jobs?.n) };
+  } finally {
+    await close();
+  }
 }

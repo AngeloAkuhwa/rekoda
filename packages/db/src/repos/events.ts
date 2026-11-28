@@ -25,6 +25,7 @@ import { and, eq, isNull, sql } from 'drizzle-orm';
 import type { Db, TenantDb } from '../client.js';
 import { withBusiness } from '../client.js';
 import { reservationOf, type MeterRow } from './usage.js';
+import { eraseInBatches, type EraseBatchOptions, type ErasedBatch } from './conversations.js';
 import { auditEvents, externalEvents } from '../schema/ops.js';
 
 export type Queryable = Db | TenantDb;
@@ -806,4 +807,41 @@ export async function resolveExceptionAsOperator(
     return true;
   });
   return done ? 'resolved' : 'not_found';
+}
+
+/** What an erased webhook payload reads as. Not sealed, and readable by nothing that needs a message. */
+export const ERASED_PAYLOAD = { erased: true } as const;
+
+/**
+ * Drop the sealed body of this business's finished WhatsApp message events
+ * (G-136 R4, owner directive on #437, 20 Nov 2026).
+ *
+ * Only `meta` events of a `message.*` type that are finished: `processed_at` is
+ * set, which happens only at an end of the event's life (its job's handler
+ * committed, a dead job was reconciled, or an operator resolved it), and nothing
+ * opens a finished WhatsApp message's body again (no recovery path requeues a
+ * message job, and a body opened after erasure reads as "unreadable payload").
+ * `error` is NOT a reason to keep one (owner review of #437 at 3a60b0f): the
+ * customer-message handler writes its ordinary outcome there ("assistant
+ * answered", "handed off to a human"), so keeping every event with an error kept
+ * almost every customer's message. Kept: anything not yet processed (waiting,
+ * running, retrying), delivery-status events, events with no business, and every
+ * payment provider's event (payment evidence). The row, its error text and its
+ * timing stay, so ingress still knows the message by its provider id and never
+ * processes it twice. `dryRun` counts and writes nothing. Returns the count only.
+ */
+export async function eraseFinishedMessagePayloads(
+  tx: TenantDb,
+  businessId: string,
+  options: EraseBatchOptions = {},
+): Promise<ErasedBatch> {
+  return eraseInBatches(tx, businessId, options, {
+    name: 'eraseFinishedMessagePayloads',
+    table: sql`external_events`,
+    eligible: sql`t.provider = 'meta'
+      AND t.event_type LIKE 'message.%'
+      AND t.processed_at IS NOT NULL
+      AND t.payload <> ${JSON.stringify(ERASED_PAYLOAD)}::jsonb`,
+    set: sql`payload = ${JSON.stringify(ERASED_PAYLOAD)}::jsonb`,
+  });
 }

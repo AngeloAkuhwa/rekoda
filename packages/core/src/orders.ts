@@ -174,8 +174,16 @@ export function orderQuestion(order: PricedOrder): string | null {
  * the merchant is about to answer, and a preview that called it a sale would
  * be teaching them that a request and a purchase look the same.
  */
-export function orderPreview(order: PricedOrder, note: string | null): string {
+export function orderPreview(
+  order: PricedOrder,
+  note: string | null,
+  /* A customer the preview must name because nothing the merchant just typed does: one a correction
+   * inherits from the draft it corrects (CG5, OWN-100; CodeRabbit on #437). A token here, rehydrated
+   * at the send boundary like a sale preview's customer line. */
+  customer: string | null = null,
+): string {
   const lines: string[] = ['This is what they are asking for:', ''];
+  if (customer) lines.push(`For: ${customer}`);
 
   for (const line of order.lines) {
     lines.push(`${line.quantity} × ${line.name} at ${formatKobo(line.unitPriceK)}`);

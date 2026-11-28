@@ -1,6 +1,12 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { billingPeriod, messageCostK, replies, type Reply } from '@rekoda/core';
-import { fitRehydrated, redactForLog, rehydrate, sliceWhole } from '@rekoda/core/privacy';
+import {
+  fitRehydrated,
+  redactForLog,
+  rehydrate,
+  sliceWhole,
+  STORED_BODY,
+} from '@rekoda/core/privacy';
 import { conversationsRepo, quotaRepo, type TenantDb } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { MESSAGE_SENDER } from '../channels/sender.tokens.js';
@@ -102,7 +108,11 @@ export class ReplySender {
         businessId: input.businessId,
         channel: 'meta',
         kind: 'text',
-        body: safe.text,
+        /* What it was, never what it said (G-136): a reply can repeat a name
+         * nobody recorded (a supplier on a purchase preview, a model-written
+         * question), and nothing reads this column back. The text leaves once,
+         * below, and is not kept. */
+        body: STORED_BODY.reply,
         ...(input.inReplyTo ? { replyToMessageId: input.inReplyTo } : {}),
       },
       /* The thread identity, stated rather than assumed (Appendix F.2):

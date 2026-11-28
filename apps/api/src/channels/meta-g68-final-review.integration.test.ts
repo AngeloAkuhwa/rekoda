@@ -18,7 +18,9 @@ import {
   stubTransport,
   useMetaWebhookHarness,
   workerDb,
+  knownCustomer,
 } from './meta-webhook.fixtures.js';
+import { lastWamid, receipt } from './meta-preview-expiry.fixtures.js';
 
 useMetaWebhookHarness();
 
@@ -53,11 +55,15 @@ describe('G-68 final review 2: one-shot rebuild, strict erasure pair, answer win
 
   async function seedMerchant(phone = `+${OWNER}`) {
     const user = await identity.upsertUserByPhone(db, phone);
-    return identity.createBusinessWithOwner(db, {
+    const business = await identity.createBusinessWithOwner(db, {
       name: 'Ada Fashion',
       businessType: null,
       ownerUserId: user.id,
     });
+    /* The customer the stubbed model names as CUSTOMER_7K2, recorded so a message
+     * naming Ada is issued that token (G-137). */
+    await knownCustomer(business.id);
+    return business;
   }
 
   async function addDelegate(businessId: string) {
@@ -253,7 +259,10 @@ describe('G-68 final review 2: one-shot rebuild, strict erasure pair, answer win
       expect(await written(business.id)).toMatchObject({ purchases: 2 });
     });
 
-    it('a replacement whose send fails gives back the preview the merchant saw (Codex review)', async () => {
+    /* OD-63(b) Option B (owner ruling 22 Nov 2026): a failed replacement never makes the preview
+     * it replaced confirmable again. Nothing is booked or stocked until a fresh preview is shown
+     * and confirmed, and then exactly once. */
+    it('a replacement whose send fails leaves nothing confirmable until a fresh preview', async () => {
       const business = await seedMerchant();
       await say('wamid.F2c-f-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
       await reply('wamid.F2c-f-bank', 'bank');
@@ -264,13 +273,61 @@ describe('G-68 final review 2: one-shot rebuild, strict erasure pair, answer win
         { ...POS_PURCHASE, paymentMethod: 'cash' },
         'I bought 10 cartons for 180k, paid cash',
       );
-      /* Nobody saw the replacement: it is superseded, the Bank preview is
-       * pending again, and a yes books THAT one, once. */
-      expect(await purchaseStates(business.id)).toEqual(['superseded', 'pending', 'superseded']);
+      /* Nobody saw the replacement: it is superseded, and so is the Bank preview it replaced. */
+      expect(await purchaseStates(business.id)).toEqual(['superseded', 'superseded', 'superseded']);
       await reply('wamid.F2c-f-yes-1', 'yes');
       await reply('wamid.F2c-f-yes-2', 'yes');
-      expect(await written(business.id)).toMatchObject({ purchases: 1 });
-      expect(await purchaseStates(business.id)).toEqual(['superseded', 'confirmed', 'superseded']);
+      expect(await written(business.id)).toMatchObject({ purchases: 0, arrivals: 0, postings: 0 });
+      expect(await purchaseStates(business.id)).toEqual(['superseded', 'superseded', 'superseded']);
+
+      /* A fresh preview the merchant is shown is the only way on, and it books once. */
+      await say(
+        'wamid.F2c-f-fresh',
+        { ...POS_PURCHASE, paymentMethod: 'cash' },
+        'I bought 10 cartons for 180k, paid cash',
+      );
+      expect(stubSender.lastText).toContain('Paid in full by cash');
+      await reply('wamid.F2c-f-yes-3', 'yes');
+      /* The first yes books it; the second changes nothing, postings included (CodeRabbit on #437
+       * at c5392f0). */
+      const booked = await written(business.id);
+      expect(booked).toMatchObject({ purchases: 1, arrivals: 1 });
+      expect(booked.postings).toBeGreaterThan(0);
+      await reply('wamid.F2c-f-yes-4', 'yes');
+      expect(await written(business.id)).toEqual(booked);
+      expect(await purchaseStates(business.id)).toEqual([
+        'superseded',
+        'superseded',
+        'superseded',
+        'confirmed',
+      ]);
+    });
+
+    /* The same rule for a replacement WhatsApp accepted and later reported failed, its receipt
+     * delivered twice: the two failure paths now leave the same state (OD-63(b)). */
+    it('a replacement reported failed after it was accepted, twice, leaves nothing confirmable', async () => {
+      const business = await seedMerchant();
+      await say('wamid.F2c-l-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
+      await reply('wamid.F2c-l-bank', 'bank');
+      await say(
+        'wamid.F2c-l-resend',
+        { ...POS_PURCHASE, paymentMethod: 'cash' },
+        'I bought 10 cartons for 180k, paid cash',
+      );
+      /* The cash replacement was sent and waits, so the failed receipt below is for it (CodeRabbit
+       * on #437 at c5392f0). */
+      expect(stubSender.lastText).toMatch(/cash/iu);
+      expect((await purchaseStates(business.id)).at(-1)).toBe('pending');
+      const sent = lastWamid();
+      await receipt(OWNER, sent, 'failed');
+      await drain();
+      await receipt(OWNER, sent, 'failed');
+      await drain();
+
+      expect(await purchaseStates(business.id)).toEqual(['superseded', 'superseded', 'superseded']);
+      await reply('wamid.F2c-l-yes-1', 'yes');
+      await reply('wamid.F2c-l-yes-2', 'yes');
+      expect(await written(business.id)).toMatchObject({ purchases: 0, arrivals: 0, postings: 0 });
     });
 
     it('a resend whose preview fails to send gives the question back; "cash" then rebuilds once (Codex review)', async () => {
@@ -414,7 +471,8 @@ describe('G-68 final review 2: one-shot rebuild, strict erasure pair, answer win
       const facets = await seedCustomer(business.id);
       await reply('wamid.F1d-del1', 'delete my data');
       await reply('wamid.F1d-del2', 'delete my data');
-      expect(stubSender.lastText).toContain('deleted (1 record)');
+      /* One more than the test seeds: seedMerchant records Ada (G-137), and erasure takes her name too. */
+      expect(stubSender.lastText).toContain('deleted (2 records)');
       expect(await facets()).toHaveLength(0);
     });
   });

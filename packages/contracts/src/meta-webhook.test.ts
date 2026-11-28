@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { extractInboundEvents, metaWebhookBody } from './meta-webhook.js';
+import { bodyForEvent, extractInboundEvents, metaWebhookBody } from './meta-webhook.js';
 
 const textMessage = {
   object: 'whatsapp_business_account',
@@ -225,5 +225,60 @@ describe('parsing what Meta sends', () => {
       text: { body: 'do you have rice' },
     });
     expect(event?.tappedReply).toBeNull();
+  });
+});
+
+describe('bodyForEvent (CodeRabbit on #437)', () => {
+  const batched = metaWebhookBody.parse({
+    object: 'whatsapp_business_account',
+    entry: [
+      {
+        id: 'WABA',
+        changes: [
+          {
+            field: 'messages',
+            value: {
+              messaging_product: 'whatsapp',
+              metadata: { phone_number_id: 'PNID' },
+              messages: [
+                {
+                  id: 'wamid.A',
+                  from: '2348030000001',
+                  type: 'text',
+                  text: { body: 'sold Ada 2 wigs' },
+                },
+                {
+                  id: 'wamid.B',
+                  from: '2348030000002',
+                  type: 'text',
+                  text: { body: 'Bola paid 5k' },
+                },
+              ],
+              statuses: [{ id: 'wamid.OUT', status: 'delivered', recipient_id: '2348030000003' }],
+            },
+          },
+        ],
+      },
+    ],
+  });
+
+  it("keeps one business's message and none of another's", () => {
+    const own = bodyForEvent(batched, 'wamid.A');
+    expect(JSON.stringify(own)).toContain('sold Ada 2 wigs');
+    expect(JSON.stringify(own)).not.toContain('Bola paid 5k');
+    expect(JSON.stringify(own)).not.toContain('2348030000003');
+    expect(extractInboundEvents(own)).toEqual(
+      extractInboundEvents(batched).filter((e) => e.externalId === 'wamid.A'),
+    );
+  });
+
+  it('keeps a status alone, keyed as the event is', () => {
+    const own = bodyForEvent(batched, 'wamid.OUT:delivered');
+    expect(JSON.stringify(own)).not.toContain('sold Ada 2 wigs');
+    expect(extractInboundEvents(own).map((e) => e.externalId)).toEqual(['wamid.OUT:delivered']);
+  });
+
+  it('yields an empty envelope for an event the body does not hold', () => {
+    expect(extractInboundEvents(bodyForEvent(batched, 'wamid.Z'))).toEqual([]);
   });
 });

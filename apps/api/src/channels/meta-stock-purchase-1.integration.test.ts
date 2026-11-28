@@ -492,7 +492,8 @@ describe('stock arriving with a purchase', () => {
       'wamid.C3',
       {
         intent: 'RecordSale',
-        customer: { kind: 'token', token: 'CUSTOMER_7K2' },
+        /* Ada, recorded as CUSTOMER_7K2 (G-137: named by mention, not an invented token). */
+        customer: { kind: 'mention', mention: 'Ada' },
         items: [{ name: 'crates of ankara', quantity: 3, unitPrice: 9_000 }],
         statedTotal: 27_000,
         reportedPayment: 27_000,
@@ -501,7 +502,7 @@ describe('stock arriving with a purchase', () => {
         deliveryFee: null,
         dueDescription: null,
       },
-      'sold 3 crates of ankara for 27k',
+      'sold Ada 3 crates of ankara for 27k',
     );
     await plain('wamid.C4', 'yes');
 

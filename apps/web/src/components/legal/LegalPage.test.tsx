@@ -1,8 +1,12 @@
 import type { ReactElement, ReactNode } from 'react';
 import { describe, expect, it } from 'vitest';
-import { POLICY_LAST_UPDATED, TERMS_LAST_UPDATED } from '@/lib/legal';
+import { POLICY_LAST_UPDATED, PRIVACY_PAGES_LAST_UPDATED, TERMS_LAST_UPDATED } from '@/lib/legal';
 import TermsPage from '@/app/terms/page';
 import PrivacyPage from '@/app/privacy/page';
+import AiPrivacyPage from '@/app/ai-privacy/page';
+import DataDeletionPage from '@/app/data-deletion/page';
+import SecurityPage from '@/app/security/page';
+import RefundsPage from '@/app/refunds/page';
 import { LegalPage } from './LegalPage';
 
 const sections = [{ id: 'a', heading: 'A', body: 'text' }];
@@ -30,6 +34,50 @@ describe('the revision date on a legal page', () => {
     const terms = (await TermsPage()) as ReactElement<{ updated?: string }>;
     const privacy = (await PrivacyPage()) as ReactElement<{ updated?: string }>;
     expect(terms.props.updated).toBe(TERMS_LAST_UPDATED);
-    expect(privacy.props.updated).toBeUndefined();
+    expect(privacy.props.updated).not.toBe(TERMS_LAST_UPDATED);
+  });
+
+  it('is 25 November 2026 on the three pages PR #437 revised, and unchanged elsewhere', async () => {
+    expect(PRIVACY_PAGES_LAST_UPDATED).toBe('25 November 2026');
+    for (const page of [PrivacyPage, AiPrivacyPage, DataDeletionPage]) {
+      const element = (await page()) as ReactElement<{ updated?: string }>;
+      expect(element.props.updated).toBe(PRIVACY_PAGES_LAST_UPDATED);
+      expect(text(LegalPage(element.props as Parameters<typeof LegalPage>[0]))).toContain(
+        'Last updated 25 November 2026',
+      );
+    }
+    for (const page of [SecurityPage, RefundsPage]) {
+      const element = (await page()) as ReactElement<{ updated?: string }>;
+      expect(element.props.updated).toBeUndefined();
+    }
+  });
+});
+
+/* Every element of a tree whose type is `tag`, walking server-component output as plain data. */
+function elements(node: ReactNode, tag: string): ReactElement<{ className?: string }>[] {
+  if (node == null || typeof node !== 'object') return [];
+  if (Array.isArray(node)) return node.flatMap((child) => elements(child, tag));
+  const element = node as ReactElement<Record<string, unknown>>;
+  const own = element.type === tag ? [element as ReactElement<{ className?: string }>] : [];
+  return [
+    ...own,
+    ...Object.values(element.props ?? {}).flatMap((value) =>
+      Array.isArray(value)
+        ? value.flatMap((item) =>
+            item && typeof item === 'object' && 'body' in item
+              ? elements((item as { body: ReactNode }).body, tag)
+              : elements(item as ReactNode, tag),
+          )
+        : elements(value as ReactNode, tag),
+    ),
+  ];
+}
+
+describe('the privacy retention table', () => {
+  /* `.rk-table td` never wraps, so a prose cell stretched the page to 3,200px on a phone. */
+  it('lets every prose cell wrap, so the page never scrolls sideways', () => {
+    const cells = elements(PrivacyPage(), 'td');
+    expect(cells.length).toBeGreaterThan(0);
+    for (const cell of cells) expect(cell.props.className).toBe('rk-wrap');
   });
 });

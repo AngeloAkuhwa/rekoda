@@ -153,6 +153,92 @@ describe('a receipt photo', () => {
     expect(stubSender.lastText).toContain('₦12,000');
   });
 
+  /* OD-69(a) Option A (owner ruling OWN-103(4), 22 Nov 2026): a page that names no buyer, read with
+   * no customer, is an anonymous sale like a typed walk-in. The preview names nobody, and the yes
+   * books an invoice that attaches and creates no customer. */
+  it('with no buyer named, previews a sale to nobody and books it with no customer', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'RECEIPT 2 wigs @ 50,000 TOTAL 100,000 PAID', confidence: 0.9 });
+    stubTransport.replyWith({
+      intent: 'RecordSale',
+      customer: { kind: 'none' },
+      items: [{ name: 'wig', quantity: 2, unitPrice: 50_000 }],
+      statedTotal: 100_000,
+      reportedPayment: 100_000,
+      paymentMethod: 'cash',
+      discount: null,
+      deliveryFee: null,
+      dueDescription: null,
+    });
+    await post(photoPayload('2348031234567', 'wamid.P1-ANON'));
+    await drain();
+    expect(stubSender.lastText).toContain('Please check this before I save it:\n\n2 × wig');
+    expect(stubSender.lastText).not.toMatch(/customer|Customer|for:/);
+
+    await post(messagePayload('2348031234567', 'wamid.P1-ANON-YES', 'yes'));
+    await drain();
+    const [row] = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ invoices: number; linked: number; customers: number }>(sql`
+        SELECT (SELECT count(*)::int FROM invoices WHERE business_id = ${business.id}::uuid) AS invoices,
+               (SELECT count(*)::int FROM invoices WHERE business_id = ${business.id}::uuid
+                  AND (customer_id IS NOT NULL OR snapshot_json::text LIKE '%CUSTOMER\_%')) AS linked,
+               (SELECT count(*)::int FROM customers WHERE business_id = ${business.id}::uuid) AS customers`),
+    );
+    expect(row).toEqual({ invoices: 1, linked: 0, customers: 0 });
+  });
+
+  /* OWN-103(4): a page that labels a buyer is not an anonymous sale when the reading names nobody,
+   * and a page whose buyer fields name two people does not say who bought. Both are asked about:
+   * no customer, no sale draft (CodeRabbit on #437 at 4a5fd80). */
+  it.each([
+    [
+      'labels a buyer the reading left out',
+      'RECEIPT Buyer: Ada Obi 2 wigs TOTAL 100,000',
+      { kind: 'none' },
+    ],
+    [
+      'labels a phone buyer the reading left out',
+      'RECEIPT\nBuyer: 08035551234\n2 wigs TOTAL 100,000',
+      { kind: 'none' },
+    ],
+    [
+      'labels a spaced phone buyer the reading left out',
+      'RECEIPT\nBuyer: 0803 555 1234\n2 wigs TOTAL 100,000',
+      { kind: 'none' },
+    ],
+    [
+      'labels two different buyers',
+      'RECEIPT\nBuyer: Ada Obi\nBuyer: Bola Ige\n2 wigs TOTAL 100,000',
+      { kind: 'mention', mention: 'Ada Obi' },
+    ],
+  ])('a page that %s is asked about and drafts nothing', async (_, text, customer) => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({ text, confidence: 0.9 });
+    stubTransport.replyWith({
+      intent: 'RecordSale',
+      customer,
+      items: [{ name: 'wig', quantity: 2, unitPrice: 50_000 }],
+      statedTotal: 100_000,
+      reportedPayment: 0,
+      paymentMethod: 'transfer',
+      discount: null,
+      deliveryFee: null,
+      dueDescription: null,
+    });
+    await post(photoPayload('2348031234567', 'wamid.P1-BUYER'));
+    await drain();
+    expect(stubSender.lastText).toContain('could not tell which customer');
+    const [row] = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ drafts: number; customers: number }>(sql`
+        SELECT (SELECT count(*)::int FROM command_drafts
+                 WHERE business_id = ${business.id}::uuid AND intent = 'RecordSale') AS drafts,
+               (SELECT count(*)::int FROM customers WHERE business_id = ${business.id}::uuid) AS customers`),
+    );
+    expect(row).toEqual({ drafts: 0, customers: 0 });
+  });
+
   it('keeps the extracted text and NEVER the image', async () => {
     const business = await seedMerchant('+2348031234567');
     arrangePhoto(Buffer.from('JFIF-secret-photo-of-adas-shop'));

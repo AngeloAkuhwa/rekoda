@@ -14,7 +14,7 @@ import {
 import { Logger } from '@nestjs/common';
 import { answerVerificationChallenge, verifyMetaSignature } from '@rekoda/core/webhooks';
 import { redactForLog } from '@rekoda/core/privacy';
-import { extractInboundEvents, metaWebhookBody } from '@rekoda/contracts';
+import { bodyForEvent, extractInboundEvents, metaWebhookBody } from '@rekoda/contracts';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { MetaIngressService } from './meta.service.js';
 import { IngressRefused, IngressStoreFailed } from './ingress-sequencer.js';
@@ -136,7 +136,9 @@ export class MetaWebhookController {
         continue;
       }
       try {
-        await this.ingress.accept(event, parsed.data);
+        /* Each event keeps only its own message (CodeRabbit on #437): a body Meta batched
+         * for two businesses is never sealed whole under either. */
+        await this.ingress.accept(event, bodyForEvent(parsed.data, event.externalId));
       } catch (error) {
         failed += 1;
         const attributed = error instanceof IngressRefused || error instanceof IngressStoreFailed;

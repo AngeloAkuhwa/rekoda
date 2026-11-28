@@ -80,8 +80,13 @@ export function cancelled(): Reply {
  */
 export function confirmErasure(draftsDiscarded = 0): Reply {
   const lines = [
+    /* Everything the erasure removes, so the merchant agrees to all of it: since #437 it also
+     * reaches the stored copies of their chat messages (R4, OWN-100; independent review at
+     * ebeeadb). */
     'You are asking me to delete your data. This removes your customers and ' +
-      'their details permanently and cannot be undone.',
+      'their details, and the stored copies of chat messages Rekoda has finished ' +
+      'processing, permanently. It cannot be undone. A message still being processed, and ' +
+      'some older copies the data deletion page describes, are kept.',
   ];
   /* Asking to erase clears whatever was waiting for a yes, and the merchant
    * has to be told: a sale they previewed a minute ago silently vanishing is
@@ -108,6 +113,17 @@ export function erasureNotYours(): Reply {
   return reply(
     'Only the business owner can delete customer data, because it cannot be ' +
       'undone. Ask them to send "delete my data" from their own number.',
+  );
+}
+
+/**
+ * A record named a customer by a reference this message never carried
+ * (G-137): nothing was drafted, because the reference could be somebody else's.
+ */
+export function customerNotRecognised(): Reply {
+  return reply(
+    'I could not tell which customer that is for, so I have not recorded it. ' +
+      "Tell me the record again with the customer's name or phone number.",
   );
 }
 
@@ -161,15 +177,20 @@ export function viewOnlyPhoto(): Reply {
  * be this deployment's.
  */
 export function erasureDone(erasedFacets: number, webUrl: string | null): Reply {
+  /* The stored copies of finished chat messages are erased too (G-136), so the reply says so; the
+   * conversation history and the account are what the page covers (CodeRabbit on #437 at 9c587bd).
+   * The older batched copies ADR 0005 Amendment 1 keeps are named, as `confirmErasure` names them
+   * (CodeRabbit on #437 at ddba9a7). */
   const done =
     `Done. Your customers' saved details are deleted (${erasedFacets} ` +
-    `record${erasedFacets === 1 ? '' : 's'}). Your invoices and books keep only their ` +
-    'reference numbers.';
+    `record${erasedFacets === 1 ? '' : 's'}), and the stored copies of your chat messages that ` +
+    'Rekoda had finished processing are erased, apart from some older copies the data deletion ' +
+    'page describes. Your invoices and books keep only their reference numbers.';
   const page = webLink(webUrl, '/data-deletion');
   return reply(
     page
-      ? `${done}\n\nFor anything more, including your conversations and account, see:\n${page}`
-      : `${done}\n\nYour conversations and account can be deleted too: the "Delete my ` +
+      ? `${done}\n\nFor anything more, including your conversation history and account, see:\n${page}`
+      : `${done}\n\nYour conversation history and account can be deleted too: the "Delete my ` +
           'data" page on Rekoda\'s website explains how.',
   );
 }
@@ -844,6 +865,18 @@ export function previewBehindQuestion(): Reply {
   );
 }
 
+/**
+ * A "yes" straight after a refusal or a failed reading, with a preview still
+ * waiting from before it (owner review of #437). The yes was about the
+ * refusal, so nothing is saved; the preview is pointed at, never confirmed.
+ */
+export function previewBehindRefusal(): Reply {
+  return reply(
+    'Nothing was saved from your last message. There is still a preview waiting from ' +
+      'before it. Check it, then reply *yes* to save it.',
+  );
+}
+
 /** A "no" to a preview that had already expired: nothing to cancel (G-23). */
 export function expiredNothingToCancel(): Reply {
   return reply('That request had already expired, so nothing was saved.');
@@ -974,6 +1007,95 @@ export function optionChosen(invoiceNumber: string): Reply {
   return reply(
     `You picked ${invoiceNumber}. Tell me what to do with it, for example ` +
       `*remind ${invoiceNumber}*.`,
+  );
+}
+
+/**
+ * CG5 (OD-67 Option B, owner ruling OWN-103(3)): a correction that says a figure was wrong when the
+ * request waiting for a yes holds no such figure. Nothing was changed; it asks what is being
+ * corrected, with the same steps as `correctionNotClear`.
+ */
+/** OD-76 Option A (OWN-107): the correction would also change a figure the merchant did not name. */
+export function correctionChangedUnnamedFigure(): Reply {
+  return reply(
+    'That correction would also change a figure you did not mention, so I have not changed ' +
+      'anything. Tell me exactly what to change. To keep the waiting request as it is, reply *yes*. ' +
+      'To replace it, reply *cancel*, then send the whole corrected record.',
+  );
+}
+
+export function correctionFigureNotInDraft(): Reply {
+  return reply(
+    'The figure you said was wrong is not in the request waiting for your yes, so I have not ' +
+      'changed anything. What are you correcting? To keep the waiting request, reply *yes* and I ' +
+      'will tell you what is still waiting. To replace it, reply *cancel*, then send the whole ' +
+      'corrected record.',
+  );
+}
+
+/**
+ * CG5 (OD-60): a message read as a correction that may not be about the request waiting for a
+ * yes (another kind of record, another member's request, two waiting, or something said since).
+ * Nothing was changed, and the reply gives the steps that work for either thing they meant.
+ */
+export function correctionNotClear(): Reply {
+  /* The steps that work after it: this reply stands as the sender's refusal, so a yes is answered
+   * with what is still waiting, and "cancel" drops what waits; sending the change again would only
+   * be asked about once more (independent review of #437 at ce3e5b0). */
+  return reply(
+    'I could not tell if that changes the request waiting for your yes or is a new record, ' +
+      'so I have not changed anything. To keep the waiting request, reply *yes* and I will ' +
+      'tell you what is still waiting, then send any new record. To replace it, reply ' +
+      '*cancel*, then send the whole corrected record.',
+  );
+}
+
+/**
+ * CG5 (OD-60): a correction while more than one request waits for a yes. Never advises "cancel",
+ * which would drop every one of them; a yes is answered with what is still waiting.
+ */
+export function correctionNotClearSeveral(): Reply {
+  return reply(
+    'More than one request is waiting for a yes, so I could not tell which one that changes, ' +
+      'and I have not changed anything. Reply *yes* and I will tell you what is still waiting.',
+  );
+}
+
+/**
+ * CG5 (OD-60): a correction aimed at a request another member is waiting to answer. Only they
+ * can answer it; nothing of theirs was changed.
+ */
+export function correctionForAnotherMember(): Reply {
+  return reply(
+    'The request waiting for a yes is from another member of this business, so I have not ' +
+      'changed it. Ask them to reply *yes* or *no* to it, then send your record in full.',
+  );
+}
+
+/**
+ * CG5: a correction that may be about the waiting request but cannot keep its customer (not clearly
+ * a correction, or it may name somebody). Nothing changed, and the waiting request is still there:
+ * a merchant who resent the record without cancelling would leave two previews of one sale for two
+ * yeses to book (independent review of #437 at 0114957). Keeps "could not tell which customer".
+ */
+export function correctionCustomerNotClear(): Reply {
+  return reply(
+    'I could not tell which customer that change is for, so I have not changed the request ' +
+      'waiting for your yes. To keep it as shown, reply *yes* and I will tell you what is still ' +
+      "waiting. To change it, reply *cancel*, then send the whole record with the customer's name.",
+  );
+}
+
+/**
+ * CG5: a correction sent while an earlier message is still being processed. Its customer cannot be
+ * kept safely, so the request it corrects is withdrawn and nothing from it is saved; the merchant
+ * sends the record again whole (independent review of #437 at 0114957).
+ */
+export function correctionWithdrawn(): Reply {
+  return reply(
+    'An earlier message of yours is still being processed, so I could not safely tell which ' +
+      'customer that change is for. I have withdrawn the request that was waiting for your yes, ' +
+      "so nothing from it will be saved. Send the whole record with the customer's name.",
   );
 }
 
@@ -1723,12 +1845,74 @@ export function expensesAnswer(input: {
  * about; anybody reading over their shoulder does not, and this text is
  * plaintext on somebody else's servers.
  */
-export function customerBalanceAnswer(rows: DebtorLine[], totalK: number): Reply {
-  if (rows.length === 0) {
+export function customerBalanceAnswer(
+  rows: DebtorLine[],
+  totalK: number,
+  /** Every open invoice of theirs, from SQL; `rows` may list fewer. */
+  count: number = rows.length,
+): Reply {
+  if (count === 0) {
     return reply('That customer has nothing outstanding. Every invoice of theirs is paid.');
   }
   const lines = rows.map((r) => `${r.invoiceNumber}: ${formatKobo(r.balanceDueK)}`);
-  return reply(`They owe you ${formatKobo(totalK)} in total.\n\n${lines.join('\n')}`);
+  const unlisted = count - rows.length;
+  const more =
+    unlisted > 0
+      ? `\n…and ${unlisted} additional outstanding invoice${unlisted === 1 ? '' : 's'}, included in the total.`
+      : '';
+  return reply(`They owe you ${formatKobo(totalK)} in total.\n\n${lines.join('\n')}${more}`);
+}
+
+/**
+ * A balance whose figures could not be stated exactly (an amount past what
+ * Rekoda can count to the kobo). Never a rounded figure; the records are
+ * unchanged and the dashboard is the next step.
+ */
+export function balanceNotStated(): Reply {
+  return reply(
+    'I could not total that balance exactly, so I have not sent a figure. ' +
+      'Your records are unchanged. Open the invoices list on your dashboard to see each one.',
+  );
+}
+
+/**
+ * A balance question about a name the books do not hold (OD-3).
+ *
+ * Not "they owe nothing": that is a claim about somebody Rekoda has never
+ * recorded. And no customer is created to answer it, because a question is
+ * a read.
+ */
+export function customerNotKnown(): Reply {
+  return reply(
+    'I do not have a customer by that name in your records. Check the spelling, ' +
+      'or send *who owes me* to see everyone who owes you.',
+  );
+}
+
+/**
+ * A customer named on a question whose figures are kept only for the whole
+ * business (G-135): sales, spending, suppliers, exceptions, reports. Answering
+ * with the business's totals would read as that customer's; only what a
+ * customer owes is kept per customer, so that is the question offered.
+ */
+export function customerFiguresNotKept(): Reply {
+  return reply(
+    'I can tell you what one customer owes you, but I do not keep sales, spending or ' +
+      'other figures per customer yet. For a balance, ask like *how much does Ada owe me*. ' +
+      'For your whole business, ask again without a name.',
+  );
+}
+
+/**
+ * OD-66 Option C (owner ruling OWN-103(2), 22 Nov 2026): a total over the whole business says so,
+ * every time a question is answered with one. A name nobody recorded may reach no token, and the
+ * model may leave the customer out, so nothing deterministic can tell "how much did Ngozi buy" from
+ * a question about the business; the answer then never reads as that person's figure.
+ */
+export const WHOLE_BUSINESS_NOTE = 'This is for your whole business, not for one customer.';
+
+export function wholeBusiness(answer: Reply): Reply {
+  return reply(`${answer.text}\n\n${WHOLE_BUSINESS_NOTE}`);
 }
 
 /** Money owed OUT, to suppliers. The other side of the debtors question. */

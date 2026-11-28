@@ -9,7 +9,7 @@
  * to obtain one; storing a raw message through it is not an oversight that
  * could happen, it is a value the caller would have to construct by hand.
  */
-import { and, desc, eq, isNull, sql } from 'drizzle-orm';
+import { type SQL, and, desc, eq, inArray, isNull, notInArray, sql } from 'drizzle-orm';
 import {
   CONFIRMATION_TTL_SECONDS,
   PURCHASE_QUESTION_SECONDS,
@@ -557,6 +557,19 @@ export async function markOutboundSent(
     .update(conversationMessages)
     .set({ providerMessageId })
     .where(eq(conversationMessages.id, id));
+  /* The moment WhatsApp accepted a first DELETE MY DATA prompt, kept on its draft: a second ask
+   * that arrived before it was answering nothing the merchant could have read, however late it is
+   * processed (OWN-102(7); CodeRabbit on #437 at 4d9fa80). Only a pending erasure draft, in the
+   * reply's own business. */
+  await tx.execute(sql`
+    UPDATE command_drafts d
+       SET command = d.command || jsonb_build_object('promptSentAt', clock_timestamp())
+      FROM conversation_messages m
+     WHERE m.id = ${id}::uuid
+       AND d.business_id = m.business_id
+       AND d.conversation_message_id = m.reply_to_message_id
+       AND d.intent = 'EraseData'
+       AND d.state = 'pending'`);
 }
 
 /** The draft this business is waiting to confirm, if there is one. */
@@ -607,7 +620,8 @@ const readsFilter = (reads: ReadDrafts) =>
 export function pendingDraft(
   tx: TenantDb,
   businessId: string,
-  options: { asOf?: Date } = {},
+  /* `except`: drafts to look past, such as another member's refusal (CodeRabbit on #437). */
+  options: { asOf?: Date; except?: readonly string[] } = {},
 ): Promise<DraftRow | null> {
   return newestPendingDraft(tx, businessId, { ...options, reads: 'count' });
 }
@@ -619,7 +633,8 @@ export function pendingDraft(
 export function pendingDraftToAnswer(
   tx: TenantDb,
   businessId: string,
-  options: { asOf?: Date } = {},
+  /* `except`: drafts to look past, such as another member's refusal (owner review of #437). */
+  options: { asOf?: Date; except?: readonly string[] } = {},
 ): Promise<DraftRow | null> {
   return newestPendingDraft(tx, businessId, { ...options, reads: 'skip' });
 }
@@ -627,7 +642,7 @@ export function pendingDraftToAnswer(
 async function newestPendingDraft(
   tx: TenantDb,
   businessId: string,
-  options: { asOf?: Date | undefined; reads: ReadDrafts },
+  options: { asOf?: Date | undefined; reads: ReadDrafts; except?: readonly string[] | undefined },
 ): Promise<DraftRow | null> {
   const rows = await tx
     .select({
@@ -654,6 +669,7 @@ async function newestPendingDraft(
         eq(commandDrafts.state, 'pending'),
         readsFilter(options.reads),
         seenBy(options.asOf),
+        options.except?.length ? notInArray(commandDrafts.id, [...options.except]) : undefined,
       ),
     )
     /* The newest PENDING draft is what the merchant's "yes" will execute, so
@@ -664,6 +680,338 @@ async function newestPendingDraft(
     .orderBy(desc(commandDrafts.insertionSeq))
     .limit(1);
   return rows[0] ?? null;
+}
+
+/**
+ * How many drafts a "yes", a "no" or a correction could be about, seen by `asOf`: pending,
+ * not a read-only Query (Build 6) and not a refusal (`isRefusalDraft`). Counted in SQL. A
+ * correction keeps the customer of the draft it corrects only when this is exactly one (CG5,
+ * owner ruling 21 Nov 2026): with two waiting, which one it corrects is a question.
+ */
+export async function answerableDraftCount(
+  tx: TenantDb,
+  businessId: string,
+  options: { asOf?: Date } = {},
+): Promise<number> {
+  /* Seen by `asOf` and still inside its window at `asOf` (G-23): an expired preview the sweep has
+   * not reached yet is not waiting. A refusal is excluded only when `refused` is exactly true: an
+   * `Unclear` clarification with no such key counts (null-safe, CodeRabbit on #437). */
+  const at = options.asOf
+    ? sql`${options.asOf.toISOString()}::timestamptz`
+    : sql`clock_timestamp()`;
+  const rows = await tx.execute<{ n: number }>(sql`
+    SELECT count(*)::int AS n FROM command_drafts
+     WHERE business_id = ${businessId}::uuid
+       AND state = 'pending'
+       AND intent <> 'Query'
+       AND NOT (intent = 'Unclear' AND COALESCE(command->>'refused', '') = 'true')
+       AND created_at <= ${at}
+       AND (expires_at IS NULL OR expires_at > ${at})`);
+  return [...rows][0]?.n ?? 0;
+}
+
+/**
+ * Whether a refusal or a read-only question was recorded after `draftId`, seen by `asOf`, in ANY
+ * state (CG5, OWN-100). A correction keeps the customer only when nothing came between the
+ * preview and it; a "yes" that closed the refusal or retired the question does not remove that.
+ */
+export async function hasRefusalOrQuestionSince(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  options: { asOf?: Date } = {},
+): Promise<boolean> {
+  const seen = options.asOf
+    ? sql`AND created_at <= ${options.asOf.toISOString()}::timestamptz`
+    : sql``;
+  const rows = await tx.execute<{ found: boolean }>(sql`
+    SELECT EXISTS (
+      SELECT 1 FROM command_drafts
+       WHERE business_id = ${businessId}::uuid
+         AND (intent = 'Query' OR (intent = 'Unclear' AND COALESCE(command->>'refused', '') = 'true'))
+         AND insertion_seq > (
+           SELECT d.insertion_seq FROM command_drafts d
+            WHERE d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid)
+         ${seen}) AS found`);
+  return [...rows][0]?.found === true;
+}
+
+/**
+ * Whether WhatsApp accepted the reply that answered the message `draftId` was recorded from: an
+ * outbound row that names that message and carries Meta's id (`markOutboundSent`). The erasure's
+ * first ask counts only when its prompt was sent (CodeRabbit on #437 at 58dd68b).
+ */
+export async function draftReplyWasSent(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  /* `before`: only a reply WhatsApp had accepted by then counts (`promptSentAt`, stamped by
+   * `markOutboundSent` on the database clock arrivals are stamped with), so a message that arrived
+   * while the reply was still being sent is never taken as an answer to it (OWN-102(7); CodeRabbit
+   * on #437 at aff3f63 and 4d9fa80). A draft with no stamp proves nothing was shown.
+   * A reply WhatsApp has reported `failed` showed nothing either, whether or not its
+   * `delivery.status` job has run yet. A receipt queued before the answer already holds the answer
+   * back (`hasEarlierLiveJob`); one that arrives after it but before it runs is not waited for, so
+   * the stored failure (its job is queued with it) counts here at once, pending, done or dead
+   * (CodeRabbit on #437 at b2703e7). */
+  options: { before?: Date } = {},
+): Promise<boolean> {
+  const rows = await tx.execute<{ sent: boolean }>(sql`
+    SELECT EXISTS (
+      SELECT 1 FROM conversation_messages m
+        JOIN command_drafts d
+          ON d.conversation_message_id = m.reply_to_message_id
+         AND d.business_id = m.business_id
+       WHERE d.id = ${draftId}::uuid
+         AND d.business_id = ${businessId}::uuid
+         AND m.direction = 'outbound'
+         AND m.provider_message_id IS NOT NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM jobs j
+            WHERE j.business_id = m.business_id
+              AND j.kind = 'delivery.status'
+              AND j.payload->>'outboundMessageId' = m.provider_message_id
+         )
+         ${
+           options.before
+             ? sql`AND (d.command ->> 'promptSentAt')::timestamptz <= ${options.before.toISOString()}::timestamptz`
+             : sql``
+         }
+    ) AS sent`);
+  return rows[0]?.sent === true;
+}
+
+/**
+ * Put back drafts a reply nobody received had closed (Codex on #437 at 3d66867): a refusal it
+ * answered and the questions it retired, each only while still `superseded`, in this business.
+ */
+export async function reopenClosedDrafts(
+  tx: TenantDb,
+  businessId: string,
+  draftIds: readonly string[],
+): Promise<number> {
+  if (draftIds.length === 0) return 0;
+  const updated = await tx
+    .update(commandDrafts)
+    .set({
+      state: 'pending',
+      updatedAt: new Date(),
+      command: sql`${commandDrafts.command} - 'answeredBy' - 'retiredReads'`,
+    })
+    .where(
+      and(
+        eq(commandDrafts.businessId, businessId),
+        inArray(commandDrafts.id, [...draftIds]),
+        eq(commandDrafts.state, 'superseded'),
+        inArray(commandDrafts.intent, ['Unclear', 'Query']),
+      ),
+    )
+    .returning({ id: commandDrafts.id });
+  return updated.length;
+}
+
+/**
+ * Retire every pending question to the books asked since `draftId` (seen as of `asOf`) and return
+ * their ids, so a reply that was never delivered can put them back. With `askedBy`, only the
+ * questions that member asked (NULL-safe): another member's question is theirs, and stays the
+ * barrier it is to their own next yes (CodeRabbit on #437 at 0e12742).
+ */
+export async function retireReadsAfter(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  options: { asOf?: Date; askedBy?: string | null; forRefusal?: string } = {},
+): Promise<string[]> {
+  const seen = options.asOf
+    ? sql`AND created_at <= ${options.asOf.toISOString()}::timestamptz`
+    : sql``;
+  const asker =
+    options.askedBy === undefined
+      ? sql``
+      : sql`AND requested_by IS NOT DISTINCT FROM ${options.askedBy}::uuid`;
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE command_drafts SET state = 'superseded', updated_at = clock_timestamp()
+     WHERE business_id = ${businessId}::uuid
+       AND state = 'pending'
+       AND intent = 'Query'
+       AND insertion_seq > (
+         SELECT d.insertion_seq FROM command_drafts d
+          WHERE d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid)
+       ${seen}
+       ${asker}
+    RETURNING id`);
+  const ids = [...rows].map((r) => r.id);
+  /* Kept on the refusal whose answer retired them, so a late failed receipt for that answer puts
+   * them back with it (OD-62(o), `markPreviewUndelivered`). */
+  if (options.forRefusal && ids.length > 0) {
+    await tx.execute(sql`
+      UPDATE command_drafts
+         SET command = command || jsonb_build_object('retiredReads',
+               COALESCE(command->'retiredReads', '[]'::jsonb) || ${JSON.stringify(ids)}::jsonb)
+       WHERE business_id = ${businessId}::uuid
+         AND id = ${options.forRefusal}::uuid
+         AND command ? 'answeredBy'`);
+  }
+  return ids;
+}
+
+/**
+ * Close one pending refusal draft (owner review of #437 at 3a60b0f).
+ *
+ * A message Rekoda answered with a refusal or a failed reading instead of a
+ * record leaves a pending `Unclear` draft marked `refused` that holds only the
+ * sentence, so that a "yes" right after it is about it and never about an
+ * older preview. The answer that "yes" (or a "no") gets closes it here, once:
+ * `superseded`, never `abandoned`, which would read as a retired purchase
+ * question and leave the preview before it unconfirmable for good
+ * (`isBehindRetiredQuestion`). Only that draft, only while pending.
+ */
+export async function closeRefusalDraft(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  options: { answeredBy?: string } = {},
+): Promise<boolean> {
+  /* The message whose reply answers this refusal (OD-62(o)): a delivery of that reply which
+   * WhatsApp accepts and later reports failed puts the refusal back (`markPreviewUndelivered`). */
+  const answered = options.answeredBy
+    ? sql`${commandDrafts.command} || jsonb_build_object('answeredBy', ${options.answeredBy}::text, 'retiredReads', '[]'::jsonb)`
+    : sql`${commandDrafts.command} - 'answeredBy' - 'retiredReads'`;
+  const updated = await tx
+    .update(commandDrafts)
+    .set({ state: 'superseded', updatedAt: new Date(), command: answered })
+    .where(
+      and(
+        eq(commandDrafts.businessId, businessId),
+        eq(commandDrafts.id, draftId),
+        eq(commandDrafts.state, 'pending'),
+        eq(commandDrafts.intent, 'Unclear'),
+      ),
+    )
+    .returning({ id: commandDrafts.id });
+  return updated.length === 1;
+}
+
+/**
+ * Whether a failed delivery receipt for the reply to `draft`'s request is stored and not yet applied:
+ * its `delivery.status` job is pending or running, or dead with its event unprocessed (a death the
+ * runner records without the inbound lock, after the yes applied the dead ones). The job marks the
+ * draft undelivered when it runs; until then the draft was still never read (CodeRabbit on #437 at
+ * c5392f0). Only a failed receipt queues a `delivery.status` job.
+ */
+const unappliedFailedReceipt = (draft: SQL) => sql`EXISTS (
+  SELECT 1 FROM jobs j
+    JOIN conversation_messages m
+      ON m.business_id = j.business_id
+     AND m.direction = 'outbound'
+     AND m.provider_message_id = j.payload->>'outboundMessageId'
+   WHERE j.business_id = nullif(current_setting('app.business_id', true), '')::uuid
+     AND j.business_id = ${draft}.business_id
+     AND j.kind = 'delivery.status'
+     AND m.reply_to_message_id = ${draft}.conversation_message_id
+     AND (j.state IN ('pending', 'running')
+          OR (j.state = 'dead' AND EXISTS (
+                SELECT 1 FROM external_events e
+                 WHERE e.business_id = j.business_id
+                   AND e.id::text = j.payload->>'eventId'
+                   AND e.processed_at IS NULL))))`;
+
+/** `unappliedFailedReceipt` for one draft of this business. */
+export async function hasUnappliedFailedReceipt(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ found: boolean }>(sql`
+    SELECT ${unappliedFailedReceipt(sql`d`)} AS found FROM command_drafts d
+     WHERE d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid`);
+  return [...rows][0]?.found === true;
+}
+
+/**
+ * Whether `requestedBy` has recorded any draft since `draftId`, in any state and of any
+ * intent, a question included (owner review of #437): their refusal is then no longer the
+ * last thing they read, so a "yes" or "no" of theirs is not about it.
+ */
+export async function hasDraftsAfterBy(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  requestedBy: string,
+  options: { asOf?: Date } = {},
+): Promise<boolean> {
+  const seen = options.asOf
+    ? sql`AND created_at <= ${options.asOf.toISOString()}::timestamptz`
+    : sql``;
+  const rows = await tx.execute<{ found: boolean }>(sql`
+    SELECT EXISTS (
+      SELECT 1 FROM command_drafts
+       WHERE business_id = ${businessId}::uuid
+         AND requested_by = ${requestedBy}::uuid
+         -- A preview WhatsApp reported undelivered was never read (CodeRabbit on #437).
+         AND retired_reason IS DISTINCT FROM 'preview_not_delivered'
+         -- Nor one withdrawn behind a lost message whose preview was then reported undelivered.
+         AND COALESCE(command->>'undelivered', '') <> 'true'
+         -- Nor a preview withdrawn when its send failed, nor a record's preview that never reached
+         -- the merchant (markDraftUnseen, then expired or superseded): only what they read closes
+         -- their refusal (CodeRabbit on #437 at 1db1a0a). A held purchase question was asked.
+         AND withdrawn IS NOT TRUE
+         AND NOT (intent NOT IN ('Query', 'Unclear', 'EraseData')
+                  AND previewed IS NOT TRUE AND state <> 'held')
+         -- Nor one whose reply's failed receipt is stored and not yet applied (CodeRabbit on #437
+         -- at c5392f0).
+         AND NOT ${unappliedFailedReceipt(sql`command_drafts`)}
+         AND insertion_seq > (
+           SELECT d.insertion_seq FROM command_drafts d
+            WHERE d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid)
+         ${seen}) AS found`);
+  return [...rows][0]?.found === true;
+}
+
+/**
+ * Whether the merchant thread holds an inbound message between the one that drafted `draftId`
+ * and `currentMessageId` (CodeRabbit on #437). A free question such as "who owes me" is answered
+ * by the router and writes no draft, so only the thread shows that something was asked since the
+ * preview. The merchant thread is one per business and channel (`resolveThread`), so a message
+ * from any member counts: the correction is then asked about, the safe reading under OWN-100. A
+ * customer's message is in its own CUSTOMER thread and does not count.
+ */
+export async function hasInboundBetween(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  currentMessageId: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ found: boolean }>(sql`
+    SELECT EXISTS (
+      SELECT 1
+        FROM command_drafts d
+        JOIN conversation_messages src
+          ON src.business_id = d.business_id AND src.id = d.conversation_message_id
+        JOIN conversation_messages cur
+          ON cur.business_id = d.business_id AND cur.id = ${currentMessageId}::uuid
+        JOIN conversation_messages m
+          ON m.business_id = d.business_id AND m.conversation_id = src.conversation_id
+       WHERE d.business_id = ${businessId}::uuid
+         AND d.id = ${draftId}::uuid
+         AND m.direction = 'inbound'
+         AND m.id <> src.id
+         AND m.id <> cur.id
+         -- Inclusive: created_at is not unique, so a message sharing either instant still came
+         -- between them; the two ends are excluded by id (CodeRabbit on #437 at c712b1e).
+         AND m.created_at >= src.created_at
+         AND m.created_at <= cur.created_at) AS found`);
+  return [...rows][0]?.found === true;
+}
+
+/** Whether a draft is a refusal's (`closeRefusalDraft`), never a request. */
+export function isRefusalDraft(draft: { intent: string; command: unknown }): boolean {
+  return (
+    draft.intent === 'Unclear' &&
+    typeof draft.command === 'object' &&
+    draft.command !== null &&
+    (draft.command as { refused?: unknown }).refused === true
+  );
 }
 
 /** What a claim found (CG3, G-23). */
@@ -797,6 +1145,19 @@ export async function markDraftUnseen(
      WHERE business_id = ${businessId}::uuid
        AND conversation_message_id = ${conversationMessageId}::uuid
        AND previewed`);
+  /* An answer to a question that failed to send was never read: retired as a late failed receipt
+   * retires it (`markPreviewUndelivered`), so it never stands between the member's refusal and
+   * their next yes (Codex on #437 at cacc734). */
+  await tx.execute(sql`
+    UPDATE command_drafts SET state = 'superseded', retired_reason = 'preview_not_delivered',
+           updated_at = clock_timestamp()
+     WHERE business_id = ${businessId}::uuid
+       AND conversation_message_id = ${conversationMessageId}::uuid
+       AND state = 'pending'
+       AND (intent = 'Query'
+            /* A clarification question too, never a refusal: the refusal is still the member's
+             * live request (CodeRabbit on #437 at 88258dc). */
+            OR (intent = 'Unclear' AND COALESCE(command->>'refused', '') <> 'true'))`);
 }
 
 /**
@@ -814,7 +1175,8 @@ export async function markDraftUnseen(
  * Only `pending` and `expired` drafts move: a confirmed or cancelled one was
  * answered, so its preview was read, a superseded one is gone, and an expired
  * one still carries `previewed` into the "that request has expired" answer a
- * later "yes" gets, which would be false for a preview never received. A
+ * later "yes" gets, which would be false for a preview never received. Both
+ * carry `preview_not_delivered`; an expired one keeps its state. A
  * preview is only ever shown once, by the reply to the message that drafted it
  * (a correction supersedes with a new draft; "I sent you a preview a moment
  * ago" does not re-display one), so the link from reply to drafting message is
@@ -826,8 +1188,8 @@ export async function markPreviewUndelivered(
   tx: TenantDb,
   businessId: string,
   providerMessageId: string,
-): Promise<{ drafts: number; continuations: number }> {
-  const rows = await tx.execute<{ drafts: string; continuations: string }>(sql`
+): Promise<{ drafts: number; continuations: number; reopened: number }> {
+  const rows = await tx.execute<{ drafts: string; continuations: string; reopened: string }>(sql`
     WITH reply AS (
       SELECT reply_to_message_id AS request_id
         FROM conversation_messages
@@ -838,14 +1200,78 @@ export async function markPreviewUndelivered(
     ), drafts AS (
       UPDATE command_drafts d SET previewed = false, identity_link = NULL,
              state = CASE WHEN d.state = 'pending' THEN 'superseded' ELSE d.state END,
-             retired_reason = CASE WHEN d.state = 'pending' THEN 'preview_not_delivered'
-                                   ELSE d.retired_reason END,
+             -- Expired too: its preview was never read, so it is not something its member has
+             -- recorded since a refusal (hasDraftsAfterBy; CodeRabbit on #437).
+             retired_reason = 'preview_not_delivered',
              updated_at = clock_timestamp()
         FROM reply
        WHERE d.business_id = ${businessId}::uuid
          AND d.conversation_message_id = reply.request_id
          AND d.state IN ('pending', 'expired')
          AND d.previewed
+      RETURNING d.id
+    ), asks AS (
+      -- A first DELETE MY DATA prompt WhatsApp accepted and then failed showed the merchant
+      -- nothing, so it is no first ask: retired, and the next ask is a new first ask that erases
+      -- nothing (CodeRabbit on #437 at 1db1a0a). It is recorded unpreviewed, so the drafts update misses it.
+      -- An answer to a question (a read-only Query draft) WhatsApp accepted and then failed was never
+      -- read either: retired the same way, it no longer stands between the member's refusal and their
+      -- next yes, since only what the member read closes a refusal (CodeRabbit on #437 at ccdcc8e).
+      -- An expired one keeps its state and carries the reason, as in the drafts update: it was never
+      -- read, so it never counts as read since a refusal (CodeRabbit on #437 at b8330cd).
+      -- A question a failed pointer already put back keeps standing (OD-75 Option A, OWN-107): its
+      -- answer's failure, arriving after the pointer's, never lets a repeated yes past it.
+      UPDATE command_drafts d SET retired_reason = 'preview_not_delivered',
+             state = CASE WHEN d.state = 'pending'
+                           AND NOT (d.intent = 'Query' AND d.command ? 'pointerRestored')
+                          THEN 'superseded' ELSE d.state END,
+             updated_at = clock_timestamp()
+        FROM reply
+       WHERE d.business_id = ${businessId}::uuid
+         AND d.conversation_message_id = reply.request_id
+         AND d.state IN ('pending', 'expired')
+         -- A repeated receipt changes nothing (CodeRabbit on #437 at cf96697).
+         AND d.retired_reason IS DISTINCT FROM 'preview_not_delivered'
+         AND (d.intent IN ('EraseData', 'Query')
+              /* An undelivered clarification question, never a refusal (CodeRabbit on #437 at
+               * 88258dc). */
+              OR (d.intent = 'Unclear' AND COALESCE(d.command->>'refused', '') <> 'true'))
+      RETURNING d.id
+    ), held_asks AS (
+      -- A held purchase whose identity question WhatsApp accepted and then failed was asked
+      -- nobody: withdrawn exactly as withdrawHeld does when the question's send fails at once
+      -- (OWN-102(4)), so it never closes its member's refusal (hasDraftsAfterBy) and is never
+      -- answered (CodeRabbit on #437 at aff3f63).
+      UPDATE command_drafts d SET state = 'superseded', withdrawn = true,
+             retired_reason = 'preview_not_delivered', updated_at = clock_timestamp()
+        FROM reply
+       WHERE d.business_id = ${businessId}::uuid
+         AND d.conversation_message_id = reply.request_id
+         AND d.state = 'held'
+      RETURNING d.id
+    ), lost_reads AS (
+      -- A question answer that failed after its Query was already retired (by the member's
+      -- answer to their refusal) keeps the record that it was never read, so the refusal's own
+      -- later failure never puts it back to pending (CodeRabbit on #437 at cacc734). So does any
+      -- draft already superseded when its preview's receipt failed: a clarification (503acf3) or a
+      -- record superseded by another member's request (cf96697). Never a refusal, and a repeated
+      -- receipt changes nothing.
+      -- A draft withdrawn because an earlier message of the merchant was lost keeps that reason:
+      -- the next yes is told to send the request again (OWN-74). That its preview never arrived is
+      -- kept beside it as an 'undelivered' mark, which hasDraftsAfterBy reads (CodeRabbit on #437).
+      UPDATE command_drafts d
+         SET retired_reason = CASE WHEN d.retired_reason = ${INBOUND_MESSAGE_FAILED}
+                                   THEN d.retired_reason ELSE 'preview_not_delivered' END,
+             command = CASE WHEN d.retired_reason = ${INBOUND_MESSAGE_FAILED}
+                            THEN d.command || '{"undelivered": true}'::jsonb ELSE d.command END,
+             updated_at = clock_timestamp()
+        FROM reply
+       WHERE d.business_id = ${businessId}::uuid
+         AND d.conversation_message_id = reply.request_id
+         AND d.state = 'superseded'
+         AND d.retired_reason IS DISTINCT FROM 'preview_not_delivered'
+         AND COALESCE(d.command->>'undelivered', '') <> 'true'
+         AND NOT (d.intent = 'Unclear' AND COALESCE(d.command->>'refused', '') = 'true')
       RETURNING d.id
     ), continuations AS (
       UPDATE conversation_continuations c
@@ -855,11 +1281,62 @@ export async function markPreviewUndelivered(
          AND c.source_message_id = reply.request_id
          AND c.state = 'open'
       RETURNING c.id
+    ), answered AS (
+      -- OD-62(o): the reply answered the member's own refusal, so the refusal it closed and the
+      -- questions it retired are put back, exactly as a send that failed outright puts them back
+      -- (reopenClosedDrafts). Only while each is still superseded, in this business.
+      SELECT d.id, COALESCE(d.command->'retiredReads', '[]'::jsonb) AS reads
+        FROM command_drafts d, reply
+       WHERE d.business_id = ${businessId}::uuid
+         AND d.state = 'superseded'
+         AND d.intent = 'Unclear'
+         AND COALESCE(d.command->>'refused', '') = 'true'
+         AND d.command->>'answeredBy' = reply.request_id::text
+    ), refusals AS (
+      UPDATE command_drafts d
+         SET state = 'pending', command = d.command - 'answeredBy' - 'retiredReads',
+             updated_at = clock_timestamp()
+        FROM answered a
+       WHERE d.business_id = ${businessId}::uuid AND d.id = a.id
+      RETURNING d.id
+    ), pointed AS (
+      -- The question a pointer reply retired ("a preview is waiting"), when WhatsApp accepted that
+      -- reply and then failed it: put back as reopenReadsRetiredBy does for a send that failed
+      -- outright, so the repeated yes is pointed again (CodeRabbit on #437 at 400ca58).
+      -- Whatever its own answer's delivery (OD-75 Option A, OWN-107): a question whose answer also
+      -- failed is still unanswered, so it stands again. Marked, so its answer's own late failure never
+      -- retires it after this (the \`asks\` step above).
+      UPDATE command_drafts q
+         SET state = 'pending',
+             command = (q.command - 'retiredBy') || '{"pointerRestored": true}'::jsonb,
+             updated_at = clock_timestamp()
+        FROM reply
+       WHERE q.business_id = ${businessId}::uuid
+         AND q.state = 'superseded'
+         AND q.intent = 'Query'
+         AND q.command->>'retiredBy' = reply.request_id::text
+      RETURNING q.id
+    ), reads AS (
+      UPDATE command_drafts q
+         SET state = 'pending', updated_at = clock_timestamp()
+       WHERE q.business_id = ${businessId}::uuid
+         AND q.state = 'superseded'
+         AND q.intent = 'Query'
+         AND q.retired_reason IS DISTINCT FROM 'preview_not_delivered'
+         AND q.id::text IN (SELECT jsonb_array_elements_text(a.reads) FROM answered a)
+      RETURNING q.id
     )
-    SELECT (SELECT count(*) FROM drafts)::text AS drafts,
-           (SELECT count(*) FROM continuations)::text AS continuations`);
+    SELECT ((SELECT count(*) FROM drafts) + (SELECT count(*) FROM asks)
+            + (SELECT count(*) FROM held_asks))::text AS drafts,
+           (SELECT count(*) FROM continuations)::text AS continuations,
+           ((SELECT count(*) FROM refusals) + (SELECT count(*) FROM reads)
+            + (SELECT count(*) FROM pointed))::text AS reopened`);
   const row = [...rows][0];
-  return { drafts: Number(row?.drafts ?? 0), continuations: Number(row?.continuations ?? 0) };
+  return {
+    drafts: Number(row?.drafts ?? 0),
+    continuations: Number(row?.continuations ?? 0),
+    reopened: Number(row?.reopened ?? 0),
+  };
 }
 
 /**
@@ -1083,7 +1560,9 @@ export async function expireStaleDrafts(
 export async function supersedePendingDrafts(
   tx: TenantDb,
   businessId: string,
-  options: { asOf?: Date } = {},
+  /* `skipRefusalsNotBy`: another member's refusal is left pending, as `latestDraftToAnswer` looks
+   * past it, so a bare "no" never takes away the guard it holds (CodeRabbit on #437 at 3d66867). */
+  options: { asOf?: Date; skipRefusalsNotBy?: string | null } = {},
 ): Promise<number> {
   const updated = await tx
     .update(commandDrafts)
@@ -1093,10 +1572,18 @@ export async function supersedePendingDrafts(
         eq(commandDrafts.businessId, businessId),
         eq(commandDrafts.state, 'pending'),
         seenBy(options.asOf),
+        options.skipRefusalsNotBy ? notAnotherMembersRefusal(options.skipRefusalsNotBy) : undefined,
       ),
     )
     .returning({ id: commandDrafts.id });
   return updated.length;
+}
+
+/** Not a refusal another member (or nobody) recorded: NULL-safe, see `latestDraftToAnswer`. */
+function notAnotherMembersRefusal(memberId: string): SQL {
+  return sql`NOT (${commandDrafts.intent} = 'Unclear'
+             AND COALESCE(${commandDrafts.command} ->> 'refused', '') = 'true'
+             AND ${commandDrafts.requestedBy} IS DISTINCT FROM ${memberId}::uuid)`;
 }
 
 /**
@@ -1112,7 +1599,14 @@ export async function supersedeDraftsBefore(
   tx: TenantDb,
   businessId: string,
   draftId: string,
+  /* `skipRefusalsNotBy`: another member's refusal stays pending, as `supersedePendingDrafts` keeps
+   * it (CodeRabbit on #437 at ce75a9e). */
+  options: { skipRefusalsNotBy?: string | null } = {},
 ): Promise<number> {
+  const keep = options.skipRefusalsNotBy
+    ? sql`AND NOT (intent = 'Unclear' AND COALESCE(command->>'refused', '') = 'true'
+                   AND requested_by IS DISTINCT FROM ${options.skipRefusalsNotBy}::uuid)`
+    : sql``;
   const rows = await tx.execute<{ id: string }>(sql`
     UPDATE command_drafts SET state = 'superseded', updated_at = now()
      WHERE business_id = ${businessId}::uuid
@@ -1120,6 +1614,7 @@ export async function supersedeDraftsBefore(
        AND insertion_seq < (
          SELECT d.insertion_seq FROM command_drafts d
           WHERE d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid)
+       ${keep}
     RETURNING id`);
   return [...rows].length;
 }
@@ -1170,13 +1665,19 @@ export async function retireNewestReadAfter(
   tx: TenantDb,
   businessId: string,
   draftId: string,
-  options: { asOf?: Date } = {},
+  /* `retiredBy`: the message whose reply points back at the preview. It is kept on the retired
+   * question, so a reply that never reaches the merchant puts it back (`reopenReadsRetiredBy`,
+   * `markPreviewUndelivered`; CodeRabbit on #437 at 400ca58). */
+  options: { asOf?: Date; retiredBy?: string } = {},
 ): Promise<number> {
   const seen = options.asOf
     ? sql`AND created_at <= ${options.asOf.toISOString()}::timestamptz`
     : sql``;
+  const stamp = options.retiredBy
+    ? sql`, command = command || jsonb_build_object('retiredBy', ${options.retiredBy}::text)`
+    : sql``;
   const rows = await tx.execute<{ id: string }>(sql`
-    UPDATE command_drafts SET state = 'superseded', updated_at = clock_timestamp()
+    UPDATE command_drafts SET state = 'superseded', updated_at = clock_timestamp() ${stamp}
      WHERE id = (
        SELECT id FROM command_drafts
         WHERE business_id = ${businessId}::uuid
@@ -1192,6 +1693,110 @@ export async function retireNewestReadAfter(
        AND state = 'pending'
     RETURNING id`);
   return [...rows].length;
+}
+
+/**
+ * Put back the question a pointer reply retired when that reply was never delivered (CodeRabbit on
+ * #437 at 400ca58): the merchant never read "a preview is waiting", so their repeated yes is
+ * pointed again and never books the preview. Only a read-only Query still `superseded` and never
+ * marked undelivered itself, in this business. Returns how many moved.
+ */
+export async function reopenReadsRetiredBy(
+  tx: TenantDb,
+  businessId: string,
+  messageId: string,
+): Promise<number> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE command_drafts
+       SET state = 'pending',
+           command = (command - 'retiredBy') || '{"pointerRestored": true}'::jsonb,
+           updated_at = clock_timestamp()
+     WHERE business_id = ${businessId}::uuid
+       AND state = 'superseded'
+       AND intent = 'Query'
+       AND command->>'retiredBy' = ${messageId}::text
+    RETURNING id`);
+  return [...rows].length;
+}
+
+/**
+ * Whether a failed-delivery receipt for a POINTER reply is stored and not yet applied
+ * (CodeRabbit on #437, PRRT_kwDOT845J8676qPh).
+ *
+ * A first "yes" to a preview behind a question retires the question and is answered with a pointer
+ * ("a preview is waiting, reply yes"). If WhatsApp accepts that reply and reports it failed, the
+ * receipt's `delivery.status` job puts the question back. A repeated "yes" queued BEFORE that job
+ * is not held up by it (`hasEarlierLiveJob` looks only at earlier jobs), so it would find no
+ * question and book the preview the merchant was never told is waiting, and the later restoration
+ * cannot undo a booking. While such a job is pending or running, the yes books nothing: the caller
+ * answers it with the pointer again. It is answered, not deferred: a deferred job re-runs every
+ * half second without an attempt charged, and a spoken yes would be transcribed and metered again on
+ * every run (independent review of f605c98). A dead receipt is applied before any yes is read
+ * (`reconcileDeadReceipts`); one that dies after that, and is not yet applied, holds the yes the
+ * same way (CodeRabbit on #437 at c5392f0).
+ *
+ * Narrow on purpose: only a receipt naming a reply to a message that retired a Query standing
+ * after `draftId`, so unrelated receipts never hold a yes. Read under the business's inbound lock,
+ * as late as the caller can, just before it claims the draft.
+ */
+export async function hasLivePointerReceipt(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  /* The member whose yes this is: only their OWN refusal guards their preview, so another member's
+   * refusal answer never holds it (CodeRabbit and Codex on #437 at 1ec5a22). */
+  answering: string | null,
+): Promise<'question' | 'refusal' | null> {
+  /* Two pointer replies exist, both "a preview is waiting, reply yes": the one a yes gets past a
+   * question it retires (`retiredBy` on that Query), and the one a yes or a bare "no" gets past the
+   * member's own refusal, which it closes (`answeredBy` on that refusal; independent review of
+   * f605c98). A failed receipt for either puts that guard back, so either holds the yes. Only a
+   * guard the receipt would actually reopen counts (the `pointed` and `answered` steps of
+   * `markPreviewUndelivered`). */
+  const rows = await tx.execute<{ held: string | null }>(sql`
+    WITH live AS (
+      SELECT m.reply_to_message_id AS request_id
+        FROM jobs j
+        JOIN conversation_messages m
+          ON m.business_id = j.business_id
+         AND m.direction = 'outbound'
+         AND m.provider_message_id = j.payload->>'outboundMessageId'
+         AND m.reply_to_message_id IS NOT NULL
+       WHERE j.business_id = ${businessId}::uuid
+         AND j.kind = 'delivery.status'
+         AND (j.state IN ('pending', 'running')
+              /* A receipt whose job died after this yes applied the dead ones, and is not applied
+               * yet: the runner records a death without the inbound lock (CodeRabbit on #437 at
+               * c5392f0). Once applied, its event is processed and it holds nothing. */
+              OR (j.state = 'dead' AND EXISTS (
+                    SELECT 1 FROM external_events e
+                     WHERE e.business_id = j.business_id
+                       AND e.id::text = j.payload->>'eventId'
+                       AND e.processed_at IS NULL)))
+    ), preview AS (
+      SELECT d.insertion_seq FROM command_drafts d
+       WHERE d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid
+    )
+    SELECT CASE
+      WHEN EXISTS (
+        SELECT 1 FROM command_drafts q, live, preview
+         WHERE q.business_id = ${businessId}::uuid
+           AND q.state = 'superseded'
+           AND q.intent = 'Query'
+           AND q.command->>'retiredBy' = live.request_id::text
+           AND q.insertion_seq > preview.insertion_seq) THEN 'question'
+      WHEN EXISTS (
+        SELECT 1 FROM command_drafts r, live, preview
+         WHERE r.business_id = ${businessId}::uuid
+           AND r.state = 'superseded'
+           AND r.intent = 'Unclear'
+           AND COALESCE(r.command->>'refused', '') = 'true'
+           AND r.command->>'answeredBy' = live.request_id::text
+           AND r.requested_by IS NOT DISTINCT FROM ${answering}::uuid
+           AND r.insertion_seq > preview.insertion_seq) THEN 'refusal'
+    END AS held`);
+  const held = rows[0]?.held;
+  return held === 'question' || held === 'refusal' ? held : null;
 }
 
 /**
@@ -1225,7 +1830,15 @@ export function latestDraftToAnswer(
   /* `skipHeld` (G-81): a purchase held for ANOTHER member's identity
    * question is not what this member's yes or no is about; the caller
    * decides whose it is, and asks again without it. */
-  options: { asOf?: Date; skipHeld?: boolean } = {},
+  options: {
+    asOf?: Date;
+    skipHeld?: boolean;
+    /* Another member's refusal is not what this member's yes or no is about: looked past, never
+     * touched, so it still guards that member's own older preview (CodeRabbit on #437 at
+     * ebeeadb). Only the member's own refusal is kept; an unattributed one is looked past, as in
+     * `pastRefusals`. Any other draft, another member's clarification included, is kept. */
+    skipRefusalsNotBy?: string | null;
+  } = {},
 ): Promise<LatestDraft | null> {
   return newestDraft(tx, businessId, { ...options, reads: 'skip' });
 }
@@ -1247,7 +1860,12 @@ export interface LatestDraft {
 async function newestDraft(
   tx: TenantDb,
   businessId: string,
-  options: { asOf?: Date | undefined; reads: ReadDrafts; skipHeld?: boolean | undefined },
+  options: {
+    asOf?: Date | undefined;
+    reads: ReadDrafts;
+    skipHeld?: boolean | undefined;
+    skipRefusalsNotBy?: string | null | undefined;
+  },
 ): Promise<LatestDraft | null> {
   const rows = await tx
     .select({
@@ -1273,6 +1891,12 @@ async function newestDraft(
         /* Nor is a withdrawn preview (0157): it never reached anybody. */
         eq(commandDrafts.withdrawn, false),
         options.skipHeld ? sql`${commandDrafts.state} <> 'held'` : undefined,
+        options.skipRefusalsNotBy
+          ? /* NULL-safe: a model `Unclear` has no `refused` key, and NOT NULL would drop it
+             * (independent review of #437 at 4480bc2). An unattributed refusal is looked past
+             * too, exactly as `pastRefusals` looks past it. */
+            notAnotherMembersRefusal(options.skipRefusalsNotBy)
+          : undefined,
       ),
     )
     .orderBy(desc(commandDrafts.insertionSeq))
@@ -1588,33 +2212,29 @@ export async function withdrawPreviewAndRestore(
 }
 
 /**
- * Undo a same-member replacement whose preview never reached the merchant
- * (G-68, Codex review): the new draft is superseded, so no yes confirms a
- * preview nobody saw, and every preview it replaced (a rebuild, or since
- * G-81 any of that member's own waiting purchase previews of the same
- * total) is pending again, so the preview the merchant DID see is the one
- * a yes confirms. Conditional
- * on each draft's state, so it undoes only what this message did.
+ * Withdraw a same-member replacement whose preview never reached the merchant
+ * (G-68): the new draft is superseded, so no yes confirms a preview nobody saw.
+ *
+ * The previews it replaced (a funding-answer rebuild, or since G-81 any of
+ * that member's own waiting purchase previews of the same total) STAY
+ * superseded (OD-63(b) Option B, owner ruling 22 Nov 2026, extending OWN-101(2)
+ * to purchases): error recovery never makes a superseded purchase confirmable
+ * again, so a send-time failure and a later failed receipt
+ * (`markPreviewUndelivered`) leave the same state, and only a fresh preview the
+ * merchant is shown can be confirmed. A funding question an undone rebuild
+ * answered is reopened separately (`undoRebuild`): a question, never a
+ * confirmable purchase. Conditional on `pending`, so a retry changes nothing.
  */
 export async function undoReplacement(
   tx: TenantDb,
   businessId: string,
   messageId: string,
-  replacedIds: readonly string[],
 ): Promise<void> {
   await tx.execute(sql`
     UPDATE command_drafts SET state = 'superseded', updated_at = clock_timestamp()
      WHERE business_id = ${businessId}::uuid
        AND conversation_message_id = ${messageId}::uuid
        AND state = 'pending'`);
-  for (const id of replacedIds) {
-    await tx.execute(sql`
-      UPDATE command_drafts SET state = 'pending', updated_at = clock_timestamp()
-       WHERE business_id = ${businessId}::uuid
-         AND id = ${id}::uuid
-         AND state = 'superseded'
-         AND intent = 'RecordPurchase'`);
-  }
 }
 
 /**
@@ -2136,4 +2756,183 @@ export async function identityQuestionState(
   return row
     ? { state: row.state, expiresAt: new Date(row.expires_at), freshPreviewWaiting: row.fresh }
     : null;
+}
+
+/** What an erased message body reads as: a fact that a message was here, nothing it said. */
+export const ERASED_BODY = '[erased]';
+
+/**
+ * The structural bodies the product writes, exactly, and nothing else (independent
+ * review and Codex on #437): a deterministic intent by its name (`[affirm]`,
+ * `[number:2]`), a placeholder (`[text message]`, `[voice note]`, `[receipt photo]`,
+ * `[customer message]`, `[reply]`), a non-text Meta message by its type, a template
+ * by its name, the gateway's refusals, and `[erased]`. A body is exempt only when it
+ * is one of these; anything else in brackets ("[ask Bola Ige]", "[ada]") is text
+ * and is erased. A kind added to the router later and missing here is erased too,
+ * which loses nothing: the body is a label, and the row stays.
+ */
+const DETERMINISTIC_KINDS = [
+  'affirm',
+  'business_email',
+  'cancel',
+  'dashboard',
+  'debtors',
+  'delete_my_data',
+  'deny',
+  'greeting',
+  'help',
+  'payment_details',
+  'records',
+  'remind',
+  'resend',
+  'start',
+  'stock',
+  'stop',
+  'unsure',
+  'upgrade',
+];
+const META_TYPES = [
+  'audio',
+  'button',
+  'contacts',
+  'document',
+  'image',
+  'interactive',
+  'location',
+  'order',
+  'reaction',
+  'sticker',
+  'system',
+  'unsupported',
+  'video',
+];
+/**
+ * Exempt only in the direction the product writes it (owner review of #437 at
+ * 3a60b0f): what a merchant or a customer SENT is inbound, so an inbound body is
+ * exempt only as one of the inbound labels; "[reply]" and "[template name]" are
+ * only ever Rekoda's own outbound messages, and is the only outbound label kept. Before this a merchant's pre-G-136
+ * message typed as "[template chiamaka]" matched a label and kept its text.
+ */
+const anchored = (labels: readonly string[]) => '^\\[(?:' + labels.join('|') + ')\\]$';
+const INBOUND_STRUCTURAL_BODY = anchored([
+  ...DETERMINISTIC_KINDS,
+  'number:[0-9]{1,2}',
+  ...META_TYPES.map((t) => `${t} message`),
+  'text message',
+  'voice note',
+  'receipt photo',
+  'customer message',
+  'erased',
+  'message too long to read',
+  'message withheld: it held a protected detail',
+]);
+/* No "[template name]": the shape alone does not prove Rekoda's template writer made it
+ * (a merchant's message to a customer was stored as its text before G-136), and erasing
+ * a real label loses nothing (CodeRabbit on #437). */
+const OUTBOUND_STRUCTURAL_BODY = anchored(['reply', 'erased']);
+
+/**
+ * Replace the stored text of this business's conversation history with a
+ * placeholder (G-136 R1 and R4, owner directive on #437, 20 Nov 2026).
+ *
+ * Only rows whose body is not one of the structural bodies of its direction
+ * (`INBOUND_STRUCTURAL_BODY`, `OUTBOUND_STRUCTURAL_BODY`):
+ * since G-136 every new model-routed message is stored as one, so what is left
+ * is text written before it, which can hold a name nobody recorded. The rows
+ * themselves stay (ids, direction, timing, provider ids, the drafts and
+ * receipts that reference them); no financial record is touched.
+ *
+ * Bounded (`limit` rows per call, oldest first) and `before` a cutoff, so an
+ * operator run walks a business in batches. `dryRun` counts and writes
+ * nothing. Returns the count only: nothing of what was erased is read out.
+ */
+export async function eraseStoredText(
+  tx: TenantDb,
+  businessId: string,
+  options: EraseBatchOptions = {},
+): Promise<ErasedBatch> {
+  return eraseInBatches(tx, businessId, options, {
+    name: 'eraseStoredText',
+    table: sql`conversation_messages`,
+    eligible: sql`NOT (
+        (t.direction = 'inbound' AND t.body ~ ${INBOUND_STRUCTURAL_BODY}) OR
+        (t.direction = 'outbound' AND t.body ~ ${OUTBOUND_STRUCTURAL_BODY}))`,
+    set: sql`body = ${ERASED_BODY}`,
+  });
+}
+
+/** Options of a bounded erasure pass (`eraseStoredText`, `eraseFinishedMessagePayloads`). */
+export interface EraseBatchOptions {
+  /** Count every eligible row, ignoring `limit` and `after`, and write nothing. */
+  dryRun?: boolean;
+  /** Only rows created before this instant. */
+  before?: Date;
+  /** At most this many rows (default 5,000). */
+  limit?: number;
+  /** Only rows whose id sorts after this one: the `last` of the previous pass. */
+  after?: string | null;
+}
+
+/** What one pass erased (or, dry, would erase), and where the next pass starts. */
+export interface ErasedBatch {
+  count: number;
+  /** The greatest id this pass touched, or null when it touched none. */
+  last: string | null;
+}
+
+/**
+ * One bounded pass of an erasure over a business's rows, in id order (owner review of
+ * #437 at 3a60b0f).
+ *
+ * Keyset-paged by id, and the update finds its batch by primary key. On
+ * `conversation_messages` the `(business_id, id)` index makes a pass read about
+ * `limit` rows; `external_events` has only a `business_id` index, so its pass reads
+ * the business's events once (0.26 s at 200,000 rows, measured). The earlier form (`id IN (SELECT ...
+ * ORDER BY created_at, id LIMIT n)`) was planned as a nested loop over the whole
+ * business: one 5,000-row batch of a 12,345-row business took 17.7 s, so a larger
+ * business would pass the 30 s statement timeout and its DELETE MY DATA could never
+ * complete. A dry run counts every eligible row (the exact figure an operator is
+ * shown), not the first `limit`.
+ */
+export async function eraseInBatches(
+  tx: TenantDb,
+  businessId: string,
+  options: EraseBatchOptions,
+  target: { name: string; table: SQL; eligible: SQL; set: SQL },
+): Promise<ErasedBatch> {
+  const limit = options.limit ?? 5_000;
+  if (!Number.isSafeInteger(limit) || limit <= 0) {
+    throw new Error(`${target.name}: limit must be a positive integer, got ${limit}`);
+  }
+  const before = options.before?.toISOString() ?? null;
+  const scope = sql`t.business_id = ${businessId}::uuid
+      AND ${target.eligible}
+      AND (${before}::timestamptz IS NULL OR t.created_at < ${before}::timestamptz)`;
+  if (options.dryRun) {
+    const rows = await tx.execute<{ n: number }>(
+      sql`SELECT count(*)::int AS n FROM ${target.table} t WHERE ${scope}`,
+    );
+    return { count: [...rows][0]?.n ?? 0, last: null };
+  }
+  const after = options.after ?? null;
+  /* The batch is chosen in this business by code (`scope`) and resolved once (an
+   * InitPlan), and the update finds its rows by primary key, so it can only touch ids
+   * that selection returned: rows of this business, whatever role runs it. RLS is the
+   * second guard, as on every statement here. Repeating `business_id = ...` on the
+   * update side is deliberately left out: with it the planner walks the business's whole
+   * history and tests each row against the 5,000 ids (4 s a pass at 200,000 rows,
+   * measured), instead of 5,000 primary-key lookups (0.2 s). */
+  const rows = await tx.execute<{ n: number; last: string | null }>(sql`
+    WITH erased AS (
+      UPDATE ${target.table} u SET ${target.set}
+       WHERE u.id = ANY (ARRAY (
+         SELECT t.id FROM ${target.table} t
+          WHERE ${scope}
+            AND (${after}::uuid IS NULL OR t.id > ${after}::uuid)
+          ORDER BY t.id
+          LIMIT ${limit}))
+      RETURNING u.id)
+    SELECT count(*)::int AS n, max(id::text) AS last FROM erased`);
+  const row = [...rows][0];
+  return { count: row?.n ?? 0, last: row?.last ?? null };
 }

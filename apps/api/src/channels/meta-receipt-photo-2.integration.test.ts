@@ -217,7 +217,7 @@ describe('a receipt photo', () => {
     const drafts = await withBusiness(db, business.id, (tx) =>
       conversationsRepo.draftsFor(tx, business.id),
     );
-    expect(drafts).toHaveLength(0);
+    expect(drafts.map((d) => conversationsRepo.isRefusalDraft(d))).toEqual([true]);
   });
 
   it('previews normally when both high-value readings agree', async () => {

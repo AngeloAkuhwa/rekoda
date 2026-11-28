@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import { LegalPage } from '@/components/legal/LegalPage';
 import { Fact } from '@/components/legal/Fact';
-import { FINANCIAL_RETENTION_YEARS, LEGAL } from '@/lib/legal';
+import { FINANCIAL_RETENTION_YEARS, LEGAL, PRIVACY_PAGES_LAST_UPDATED } from '@/lib/legal';
 import { canonical } from '@/lib/site';
 
 export const metadata: Metadata = {
@@ -15,6 +15,7 @@ export default function DataDeletionPage() {
   return (
     <LegalPage
       title="Delete my data"
+      updated={PRIVACY_PAGES_LAST_UPDATED}
       intro="How to have your data removed, what actually gets removed, and the one thing we are required to keep."
       sections={[
         {
@@ -22,14 +23,19 @@ export default function DataDeletionPage() {
           heading: 'How to ask',
           body: (
             <>
-              <p>Either way works, and both reach a person:</p>
+              <p>
+                You can ask us to delete your information by email, and the request reaches a
+                person:
+              </p>
               <ul>
                 <li>
-                  Message <strong>DELETE MY DATA</strong> to Rekoda on WhatsApp, from the number on
-                  the account.
+                  Email <Fact fact={LEGAL.privacyEmail} /> from the address you use with us.
                 </li>
                 <li>
-                  Or email <Fact fact={LEGAL.privacyEmail} /> from the address you use with us.
+                  Deleting through WhatsApp, by messaging <strong>DELETE MY DATA</strong> from the
+                  number on the account, is being introduced gradually and is available only when it
+                  has been enabled for your account. When it is available, Rekoda first tells you
+                  what will be deleted and asks you to confirm before anything is removed.
                 </li>
               </ul>
               <p>
@@ -55,10 +61,18 @@ export default function DataDeletionPage() {
           body: (
             <ul>
               <li>
-                Your customers&rsquo; names, numbers and addresses are deleted immediately when you
-                send <strong>DELETE MY DATA</strong> on WhatsApp and confirm.
+                Where WhatsApp deletion is enabled for your account, as the first step once you send{' '}
+                <strong>DELETE MY DATA</strong> and confirm: your customers&rsquo; names, numbers
+                and addresses, any text of your messages that Rekoda&rsquo;s chat history still
+                held, and the encrypted originals of the WhatsApp messages Rekoda has finished
+                processing. Messages still being processed at that moment and delivery receipts are
+                not part of that step. A message delivered before our latest privacy change in the
+                same batch as another business&rsquo;s message can still have an encrypted copy
+                stored with that other business&rsquo;s message.
               </li>
-              <li>Your conversations with Rekoda.</li>
+              <li>
+                When the deletion of your account is complete: your conversations with Rekoda.
+              </li>
               <li>Your business profile and settings.</li>
               <li>Your sign-in history and sessions.</li>
               <li>Connections to your payment provider and WhatsApp catalogue.</li>

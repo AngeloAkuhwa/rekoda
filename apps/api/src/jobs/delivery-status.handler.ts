@@ -22,7 +22,10 @@ import type { JobContext, JobHandler } from './runner.js';
  * notice): marked processed, never retried.
  *
  * It also closes the continuation (a "Which period?" question) the reply
- * opened, found through the same reply-to link. Re-asked identity holds a
+ * opened, found through the same reply-to link, and puts back a refusal the
+ * reply answered, with the questions that answer retired (OD-62(o)): the
+ * merchant never read the answer, so their repeated "yes" is about the
+ * refusal again, never the older preview behind it. Re-asked identity holds a
  * send-time failure restores depend on the inbound job's in-memory outcome,
  * which a later webhook does not have.
  *
@@ -63,10 +66,10 @@ export function deliveryStatusHandler(): JobHandler {
     await jobsRepo.serializeBusiness(tx, businessId, 'inbound');
 
     const moved = await conversationsRepo.markPreviewUndelivered(tx, businessId, outboundMessageId);
-    if (moved.drafts > 0 || moved.continuations > 0) {
+    if (moved.drafts > 0 || moved.continuations > 0 || moved.reopened > 0) {
       log.log(
-        `a preview failed after acceptance: ${moved.drafts} draft(s) retired, ` +
-          `${moved.continuations} question(s) closed`,
+        `a preview failed after acceptance: ${moved.drafts} draft(s) marked undelivered, ` +
+          `${moved.continuations} question(s) closed, ${moved.reopened} refusal(s) and question(s) put back`,
       );
     }
     const reminders = await subscriptionsRepo.markTrialNoticeUndelivered(

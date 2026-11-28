@@ -6,10 +6,9 @@
  * webhook.fixtures.ts.
  */
 import { describe, expect, it } from 'vitest';
-import { identity, withBusiness, sql } from '@rekoda/db';
+import { conversationsRepo, customersRepo, identity, withBusiness, sql } from '@rekoda/db';
 import { replies } from '@rekoda/core';
 import { buildRunner } from '../jobs/jobs.module.js';
-import { customersRepo } from '@rekoda/db';
 import {
   db,
   deps,
@@ -19,7 +18,9 @@ import {
   stubTransport,
   useMetaWebhookHarness,
   workerDb,
+  knownCustomer,
 } from './meta-webhook.fixtures.js';
+import { mediaMessage } from './meta-continuations.fixtures.js';
 import { setPlanForTest } from '@rekoda/db/testing';
 
 useMetaWebhookHarness();
@@ -66,11 +67,15 @@ describe('G-68 review: doubt, the funding gates, and closing a question', () => 
 
   async function seedMerchant(phone = `+${OWNER}`) {
     const user = await identity.upsertUserByPhone(db, phone);
-    return identity.createBusinessWithOwner(db, {
+    const business = await identity.createBusinessWithOwner(db, {
       name: 'Ada Fashion',
       businessType: null,
       ownerUserId: user.id,
     });
+    /* The customer the stubbed model names as CUSTOMER_7K2, recorded so a message
+     * naming Ada is issued that token (G-137). */
+    await knownCustomer(business.id);
+    return business;
   }
 
   async function addDelegate(businessId: string) {
@@ -345,11 +350,15 @@ describe('G-68 final review: erasure, doubt anywhere, re-asked funding question'
 
   async function seedMerchant(phone = `+${OWNER}`) {
     const user = await identity.upsertUserByPhone(db, phone);
-    return identity.createBusinessWithOwner(db, {
+    const business = await identity.createBusinessWithOwner(db, {
       name: 'Ada Fashion',
       businessType: null,
       ownerUserId: user.id,
     });
+    /* The customer the stubbed model names as CUSTOMER_7K2, recorded so a message
+     * naming Ada is issued that token (G-137). */
+    await knownCustomer(business.id);
+    return business;
   }
 
   async function drain() {
@@ -491,6 +500,77 @@ describe('G-68 final review: erasure, doubt anywhere, re-asked funding question'
       await reply('wamid.F-r3-bank', 'bank', DELEGATE);
       expect(stubSender.lastText).toContain('Paid in full by transfer');
       expect(modelCalls()).toBe(0);
+      expect(await purchaseStates(business.id)).toEqual(['superseded', 'pending']);
+    });
+
+    it("another member's refusal never hides the owner's question from the owner's yes", async () => {
+      const business = await seedMerchant();
+      const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+      await identity.addMembership(db, business.id, delegate.id, 'delegate');
+      await say('wamid.F-r5-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
+      /* The delegate's unsupported media leaves a refusal of theirs, newer than the question
+       * (CodeRabbit on #437 at ebeeadb). */
+      await post(
+        mediaMessage(
+          'wamid.F-r5-sticker',
+          { type: 'sticker', sticker: { id: 'sticker-1', mime_type: 'image/webp' } },
+          DELEGATE,
+        ),
+      );
+      await drain();
+      expect(stubSender.lastText).toBe(replies.onlyText().text);
+
+      await reply('wamid.F-r5-yes', 'yes');
+      expect(stubSender.lastText).toContain(POS_QUESTION);
+      /* The delegate's own refusal is still theirs to answer: their yes saves nothing. */
+      await reply('wamid.F-r5-d-yes', 'yes', DELEGATE);
+      expect(stubSender.lastText).not.toContain(POS_QUESTION);
+      expect(await footprint(business.id)).toEqual({ invoices: 0, purchases: 0, postings: 0 });
+    });
+
+    /* The newest pending draft: each sticker below must leave its sender's refusal (CodeRabbit). */
+    const refusal = async (b: string) => {
+      const d = await withBusiness(db, b, (tx) => conversationsRepo.pendingDraft(tx, b));
+      return { by: d?.requestedBy, refused: (d?.command as { refused?: boolean })?.refused };
+    };
+    it("another member's refusal never stops the owner's no from closing their question", async () => {
+      const business = await seedMerchant();
+      const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+      await identity.addMembership(db, business.id, delegate.id, 'delegate');
+      await say('wamid.F-r6-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
+      await post(
+        mediaMessage(
+          'wamid.F-r6-sticker',
+          { type: 'sticker', sticker: { id: 'sticker-1', mime_type: 'image/webp' } },
+          DELEGATE,
+        ),
+      );
+      await drain();
+      expect(await refusal(business.id)).toEqual({ by: delegate.id, refused: true });
+      await reply('wamid.F-r6-no', 'no');
+      expect(stubSender.lastText).toBe(replies.cancelled().text);
+      expect(await purchaseStates(business.id)).toEqual(['superseded']);
+      expect(await footprint(business.id)).toEqual({ invoices: 0, purchases: 0, postings: 0 });
+    });
+
+    /* The owner's no answers their own refusal, never the delegate's later question (CodeRabbit). */
+    it("the owner's no after their own refusal never closes the delegate's funding question", async () => {
+      const business = await seedMerchant();
+      const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+      await identity.addMembership(db, business.id, delegate.id, 'delegate');
+      const sticker = { type: 'sticker', sticker: { id: 'sticker-1', mime_type: 'image/webp' } };
+      await post(mediaMessage('wamid.F-r7-sticker', sticker));
+      await drain();
+      const own = await refusal(business.id);
+      expect([own.refused, !!own.by && own.by !== delegate.id]).toEqual([true, true]);
+      await say('wamid.F-r7-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, by POS', DELEGATE);
+      expect(stubSender.lastText).toContain(POS_QUESTION);
+
+      await reply('wamid.F-r7-no', 'no');
+      expect(stubSender.lastText).not.toBe(replies.cancelled().text);
+      expect(await purchaseStates(business.id)).toEqual(['abandoned']);
+      await reply('wamid.F-r7-bank', 'bank', DELEGATE);
+      expect(stubSender.lastText).toContain('Paid in full by transfer');
       expect(await purchaseStates(business.id)).toEqual(['superseded', 'pending']);
     });
 

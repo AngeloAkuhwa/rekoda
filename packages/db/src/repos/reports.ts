@@ -21,6 +21,7 @@
 import { sql } from 'drizzle-orm';
 import {
   ACCOUNTS,
+  assertKobo,
   isExpenseCategory,
   isSaleSource,
   type ExpenseCategory,
@@ -226,24 +227,28 @@ export async function debtorsFor(
   }>(sql`
     SELECT invoice_number, balance_due_k::bigint AS balance_due_k, created_at AS issued_at,
            due_date,
-           SUM(balance_due_k) OVER ()::bigint AS total_k,
+           -- Exact text, never narrowed to bigint: a total past PostgreSQL's bigint range would fail
+           -- here, before the exact-kobo check below can refuse it (CodeRabbit on #437).
+           SUM(balance_due_k) OVER ()::text AS total_k,
            count(*)  OVER ()::int   AS n
     FROM invoices
     WHERE business_id = ${businessId}::uuid AND status IN ('issued', 'partially_paid')
-    ORDER BY due_date ASC NULLS LAST, created_at DESC
+    ORDER BY due_date ASC NULLS LAST, created_at DESC, invoice_number ASC
     LIMIT ${limit}
   `);
   const list = [...rows];
-  return {
-    rows: list.map((r) => ({
-      invoiceNumber: r.invoice_number,
-      balanceDueK: Number(r.balance_due_k),
-      issuedAt: new Date(r.issued_at),
-      dueDate: r.due_date === null ? null : new Date(r.due_date),
-    })),
-    totalK: Number(list[0]?.total_k ?? 0),
-    count: list[0]?.n ?? 0,
-  };
+  const listed = list.map((r) => ({
+    invoiceNumber: r.invoice_number,
+    balanceDueK: Number(r.balance_due_k),
+    issuedAt: new Date(r.issued_at),
+    dueDate: r.due_date === null ? null : new Date(r.due_date),
+  }));
+  const totalK = Number(list[0]?.total_k ?? 0);
+  /* Exact kobo or nothing (invariant 1): a bigint past 2^53 would read back
+   * rounded, and this total is said to the merchant (owner directive on #437). */
+  for (const r of listed) assertKobo(r.balanceDueK, 'debtor balance');
+  assertKobo(totalK, 'debtors total');
+  return { rows: listed, totalK, count: list[0]?.n ?? 0 };
 }
 
 /**

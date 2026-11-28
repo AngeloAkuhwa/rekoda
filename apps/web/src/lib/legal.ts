@@ -45,6 +45,9 @@ export const LEGAL = {
  */
 export const POLICY_LAST_UPDATED = '29 August 2026';
 
+/** The privacy, AI-privacy and data-deletion pages, revised on their own date (PR #437). */
+export const PRIVACY_PAGES_LAST_UPDATED = '25 November 2026';
+
 /** Terms changed on its own (the free trial became 14 days, OWN-27); the other pages did not. */
 export const TERMS_LAST_UPDATED = '21 October 2026';
 

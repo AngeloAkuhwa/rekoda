@@ -28,6 +28,7 @@ import {
   stubTransport,
   useMetaWebhookHarness,
   workerDb,
+  knownCustomer,
 } from './meta-webhook.fixtures.js';
 
 useMetaWebhookHarness();
@@ -67,11 +68,15 @@ describe('Nigerian and Pidgin answers continue what was asked (G-68 Phase 2)', (
 
   async function seedMerchant(phone = `+${OWNER}`) {
     const user = await identity.upsertUserByPhone(db, phone);
-    return identity.createBusinessWithOwner(db, {
+    const business = await identity.createBusinessWithOwner(db, {
       name: 'Ada Fashion',
       businessType: null,
       ownerUserId: user.id,
     });
+    /* The customer the stubbed model names as CUSTOMER_7K2, recorded so a message
+     * naming Ada is issued that token (G-137). */
+    await knownCustomer(business.id);
+    return business;
   }
 
   async function drain() {
@@ -529,11 +534,12 @@ describe('Nigerian and Pidgin answers continue what was asked (G-68 Phase 2)', (
       expect(await written(business.id)).toEqual({ purchases: 0, postings: 0, arrivals: 0 });
     });
 
-    it('the short answer is stored like any model-path text: tokenised, never a name', async () => {
+    /* Like any model-path text: since G-136 that means as what it was, never its words. */
+    it('the short answer is stored like any model-path text: as what it was, never its words', async () => {
       const business = await seedMerchant();
       await askFunding(business.id);
       await reply('wamid.P2-e-body', 'na bank');
-      expect(await lastInboundBody(business.id)).toBe('na bank');
+      expect(await lastInboundBody(business.id)).toBe('[text message]');
     });
   });
 });

@@ -164,7 +164,7 @@ describe('a preview has a time limit (G-23)', () => {
         items: [{ name: 'wig', quantity: 4, unitPrice: 100_000 }],
         statedTotal: 400_000,
       },
-      'sorry, 4 wigs not 3',
+      'sorry, 4 wigs for Ada not 3',
     );
     expect(await states(business.id)).toEqual(['superseded', 'pending']);
     const windows = await withBusiness(db, business.id, (tx) =>
@@ -193,7 +193,7 @@ describe('a preview has a time limit (G-23)', () => {
         items: [{ name: 'wig', quantity: 4, unitPrice: 100_000 }],
         statedTotal: 400_000,
       },
-      'sorry, 4 wigs not 3',
+      'sorry, 4 wigs for Ada not 3',
     );
     /* The expired one was expired, not "corrected". */
     expect(await states(business.id)).toEqual(['expired', 'pending']);
@@ -326,9 +326,7 @@ describe('a preview has a time limit (G-23)', () => {
 
   it('an expired overpayment preview writes no payment, credit, reconciliation or posting (G-49)', async () => {
     const business = await seedMerchant();
-    await customersRepo.createCustomerWithIdentities(db, business.id, 'CUSTOMER_7K2', [
-      { facet: 'phone', ciphertext: 'sealed-phone', matchKey: 'mk-g23-over' },
-    ]);
+    /* Ada, on file as CUSTOMER_7K2 (seedMerchant), so the excess is hers. */
     await say('wamid.G23-o-sale', A_SALE, 'sold Ada 3 wigs for 300k');
     await plain('wamid.G23-o-sale-yes', 'yes');
     expect((await footprint(business.id)).invoices).toBe(1);
@@ -447,11 +445,12 @@ describe('a preview has a time limit (G-23)', () => {
       'wamid.G23-ord',
       {
         intent: 'RecordOrder',
-        customer: { kind: 'token', token: 'CUSTOMER_7K2' },
+        /* Ada, recorded as CUSTOMER_7K2 (G-137: named by mention, not an invented token). */
+        customer: { kind: 'mention', mention: 'Ada' },
         items: [{ name: 'Ankara bale', quantity: 2 }],
         note: null,
       },
-      'please I want 2 ankara bale',
+      'Ada: please I want 2 ankara bale',
     );
     expect(stubSender.lastText).toContain('Total: ₦17,000');
     await lapse(business.id);

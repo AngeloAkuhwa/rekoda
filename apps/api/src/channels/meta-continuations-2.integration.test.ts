@@ -12,6 +12,7 @@ import { replies, resolvePeriod } from '@rekoda/core';
 import { customersRepo, issueRepo, settleRepo } from '@rekoda/db';
 import {
   db,
+  deps,
   messagePayload,
   post,
   stubOcr,
@@ -210,7 +211,7 @@ describe('a short reply continues what Rekoda just asked (Build 6)', () => {
   it('a correction after only a question is a new request, not a correction', async () => {
     const business = await seedMerchant();
     await say('wamid.B6-corr-ask', HOW_MUCH_DID_I_SELL, 'How much did I sell?');
-    await say('wamid.B6-corr-sale', A_SALE, 'sorry, 3 wigs not 4');
+    await say('wamid.B6-corr-sale', A_SALE, 'sorry, 3 wigs for Ada not 4');
 
     expect(stubSender.lastText).not.toContain(replies.correctionTaken().text);
     /* The question's draft was not superseded as if it had been corrected. */
@@ -229,6 +230,24 @@ describe('a short reply continues what Rekoda just asked (Build 6)', () => {
     await reply('wamid.B6-x-answer', 'last month', OWNER);
     expect(stubSender.lastText).toContain('sales');
     expect(modelCalls()).toBe(0);
+    /* The resumed read is the owner's own, so the owner's refusal answer retires it (CodeRabbit on
+     * #437 at c5392f0). */
+    const [read] = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ by: string | null }>(sql`
+        SELECT d.requested_by::text AS by FROM command_drafts d
+          JOIN conversation_messages m ON m.id = d.conversation_message_id
+         WHERE d.business_id = ${business.id}::uuid AND d.intent = 'Query'
+           AND m.provider_message_id = 'wamid.B6-x-answer'`),
+    );
+    const [member] = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ id: string }>(sql`
+        SELECT requested_by::text AS id FROM command_drafts
+         WHERE business_id = ${business.id}::uuid AND intent = 'Query'
+         ORDER BY insertion_seq LIMIT 1`),
+    );
+    /* The owner's first question ("How much did I sell?") was recorded with the owner as asker. */
+    expect(member?.id).toBeTruthy();
+    expect(read?.by).toBe(member?.id);
 
     /* "correct" is about the figure just read, never the older preview. */
     await reply('wamid.B6-x-correct', 'correct', OWNER);
@@ -488,14 +507,16 @@ describe('a short reply continues what Rekoda just asked (Build 6)', () => {
 
   it('keeps a customer as a vault token, never a name', async () => {
     const business = await seedMerchant();
+    /* The message carries the token the known-name pass issues for her. */
+    const { token } = await deps.gateway.resolveMention(business.id, 'Ada Obi');
     await say(
       'wamid.B6-pii',
       {
         ...HOW_MUCH_DID_I_SELL,
         topic: 'customer_balance',
-        customer: { kind: 'token', token: 'CUSTOMER_7K2' },
+        customer: { kind: 'token', token },
       },
-      'how much does Ada owe me',
+      'how much does Ada Obi owe me',
     );
 
     const rows = await withBusiness(db, business.id, (tx) =>
@@ -505,7 +526,7 @@ describe('a short reply continues what Rekoda just asked (Build 6)', () => {
     );
     const stored = [...rows].map((r) => r.row);
     expect(stored).toHaveLength(1);
-    expect(stored[0]).toContain('CUSTOMER_7K2');
+    expect(stored[0]).toContain(token);
     expect(stored[0]).not.toContain('Ada');
     expect(stored[0]).not.toContain('owe');
   });

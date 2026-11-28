@@ -7,7 +7,9 @@
  */
 import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../config.js';
-import { BASE } from './env.fixtures.js';
+import { BASE as UNLABELLED } from './env.fixtures.js';
+
+const BASE = { ...UNLABELLED, NODE_ENV: 'test' };
 
 describe('picking a provider', () => {
   it('follows an explicit choice', () => {
@@ -147,6 +149,7 @@ describe('the role ensemble (docs/ai-model-strategy.md)', () => {
   it('lets any role be re-pointed by env without touching code', () => {
     const config = loadConfig({
       ...BASE,
+      NODE_ENV: 'test',
       ANTHROPIC_API_KEY: 'k',
       AI_MODEL_CLASSIFIER: 'claude-sonnet-latest',
       AI_MODEL_TRANSCRIBER: 'whisper-1',
@@ -155,5 +158,139 @@ describe('the role ensemble (docs/ai-model-strategy.md)', () => {
     expect(config.aiModelClassifier).toBe('claude-sonnet-latest');
     expect(config.aiModelTranscriber).toBe('whisper-1');
     expect(config.aiModelVisionVerifier).toBe('gpt-test-verifier');
+  });
+});
+
+/**
+ * OD-63(c): the high-value verifier reads the document text, where a name nobody recorded is still
+ * plain, and sends it to OpenAI. Until the owner rules on that processor boundary, a production
+ * process refuses to start with the verifier configured, as `FX_MODE=live` is refused until its
+ * gate opens; the PR that implements the ruling replaces this refusal, never an env change.
+ */
+describe('the high-value verifier in production (OD-63(c))', () => {
+  const PROD = {
+    ...BASE,
+    NODE_ENV: 'production',
+    ANTHROPIC_API_KEY: 'k',
+    REKODA_TRUSTED_PROXIES: '172.30.10.10',
+    OPERATOR_OIDC_ISSUER: 'https://issuer.example.com',
+    OPERATOR_OIDC_AUDIENCE: 'rekoda-ops',
+    OPERATOR_OIDC_JWKS_URL: 'https://issuer.example.com/jwks',
+    META_APP_SECRET: 'm'.repeat(40),
+    META_VERIFY_TOKEN: 'v'.repeat(40),
+    REKODA_TRUSTED_WEB: '172.30.10.11',
+  } as NodeJS.ProcessEnv;
+
+  it('starts with no verifier, and refuses to start with one', () => {
+    expect(loadConfig(PROD).aiModelVisionVerifier).toBeNull();
+    expect(() =>
+      loadConfig({ ...PROD, AI_MODEL_VISION_VERIFIER: 'gpt-test-verifier', OPENAI_API_KEY: 'k' }),
+    ).toThrow(/OD-63\(c\)/);
+  });
+
+  it.each(['development', 'test'])('is still allowed when NODE_ENV is %s', (nodeEnv) => {
+    expect(
+      loadConfig({
+        ...BASE,
+        NODE_ENV: nodeEnv,
+        ANTHROPIC_API_KEY: 'k',
+        AI_MODEL_VISION_VERIFIER: 'gpt-test-verifier',
+      }).aiModelVisionVerifier,
+    ).toBe('gpt-test-verifier');
+  });
+
+  /* An unset or empty NODE_ENV is development for the other hardening rules, but it names no
+   * environment: a process started from a checkout against real data would send names nobody
+   * recorded to OpenAI. The verifier needs development or test said explicitly (CodeRabbit on #437
+   * at 4d9fa80). */
+  it.each([undefined, ''])('is refused when NODE_ENV is %j', (nodeEnv) => {
+    const env: NodeJS.ProcessEnv = {
+      ...UNLABELLED,
+      ANTHROPIC_API_KEY: 'k',
+      AI_MODEL_VISION_VERIFIER: 'gpt-test-verifier',
+    };
+    if (nodeEnv !== undefined) env['NODE_ENV'] = nodeEnv;
+    expect(() => loadConfig(env)).toThrow(/OD-63\(c\)/);
+  });
+});
+
+/**
+ * The OD-59 deployment gate (owner disposition of PR #437, OWN-103(6)): an unrecorded name reaches
+ * the interpreter as plain text, so a production process starts only with the approved Anthropic
+ * interpreter on Anthropic's own host. Transcription keeps its OpenAI key.
+ */
+describe('the primary interpreter in production (OD-59 gate)', () => {
+  const PROD = {
+    ...BASE,
+    NODE_ENV: 'production',
+    REKODA_TRUSTED_PROXIES: '172.30.10.10',
+    OPERATOR_OIDC_ISSUER: 'https://issuer.example.com',
+    OPERATOR_OIDC_AUDIENCE: 'rekoda-ops',
+    OPERATOR_OIDC_JWKS_URL: 'https://issuer.example.com/jwks',
+    META_APP_SECRET: 'm'.repeat(40),
+    META_VERIFY_TOKEN: 'v'.repeat(40),
+    REKODA_TRUSTED_WEB: '172.30.10.11',
+  } as NodeJS.ProcessEnv;
+
+  it('starts on Anthropic, with an OpenAI key kept for transcription', () => {
+    const config = loadConfig({ ...PROD, ANTHROPIC_API_KEY: 'k', OPENAI_API_KEY: 'k' });
+    expect(config.aiProvider).toBe('anthropic');
+    expect(config.openaiApiKey).toBe('k');
+    expect(
+      loadConfig({ ...PROD, ANTHROPIC_API_KEY: 'k', AI_BASE_URL: 'https://api.anthropic.com/' })
+        .aiBaseUrl,
+    ).toBe('https://api.anthropic.com/');
+  });
+
+  it.each([
+    ['AI_PROVIDER=openai', { AI_PROVIDER: 'openai', OPENAI_API_KEY: 'k', AI_MODEL_DEFAULT: 'm' }],
+    ['an OpenAI key and no Anthropic key', { OPENAI_API_KEY: 'k', AI_MODEL_DEFAULT: 'm' }],
+  ])('refuses %s as the primary interpreter', (_, over) => {
+    expect(() => loadConfig({ ...PROD, ...over })).toThrow(
+      /must be Anthropic outside explicit development or test/,
+    );
+  });
+
+  it.each(['https://api.groq.com/openai/v1', 'https://gateway.example.com/anthropic'])(
+    'refuses AI_BASE_URL=%s, which would redirect what the interpreter sends',
+    (url) => {
+      expect(() => loadConfig({ ...PROD, ANTHROPIC_API_KEY: 'k', AI_BASE_URL: url })).toThrow(
+        /AI_BASE_URL must be blank or exactly https:\/\/api\.anthropic\.com/,
+      );
+    },
+  );
+
+  it('keeps the specific refusal for a private host', () => {
+    expect(() =>
+      loadConfig({ ...PROD, ANTHROPIC_API_KEY: 'k', AI_BASE_URL: 'https://ollama:11434/v1' }),
+    ).toThrow(/AI_BASE_URL names ollama/);
+  });
+
+  it.each([undefined, ''])('holds an unlabelled process to Anthropic (NODE_ENV=%j)', (NODE_ENV) => {
+    const env = { ...UNLABELLED, NODE_ENV };
+    const openai = { OPENAI_API_KEY: 'k', AI_MODEL_DEFAULT: 'm' };
+    expect(() => loadConfig({ ...env, ...openai })).toThrow(/must be Anthropic/);
+    expect(() => loadConfig({ ...env, ...openai, AI_PROVIDER: 'openai' })).toThrow(
+      /must be Anthropic/,
+    );
+    expect(() =>
+      loadConfig({ ...env, AI_BASE_URL: 'https://gateway.example.com/anthropic' }),
+    ).toThrow(/AI_BASE_URL must be blank or exactly/);
+    expect(
+      loadConfig({ ...env, AI_BASE_URL: 'https://api.anthropic.com', ANTHROPIC_API_KEY: 'k' })
+        .aiProvider,
+    ).toBe('anthropic');
+  });
+
+  it.each(['development', 'test'])('lets %s try another provider', (NODE_ENV) => {
+    expect(
+      loadConfig({
+        ...BASE,
+        NODE_ENV,
+        AI_PROVIDER: 'openai',
+        OPENAI_API_KEY: 'k',
+        AI_MODEL_DEFAULT: 'm',
+      }).aiProvider,
+    ).toBe('openai');
   });
 });

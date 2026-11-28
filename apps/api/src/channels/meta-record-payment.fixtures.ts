@@ -12,6 +12,7 @@ import {
   post,
   stubTransport,
   workerDb,
+  knownCustomer,
 } from './meta-webhook.fixtures.js';
 
 export const A_SALE_FOR_PAYMENT = {
@@ -38,11 +39,15 @@ export const paymentOf = (over: Record<string, unknown>) => ({
 
 export async function seedMerchant(phone: string) {
   const user = await identity.upsertUserByPhone(db, phone);
-  return identity.createBusinessWithOwner(db, {
+  const business = await identity.createBusinessWithOwner(db, {
     name: 'Ada Fashion',
     businessType: null,
     ownerUserId: user.id,
   });
+  /* The customer the stubbed model names as CUSTOMER_7K2, recorded so a message
+   * naming Ada is issued that token (G-137). */
+  await knownCustomer(business.id);
+  return business;
 }
 
 /** Work the queue to empty, as a real worker does: issuing enqueues renders. */
@@ -63,9 +68,8 @@ export async function issueUnpaidInvoice(wamid: string) {
 
 /** G-49: the chat invoice names a customer on file, so the excess is theirs. */
 export async function issueUnpaidInvoiceToCustomer(businessId: string, wamid: string) {
-  await customersRepo.createCustomerWithIdentities(db, businessId, 'CUSTOMER_7K2', [
-    { facet: 'phone', ciphertext: 'sealed-phone', matchKey: `mk-${wamid}` },
-  ]);
+  /* On file: Ada, recorded as CUSTOMER_7K2 (G-137). */
+  await knownCustomer(businessId);
   await issueUnpaidInvoice(wamid);
 }
 

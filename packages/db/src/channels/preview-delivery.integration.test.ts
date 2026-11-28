@@ -242,7 +242,10 @@ describe('an unseen preview can never be confirmed (G-20, owner ruling)', () => 
                       WHERE business_id = ${businessId}::uuid AND id = ${sent.draftId}::uuid`),
     );
     await undelivered(businessId, sent.wamid);
-    expect(await draftRow(businessId, sent.draftId)).toEqual({ state: 'expired', reason: null });
+    expect(await draftRow(businessId, sent.draftId)).toEqual({
+      state: 'expired',
+      reason: 'preview_not_delivered',
+    });
   });
 
   it('a draft already confirmed keeps its state when a failed receipt arrives later', async () => {
@@ -271,6 +274,30 @@ describe('an unseen preview can never be confirmed (G-20, owner ruling)', () => 
     const sent = await previewed(businessId);
     expect(await claim(businessId, sent.draftId)).toEqual({ outcome: 'claimed' });
   });
+
+  /* A repeated receipt for a marked question changes nothing; its state is kept (CodeRabbit, #437). */
+  it.each(['expired', 'superseded'])(
+    'a repeated receipt leaves a %s question as it was',
+    async (st) => {
+      const businessId = await seedBusiness();
+      const sent = await previewed(businessId);
+      const stamp = () =>
+        withBusiness(app, businessId, (tx) =>
+          tx.execute<{ at: string }>(sql`SELECT updated_at::text AS at FROM command_drafts
+                                        WHERE id = ${sent.draftId}::uuid`),
+        ).then((r) => [...r][0]!.at);
+      await withBusiness(app, businessId, (tx) =>
+        tx.execute(sql`UPDATE command_drafts SET previewed = false, intent = 'Query', state = ${st},
+                             command = '{"intent":"Query"}'::jsonb WHERE id = ${sent.draftId}::uuid`),
+      );
+      await undelivered(businessId, sent.wamid);
+      const marked = { state: st, reason: 'preview_not_delivered' };
+      expect(await draftRow(businessId, sent.draftId)).toEqual(marked);
+      const first = await stamp();
+      expect(await undelivered(businessId, sent.wamid)).toBe(0);
+      expect(await stamp()).toBe(first);
+    },
+  );
 
   it('a draft that is no financial preview (an erasure ask) is still claimed', async () => {
     const businessId = await seedBusiness();
@@ -328,7 +355,7 @@ describe('an unseen preview can never be confirmed (G-20, owner ruling)', () => 
     const again = await withBusiness(app, businessId, (tx) =>
       conversationsRepo.markPreviewUndelivered(tx, businessId, asked.wamid),
     );
-    expect(again).toEqual({ drafts: 0, continuations: 0 });
+    expect(again).toEqual({ drafts: 0, continuations: 0, reopened: 0 });
   });
 });
 
@@ -432,5 +459,141 @@ describe('the claim exemption needs the stored command to agree (G-20)', () => {
                       WHERE business_id = ${businessId}::uuid AND id = ${sent.draftId}::uuid`),
     );
     expect(await claim(businessId, sent.draftId)).toEqual({ outcome: 'unseen' });
+  });
+});
+
+/**
+ * CG5 inherits a customer only when no message came between the preview and the correction
+ * (`hasInboundBetween`, OWN-100). `created_at` is `clock_timestamp()`, not unique: a message that
+ * shares the correction's or the preview's instant still came between them (CodeRabbit on #437
+ * at c712b1e). A tie blocks inheritance, which is the safe answer: the correction is asked about.
+ */
+describe('a message between a preview and its correction is seen even at the same instant', () => {
+  const inbound = (businessId: string, n: string) =>
+    withBusiness(app, businessId, (tx) =>
+      conversationsRepo.recordInbound(tx, {
+        businessId,
+        channel: 'meta',
+        kind: 'text',
+        body: '[text]',
+        providerMessageId: `wamid.between-${n}`,
+      }),
+    );
+  const at = (businessId: string, messageId: string, sameAs: string) =>
+    withBusiness(ownerDb(), businessId, (tx) =>
+      tx.execute(sql`UPDATE conversation_messages SET created_at =
+                       (SELECT created_at FROM conversation_messages WHERE id = ${sameAs}::uuid)
+                     WHERE business_id = ${businessId}::uuid AND id = ${messageId}::uuid`),
+    );
+  const between = (businessId: string, draftId: string, currentId: string) =>
+    withBusiness(app, businessId, (tx) =>
+      conversationsRepo.hasInboundBetween(tx, businessId, draftId, currentId),
+    );
+
+  it('nothing in between: the correction may inherit', async () => {
+    const businessId = await seedBusiness();
+    const sent = await previewed(businessId);
+    const fix = await inbound(businessId, `fix-${seq}`);
+    expect(await between(businessId, sent.draftId, fix.id)).toBe(false);
+  });
+
+  it("a question that shares the correction's instant counts", async () => {
+    const businessId = await seedBusiness();
+    const sent = await previewed(businessId);
+    const asked = await inbound(businessId, `q-${seq}`);
+    const fix = await inbound(businessId, `fix-${seq}`);
+    await at(businessId, asked.id, fix.id);
+    expect(await between(businessId, sent.draftId, fix.id)).toBe(true);
+  });
+
+  it("a question that shares the preview request's instant counts", async () => {
+    const businessId = await seedBusiness();
+    const sent = await previewed(businessId);
+    const asked = await inbound(businessId, `q2-${seq}`);
+    const fix = await inbound(businessId, `fix2-${seq}`);
+    await at(businessId, asked.id, sent.messageId);
+    expect(await between(businessId, sent.draftId, fix.id)).toBe(true);
+  });
+});
+
+/**
+ * A member's yes or no looks past another member's REFUSAL, and only that: another member's
+ * ordinary clarification (a model `Unclear`, no `refused` key) is still the newest thing a yes is
+ * about (independent review of #437 at 4480bc2: `->> 'refused'` is NULL there, and NOT NULL
+ * dropped the row).
+ */
+describe("latestDraftToAnswer looks past another member's refusal only", () => {
+  async function twoMembers() {
+    const businessId = await seedBusiness();
+    const owner = await withBusiness(app, businessId, (tx) =>
+      tx.execute<{ user_id: string }>(
+        sql`SELECT user_id FROM memberships WHERE business_id = ${businessId}::uuid`,
+      ),
+    );
+    seq += 1;
+    const delegate = await identity.upsertUserByPhone(
+      app,
+      `+23481901${String(seq).padStart(5, '0')}`,
+    );
+    await identity.addMembership(app, businessId, delegate.id, 'delegate');
+    return { businessId, ownerId: [...owner][0]!.user_id, delegateId: delegate.id };
+  }
+  const draftBy = (
+    businessId: string,
+    requestedBy: string | null,
+    command: Record<string, unknown>,
+  ) =>
+    withBusiness(app, businessId, async (tx) => {
+      seq += 1;
+      const message = await conversationsRepo.recordInbound(tx, {
+        businessId,
+        channel: 'meta',
+        kind: 'text',
+        body: '[text message]',
+        providerMessageId: `wamid.unclear-${seq}`,
+      });
+      return conversationsRepo.recordDraft(tx, {
+        businessId,
+        conversationMessageId: message.id,
+        intent: 'Unclear',
+        command,
+        model: null,
+        previewed: false,
+        requestedBy,
+      });
+    });
+  const latest = (businessId: string, by: string) =>
+    withBusiness(app, businessId, (tx) =>
+      conversationsRepo.latestDraftToAnswer(tx, businessId, { skipRefusalsNotBy: by }),
+    );
+
+  it("another member's ordinary clarification is still the latest", async () => {
+    const { businessId, ownerId, delegateId } = await twoMembers();
+    const asked = await draftBy(businessId, delegateId, {
+      intent: 'Unclear',
+      clarification: '[clarification]',
+    });
+    expect((await latest(businessId, ownerId))?.id).toBe(asked.id);
+  });
+
+  it('an unattributed refusal is looked past, as `pastRefusals` looks past it', async () => {
+    const { businessId, ownerId } = await twoMembers();
+    await draftBy(businessId, null, {
+      intent: 'Unclear',
+      clarification: 'Please send text.',
+      refused: true,
+    });
+    expect(await latest(businessId, ownerId)).toBeNull();
+  });
+
+  it("another member's refusal is looked past; the member's own is not", async () => {
+    const { businessId, ownerId, delegateId } = await twoMembers();
+    const refusal = await draftBy(businessId, delegateId, {
+      intent: 'Unclear',
+      clarification: 'Please send text.',
+      refused: true,
+    });
+    expect(await latest(businessId, ownerId)).toBeNull();
+    expect((await latest(businessId, delegateId))?.id).toBe(refusal.id);
   });
 });

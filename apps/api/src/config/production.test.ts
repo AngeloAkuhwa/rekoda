@@ -143,12 +143,16 @@ describe('AI_BASE_URL', () => {
     expect(() => loadConfig({ ...PROD, AI_BASE_URL: value })).toThrow(/AI_BASE_URL/);
   });
 
-  it('production accepts a public https host', () => {
-    expect(loadConfig({ ...PROD, AI_BASE_URL: 'https://api.groq.com/openai/v1' }).aiBaseUrl).toBe(
-      'https://api.groq.com/openai/v1',
-    );
-    expect(loadConfig({ ...PROD, AI_BASE_URL: 'https://8.8.8.8/v1' }).aiBaseUrl).toBe(
-      'https://8.8.8.8/v1',
+  /* A public host passes the local-host check, but until OD-59 lands production names only
+   * Anthropic's own (owner disposition of PR #437, OWN-103(6); `ai-provider.test.ts`). */
+  it('production refuses a public https host that is not Anthropic', () => {
+    for (const url of ['https://api.groq.com/openai/v1', 'https://8.8.8.8/v1']) {
+      expect(() => loadConfig({ ...PROD, AI_BASE_URL: url })).toThrow(
+        /AI_BASE_URL must be blank or exactly https:\/\/api\.anthropic\.com outside explicit development or test/,
+      );
+    }
+    expect(loadConfig({ ...PROD, AI_BASE_URL: 'https://api.anthropic.com' }).aiBaseUrl).toBe(
+      'https://api.anthropic.com',
     );
   });
 

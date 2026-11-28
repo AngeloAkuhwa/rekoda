@@ -29,6 +29,7 @@ import {
   stubTransport,
   useMetaWebhookHarness,
   workerDb,
+  knownCustomer,
 } from './meta-webhook.fixtures.js';
 
 useMetaWebhookHarness();
@@ -36,7 +37,15 @@ useMetaWebhookHarness();
 describe("the plan's own example, end to end", () => {
   async function seedMerchant(phone: string, name: string) {
     const user = await identity.upsertUserByPhone(db, phone);
-    return identity.createBusinessWithOwner(db, { name, businessType: null, ownerUserId: user.id });
+    const business = await identity.createBusinessWithOwner(db, {
+      name,
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    /* The customer the stubbed model names as CUSTOMER_7K2, recorded so a message
+     * naming Ada is issued that token (G-137). */
+    await knownCustomer(business.id);
+    return business;
   }
 
   const THE_SALE = {
@@ -354,15 +363,19 @@ describe("the plan's own example, end to end", () => {
     stubTransport.replyWith(THE_SALE);
     await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.SALE');
 
-    // CG5 — "no, 4 not 3" re-runs the draft rather than mutating anything.
+    // CG5 — "no, 4 not 3" re-runs the draft rather than mutating anything. It names
+    // nobody, so the model reads no customer; the customer is the pending draft's, kept
+    // from that trusted draft (owner ruling 21 Nov 2026), never a token the model wrote.
     stubTransport.replyWith({
       ...THE_SALE,
+      customer: { kind: 'none' },
       items: [{ name: 'wig', quantity: 4, unitPrice: 50_000 }],
       statedTotal: 200_000,
     });
     await send('no, 4 not 3', 'wamid.FIX');
     expect(stubSender.lastText).toContain('replaced the earlier version');
     expect(stubSender.lastText).toContain('Total: ₦200,000');
+    expect(stubSender.lastText).toContain('The same customer as before');
 
     await send('yes', 'wamid.YES');
 
@@ -373,6 +386,14 @@ describe("the plan's own example, end to end", () => {
       conversationsRepo.draftsFor(tx, business.id),
     );
     expect(rows.map((r) => r.state).sort()).toEqual(['confirmed', 'superseded']);
+    // The corrected invoice is Ada's.
+    const owner = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ token: string | null }>(
+        sql`SELECT c.token FROM invoices i LEFT JOIN customers c ON c.id = i.customer_id
+             WHERE i.business_id = ${business.id}::uuid`,
+      ),
+    );
+    expect([...owner]).toEqual([{ token: 'CUSTOMER_7K2' }]);
   });
 
   it('discards the draft when the merchant says no', async () => {

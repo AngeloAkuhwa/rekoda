@@ -18,6 +18,7 @@ import {
   stubTransport,
   useMetaWebhookHarness,
   workerDb,
+  knownCustomer,
 } from './meta-webhook.fixtures.js';
 import {
   A_SALE_FOR_PAYMENT,
@@ -263,7 +264,7 @@ describe('a payment the merchant reports (RecordPayment)', () => {
 
     // CG5: the correction replaces the draft, and the new one shows no excess.
     stubTransport.replyWith(paymentOf({ amount: 150_000 }));
-    await post(messagePayload('2348031234567', 'wamid.PC-fix', 'no, 150k not 180k'));
+    await post(messagePayload('2348031234567', 'wamid.PC-fix', 'no, Ada paid 150k not 180k'));
     await drain();
     expect(stubSender.lastText).not.toContain('Customer credit');
     const draft = await withBusiness(db, business.id, (tx) =>
@@ -288,10 +289,28 @@ describe('a payment the merchant reports (RecordPayment)', () => {
 
   it('an overpayment on an invoice with no customer is unapplied, never owed to anyone (G-49)', async () => {
     const business = await seedMerchant('+2348031234567');
-    await issueUnpaidInvoice('wamid.PU');
+    /* A sale to nobody: an invoice with no customer on it. (Before G-137 this rode an
+     * invented token with no customer row; a token the message never carried is now
+     * refused, so the honest way to an unattributed invoice is a sale naming nobody.) */
+    stubTransport.replyWith({ ...A_SALE_FOR_PAYMENT, customer: { kind: 'none' } });
+    await post(messagePayload('2348031234567', 'wamid.PU-sale', 'sold 3 wigs for 150k'));
+    await drain();
+    await post(messagePayload('2348031234567', 'wamid.PU-yes', 'yes'));
+    await drain();
+    const [unattributed] = (
+      await withBusiness(db, business.id, (tx) => reportsRepo.invoicesFor(tx, business.id, 10))
+    ).rows;
 
-    stubTransport.replyWith(paymentOf({ amount: 180_000 }));
-    await post(messagePayload('2348031234567', 'wamid.PU-pay', 'Ada paid 180k'));
+    stubTransport.replyWith(
+      paymentOf({
+        amount: 180_000,
+        documentRef: unattributed!.invoiceNumber,
+        customer: { kind: 'none' },
+      }),
+    );
+    await post(
+      messagePayload('2348031234567', 'wamid.PU-pay', `${unattributed!.invoiceNumber} paid 180k`),
+    );
     await drain();
     expect(stubSender.lastText).toContain(
       'Unapplied: ₦30,000. It is not linked to a customer yet.',
@@ -396,6 +415,64 @@ describe('a payment the merchant reports (RecordPayment)', () => {
     expect(stubSender.lastText).toContain('could not find an unpaid invoice');
   });
 
+  /* The legacy shape (independent review of e15b63a): an invoice whose snapshot carries
+   * a customer token with no customer row behind it. Paid past its balance by number,
+   * the excess is unapplied, never owed to a customer nobody holds. */
+  it('an overpayment on an invoice whose token has no customer row is unapplied (G-49)', async () => {
+    const business = await seedMerchant('+2348031234567');
+    const sale = await withBusiness(db, business.id, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId: business.id,
+        customerId: null,
+        customerToken: 'CUSTOMER_ZZ9',
+        items: [{ name: 'wig', quantity: 3, unitPriceK: 5_000_000 }],
+        subtotalK: 15_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 15_000_000,
+        paidK: 0,
+        balanceDueK: 15_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'draft-legacy',
+        actor: 'system',
+      }),
+    );
+
+    stubTransport.replyWith(
+      paymentOf({ amount: 180_000, documentRef: sale.invoiceNumber, customer: { kind: 'none' } }),
+    );
+    await post(messagePayload('2348031234567', 'wamid.PL-pay', `${sale.invoiceNumber} paid 180k`));
+    await drain();
+    expect(stubSender.lastText).toContain(
+      'Unapplied: ₦30,000. It is not linked to a customer yet.',
+    );
+    await post(messagePayload('2348031234567', 'wamid.PL-confirm', 'yes'));
+    await drain();
+
+    const credits = await withBusiness(db, business.id, (tx) =>
+      tx.execute(sql`SELECT 1 FROM customer_credits WHERE business_id = ${business.id}::uuid`),
+    );
+    expect([...credits]).toHaveLength(0);
+    /* And the confirmation really recorded the payment (CodeRabbit on #437): the whole
+     * ₦180,000, the invoice paid in full, the ₦30,000 excess unapplied. */
+    const [state] = [
+      ...(await withBusiness(db, business.id, (tx) =>
+        tx.execute<{ paid: string; due: string }>(sql`
+          SELECT (SELECT amount_k::text FROM payments WHERE business_id = ${business.id}::uuid) AS paid,
+                 (SELECT balance_due_k::text FROM invoices WHERE business_id = ${business.id}::uuid) AS due,
+                 (SELECT string_agg(a.amount_k::text, ',')
+                    FROM payment_allocations a
+                    JOIN payments p ON p.id = a.payment_id
+                    JOIN invoices i ON i.id = a.invoice_id
+                   WHERE a.business_id = ${business.id}::uuid) AS allocated`),
+      )),
+    ];
+    /* The balance is a projection; the allocation row is the link itself. */
+    expect(state).toEqual({ paid: '18000000', due: '0', allocated: '15000000' });
+  });
+
   /**
    * The one that matters most on this whole path.
    *
@@ -406,6 +483,7 @@ describe('a payment the merchant reports (RecordPayment)', () => {
    */
   it('puts a named customer payment on THEIR invoice, not the newest one', async () => {
     const business = await seedMerchant('+2348031234567');
+    await knownCustomer(business.id, 'Bola', 'CUSTOMER_B9L');
     // Ada first, then Bola. Bola's is newest, so a fallback would take it.
     await issueUnpaidInvoice('wamid.P5');
     stubTransport.replyWith({
@@ -445,7 +523,8 @@ describe('a payment the merchant reports (RecordPayment)', () => {
   });
 
   it('asks which invoice when nobody is named and several are open', async () => {
-    await seedMerchant('+2348031234567');
+    const business = await seedMerchant('+2348031234567');
+    await knownCustomer(business.id, 'Bola', 'CUSTOMER_B9L');
     await issueUnpaidInvoice('wamid.P6');
     stubTransport.replyWith({
       ...A_SALE_FOR_PAYMENT,
@@ -467,7 +546,9 @@ describe('a payment the merchant reports (RecordPayment)', () => {
   });
 
   it('says so rather than guessing when the named customer owes nothing', async () => {
-    await seedMerchant('+2348031234567');
+    const business = await seedMerchant('+2348031234567');
+    /* Ngozi is on file, and owes nothing: Ada holds the only open invoice. */
+    await knownCustomer(business.id, 'Ngozi', 'CUSTOMER_ZZZ');
     await issueUnpaidInvoice('wamid.P7');
 
     stubTransport.replyWith(
@@ -486,6 +567,7 @@ describe('a payment the merchant reports (RecordPayment)', () => {
       reportsRepo.invoicesFor(tx, business.id, 10),
     );
     const number = open.rows[0]!.invoiceNumber;
+    await knownCustomer(business.id, 'Ngozi', 'CUSTOMER_ZZZ');
 
     stubTransport.replyWith(
       paymentOf({
@@ -494,7 +576,7 @@ describe('a payment the merchant reports (RecordPayment)', () => {
         customer: { kind: 'token', token: 'CUSTOMER_ZZZ' },
       }),
     );
-    await post(messagePayload('2348031234567', 'wamid.P8-pay', `${number} paid 20k`));
+    await post(messagePayload('2348031234567', 'wamid.P8-pay', `${number} paid 20k by Ngozi`));
     await drain();
 
     expect(stubSender.lastText).toContain(`Payment on ${number}`);
@@ -505,7 +587,8 @@ describe('a payment the merchant reports (RecordPayment)', () => {
     await issueUnpaidInvoice('wamid.P9');
 
     stubTransport.replyWith(paymentOf({ amount: 20_000, documentRef: 'INV-2026-999999' }));
-    await post(messagePayload('2348031234567', 'wamid.P9-pay', 'INV-2026-999999 paid 20k'));
+    // not issued: a number that names no invoice, so the payment must refuse it
+    await post(messagePayload('2348031234567', 'wamid.P9-pay', 'Ada paid 20k on INV-2026-999999'));
     await drain();
 
     expect(stubSender.lastText).toContain('could not find an unpaid invoice');

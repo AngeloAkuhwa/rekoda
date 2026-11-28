@@ -1081,6 +1081,66 @@ function fxMode(env: NodeJS.ProcessEnv, isProduction: boolean): FxMode {
 }
 
 /**
+ * The high-value document verifier (AI hardening item 9), or a refusal to run with one in
+ * production (OD-63(c), PR #437, 21 Nov 2026).
+ *
+ * The verifier reads the same `safeText` the interpreter read, where a name nobody recorded is
+ * still plain text, and sends it to OpenAI. Whether OpenAI may receive such names, and how a
+ * comparison that also checks name fields would survive their redaction, is an open owner
+ * decision. Until it is ruled, a production process refuses to start with the verifier set, as
+ * `FX_MODE=live` is refused until its gate opens: the PR that implements the ruling replaces this
+ * refusal, never an environment change. Outside production it stays available for development
+ * and tests. Unset is the default everywhere.
+ */
+function visionVerifier(env: NodeJS.ProcessEnv, isProduction: boolean): string | null {
+  const model = env['AI_MODEL_VISION_VERIFIER'] || null;
+  /* Allowed only where development or test is said explicitly: an unset NODE_ENV names no
+   * environment, so a process started from a checkout against real data is refused too
+   * (CodeRabbit on #437 at 4d9fa80). */
+  if (model && (isProduction || !NON_PRODUCTION_ENVS.has(env['NODE_ENV'] ?? ''))) {
+    throw new ConfigError(
+      'AI_MODEL_VISION_VERIFIER is refused in production until the owner rules on OD-63(c): ' +
+        'the verifier would send names nobody recorded to OpenAI. Unset it to start.',
+    );
+  }
+  return model;
+}
+
+/**
+ * The OD-59 deployment gate (owner disposition of PR #437, OWN-103(6), 22 Nov 2026). A name nobody
+ * recorded reaches the interpreter as plain text (ADR 0005 Amendment 1, OWN-102(5)), and only the
+ * approved Anthropic interpretation processor may receive it. Until OD-59 lands, a process
+ * refuses to start under either condition below unless NODE_ENV explicitly names development or
+ * test:
+ *  - with OpenAI, or an OpenAI-compatible host, as the primary interpreter (`AI_PROVIDER=openai`,
+ *    or an OpenAI key with no Anthropic key, which picks OpenAI);
+ *  - with `AI_BASE_URL` naming any host but Anthropic's own, because the Anthropic transport sends
+ *    every interpretation, classification and vision call to that URL.
+ * The OpenAI transcription route (`OPENAI_API_KEY` beside an Anthropic primary) is untouched, and
+ * the high-value verifier is refused separately (`visionVerifier`, OD-63(c)). Nothing secret is in
+ * the message.
+ */
+function approvedInterpreter(env: NodeJS.ProcessEnv, provider: 'anthropic' | 'openai'): void {
+  if (NON_PRODUCTION_ENVS.has(env['NODE_ENV'] ?? '')) return;
+  if (provider === 'openai') {
+    throw new ConfigError(
+      'The primary interpreter must be Anthropic outside explicit development or test until OD-59 lands: ' +
+        'set ANTHROPIC_API_KEY (and AI_PROVIDER=anthropic or leave it unset). OPENAI_API_KEY may ' +
+        'stay for voice transcription.',
+    );
+  }
+  const raw = env['AI_BASE_URL']?.trim();
+  /* A private or local host keeps its own, more specific refusal (deploy smoke pins it). */
+  if (raw) publicInProduction('AI_BASE_URL', raw, true);
+  if (raw && raw.replace(/\/+$/u, '') !== ANTHROPIC_API_ORIGIN) {
+    throw new ConfigError(
+      `AI_BASE_URL must be blank or exactly ${ANTHROPIC_API_ORIGIN} outside explicit development or test ` +
+        'until OD-59 lands: the interpreter may send unrecorded names only to Anthropic.',
+    );
+  }
+}
+
+/**
  * The operator plane's identity provider, or a refusal to run without one.
  *
  * Provider-neutral on purpose: issuer, audience and key set are deployment
@@ -1238,6 +1298,8 @@ function optionalHexKey(env: NodeJS.ProcessEnv, key: string): string {
  * is the one non-production state that carries no name.
  */
 const NON_PRODUCTION_ENVS = new Set(['development', 'test']);
+/** Anthropic's own API origin: the only AI_BASE_URL a production process may name (OD-59). */
+const ANTHROPIC_API_ORIGIN = 'https://api.anthropic.com';
 /**
  * A command bus rollout flag (OD-4, approved by the owner 8 Oct 2026).
  *
@@ -1364,6 +1426,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   if (requested === 'openai' && !env['OPENAI_API_KEY']) {
     throw new ConfigError('AI_PROVIDER=openai but OPENAI_API_KEY is not set');
   }
+  approvedInterpreter(env, aiProvider);
 
   /* A deployment that can send WhatsApp but has no approved authentication
    * template can take sign-ups and deliver no sign-in codes, and the failure
@@ -1560,7 +1623,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     aiModelVision: env['AI_MODEL_VISION'] ?? ROLE_DEFAULTS.vision,
     aiModelEscalation: env['AI_MODEL_ESCALATION'] ?? ROLE_DEFAULTS.escalation,
     aiModelTranscriber: env['AI_MODEL_TRANSCRIBER'] ?? ROLE_DEFAULTS.transcriber,
-    aiModelVisionVerifier: env['AI_MODEL_VISION_VERIFIER'] || null,
+    aiModelVisionVerifier: visionVerifier(env, isProduction),
     aiBaseUrl: aiBaseUrl(env, isProduction),
     aiModelPrices: env['AI_MODEL_PRICES'] || null,
     aiTranscriptionPrices: env['AI_TRANSCRIPTION_PRICES'] || null,
