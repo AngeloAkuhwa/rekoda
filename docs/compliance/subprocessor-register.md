@@ -33,7 +33,10 @@ documents, no self-hosted media sidecars).
   tokens in place of supported identifiers (recorded customers, phones
   and emails). Three exceptions, all in the rows above: a customer name
   nobody recorded, first met in a record request, reaches Anthropic's
-  interpretation model as typed until it is vaulted and tokenised
+  interpretation model as typed until it is vaulted and tokenised when
+  the reading names that customer; if the reading names nobody, nothing
+  is vaulted and the name may reach it again in a later record request
+  under the same limits (OD-78, OWN-107)
   (ADR 0005 layer 3, Amendment 1 case 4; an exception to spec C.3 ratified by OWN-106, under case 3's limits: Anthropic only, at most two interpretation calls (the primary and one escalation), plus, for a photographed record, one document-classifier call that runs first, so at most three Anthropic calls carry the name, no log or telemetry field, no new store); a customer name nobody
   recorded, in a read-only question, reaches Anthropic as typed and is
   not vaulted (ADR 0005 Amendment 1 case 3, OWN-102(5)); and the high-value

@@ -68,7 +68,7 @@ export function deliveryStatusHandler(): JobHandler {
     const moved = await conversationsRepo.markPreviewUndelivered(tx, businessId, outboundMessageId);
     if (moved.drafts > 0 || moved.continuations > 0 || moved.reopened > 0) {
       log.log(
-        `a preview failed after acceptance: ${moved.drafts} draft(s) retired, ` +
+        `a preview failed after acceptance: ${moved.drafts} draft(s) marked undelivered, ` +
           `${moved.continuations} question(s) closed, ${moved.reopened} refusal(s) and question(s) put back`,
       );
     }
