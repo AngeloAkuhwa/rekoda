@@ -544,6 +544,10 @@ export const commandDrafts = pgTable(
      * (0158, Codex review of 30a5c8f): a "separate" sent before it is
      * asked again. Null until a re-ask. */
     reaskedAt: timestamp('reasked_at', { withTimezone: true }),
+    /** The inbound message the latest identity question WhatsApp accepted answered (0249,
+     * #439): only that question's late failure withdraws the hold. Null before any re-ask is
+     * recorded, which keeps the earlier rule. */
+    heldQuestionMessageId: uuid('held_question_message_id'),
   },
   (t) => [
     // One draft per message — a job that runs twice must not give the merchant

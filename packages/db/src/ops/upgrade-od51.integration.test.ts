@@ -176,7 +176,7 @@ afterAll(async () => {
   }
 });
 
-describe('upgrading a database from 0212 through 0248', () => {
+describe('upgrading a database from 0212 through 0249', () => {
   it('starts from the boundary the previous release had', async () => {
     expect(before.charges).toHaveLength(3);
     expect(await facts()).toEqual({
@@ -188,7 +188,7 @@ describe('upgrading a database from 0212 through 0248', () => {
     });
   });
 
-  it('applies 0213 to 0248 and rewrites no history', async () => {
+  it('applies 0213 to 0249 and rewrites no history', async () => {
     const applied = await applyMigrations(scratchUrl(urls.owner));
     expect(applied).toEqual([
       '0213_support_review_plan_change',
@@ -227,6 +227,7 @@ describe('upgrading a database from 0212 through 0248', () => {
       '0246_refund_refuses_a_pack_credited_before_0193',
       '0247_payment_preview_invoice',
       '0248_validate_payment_preview_invoice',
+      '0249_held_purchase_question_message',
     ]);
 
     const after = await snapshot();
@@ -342,6 +343,7 @@ describe('upgrading a database from 0212 through 0248', () => {
       '0246_refund_refuses_a_pack_credited_before_0193',
       '0247_payment_preview_invoice',
       '0248_validate_payment_preview_invoice',
+      '0249_held_purchase_question_message',
     ]) {
       await owner.unsafe(readFileSync(join(MIGRATIONS_DIR, `${tag}.sql`), 'utf8')).simple();
     }

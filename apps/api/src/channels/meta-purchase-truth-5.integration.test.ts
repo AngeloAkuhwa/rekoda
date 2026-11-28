@@ -259,11 +259,10 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
     });
 
     /*
-     * OD-70 Option B: linking a hold to its latest identity question (migration 0247) is its own
-     * PR after #437. Until then a late failed receipt for an earlier question can withdraw a hold
-     * whose re-ask is still live, and a failed re-ask can leave the hold waiting. Either way the
-     * merchant's answer books nothing they did not confirm: this pins that safety floor, not the
-     * finished behaviour.
+     * The safety floor under any late failure of an identity question: the merchant's answer
+     * books nothing they did not confirm and nothing posts unseen. Which question a failure
+     * withdraws (only the latest accepted one, migration 0249, #439) is pinned in
+     * meta-purchase-held-question.integration.test.ts.
      */
     it.each([
       ['initial', false],
