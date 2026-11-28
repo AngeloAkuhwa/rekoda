@@ -312,6 +312,8 @@ describe('a replaced figure the waiting draft does not hold', () => {
   const fuel = draftFigures({ description: 'fuel', amount: 5_000 });
   const priced = draftFigures({ items: [{ name: 'oil', quantity: 2, unitPrice: 4.5 }] });
   const bought = draftFigures({ description: 'nails', amount: 50, quantity: 3 });
+  const rice = (unitPrice: number, quantity = 1.5) =>
+    draftFigures({ items: [{ name: 'rice', quantity, unitPrice }] });
 
   it.each([
     ['No, 4 not 3', sale],
@@ -331,25 +333,12 @@ describe('a replaced figure the waiting draft does not hold', () => {
     ['No, 4 pcs not 3, amount 60 not 50', bought],
     ['amount 60 not 50', bought],
     /* The total as the preview rounds it (CodeRabbit on #437 at d80426e). */
-    [
-      'No, total should be ₦16.38 not ₦15.38',
-      draftFigures({ items: [{ name: 'rice', quantity: 1.5, unitPrice: 10.25 }] }),
-    ],
-    ['no, 6k not 5k', draftFigures({ description: 'fuel', amount: 5_000 })],
-    [
-      'No, 2 kg not 1.5 kg',
-      draftFigures({ items: [{ name: 'rice', quantity: 1.5, unitPrice: 1.5 }] }),
-    ],
+    ['No, total should be ₦16.38 not ₦15.38', rice(10.25)],
+    ['No, 2 kg not 1.5 kg', rice(1.5)],
     /* One marked half gives the unmarked half its sense before a decimal guess (CodeRabbit on #437
      * at ddba9a7). */
-    [
-      'No, 2 kg not 1.5',
-      draftFigures({ items: [{ name: 'rice', quantity: 1.5, unitPrice: 1_000 }] }),
-    ],
-    [
-      'No, 2 not 1.5 kg',
-      draftFigures({ items: [{ name: 'rice', quantity: 1.5, unitPrice: 1_000 }] }),
-    ],
+    ['No, 2 kg not 1.5', rice(1_000)],
+    ['No, 2 not 1.5 kg', rice(1_000)],
     /* A stock adjustment's count is one of its figures (Codex on #437 at af169b0). */
     ['No, 4 not 3', draftFigures({ productMention: 'wig', quantityDelta: 3 })],
     ['No, 4 not 3', draftFigures({ productMention: 'wig', quantityDelta: -3 })],
@@ -375,15 +364,9 @@ describe('a replaced figure the waiting draft does not hold', () => {
     ['No, 4 not 3, 60 not 50', bought],
     /* "1.5m" is ₦1.5 million, never ₦1.50; "1.5 kg" a weight, never ₦1.50 (CodeRabbit, d80426e). */
     ['No, it was 1.6m not 1.5m', draftFigures({ description: 'fuel', amount: 1.5 })],
-    [
-      'No, 2 kg not 1.5 kg',
-      draftFigures({ items: [{ name: 'rice', quantity: 3, unitPrice: 1.5 }] }),
-    ],
+    ['No, 2 kg not 1.5 kg', rice(1.5, 3)],
     /* Two halves marked with different senses are still refused (CodeRabbit on #437 at ddba9a7). */
-    [
-      'No, 2 kg not ₦1.50',
-      draftFigures({ items: [{ name: 'rice', quantity: 1.5, unitPrice: 1.5 }] }),
-    ],
+    ['No, 2 kg not ₦1.50', rice(1.5)],
   ])('%j does not fit', (t, figures) => {
     expect(replacedFiguresFit(t, figures)).toBe(false);
   });
@@ -574,25 +557,41 @@ describe("a correction's words keep to their sentence, item and field", () => {
   const two = sale([ln('wig', 3, 50_000), ln('cap', 3, 50_000)]);
   const arrival = { productMention: 'cap', quantity: 3 };
   const bought = { intent: 'RecordPurchase', description: 'caps', amount: 50_000, ...arrival };
+  const oil = { ...bought, productMention: 'oil' };
   const paid = sale([ln('wig', 3, 10_000)], { statedTotal: 29_900, reportedPayment: 5_000 });
   it.each([
     ['No, make it 4 caps', true, caps, sale([ln('cap', 3, 4)])],
     ['No, make it 4 caps', false, caps, sale([ln('cap', 4, 3)])],
-    ['No, price 60k wigs not 50k', true, two, sale([two.items[0]!, ln('cap', 3, 60_000)])],
-    ['No, price 60k wigs not 50k', false, two, sale([ln('wig', 3, 60_000), two.items[1]!])],
     ['No, amount 60k not 50k', true, bought, { ...bought, amount: 60_000, productMention: null }],
     ['No, amount 60k not 50k', false, bought, { ...bought, amount: 60_000 }],
+    /* "rice" inside "price" names no arrival (independent review of #437 at a9b955a). */
+    ['No, price 60k not 50k', true, oil, { ...oil, amount: 60_000, productMention: 'rice' }],
+    ['No, price 60k not 50k, it was rice', false, oil, { ...oil, productMention: 'rice' }],
     ['No, paid 4k not 5k', true, paid, { ...paid, reportedPayment: 4_000, statedTotal: 30_000 }],
     ['No, paid 4k not 5k', false, paid, { ...paid, reportedPayment: 4_000 }],
     ['No, 4 not 3', false, paid, { ...paid, items: [ln('wig', 4, 10_000)], statedTotal: 40_000 }],
   ])('unnamedFiguresChanged(%j) is %s (gates.ts:997 to 1241)', (text, changed, draft, reading) => {
     expect(unnamedFiguresChanged(text, draft, reading)).toBe(changed);
   });
+  /* The item a price names, before or after it in its clause (gates.ts:1011; independent review of
+   * #437 at a9b955a): the wigs' price never moves the caps. */
+  it.each([
+    'No, price 60k wigs not 50k',
+    'No, wigs price 60k not 50k',
+    'No, wig price is 60k not 50k',
+    'No, price of wigs should be 60k not 50k',
+    'No, price 60k for the wigs not 50k',
+    'No, 60k not 50k for wigs',
+  ])('%j changes only the wigs', (text) => {
+    const [wig, cap] = two.items as object[];
+    expect(unnamedFiguresChanged(text, two, sale([wig!, ln('cap', 3, 60_000)]))).toBe(true);
+    expect(unnamedFiguresChanged(text, two, sale([ln('wig', 3, 60_000), cap!]))).toBe(false);
+  });
   const anon = sale([ln('wig', 3, 50_000)], { customer: { kind: 'none' }, statedTotal: 150_000 });
   const four = { ...anon, items: [ln('wig', 4, 50_000)], statedTotal: 200_000 };
   const shown = ['No, 4 not 3', 'No, 4 not 3, 50k each', 'No, 4 not 3. Total 200k', 'make it 4'];
   it.each([
-    ['No, 4 not 3. Sold 2 bags at 10k to someone else', true],
+    ['No, 4 not 3. Sold 2 bags at 10k to someone else', true] as const,
     ...shown.map((t) => [t, false] as const),
   ])('correctionHoldsOtherFigures(%j) is %s (meta-correction-ambiguous:259)', (text, other) => {
     expect(correctionHoldsOtherFigures(text, anon, four)).toBe(other);

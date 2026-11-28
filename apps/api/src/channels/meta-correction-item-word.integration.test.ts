@@ -559,17 +559,23 @@ async function seedWalkIn() {
 }
 
 describe('CG5: an anonymous waiting sale and a correction mixed with another sale', () => {
-  it('asks, and leaves the waiting sale exactly as it was', async () => {
+  /* The other sale's figures may also be the draft's (independent review of #437 at a9b955a). */
+  it.each([
+    ['AM', 'No, 4 not 3. Sold 2 bags at 10k to someone else'],
+    ['AC', 'No, 4 not 3. Sold 4 caps at 50k to someone else'],
+    ['AB', 'No, 4 not 3. Sold 3 bags at 50k to someone else'],
+  ])('%s: asks about %j, and leaves the waiting sale exactly as it was', async (id, text) => {
     const business = await seedWalkIn();
     stubTransport.replyWith(ANON_SALE);
-    await sendWorked('Sold 3 wigs for 150k', 'wamid.AM-SALE');
+    await sendWorked('Sold 3 wigs for 150k', `wamid.${id}-SALE`);
     const before = await sales(business.id);
     expect(before.map((r) => r.state)).toEqual(['pending']);
 
     stubTransport.replyWith(ANON_FOUR);
     const sent = stubSender.sent.length;
-    await sendWorked('No, 4 not 3. Sold 2 bags at 10k to someone else', 'wamid.AM-FIX');
+    await sendWorked(text, `wamid.${id}-FIX`);
     expect(stubSender.sent.length).toBe(sent + 1);
+    expect(stubSender.lastText).toBe(replies.correctionNotClear().text);
     /* Nothing replaced: the same draft, the same command, and no second draft to confirm. */
     expect(await sales(business.id)).toEqual(before);
     expect(await invoiceCount(business.id)).toBe(0);
