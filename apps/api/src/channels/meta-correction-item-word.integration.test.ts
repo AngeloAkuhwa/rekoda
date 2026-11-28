@@ -1,6 +1,8 @@
 /**
  * CG5, an item word in a correction (OD-63(a) Option B, owner ruling OWN-102(3), 22 Nov 2026). Split
- * from `meta-correction-kind.integration.test.ts` by concern; the same fixtures.
+ * from `meta-correction-kind.integration.test.ts` by concern; the same fixtures. Also holds the
+ * corrections made while an earlier message retries, and an anonymous sale corrected with another
+ * sale beside it.
  */
 import { describe, expect, it } from 'vitest';
 import { replies } from '@rekoda/core';
@@ -420,5 +422,167 @@ describe('a correction whose reading changes a figure the merchant did not name'
 
     expect(stubSender.lastText).toContain('4 × wig');
     expect(await drafts(business.id)).toEqual(['RecordSale:superseded', 'RecordSale:pending']);
+  });
+});
+
+/**
+ * CG5 while an earlier message of the same business is still retrying: a clear correction of an
+ * expense still replaces it, and a yes retried after the correction books nothing; a nameless
+ * correction of a customer's sale withdraws that sale (OD-60, owner review of #437 at 49f2586).
+ * Each retried job is checked to have finished before the books are read, so an empty book is the
+ * retry's answer, never a job still waiting (CodeRabbit on #437 at 156621f). Moved from
+ * `meta-correction-kind.integration.test.ts`, which is at the layout limit.
+ */
+/** A job's state, read in its own business. */
+const jobState = (businessId: string, jobId: string) =>
+  withBusiness(db, businessId, (tx) =>
+    tx.execute<{ state: string }>(sql`
+      SELECT state FROM jobs WHERE business_id = ${businessId}::uuid AND id = ${jobId}::uuid`),
+  ).then((rows) => rows[0]?.state ?? null);
+
+describe('CG5: a correction while an earlier message is retrying', () => {
+  it('an earlier question still retrying does not stop the correction', async () => {
+    const { business } = await seedOwner();
+    await send('fuel 5k cash', 'wamid.K7-EXP', expense(5_000));
+    await queueOnly('wamid.K7-Q', 'how much did I sell this month?');
+    await failOnceAndBackOff(business.id);
+
+    await send('no, 6k not 5k', 'wamid.K7-FIX', expense(6_000));
+    expect(stubSender.lastText).toContain(replies.correctionTaken().text);
+    expect(await drafts(business.id)).toEqual([
+      'RecordExpense:superseded',
+      'RecordExpense:pending',
+    ]);
+  });
+
+  it('a yes retried after the correction books nothing; the corrected expense is booked once', async () => {
+    const { business } = await seedOwner();
+    await send('fuel 5k cash', 'wamid.K8-EXP', expense(5_000));
+    await queueOnly('wamid.K8-YES', 'yes');
+    const retried = await failOnceAndBackOff(business.id);
+
+    await send('no, 6k not 5k', 'wamid.K8-FIX', expense(6_000));
+    expect(await drafts(business.id)).toEqual([
+      'RecordExpense:superseded',
+      'RecordExpense:pending',
+    ]);
+    await bringDue(business.id);
+    await run();
+    /* The retried yes ran to the end, so the empty books are its answer (CodeRabbit on #437 at
+     * 156621f). */
+    expect(await jobState(business.id, retried)).toBe('done');
+    expect((await books(business.id)).expenses).toEqual([]);
+
+    await send('yes', 'wamid.K8-YES2');
+    expect((await books(business.id)).expenses).toEqual([600_000]);
+  });
+});
+
+describe("CG5: a nameless correction of a customer's sale while a yes retries", () => {
+  it('withdraws the sale and asks; the retried yes books nothing', async () => {
+    const { business } = await seedOwner();
+    await send('Ada bought 3 wigs for 150k', 'wamid.K13-SALE', SALE);
+    await queueOnly('wamid.K13-YES', 'yes');
+    const retried = await failOnceAndBackOff(business.id);
+
+    await send('No, 4 not 3', 'wamid.K13-FIX', {
+      ...SALE,
+      customer: { kind: 'none' },
+      items: [{ name: 'wig', quantity: 4, unitPrice: 50_000 }],
+      statedTotal: 200_000,
+    });
+    expect(stubSender.lastText).toBe(replies.correctionWithdrawn().text);
+    expect(await drafts(business.id)).toEqual(['RecordSale:superseded']);
+    await bringDue(business.id);
+    await run();
+    expect(await jobState(business.id, retried)).toBe('done');
+    expect(await books(business.id)).toEqual({ invoices: [], expenses: [] });
+  });
+});
+
+/**
+ * CG5: a correction mixed with another record is asked about, whether or not the waiting sale names
+ * a customer (owner ruling OWN-102(2); CodeRabbit on #437 at 156621f). An anonymous waiting sale was
+ * superseded before the mixed-instruction checks ran, so "No, 4 not 3. Sold 2 bags at 10k to
+ * someone else" dropped the 2-bag sale and left a four-wig preview to confirm. The same case for a
+ * named customer is in `meta-correction-ambiguous.integration.test.ts`.
+ */
+const ANON_SALE = {
+  intent: 'RecordSale',
+  customer: { kind: 'none' },
+  items: [{ name: 'wig', quantity: 3, unitPrice: 50_000 }],
+  statedTotal: 150_000,
+  reportedPayment: 0,
+  paymentMethod: 'transfer',
+  discount: null,
+  deliveryFee: null,
+  dueDescription: null,
+};
+const ANON_FOUR = {
+  ...ANON_SALE,
+  items: [{ name: 'wig', quantity: 4, unitPrice: 50_000 }],
+  statedTotal: 200_000,
+};
+
+/** Sends one message and asserts the worker had a job to run for it. */
+async function sendWorked(text: string, wamid: string) {
+  await post(messagePayload(OWNER, wamid, text));
+  const runner = buildRunner(workerDb, db, deps);
+  let worked = await runner.runOnce();
+  expect(worked).toBe(true);
+  while (worked) worked = await runner.runOnce();
+}
+
+const sales = (businessId: string) =>
+  withBusiness(db, businessId, (tx) =>
+    tx.execute<{ id: string; state: string; command: unknown }>(
+      sql`SELECT id, state, command FROM command_drafts
+           WHERE business_id = ${businessId}::uuid AND intent = 'RecordSale'
+           ORDER BY insertion_seq`,
+    ),
+  ).then((rows) => [...rows]);
+
+const invoiceCount = (businessId: string) =>
+  withBusiness(db, businessId, (tx) =>
+    tx.execute<{ n: string }>(
+      sql`SELECT count(*)::text AS n FROM invoices WHERE business_id = ${businessId}::uuid`,
+    ),
+  ).then((rows) => Number(rows[0]?.n ?? 0));
+
+async function seedWalkIn() {
+  const user = await identity.upsertUserByPhone(db, `+${OWNER}`);
+  return identity.createBusinessWithOwner(db, {
+    name: 'Walk-in Wigs',
+    businessType: null,
+    ownerUserId: user.id,
+  });
+}
+
+describe('CG5: an anonymous waiting sale and a correction mixed with another sale', () => {
+  it('asks, and leaves the waiting sale exactly as it was', async () => {
+    const business = await seedWalkIn();
+    stubTransport.replyWith(ANON_SALE);
+    await sendWorked('Sold 3 wigs for 150k', 'wamid.AM-SALE');
+    const before = await sales(business.id);
+    expect(before.map((r) => r.state)).toEqual(['pending']);
+
+    stubTransport.replyWith(ANON_FOUR);
+    const sent = stubSender.sent.length;
+    await sendWorked('No, 4 not 3. Sold 2 bags at 10k to someone else', 'wamid.AM-FIX');
+    expect(stubSender.sent.length).toBe(sent + 1);
+    /* Nothing replaced: the same draft, the same command, and no second draft to confirm. */
+    expect(await sales(business.id)).toEqual(before);
+    expect(await invoiceCount(business.id)).toBe(0);
+  });
+
+  it('still lets a plain correction supersede it', async () => {
+    const business = await seedWalkIn();
+    stubTransport.replyWith(ANON_SALE);
+    await sendWorked('Sold 3 wigs for 150k', 'wamid.AP-SALE');
+    stubTransport.replyWith(ANON_FOUR);
+    await sendWorked('No, 4 not 3', 'wamid.AP-FIX');
+    const rows = await sales(business.id);
+    expect(rows.map((r) => r.state)).toEqual(['superseded', 'pending']);
+    expect((rows[1]?.command as { items: { quantity: number }[] }).items[0]?.quantity).toBe(4);
   });
 });

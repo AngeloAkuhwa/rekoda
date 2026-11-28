@@ -5,11 +5,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   clearlyCorrects,
+  correctionHoldsOtherFigures,
   correctionWordsExplained,
   draftFigures,
   explicitlyCorrects,
   looksLikeCorrection,
   replacedFiguresFit,
+  unnamedFiguresChanged,
 } from './gates.js';
 
 describe('a correction clear enough to keep the draft customer (clearlyCorrects, OWN-100)', () => {
@@ -553,5 +555,46 @@ describe('a sale preview shows only these aggregates', () => {
     expect(over.moneyKobo).toContain(1_500_000);
     const exact = draftFigures({ ...LINES, statedTotal: 30_000, reportedPayment: 30_000 });
     expect(exact.moneyKobo).not.toContain(1_500_000);
+  });
+});
+
+/* A correction's scope (OD-67 B, OD-76 A; CodeRabbit on #437 at 156621f): a figure reads in its own
+ * sentence and binds to the item it names; stock arrival and stated total change only when named. */
+describe("a correction's words keep to their sentence, item and field", () => {
+  const ln = (name: string, quantity: number, unitPrice: number) => ({ name, quantity, unitPrice });
+  const sale = (items: object[], more = {}) => ({ intent: 'RecordSale', items, ...more });
+  const wigs = draftFigures(sale([ln('wig', 3, 50_000)], { discount: 2_000 }));
+  it.each([
+    ['No, discount should be 5k. Quantity should be 4 pcs not 3.', true],
+    ['No, price should be 4 pcs not 3', false],
+  ])('replacedFiguresFit(%j) is %s (gates.ts:856)', (text, fits) => {
+    expect(replacedFiguresFit(text, wigs)).toBe(fits);
+  });
+  const caps = sale([ln('cap', 3, 3)]);
+  const two = sale([ln('wig', 3, 50_000), ln('cap', 3, 50_000)]);
+  const arrival = { productMention: 'cap', quantity: 3 };
+  const bought = { intent: 'RecordPurchase', description: 'caps', amount: 50_000, ...arrival };
+  const paid = sale([ln('wig', 3, 10_000)], { statedTotal: 29_900, reportedPayment: 5_000 });
+  it.each([
+    ['No, make it 4 caps', true, caps, sale([ln('cap', 3, 4)])],
+    ['No, make it 4 caps', false, caps, sale([ln('cap', 4, 3)])],
+    ['No, price 60k wigs not 50k', true, two, sale([two.items[0]!, ln('cap', 3, 60_000)])],
+    ['No, price 60k wigs not 50k', false, two, sale([ln('wig', 3, 60_000), two.items[1]!])],
+    ['No, amount 60k not 50k', true, bought, { ...bought, amount: 60_000, productMention: null }],
+    ['No, amount 60k not 50k', false, bought, { ...bought, amount: 60_000 }],
+    ['No, paid 4k not 5k', true, paid, { ...paid, reportedPayment: 4_000, statedTotal: 30_000 }],
+    ['No, paid 4k not 5k', false, paid, { ...paid, reportedPayment: 4_000 }],
+    ['No, 4 not 3', false, paid, { ...paid, items: [ln('wig', 4, 10_000)], statedTotal: 40_000 }],
+  ])('unnamedFiguresChanged(%j) is %s (gates.ts:997 to 1241)', (text, changed, draft, reading) => {
+    expect(unnamedFiguresChanged(text, draft, reading)).toBe(changed);
+  });
+  const anon = sale([ln('wig', 3, 50_000)], { customer: { kind: 'none' }, statedTotal: 150_000 });
+  const four = { ...anon, items: [ln('wig', 4, 50_000)], statedTotal: 200_000 };
+  const shown = ['No, 4 not 3', 'No, 4 not 3, 50k each', 'No, 4 not 3. Total 200k', 'make it 4'];
+  it.each([
+    ['No, 4 not 3. Sold 2 bags at 10k to someone else', true],
+    ...shown.map((t) => [t, false] as const),
+  ])('correctionHoldsOtherFigures(%j) is %s (meta-correction-ambiguous:259)', (text, other) => {
+    expect(correctionHoldsOtherFigures(text, anon, four)).toBe(other);
   });
 });

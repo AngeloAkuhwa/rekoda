@@ -7,7 +7,7 @@
  * 3d66867). Now a correction read as another kind, aimed at another member's request, sent with
  * two waiting, or after something else was said, is asked about and changes nothing. A clear
  * correction of the member's own single request of the same kind still replaces it. The cases while
- * an earlier message retries are in `meta-correction-retry.integration.test.ts`. The books are
+ * an earlier message retries are in `meta-correction-item-word.integration.test.ts`. The books are
  * asserted, never only the reply.
  */
 import { describe, expect, it } from 'vitest';
