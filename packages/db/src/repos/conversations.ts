@@ -1242,12 +1242,18 @@ export async function markPreviewUndelivered(
       -- nobody: withdrawn exactly as withdrawHeld does when the question's send fails at once
       -- (OWN-102(4)), so it never closes its member's refusal (hasDraftsAfterBy) and is never
       -- answered (CodeRabbit on #437 at aff3f63).
+      -- Only the hold's LATEST accepted question counts (0249, issue #439): an earlier question's
+      -- failure leaves the live re-ask answerable. A hold asked before 0249 has no link: one never
+      -- re-asked is matched by the message that drafted it (its initial question), as before; one
+      -- already marked re-asked is never withdrawn by a receipt for that initial question.
       UPDATE command_drafts d SET state = 'superseded', withdrawn = true,
              retired_reason = 'preview_not_delivered', updated_at = clock_timestamp()
         FROM reply
        WHERE d.business_id = ${businessId}::uuid
-         AND d.conversation_message_id = reply.request_id
          AND d.state = 'held'
+         AND (d.held_question_message_id = reply.request_id
+              OR (d.held_question_message_id IS NULL AND d.reasked_at IS NULL
+                  AND d.conversation_message_id = reply.request_id))
       RETURNING d.id
     ), lost_reads AS (
       -- A question answer that failed after its Query was already retired (by the member's
@@ -1278,8 +1284,19 @@ export async function markPreviewUndelivered(
          SET state = 'superseded', updated_at = clock_timestamp()
         FROM reply
        WHERE c.business_id = ${businessId}::uuid
-         AND c.source_message_id = reply.request_id
          AND c.state = 'open'
+         AND (
+           -- The question this reply opened, unless it is an identity question whose hold has
+           -- since been asked again by another accepted reply: a re-ask reuses the continuation
+           -- the first question opened, and that re-ask is the one the member can answer (#439).
+           (c.source_message_id = reply.request_id AND NOT EXISTS (
+             SELECT 1 FROM command_drafts h
+              WHERE c.expects = 'purchase_identity'
+                AND h.business_id = c.business_id AND h.id = c.draft_id AND h.state = 'held'
+                AND h.held_question_message_id <> reply.request_id))
+           -- The question of a hold this receipt withdrew, whichever message opened it.
+           OR (c.expects = 'purchase_identity' AND c.draft_id IN (SELECT id FROM held_asks))
+         )
       RETURNING c.id
     ), answered AS (
       -- OD-62(o): the reply answered the member's own refusal, so the refusal it closed and the
@@ -2491,6 +2508,24 @@ export async function reaskHeld(
         expiresAt: new Date(row.expires_at),
       }
     : null;
+}
+
+/**
+ * The inbound message the held purchase's latest accepted identity question answered (0249,
+ * issue #439). Set only once WhatsApp accepted the reply that asked or re-asked it, so a late
+ * failed receipt for an earlier question never withdraws the hold (`markPreviewUndelivered`).
+ */
+export async function setHeldQuestionMessage(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  messageId: string,
+): Promise<void> {
+  await tx.execute(sql`
+    -- updated_at is left alone: it dates the hold itself, which the yes path compares with
+    -- when a message arrived.
+    UPDATE command_drafts SET held_question_message_id = ${messageId}::uuid
+     WHERE business_id = ${businessId}::uuid AND id = ${draftId}::uuid AND state = 'held'`);
 }
 
 /**
