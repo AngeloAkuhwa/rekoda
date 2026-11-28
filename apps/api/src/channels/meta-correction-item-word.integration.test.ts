@@ -581,12 +581,17 @@ describe('CG5: an anonymous waiting sale and a correction mixed with another sal
     expect(await invoiceCount(business.id)).toBe(0);
   });
 
-  it('still lets a plain correction supersede it', async () => {
+  /* Spoken particles and "it's" carry no other record (independent review of #437 at f39710b). */
+  it.each([
+    ['AP', 'No, 4 not 3'],
+    ['AQ', 'No, 4 not 3 abeg'],
+    ['AR', "No, it's 4"],
+  ])('%s: still lets the plain correction %j supersede it', async (id, text) => {
     const business = await seedWalkIn();
     stubTransport.replyWith(ANON_SALE);
-    await sendWorked('Sold 3 wigs for 150k', 'wamid.AP-SALE');
+    await sendWorked('Sold 3 wigs for 150k', `wamid.${id}-SALE`);
     stubTransport.replyWith(ANON_FOUR);
-    await sendWorked('No, 4 not 3', 'wamid.AP-FIX');
+    await sendWorked(text, `wamid.${id}-FIX`);
     const rows = await sales(business.id);
     expect(rows.map((r) => r.state)).toEqual(['superseded', 'pending']);
     expect((rows[1]?.command as { items: { quantity: number }[] }).items[0]?.quantity).toBe(4);
