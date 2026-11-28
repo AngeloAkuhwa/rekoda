@@ -5384,11 +5384,7 @@ async function confirmPayment(
      * balance it showed. Any other balance, up or down, makes the preview
      * untrue, so nothing is written and they are asked again. The same check
      * runs again under the row lock (`expectedBalanceK`). */
-    if (
-      shown.balanceShownK !== invoice.balanceDueK ||
-      shown.amountShownK !== gate.amountK ||
-      gate.creditK > 0
-    ) {
+    if (shown.balanceShownK !== invoice.balanceDueK || shown.amountShownK !== gate.amountK) {
       await refundDocumentUnit();
       return replies.paymentBalanceMoved(
         invoice.invoiceNumber,
