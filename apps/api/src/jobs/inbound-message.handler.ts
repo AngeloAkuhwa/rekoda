@@ -6101,16 +6101,21 @@ async function correctionInheritance(
    * about, never turned into a sale to nobody. */
   if (token && !customerId) return { kind: 'unclear', ask: 'customer' };
   /* The draft named nobody: nothing to carry. An anonymous sale's correction is still held to the
-   * words a customer's is held to: one not clearly this draft's correction, or with words the draft
-   * does not explain ("No, 4 not 3. Sold 4 caps at 50k to someone else"), is asked about, so another
-   * sale it carries is never dropped when its figures happen to be the draft's (independent review
-   * of #437 at a9b955a). */
+   * words it may use: one whose words the draft does not explain ("No, 4 not 3. Sold 4 caps at 50k
+   * to someone else") is asked about, so another sale it carries is never dropped when its figures
+   * happen to be the draft's (independent review of #437 at a9b955a). With no customer to carry, a
+   * spoken particle ("abeg", "please", "o") is no one's name and is set aside (review at f39710b). */
   if (!customerId && !draftRef) {
-    const explained =
-      clearlyCorrects(input.rawText) &&
-      correctionWordsExplained(input.rawText, draftVocabulary(stored));
-    if (command.intent === 'RecordSale' && !explained)
+    const spoken = input.rawText.replace(
+      /(?<![\p{L}\p{N}])(?:abeg|please|pls|plz|o|oh)(?![\p{L}\p{N}])/giu,
+      ' ',
+    );
+    if (
+      command.intent === 'RecordSale' &&
+      !correctionWordsExplained(spoken, draftVocabulary(stored))
+    ) {
       return { kind: 'unclear', ask: 'correction' };
+    }
     return { kind: 'supersede' };
   }
 
