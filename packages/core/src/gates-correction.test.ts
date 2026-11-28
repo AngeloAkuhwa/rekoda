@@ -389,13 +389,9 @@ describe('a replaced figure and its replacement agree on what they are', () => {
 });
 
 describe('corrections use displayed figures', () => {
+  const buy = (more: object) => draftFigures({ intent: 'RecordPurchase', ...more });
   it('reads the balance a part-paid purchase preview shows (CodeRabbit on #437 at 600a155)', () => {
-    const partPaid = draftFigures({
-      intent: 'RecordPurchase',
-      description: 'ankara fabric',
-      amount: 50_000,
-      reportedPayment: 20_000,
-    });
+    const partPaid = buy({ description: 'ankara fabric', amount: 50_000, reportedPayment: 20_000 });
     expect(replacedFiguresFit('No, balance should be 25k not 30k', partPaid)).toBe(true);
     expect(replacedFiguresFit('No, amount 60k not 50k', partPaid)).toBe(true);
     expect(replacedFiguresFit('No, balance should be 25k not 35k', partPaid)).toBe(false);
@@ -407,12 +403,7 @@ describe('corrections use displayed figures', () => {
   });
 
   it('uses the stock arrival quantity for purchases and the original quantity for sales', () => {
-    const purchase = draftFigures({
-      intent: 'RecordPurchase',
-      productMention: 'wig',
-      quantity: 3.5,
-      amount: 50_000,
-    });
+    const purchase = buy({ productMention: 'wig', quantity: 3.5, amount: 50_000 });
     expect(replacedFiguresFit('No, 4 pcs not 3', purchase)).toBe(true);
     expect(purchase.quantities).toEqual([3]);
 
@@ -433,27 +424,20 @@ describe('CodeRabbit on #437 at 400ca58', () => {
   });
 
   it('reads the balance a part-paid sale preview shows', () => {
-    const sale = draftFigures({
-      intent: 'RecordSale',
-      items: [{ name: 'generator', quantity: 1, unitPrice: 150_000 }],
-      reportedPayment: 110_000,
-    });
+    const generator = (more: object) =>
+      draftFigures({
+        intent: 'RecordSale',
+        items: [{ name: 'generator', quantity: 1, unitPrice: 150_000 }],
+        ...more,
+      });
+    const sale = generator({ reportedPayment: 110_000 });
     expect(replacedFiguresFit('balance should be 35k not 40k', sale)).toBe(true);
     expect(replacedFiguresFit('balance should be 35k not 99k', sale)).toBe(false);
     /* Fully paid: no balance line is shown, so none is a figure the merchant saw. */
-    const paid = draftFigures({
-      intent: 'RecordSale',
-      items: [{ name: 'generator', quantity: 1, unitPrice: 150_000 }],
-      reportedPayment: 150_000,
-    });
+    const paid = generator({ reportedPayment: 150_000 });
     expect(replacedFiguresFit('balance should be 5k not 0', paid)).toBe(false);
     /* A sale whose figures disagree is asked about (CG1), never shown with a balance. */
-    const mismatched = draftFigures({
-      intent: 'RecordSale',
-      items: [{ name: 'generator', quantity: 1, unitPrice: 150_000 }],
-      statedTotal: 100_000,
-      reportedPayment: 60_000,
-    });
+    const mismatched = generator({ statedTotal: 100_000, reportedPayment: 60_000 });
     expect(replacedFiguresFit('balance should be 30k not 40k', mismatched)).toBe(false);
   });
 
@@ -558,6 +542,9 @@ describe("a correction's words keep to their sentence, item and field", () => {
   const arrival = { productMention: 'cap', quantity: 3 };
   const bought = { intent: 'RecordPurchase', description: 'caps', amount: 50_000, ...arrival };
   const oil = { ...bought, productMention: 'oil' };
+  const twoNaira = sale([ln('wig', 3, 2)]);
+  const drop = { reportedPayment: 4_000, statedTotal: null };
+  const redCap = (p: number) => sale([ln('cap', 1, 50_000), ln('red cap', 1, p)]);
   const paid = sale([ln('wig', 3, 10_000)], { statedTotal: 29_900, reportedPayment: 5_000 });
   it.each([
     ['No, make it 4 caps', true, caps, sale([ln('cap', 3, 4)])],
@@ -570,6 +557,18 @@ describe("a correction's words keep to their sentence, item and field", () => {
     ['No, paid 4k not 5k', true, paid, { ...paid, reportedPayment: 4_000, statedTotal: 30_000 }],
     ['No, paid 4k not 5k', false, paid, { ...paid, reportedPayment: 4_000 }],
     ['No, 4 not 3', false, paid, { ...paid, items: [ln('wig', 4, 10_000)], statedTotal: 40_000 }],
+    /* CodeRabbit on #437 at 8018978: a restated total is no leave to drop it; a named quantity is
+     * never a price; "not rice" names no arrival. */
+    ['No, paid 4k not 5k, total should be 29.9k', true, paid, { ...paid, ...drop }],
+    ['No, price 60k caps not 50k', true, redCap(50_000), redCap(60_000)],
+    ['No, quantity should be 4 not 3', true, twoNaira, sale([ln('wig', 3, 4)])],
+    ['No, quantity should be 4 not 3', false, twoNaira, sale([ln('wig', 4, 2)])],
+    [
+      'No, price 60k not 50k, not rice',
+      true,
+      oil,
+      { ...oil, amount: 60_000, productMention: 'rice' },
+    ],
   ])('unnamedFiguresChanged(%j) is %s (gates.ts:997 to 1241)', (text, changed, draft, reading) => {
     expect(unnamedFiguresChanged(text, draft, reading)).toBe(changed);
   });
