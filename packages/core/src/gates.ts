@@ -944,6 +944,21 @@ export function unnamedFiguresChanged(
     word && !NOT_AN_ITEM.has(word) && [...before, ...after].some((l) => sameItem(word, lineKey(l)))
       ? word
       : null;
+  /* The line a money figure's clause names when the word after it does not: an item word before it
+   * ("wigs price 60k", "price of wigs should be 60k") or after it, short of the next figure ("60k
+   * for the wigs", "50k for wigs"). Words naming two lines name none (independent review of #437 at
+   * a9b955a). */
+  const lineOf = (word: string) =>
+    [...before, ...after].map(lineKey).find((k) => k !== '' && sameItem(word, k)) ?? null;
+  const clauseItem = (lead: string, rest: string): string | null => {
+    const ahead = rest.split(CLAUSE_BREAK)[0]?.split(/\d/u)[0] ?? '';
+    const words = [lead.split(CLAUSE_BREAK).at(-1) ?? '', ahead]
+      .flatMap((part) => part.match(/\p{L}+/gu) ?? [])
+      .filter((w) => !UNIT_WORDS.has(w) && itemOf(w) !== null);
+    const lines = new Set(words.map(lineOf));
+    if (lines.size === 0) return null;
+    return lines.size === 1 ? words[0]! : CONFLICTING_ITEMS;
+  };
   const money: NamedFigure[] = [];
   /* Counts pair the same way ("4 not 3"): the 3 answers only with the 4, for the one change from 3
    * to 4, never for another line's count (Codex on #437 at 1f99af5). */
@@ -1039,7 +1054,7 @@ export function unnamedFiguresChanged(
       field: named,
       replaced: replaces || NEGATED_GAP.test(gap),
       removal,
-      item,
+      item: item ?? clauseItem(gap, lower.slice(end)),
       pair: null,
       used: false,
     };
@@ -1178,7 +1193,7 @@ export function unnamedFiguresChanged(
     const nowProduct = product(arrivalAfter);
     if (
       product(arrivalBefore) !== nowProduct &&
-      (nowProduct === null || !lower.includes(nowProduct))
+      (nowProduct === null || !namesWords(lower, nowProduct))
     ) {
       return true;
     }
@@ -1470,6 +1485,17 @@ function removes(clause: string): boolean {
   /* Pidgin "no remove", and a question about a removal ("who told you to remove"), are no removal
    * (independent review of #437 at 4621600). */
   return !NEGATION_WORD.test(lead) && !/\bno\s+$|\b(?:who|what|how)\b/u.test(lead);
+}
+
+/** Whether `name` stands in `text` as whole words, a plural allowed ("caps"), never inside another
+ * word ("rice" in "price"; independent review of #437 at a9b955a). */
+function namesWords(text: string, name: string): boolean {
+  const words = name.trim().split(/\s+/u).filter(Boolean);
+  if (words.length === 0) return false;
+  const escaped = words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')).join(String.raw`\s+`);
+  return new RegExp(String.raw`(?<![\p{L}\p{N}])${escaped}(?:e?s)?(?![\p{L}\p{N}])`, 'u').test(
+    text,
+  );
 }
 
 /** Whether the word after a count names a line: its name, its last word, or either with an "s" or
