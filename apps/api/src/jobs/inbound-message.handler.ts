@@ -19,6 +19,7 @@ import {
   explicitlyCorrects,
   replacedFiguresFit,
   unnamedFiguresChanged,
+  correctionHoldsOtherFigures,
   correctionWordsExplained,
   orderPreview,
   orderQuestion,
@@ -6076,6 +6077,19 @@ async function correctionInheritance(
    * reading of "No, 4 not 3" that also moves the payment is asked about, never previewed. */
   if (unnamedFiguresChanged(input.rawText, stored, command as unknown as Record<string, unknown>)) {
     return { kind: 'unclear', ask: 'unnamed' };
+  }
+  /* Nor may it carry a figure that belongs to something else (OWN-102(2)): "No, 4 not 3. Sold 2 bags
+   * at 10k to someone else" holds a sale the replacement would drop, whether or not the waiting
+   * draft names a customer, so it is asked about and nothing is replaced (CodeRabbit on #437 at
+   * 156621f). */
+  if (
+    correctionHoldsOtherFigures(
+      input.rawText,
+      stored,
+      command as unknown as Record<string, unknown>,
+    )
+  ) {
+    return { kind: 'unclear', ask: draftNamesSomeone(stored, target) ? 'customer' : 'correction' };
   }
 
   /* A customer the correction names, by a name or by any token, is its own: a different one
