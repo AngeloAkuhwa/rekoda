@@ -263,13 +263,15 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
      * only when it is for the hold's LATEST accepted identity question. A failure of an earlier
      * question leaves the live re-ask answerable; a failure of the current one withdraws the hold
      * and closes its question, as a send that fails at once withdraws a hold nobody was asked
-     * about (OWN-102(4)). Every way a question is asked again is covered: after a "no", after doubt
-     * ("same?", which passed no outcome before #439), and after a "separate" that found a new match.
+     * about (OWN-102(4)). Every way a question is asked again is covered: after a "no", after a
+     * doubtful answer ("same?", read as an uncertain identity answer), after a doubtful yes ("yes?",
+     * the `unsureReply` path, which passed no outcome before #439, so its re-ask was never recorded;
+     * CodeRabbit on #437), and after a "separate" that found a new match.
      * Each case receives the failed receipt twice: a duplicate converges.
      */
     const lateFailure = async (
       failed: 'initial' | 'current',
-      how: 'no' | 'doubt' | 'separate',
+      how: 'no' | 'doubt' | 'yes?' | 'separate',
       newMatch: boolean,
       tag: string,
     ) => {
@@ -289,7 +291,8 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
         await reply(`wamid.${tag}-reask`, 'separate', DELEGATE);
         expect(stubSender.lastText).toContain(QUESTION);
       } else {
-        await reply(`wamid.${tag}-reask`, how === 'no' ? 'no' : 'same?', DELEGATE);
+        const text = how === 'no' ? 'no' : how === 'doubt' ? 'same?' : 'yes?';
+        await reply(`wamid.${tag}-reask`, text, DELEGATE);
         expect(stubSender.lastText).toContain(REASK);
       }
       const current = lastWamid();
@@ -325,6 +328,8 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
       ['current', 'doubt', false],
       ['initial', 'doubt', true],
       ['current', 'doubt', true],
+      ['initial', 'yes?', false],
+      ['current', 'yes?', false],
       ['initial', 'separate', true],
       ['current', 'separate', true],
     ] as const)(
