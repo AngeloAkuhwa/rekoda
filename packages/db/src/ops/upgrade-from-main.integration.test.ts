@@ -165,15 +165,15 @@ afterAll(async () => {
   }
 });
 
-describe('upgrading the database main leaves (0192) through 0247', () => {
+describe('upgrading the database main leaves (0192) through 0248', () => {
   it('starts at 0192 with the release seeded', () => {
     expect(pending[0]).toBe('0193_charge_provider_times');
-    expect(pending.at(-1)).toBe('0247_payment_preview_invoice');
+    expect(pending.at(-1)).toBe('0248_validate_payment_preview_invoice');
     expect(before.charges).toHaveLength(3);
     expect(before.charges[0]).not.toHaveProperty('provider_paid_at');
   });
 
-  it('applies 0193 to 0247 in order and rewrites no column the old release wrote', async () => {
+  it('applies 0193 to 0248 in order and rewrites no column the old release wrote', async () => {
     const applied = await applyMigrations(scratchUrl(urls.owner));
     expect(applied).toEqual(pending);
 

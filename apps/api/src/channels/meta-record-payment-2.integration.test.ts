@@ -98,11 +98,11 @@ describe('a payment the merchant reports (RecordPayment)', () => {
   /**
    * The balance fell between the preview and the yes.
    *
-   * The confirmation re-resolves the invoice and re-gates on the FRESH
-   * balance, which is the whole reason it does not carry the preview's
-   * figure forward: the merchant is asked before anything is attempted.
-   * `BalanceMoved` in settle.ts guards the narrower race that remains,
-   * between that read and the row lock, and refuses there too. Neither path
+   * The confirmation reads back the invoice the preview showed and the
+   * balance it showed (OD-57); a fresh balance that differs is a stale
+   * confirmation, so the merchant is asked before anything is attempted.
+   * `BalanceMoved` in settle.ts repeats the check under the row lock for
+   * the narrower race between that read and the lock. Neither path
    * posts what fits and drops the rest, which would leave real money with no
    * story and only the merchant knows where it belongs.
    */
@@ -134,8 +134,8 @@ describe('a payment the merchant reports (RecordPayment)', () => {
     await post(messagePayload('2348031234567', 'wamid.PD-confirm', 'yes'));
     await drain();
 
-    // G-49: the fresh balance makes this an overpayment nobody was shown, so
-    // it is refused as stale rather than turned into ₦100,000 of credit.
+    // OD-57: the balance is not the one shown, so it is refused as stale, never
+    // posted short or turned into ₦100,000 of credit nobody was shown (G-49).
     expect(stubSender.lastText).toContain('only has ₦50,000 owing');
     expect(stubSender.lastText).toContain('I have not recorded anything');
     // A question, never a preview: nothing here invites another yes.

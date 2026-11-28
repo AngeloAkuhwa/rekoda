@@ -179,7 +179,7 @@ describe('a payment preview is bound to the invoice it showed (OD-57)', () => {
     expect(after1!.balance_due_k).toBe('14000000');
   });
 
-  it('(v) an unchanged invoice books once, even under a double yes', async () => {
+  it('(v) an unchanged invoice books once, and a second yes books nothing more', async () => {
     const business = await seedMerchant(`+${OWNER}`);
     await issueUnpaidInvoice('wamid.B5-1');
     const [inv1] = await invoices(business.id);
@@ -219,6 +219,27 @@ describe('a payment preview is bound to the invoice it showed (OD-57)', () => {
     const [, after2] = await invoices(business.id);
     expect(after2!.id).toBe(inv2!.id);
     expect(after2!.balance_due_k).toBe('15000000');
+  });
+
+  it('(vi-b) a payment naming its invoice number is refused when that balance moved', async () => {
+    const business = await seedMerchant(`+${OWNER}`);
+    await issueUnpaidInvoice('wamid.B6b-1');
+    const [inv1] = await invoices(business.id);
+
+    stubTransport.replyWith(
+      paymentOf({ amount: 20_000, customer: { kind: 'none' }, documentRef: inv1!.invoice_number }),
+    );
+    await send(`${inv1!.invoice_number} paid 20k`, 'wamid.B6b-pay');
+    expect(stubSender.lastText).toContain('Still owing after this: ₦130,000');
+    await paidElsewhere(business.id, inv1!.id, 1_000_000);
+
+    await send('yes', 'wamid.B6b-yes');
+
+    // The preview's "Still owing after this" is no longer true (OWN-101: every payment preview).
+    expect(stubSender.lastText).toBe(
+      replies.paymentBalanceMoved(inv1!.invoice_number, 14_000_000, 0).text,
+    );
+    expect(await chatPayments(business.id)).toEqual([]);
   });
 
   it('(vii) an overpayment still follows OWN-16 on the invoice it showed', async () => {
@@ -357,7 +378,7 @@ describe('a payment preview is bound to the invoice it showed (OD-57)', () => {
       { ...context, amountShownK: 15_000_001 },
       { ...context, amountShownK: 0 },
       { ...context, balanceShownK: 1.5 },
-      { ...context, invoiceId: 'INV-2026-000001' },
+      { ...context, invoiceId: 'INV-1' }, // not issued: text where a uuid belongs
       { ...context, customerName: 'Ada' },
       { ...context, kind: 'something_else' },
     ]) {

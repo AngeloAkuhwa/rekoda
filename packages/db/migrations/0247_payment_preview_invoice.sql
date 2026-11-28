@@ -15,7 +15,9 @@
 --
 -- Additive for the running release: it writes only `payment_overpayment` contexts, which still
 -- pass, and it reads a `payment_invoice` context as none (its earlier behaviour). The constraint
--- is replaced in one transaction; the existing rows hold only NULL or the 0152 kind.
+-- is replaced NOT VALID, so this transaction holds its lock only briefly and scans nothing; new
+-- and updated rows are checked at once. 0248 validates the existing rows (NULL or the 0152 kind)
+-- in its own transaction, taking only SHARE UPDATE EXCLUSIVE, as 0187 and 0188 do.
 ALTER TABLE command_drafts DROP CONSTRAINT command_drafts_confirmation_context_ck;
 -- Wrapped in COALESCE(..., false) on purpose, as 0152 is: a CHECK that evaluates to NULL PASSES,
 -- and a missing key makes the terms below NULL rather than false. The number casts are reached
@@ -77,4 +79,4 @@ ALTER TABLE command_drafts ADD CONSTRAINT command_drafts_confirmation_context_ck
     END,
     false
   )
-);
+) NOT VALID;

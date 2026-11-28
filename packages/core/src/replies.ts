@@ -1289,9 +1289,9 @@ export function paymentAlreadySettled(invoiceNumber: string): Reply {
  */
 export function paymentPreviewOutOfDate(): Reply {
   return reply(
-    'That payment preview is out of date, so I have not recorded anything. Tell me ' +
-      'the payment again, like "Ada paid 20k" or "INV-2026-000004 paid 20k", and I ' +
-      'will check it against the invoice with you.',
+    'The payment I showed you earlier no longer matches the invoice, so I have not ' +
+      'recorded anything. Tell me the payment again, like "Ada paid 20k" or ' +
+      '"INV-2026-000004 paid 20k", and I will check it with you.',
   );
 }
 
