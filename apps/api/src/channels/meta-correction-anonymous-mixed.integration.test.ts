@@ -28,7 +28,7 @@ const SALE = {
   customer: { kind: 'none' },
   items: [{ name: 'wig', quantity: 3, unitPrice: 50_000 }],
   statedTotal: 150_000,
-  reportedPayment: 150_000,
+  reportedPayment: 0,
   paymentMethod: 'transfer',
   discount: null,
   deliveryFee: null,
@@ -38,7 +38,6 @@ const FOUR = {
   ...SALE,
   items: [{ name: 'wig', quantity: 4, unitPrice: 50_000 }],
   statedTotal: 200_000,
-  reportedPayment: 200_000,
 };
 
 async function send(text: string, wamid: string) {
@@ -78,7 +77,7 @@ describe('CG5: an anonymous waiting sale and a correction mixed with another sal
   it('asks, and leaves the waiting sale exactly as it was', async () => {
     const business = await seedOwner();
     stubTransport.replyWith(SALE);
-    await send('Sold 3 wigs for 150k, paid transfer', 'wamid.AM-SALE');
+    await send('Sold 3 wigs for 150k', 'wamid.AM-SALE');
     const before = await sales(business.id);
     expect(before.map((r) => r.state)).toEqual(['pending']);
 
@@ -94,7 +93,7 @@ describe('CG5: an anonymous waiting sale and a correction mixed with another sal
   it('still lets a plain correction supersede it', async () => {
     const business = await seedOwner();
     stubTransport.replyWith(SALE);
-    await send('Sold 3 wigs for 150k, paid transfer', 'wamid.AP-SALE');
+    await send('Sold 3 wigs for 150k', 'wamid.AP-SALE');
     stubTransport.replyWith(FOUR);
     await send('No, 4 not 3', 'wamid.AP-FIX');
     const rows = await sales(business.id);
