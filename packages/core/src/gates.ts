@@ -1377,7 +1377,30 @@ export function correctionHoldsOtherFigures(
     );
     if (!isHeld) return true;
   }
-  return false;
+  /* A reading may take the other record in as a line of its own ("No, 4 not 3. Sold 2 bags at 10k
+   * to someone else" read as four wigs and two bags), which holds every figure above. A line the
+   * draft did not have, beside a later sentence that records something of its own, is that other
+   * record, and is asked about rather than merged (independent review of #437 at b51fc0c). */
+  return addsLineOfItsOwn(stored, reading) && LATER_RECORD_SENTENCE.test(text.toLowerCase());
+}
+
+/** A sentence after the first that opens by recording something: "… . Sold 2 bags", "… ! And I bought". */
+const LATER_RECORD_SENTENCE =
+  /[.!?;\n]\s*(?:and\s+|also\s+)?(?:i\s+(?:also\s+)?)?(?:sold|sell|bought|buy|paid|pay|received|spent|collected)\b/u;
+
+/** Whether the reading holds an item line whose name none of the draft's lines has. */
+function addsLineOfItsOwn(
+  stored: Record<string, unknown>,
+  reading: Record<string, unknown>,
+): boolean {
+  const names = (c: Record<string, unknown>) =>
+    (Array.isArray(c['items']) ? (c['items'] as unknown[]) : []).map((item) =>
+      item && typeof item === 'object' && typeof (item as { name?: unknown }).name === 'string'
+        ? (item as { name: string }).name.trim().toLowerCase()
+        : '',
+    );
+  const before = new Set(names(stored));
+  return names(reading).some((name) => !before.has(name));
 }
 
 /** The field a correction's clause names for its figure, if it names one. */
