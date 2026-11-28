@@ -55,6 +55,9 @@ export interface RecordPaymentInput {
    * real confirmation; the public API never does, so it cannot overpay.
    */
   confirmedOverpayment?: { expectedBalanceK: number } | null;
+  /** The balance a chat payment preview showed, checked again under the row
+   * lock (OD-57). Only chat sets it. */
+  expectedBalanceK?: number | null;
 }
 
 /**
@@ -132,6 +135,7 @@ export async function recordPaymentWork(
         evidenceBasis: input.evidenceBasis ?? null,
         paymentEvidenceId: input.paymentEvidenceId ?? null,
         confirmedOverpayment: input.confirmedOverpayment ?? null,
+        expectedBalanceK: input.expectedBalanceK ?? null,
       });
       result = { outcome: 'recorded', ...recorded };
     } catch (error) {

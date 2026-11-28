@@ -1011,6 +1011,14 @@ export interface RecordMerchantPaymentInput {
    * the public API never does.
    */
   confirmedOverpayment?: { expectedBalanceK: number } | null;
+  /**
+   * The balance a chat payment preview showed (OD-57, OWN-101). Under the
+   * invoice's row lock the balance must still be exactly that, or nothing is
+   * written (`BalanceMoved`): "Still owing after this" was computed from it,
+   * and a payment landing between the "yes" and the lock makes it untrue.
+   * Absent for every other caller, which behaves as before.
+   */
+  expectedBalanceK?: number | null;
 }
 
 export interface RecordedPayment {
@@ -1075,6 +1083,9 @@ export async function recordMerchantPayment(
 
   const balanceK = Number(invoice.balance_due_k);
   if (balanceK <= 0) throw new AlreadySettled(`${invoice.invoice_number} has nothing owing`);
+  if (input.expectedBalanceK != null && balanceK !== input.expectedBalanceK) {
+    throw new BalanceMoved(invoice.invoice_number, balanceK, Math.max(0, input.amountK - balanceK));
+  }
 
   /**
    * `applyPayment` decides, not a clamp.

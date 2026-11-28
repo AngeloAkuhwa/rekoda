@@ -6,6 +6,13 @@
 > where it names a document, that document may since have been archived
 > (see `REKODA_REFERENCE_MANIFEST.md`).
 
+## OD-57 PR, 28 Nov 2026 (read first)
+
+- **main:** `21c92df` (#437 merged by the owner; deployment hold OWN-104(2) until #438 still applies to real merchants). **Active PR:** OD-57 (payment preview bound to the invoice it showed), branch `angelo/magical-bell-nsp27i`, base `21c92df`. CODE COMPLETE, PR OPEN, not merged, not deployed, STAGING ACCEPTANCE PENDING. The owner merges (OWN-99 to OWN-107 repeat it; the 19 Nov staging acceptance freeze on #435 also suspended the autopilot's OWN-26 merge authority, and no later ruling restores it).
+- **What changed:** migrations `0247_payment_preview_invoice` and `0248_validate_payment_preview_invoice` (a second `confirmation_context` kind, additive); preview stores the invoice shown; `confirmPayment` reads it back by id and refuses rather than redirects; the balance shown is checked again under the row lock. Details and evidence: the OD-57 row of `REKODA_LAUNCH_READINESS.md`.
+- **Migration numbers:** this PR takes 0247 (constraint added NOT VALID) and 0248 (validated); #439 (held-question message id, OD-70) now takes 0249.
+- **Still open, in order (OWN-101, OWN-104, OWN-107):** #439 after OD-57; OD-79 (recommendation B, after OD-57); #438 (WhatsApp erasure flag; deployment hold); OD-59 paid-launch item; deferred #440, #441, #442. Draft #435 (G-13) is engineering-complete and held by the owner's freeze.
+
 ## PR #437 closeout, 28 Nov 2026 (read first)
 
 - **main:** `dbe99b7`. **Active PR:** #437 (owner merges, OWN-99). The remediation branch `angelo/magical-bell-5r9wet` (`b51fc0c`) was fast-forwarded into the PR branch on the owner's instruction, with these commits on top:

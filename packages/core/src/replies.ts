@@ -1280,6 +1280,22 @@ export function paymentAlreadySettled(invoiceNumber: string): Reply {
 }
 
 /**
+ * The "yes" no longer matches the payment preview it answers (OD-57).
+ *
+ * The invoice the preview showed is no longer the one this payment can go on:
+ * it was voided, it now belongs to someone else, or the preview was made
+ * before Rekoda kept a record of the invoice it showed. Nothing is posted and
+ * no other invoice is tried: a payment on a guessed invoice is the defect.
+ */
+export function paymentPreviewOutOfDate(): Reply {
+  return reply(
+    'The payment I showed you earlier no longer matches the invoice, so I have not ' +
+      'recorded anything. Tell me the payment again, like "Ada paid 20k" or ' +
+      '"INV-2026-000004 paid 20k", and I will check it with you.',
+  );
+}
+
+/**
  * The invoice owes less than the merchant just reported.
  *
  * Between the preview and the write a provider payment landed, so part of

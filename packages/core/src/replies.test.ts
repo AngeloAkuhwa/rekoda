@@ -231,6 +231,7 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   paymentNoOpenInvoice: [replies.paymentNoOpenInvoice()],
   paymentWhichInvoice: [replies.paymentWhichInvoice(1), replies.paymentWhichInvoice(37)],
   paymentAlreadySettled: [replies.paymentAlreadySettled('INV-2026-000041')],
+  paymentPreviewOutOfDate: [replies.paymentPreviewOutOfDate()],
   paymentBalanceMoved: [
     replies.paymentBalanceMoved('INV-2026-000041', 0, NAIRA_MILLIONS),
     replies.paymentBalanceMoved('INV-2026-000041', NAIRA_MILLIONS, 0),

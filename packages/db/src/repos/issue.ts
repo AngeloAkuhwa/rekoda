@@ -1207,6 +1207,51 @@ export async function openInvoiceForPayment(
   return { outcome: 'found', invoice: readOpenInvoice(row) };
 }
 
+/**
+ * The invoice a payment preview SHOWED, read back by id at the "yes" (OD-57, OWN-101).
+ *
+ * Never a fresh resolution: the customer's newest open invoice may be a different invoice by
+ * now, and a payment booked there is money on the wrong invoice. The preview's own hints are
+ * checked again, so the invoice is still what the merchant named: the number they typed, or
+ * else the customer they named (the joined customer row or the snapshot token, as
+ * `openInvoiceForPayment` matches). Read without a lock; the write repeats the balance check
+ * under the invoice's row lock (`recordMerchantPayment`, `expectedBalanceK`).
+ */
+export type ShownInvoice =
+  | { outcome: 'open'; invoice: OpenInvoice }
+  /** Paid off since the preview. */
+  | { outcome: 'settled'; invoiceNumber: string }
+  /** Not this business's, gone, voided, or no longer the invoice the merchant named. */
+  | { outcome: 'unavailable' };
+
+export async function shownInvoiceForPayment(
+  tx: TenantDb,
+  businessId: string,
+  invoiceId: string,
+  hint: { invoiceNumber?: string | null; customerToken?: string | null },
+): Promise<ShownInvoice> {
+  const rows = await tx.execute<OpenInvoiceRow & { status: string; named: boolean }>(sql`
+    SELECT i.id, i.invoice_number, i.balance_due_k::bigint AS balance_due_k, i.customer_id,
+           i.status,
+           CASE
+             WHEN ${hint.invoiceNumber ?? null}::text IS NOT NULL
+               THEN upper(i.invoice_number) = upper(${hint.invoiceNumber ?? null}::text)
+             WHEN ${hint.customerToken ?? null}::text IS NOT NULL
+               THEN COALESCE(c.token = ${hint.customerToken ?? null}::text, false)
+                    OR COALESCE(i.snapshot_json ->> 'customerToken' = ${hint.customerToken ?? null}::text, false)
+             ELSE true
+           END AS named
+    FROM invoices i
+    LEFT JOIN customers c ON c.id = i.customer_id AND c.business_id = i.business_id
+    WHERE i.id = ${invoiceId}::uuid AND i.business_id = ${businessId}::uuid
+  `);
+  const row = [...rows][0];
+  if (!row || !row.named) return { outcome: 'unavailable' };
+  if (row.status === 'paid') return { outcome: 'settled', invoiceNumber: row.invoice_number };
+  if (row.status !== 'issued' && row.status !== 'partially_paid') return { outcome: 'unavailable' };
+  return { outcome: 'open', invoice: readOpenInvoice(row) };
+}
+
 type OpenInvoiceRow = {
   id: string;
   invoice_number: string;

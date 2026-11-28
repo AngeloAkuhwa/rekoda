@@ -1730,6 +1730,20 @@
       "when": 1796904000023,
       "tag": "0246_refund_refuses_a_pack_credited_before_0193",
       "breakpoints": true
+    },
+    {
+      "idx": 247,
+      "version": "7",
+      "when": 1796904000024,
+      "tag": "0247_payment_preview_invoice",
+      "breakpoints": true
+    },
+    {
+      "idx": 248,
+      "version": "7",
+      "when": 1796904000025,
+      "tag": "0248_validate_payment_preview_invoice",
+      "breakpoints": true
     }
   ]
 }
