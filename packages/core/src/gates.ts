@@ -959,6 +959,13 @@ export function unnamedFiguresChanged(
     if (lines.size === 0) return null;
     return lines.size === 1 ? words[0]! : CONFLICTING_ITEMS;
   };
+  /* An item word that fits two lines ("caps" beside "cap" and "red cap") names neither: its figure
+   * is asked about rather than given to either (CodeRabbit on #437 at 8018978). */
+  const oneLine = (word: string | null): string | null => {
+    if (word === null || word === CONFLICTING_ITEMS) return word;
+    const keys = new Set([...before, ...after].map(lineKey).filter((k) => sameItem(word, k)));
+    return keys.size > 1 ? CONFLICTING_ITEMS : word;
+  };
   const money: NamedFigure[] = [];
   /* Counts pair the same way ("4 not 3"): the 3 answers only with the 4, for the one change from 3
    * to 4, never for another line's count (Codex on #437 at 1f99af5). */
@@ -1033,8 +1040,13 @@ export function unnamedFiguresChanged(
      * reading leaves the count unchanged ("No, make it 4 caps" read as three caps at ₦4; CodeRabbit
      * on #437 at 156621f). */
     const item = itemOf(m[2]);
+    /* A figure its clause names as a quantity ("quantity should be 4") is a count, never a price,
+     * whether or not the draft holds it (CodeRabbit on #437 at 8018978). */
+    const quantityNamed =
+      kind === null && isCount && QUANTITY_FIELD.test(fieldGap.split(CLAUSE_BREAK).at(-1) ?? '');
     if (
       kind === 'quantity' ||
+      quantityNamed ||
       (kind === null &&
         isCount &&
         !namedMoney &&
@@ -1054,7 +1066,7 @@ export function unnamedFiguresChanged(
       field: named,
       replaced: replaces || NEGATED_GAP.test(gap),
       removal,
-      item: item ?? clauseItem(gap, lower.slice(end)),
+      item: oneLine(item ?? clauseItem(gap, lower.slice(end))),
       pair: null,
       used: false,
     };
@@ -1341,6 +1353,10 @@ export function unnamedFiguresChanged(
         fits(f, 'total') &&
         (!pairChecked || f.pair === null || totalBefore.includes(f.pair.kobo)),
     );
+  /* Only removal wording lets a reading drop the stated total: restating it ("total should be
+   * 29.9k") keeps it (CodeRabbit on #437 at 8018978). */
+  const removesTotal = (value: number) =>
+    money.some((f) => f.kobo === value && f.removal && fits(f, 'total'));
   /* A stated total the correction does not name must follow from the corrected figures: within
    * `computeMoney`'s tolerance a different one would become the invoice total unasked (Codex on #437
    * at 0bf9298). One the reading drops must have been the total the draft's lines computed, or the
@@ -1358,7 +1374,7 @@ export function unnamedFiguresChanged(
       if (statedBefore !== null && computedBefore?.computedTotalK === figures.computedTotalK) {
         return true;
       }
-    } else if (statedBefore !== null && !namesTotal(statedBefore, false)) {
+    } else if (statedBefore !== null && !removesTotal(statedBefore)) {
       const figures = before.length > 0 ? saleFigures(stored, before) : null;
       if (!figures || figures.computedTotalK !== statedBefore) return true;
     }
@@ -1492,10 +1508,11 @@ function removes(clause: string): boolean {
 function namesWords(text: string, name: string): boolean {
   const words = name.trim().split(/\s+/u).filter(Boolean);
   if (words.length === 0) return false;
+  /* Only an affirmative mention counts: "not rice" or "instead of rice" rules the product out
+   * (CodeRabbit on #437 at 8018978). */
   const escaped = words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')).join(String.raw`\s+`);
-  return new RegExp(String.raw`(?<![\p{L}\p{N}])${escaped}(?:e?s)?(?![\p{L}\p{N}])`, 'u').test(
-    text,
-  );
+  const found = new RegExp(String.raw`(?<![\p{L}\p{N}])${escaped}(?:e?s)?(?![\p{L}\p{N}])`, 'gu');
+  return [...text.matchAll(found)].some((m) => !NEGATED_GAP.test(text.slice(0, m.index)));
 }
 
 /** Whether the word after a count names a line: its name, its last word, or either with an "s" or
