@@ -5,7 +5,12 @@
  * Split from `gates-unnamed-figures.test.ts` by concern (CodeRabbit on #437 at 156621f).
  */
 import { describe, expect, it } from 'vitest';
-import { draftFigures, replacedFiguresFit, unnamedFiguresChanged } from './gates.js';
+import {
+  correctionHoldsOtherFigures,
+  draftFigures,
+  replacedFiguresFit,
+  unnamedFiguresChanged,
+} from './gates.js';
 
 describe('replacedFiguresFit: a figure is read within its own sentence', () => {
   const sale = {
@@ -142,4 +147,32 @@ describe('unnamedFiguresChanged: a stated total is kept when nothing it follows 
       }),
     ).toBe(false);
   });
+});
+
+describe('correctionHoldsOtherFigures: a correction mixed with another record', () => {
+  const sale = {
+    intent: 'RecordSale',
+    customer: { kind: 'none' },
+    items: [{ name: 'wig', quantity: 3, unitPrice: 50_000 }],
+    statedTotal: 150_000,
+  };
+  const four = {
+    ...sale,
+    items: [{ name: 'wig', quantity: 4, unitPrice: 50_000 }],
+    statedTotal: 200_000,
+  };
+
+  /* CodeRabbit on #437 at 156621f (meta-correction-ambiguous:259): the 2 bags at 10k are another sale. */
+  it('finds a figure neither the waiting draft nor the reading holds', () => {
+    expect(
+      correctionHoldsOtherFigures('No, 4 not 3. Sold 2 bags at 10k to someone else', sale, four),
+    ).toBe(true);
+  });
+
+  it.each(['No, 4 not 3', 'No, 4 not 3, 50k each', 'No, 4 not 3. Total 200k', 'make it 4'])(
+    '%j holds only the correction and figures the preview showed',
+    (text) => {
+      expect(correctionHoldsOtherFigures(text, sale, four)).toBe(false);
+    },
+  );
 });

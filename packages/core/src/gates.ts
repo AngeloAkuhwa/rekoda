@@ -1351,6 +1351,35 @@ export function unnamedFiguresChanged(
   return false;
 }
 
+/**
+ * Whether a correction's words hold a figure that is neither one the waiting draft holds nor one its
+ * reading holds (owner ruling OWN-102(2): a correction mixed with another instruction is asked
+ * about). Every figure of a correction is a value it replaces, the value it becomes, or one the
+ * preview already showed; any other ("No, 4 not 3. Sold 2 bags at 10k to someone else") belongs to
+ * something else, which a replacement would silently drop (CodeRabbit on #437 at 156621f). A figure
+ * is held if it matches as a count or as money in kobo.
+ */
+export function correctionHoldsOtherFigures(
+  text: string,
+  stored: Record<string, unknown>,
+  reading: Record<string, unknown>,
+): boolean {
+  const held = [draftFigures(stored), draftFigures(reading)];
+  for (const m of text.toLowerCase().matchAll(ANY_FIGURE)) {
+    const figure = m[1]?.trim();
+    if (!figure) continue;
+    const plain = Number(figure.replace(/,/gu, ''));
+    const k = figureKobo(figure);
+    const isHeld = held.some(
+      (f) =>
+        (Number.isFinite(plain) && f.quantities.includes(plain)) ||
+        (k !== null && f.moneyKobo.includes(k)),
+    );
+    if (!isHeld) return true;
+  }
+  return false;
+}
+
 /** The field a correction's clause names for its figure, if it names one. */
 type NamedField = 'price' | 'payment' | 'discount' | 'fee' | 'amount' | 'total';
 /** A change's field: a named one, or the amount of a payment or an expense, which is what was paid. */
