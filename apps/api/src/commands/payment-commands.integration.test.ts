@@ -208,6 +208,63 @@ describe('RecordPayment through the bus', () => {
     expect(await count(businessId, 'payments')).toBe(1);
   });
 
+  /**
+   * OD-57: a chat payment carries the balance its preview showed. A payment that lands between
+   * the handler's own check and this write's row lock moves the balance; under the lock that is
+   * a stale confirmation, refused with nothing written, never booked against the new figure.
+   */
+  it('refuses a payment whose shown balance moved before the row lock (OD-57)', async () => {
+    const businessId = await seedBusiness();
+    const sale = await seedOpenInvoice(businessId);
+    await withBusiness(appDb, businessId, (tx) =>
+      recordPaymentWork(tx, {
+        businessId,
+        invoice: { id: sale.invoiceId },
+        amountK: 300_000,
+        method: 'transfer',
+        sourceType: 'dashboard',
+        sourceId: 'landed-meanwhile',
+        actor: 'system',
+      }),
+    );
+
+    const stale = await withBusiness(appDb, businessId, (tx) =>
+      recordPaymentWork(tx, {
+        businessId,
+        invoice: { id: sale.invoiceId },
+        amountK: 200_000,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 'draft-shown-at-10k',
+        actor: 'system',
+        expectedBalanceK: 1_000_000,
+      }),
+    );
+    expect(stale).toEqual({
+      outcome: 'balance_moved',
+      invoiceNumber: sale.invoiceNumber,
+      balanceDueK: 700_000,
+      excessK: 0,
+    });
+    expect(await count(businessId, 'payments')).toBe(1);
+
+    /* The balance it showed, still true: booked as before. */
+    const fresh = await withBusiness(appDb, businessId, (tx) =>
+      recordPaymentWork(tx, {
+        businessId,
+        invoice: { id: sale.invoiceId },
+        amountK: 200_000,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 'draft-shown-at-7k',
+        actor: 'system',
+        expectedBalanceK: 700_000,
+      }),
+    );
+    expect(fresh.outcome).toBe('recorded');
+    expect(await count(businessId, 'payments')).toBe(2);
+  });
+
   it('the booking, the receipt job and the announcement roll back together', async () => {
     const businessId = await seedBusiness();
     const sale = await seedOpenInvoice(businessId);
