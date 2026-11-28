@@ -270,7 +270,11 @@ describe('a payment the merchant reports (RecordPayment)', () => {
     const draft = await withBusiness(db, business.id, (tx) =>
       conversationsRepo.pendingDraft(tx, business.id),
     );
-    expect(draft?.confirmationContext ?? null).toBeNull();
+    // No overpayment figures: only the invoice and exact payment shown (OD-57).
+    expect(draft?.confirmationContext).toMatchObject({
+      kind: 'payment_invoice',
+      amountShownK: 15_000_000,
+    });
 
     await post(messagePayload('2348031234567', 'wamid.PC-confirm', 'yes'));
     await drain();

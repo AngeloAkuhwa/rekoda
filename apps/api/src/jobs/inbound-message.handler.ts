@@ -5323,10 +5323,13 @@ async function continueConversation(
 /**
  * A confirmed payment the merchant reported.
  *
- * The invoice is resolved AGAIN here rather than carried on the draft: a
- * provider payment or another reported one may have landed since the
- * preview, and applying a stale balance is how an invoice goes negative. The
- * gate runs again on the fresh figure for the same reason.
+ * The invoice is the one the PREVIEW showed (OD-57, OWN-101), read back by id
+ * from what the draft recorded, never resolved afresh: a newer invoice issued
+ * to the same customer before the "yes" would otherwise take the payment. Its
+ * payable state is read AGAIN, because a provider payment or another reported
+ * one may have landed since the preview: a balance that is not the one shown
+ * is a stale confirmation and is asked again, here and under the row lock. A
+ * draft with nothing recorded (previewed before this rule) is asked again too.
  */
 async function confirmPayment(
   deps: InboundMessageDeps,
@@ -5338,17 +5341,22 @@ async function confirmPayment(
   command: Record<string, unknown>,
   refundDocumentUnit: () => Promise<void>,
 ): Promise<Reply> {
-  const target = await issueRepo.openInvoiceForPayment(tx, businessId, {
+  const shown = parseConfirmationContext(draft.confirmationContext);
+  if (shown === null) {
+    await refundDocumentUnit();
+    return replies.paymentPreviewOutOfDate();
+  }
+  const target = await issueRepo.shownInvoiceForPayment(tx, businessId, shown.invoiceId, {
     invoiceNumber: (command['documentRef'] as string | null) ?? null,
     customerToken: customerTokenOf(command),
   });
-  if (target.outcome === 'none') {
+  if (target.outcome === 'settled') {
     await refundDocumentUnit();
-    return replies.paymentNoOpenInvoice();
+    return replies.paymentAlreadySettled(target.invoiceNumber);
   }
-  if (target.outcome === 'ambiguous') {
+  if (target.outcome === 'unavailable') {
     await refundDocumentUnit();
-    return replies.paymentWhichInvoice(target.openCount);
+    return replies.paymentPreviewOutOfDate();
   }
   const invoice = target.invoice;
 
@@ -5370,11 +5378,26 @@ async function confirmPayment(
    * 100,000 of credit nobody was shown. The repository repeats the balance
    * check under the invoice's row lock; this one answers before any work.
    */
-  const shown = parseConfirmationContext(draft.confirmationContext);
   let confirmedOverpayment: { expectedBalanceK: number } | null = null;
-  if (gate.creditK > 0 || shown !== null) {
+  if (shown.kind === 'payment_invoice') {
+    /* OD-57: the preview's "Still owing after this" was computed from the
+     * balance it showed. Any other balance, up or down, makes the preview
+     * untrue, so nothing is written and they are asked again. The same check
+     * runs again under the row lock (`expectedBalanceK`). */
     if (
-      shown === null ||
+      shown.balanceShownK !== invoice.balanceDueK ||
+      shown.amountShownK !== gate.amountK ||
+      gate.creditK > 0
+    ) {
+      await refundDocumentUnit();
+      return replies.paymentBalanceMoved(
+        invoice.invoiceNumber,
+        invoice.balanceDueK,
+        Math.max(0, gate.amountK - invoice.balanceDueK),
+      );
+    }
+  } else {
+    if (
       shown.invoiceId !== invoice.id ||
       shown.amountReceivedK !== gate.amountK ||
       shown.balanceShownK !== invoice.balanceDueK
@@ -5383,11 +5406,7 @@ async function confirmPayment(
       /* With figures on the draft, the balance may have risen as well as
        * fallen (a reversed payment reopens it), so the reply names no cause;
        * with none, the preview was not an overpayment and the balance fell. */
-      return replies.paymentBalanceMoved(
-        invoice.invoiceNumber,
-        invoice.balanceDueK,
-        shown === null ? gate.amountK - invoice.balanceDueK : 0,
-      );
+      return replies.paymentBalanceMoved(invoice.invoiceNumber, invoice.balanceDueK, 0);
     }
     confirmedOverpayment = { expectedBalanceK: shown.balanceShownK };
   }
@@ -5445,7 +5464,9 @@ async function confirmPayment(
     actor: 'system',
     evidenceBasis: basis,
     paymentEvidenceId,
-    ...(confirmedOverpayment ? { confirmedOverpayment } : {}),
+    ...(confirmedOverpayment
+      ? { confirmedOverpayment }
+      : { expectedBalanceK: shown.balanceShownK }),
   };
 
   /* The A1 rollout seam (spec §25): the work books the payment, enqueues the
@@ -7257,9 +7278,20 @@ async function acknowledge(
           : paymentGate.preview,
       ),
     );
-    /* An overpayment preview is a promise about specific figures; the draft
-     * keeps them so `yes` can prove it is confirming what was shown. */
-    if (paymentGate.creditK === 0) return previewed;
+    /* A preview is a promise about specific figures on a specific invoice; the
+     * draft keeps them so `yes` can prove it is confirming what was shown and
+     * books to that invoice, never a newer one (OD-57, OWN-101). */
+    if (paymentGate.creditK === 0) {
+      return {
+        ...previewed,
+        confirmationContext: {
+          kind: 'payment_invoice',
+          invoiceId: invoice.id,
+          balanceShownK: invoice.balanceDueK,
+          amountShownK: paymentGate.amountK,
+        },
+      };
+    }
     return {
       ...previewed,
       confirmationContext: {

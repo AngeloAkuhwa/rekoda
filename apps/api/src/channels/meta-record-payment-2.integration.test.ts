@@ -86,7 +86,9 @@ describe('a payment the merchant reports (RecordPayment)', () => {
     await post(messagePayload('2348031234567', 'wamid.PC-confirm', 'yes'));
     await drain();
 
-    expect(stubSender.lastText).toContain('could not find an unpaid invoice');
+    // The invoice the preview showed is paid off, and it is named (OD-57): no other invoice is
+    // looked for.
+    expect(stubSender.lastText).toContain(`${open!.invoiceNumber} was already paid off`);
     const after = await withBusiness(db, business.id, (tx) =>
       usageRepo.usageFor(tx, business.id, period),
     );

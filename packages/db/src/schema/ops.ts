@@ -448,10 +448,11 @@ export const commandDrafts = pgTable(
     identityLink: jsonb('identity_link'),
     /**
      * What the preview SHOWED, computed from SQL (migration 0152, OWN-16):
-     * today only a deliberate overpayment's balance, amount, allocation and
-     * credit, checked again at `yes`. System-owned, never the model's; ids
-     * and kobo only. Read through `parseConfirmationContext`. Null on almost
-     * every draft.
+     * a deliberate overpayment's balance, amount, allocation and credit, or
+     * (0247, OD-57) the invoice any other payment preview showed with its
+     * balance and amount, checked again at `yes`. System-owned, never the
+     * model's; ids and kobo only. Read through `parseConfirmationContext`.
+     * Null on every draft that is not a payment preview.
      */
     confirmationContext: jsonb('confirmation_context'),
     /**
