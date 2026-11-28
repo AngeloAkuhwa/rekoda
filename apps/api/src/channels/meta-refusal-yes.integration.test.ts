@@ -303,9 +303,13 @@ describe('a yes after a refused record', () => {
       actor: 'operator:test-clock',
     });
 
+    /* Each answer gets its own reply (CodeRabbit on #437 at 156621f). */
+    const sent = stubSender.sent.length;
     await plain('wamid.R42', 'yes');
+    expect(stubSender.sent.length).toBe(sent + 1);
     expect(stubSender.lastText).not.toContain('reply *yes* to save it');
     await plain('wamid.R43', 'no');
+    expect(stubSender.sent.length).toBe(sent + 2);
     expect(stubSender.lastText).not.toContain('reply *yes* to save it');
     expect((await footprint(business.id)).invoices).toBe(0);
   });

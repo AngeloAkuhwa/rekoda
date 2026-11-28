@@ -504,8 +504,9 @@ describe('the sale total the preview shows is a figure of the draft', () => {
 
   it('accepts a correction of the displayed total, and still refuses a figure never shown', () => {
     const figures = draftFigures(FRACTIONAL);
-    expect(figures.moneyKobo).toContain(44);
-    expect(figures.moneyKobo).not.toContain(45);
+    /* Through the gate itself, not only the list it reads (CodeRabbit on #437 at 156621f). */
+    expect(replacedFiguresFit('No, ₦0.50 not ₦0.44', figures)).toBe(true);
+    expect(replacedFiguresFit('No, ₦0.50 not ₦0.45', figures)).toBe(false);
   });
 
   /* A CG1 question shows both totals when the stated one disagrees with the lines. */

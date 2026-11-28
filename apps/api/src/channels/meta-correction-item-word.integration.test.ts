@@ -221,10 +221,22 @@ describe('a seconds-only message beside a waiting expense', () => {
   it('never replaces the shown preview', async () => {
     const { business } = await seedOwner();
     await send('fuel 6k', 'wamid.SEC-EXP', expense(6_000));
+    /* The same draft holding the same ₦6,000 command afterwards, and nothing posted (CodeRabbit on
+     * #437 at 156621f): a state check alone passes an overwritten amount. */
+    const expenseDraft = (businessId: string) =>
+      withBusiness(db, businessId, (tx) =>
+        tx.execute<{ id: string; state: string; command: unknown }>(sql`
+          SELECT id, state, command FROM command_drafts
+           WHERE business_id = ${businessId}::uuid AND intent = 'RecordExpense'
+           ORDER BY insertion_seq`),
+      ).then((rows) => [...rows]);
+    const before = await expenseDraft(business.id);
+    expect(before.map((r) => r.state)).toEqual(['pending']);
 
     await send('make it 5 seconds', 'wamid.SEC-FIX', expense(5_000));
     expect(stubSender.lastText).not.toContain(replies.correctionTaken().text);
-    expect((await drafts(business.id))[0]).toBe('RecordExpense:pending');
+    expect(await expenseDraft(business.id)).toEqual(before);
+    expect((await books(business.id)).expenses).toEqual([]);
   });
 });
 

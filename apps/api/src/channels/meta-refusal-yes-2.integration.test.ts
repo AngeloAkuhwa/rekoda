@@ -218,6 +218,13 @@ describe("answering a refusal keeps another member's question", () => {
       await plain(`wamid.RD4-${answer}`, answer);
       /* Another member's question still stands between the owner and the preview. */
       expect(stubSender.lastText).toBe(replies.previewBehindQuestion().text);
+      /* The delegate's question is still pending, not retired (CodeRabbit on #437 at 156621f). */
+      const query = await withBusiness(db, business.id, (tx) =>
+        tx.execute<{ state: string }>(sql`SELECT state FROM command_drafts
+           WHERE business_id = ${business.id}::uuid AND intent = 'Query'
+             AND requested_by = ${delegate.id}::uuid`),
+      );
+      expect([...query].map((r) => r.state)).toEqual(['pending']);
       await post(messagePayload(DELEGATE, `wamid.RD5-${answer}`, 'yes'));
       await drain();
       expect(await footprint(business.id)).toEqual(before);
@@ -466,7 +473,14 @@ describe("a yes after one's own refusal never re-asks another member's funding q
     expect(stubSender.lastText).toContain(POS_QUESTION);
     const before = await footprint(business.id);
 
+    const sent = stubSender.sent.length;
     await plain(`wamid.RF3-${answer}`, answer);
+    /* Its own reply, answering the refusal: a plain yes closes it, "na so?" leaves it waiting
+     * (CodeRabbit on #437 at 156621f). */
+    expect(stubSender.sent.length).toBe(sent + 1);
+    expect(await refusalStates(business.id, owner.id)).toEqual([
+      answer === 'yes' ? 'superseded' : 'pending',
+    ]);
     expect(stubSender.lastText).not.toContain(POS_QUESTION);
     expect(await footprint(business.id)).toEqual(before);
     /* No funding answer was opened for the owner: their "cash" would be about nothing. */
@@ -525,8 +539,12 @@ describe("a questioned yes looks past the sender's own unseen record", () => {
     expect(await refusalStates(business.id, owner.id)).toEqual(['pending']);
     expect(await footprint(business.id)).toEqual(before);
 
+    const sent = stubSender.sent.length;
     await plain('wamid.RQ5', 'yes');
+    /* Its own reply, and the refusal it answered closed (CodeRabbit on #437 at 156621f). */
+    expect(stubSender.sent.length).toBe(sent + 1);
     expect(stubSender.lastText).toBe(replies.previewWaitingForAnotherMember().text);
+    expect(await refusalStates(business.id, owner.id)).toEqual(['superseded']);
     expect((await footprint(business.id)).invoices).toBe(before.invoices);
   });
 });

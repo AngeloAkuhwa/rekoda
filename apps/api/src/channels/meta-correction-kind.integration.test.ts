@@ -5,9 +5,10 @@
  * Before this, `looksLikeCorrection` alone superseded every waiting draft, whatever kind of record
  * the model read: "Bought fuel 5k, not paid yet" replaced a waiting sale (CodeRabbit on #437 at
  * 3d66867). Now a correction read as another kind, aimed at another member's request, sent with
- * two waiting, after something else was said, or while an earlier message is retrying, is asked
- * about and changes nothing. A clear correction of the member's own single request of the same
- * kind still replaces it. The books are asserted, never only the reply.
+ * two waiting, or after something else was said, is asked about and changes nothing. A clear
+ * correction of the member's own single request of the same kind still replaces it. The cases while
+ * an earlier message retries are in `meta-correction-retry.integration.test.ts`. The books are
+ * asserted, never only the reply.
  */
 import { describe, expect, it } from 'vitest';
 import { replies } from '@rekoda/core';
@@ -250,7 +251,10 @@ describe('CG5: a clear correction of the same kind still replaces the waiting dr
 
     await send('yes', 'wamid.K3-YES');
     expect(stubSender.lastText).toContain('Saved ✅ ₦60,000 stock purchase');
+    /* One ₦60,000 purchase in the books, after each yes (CodeRabbit on #437 at 156621f). */
+    expect((await books(business.id)).expenses).toEqual([6_000_000]);
     await send('yes', 'wamid.K3-YES2');
+    expect((await books(business.id)).expenses).toEqual([6_000_000]);
     expect(await drafts(business.id)).toEqual([
       'RecordPurchase:superseded',
       'RecordPurchase:confirmed',
@@ -311,62 +315,6 @@ describe('CG5: a correction that may be about something else is asked about (OD-
  * the corrected preview's own yes books anything. Keeping a customer still waits for that message
  * (`meta-correction-ambiguous`).
  */
-describe('CG5: a correction while an earlier message is retrying', () => {
-  it('an earlier question still retrying does not stop the correction', async () => {
-    const { business } = await seedOwner();
-    await send('fuel 5k cash', 'wamid.K7-EXP', expense(5_000));
-    await queueOnly('wamid.K7-Q', 'how much did I sell this month?');
-    await failOnceAndBackOff(business.id);
-
-    await send('no, 6k not 5k', 'wamid.K7-FIX', expense(6_000));
-    expect(stubSender.lastText).toContain(replies.correctionTaken().text);
-    expect(await drafts(business.id)).toEqual([
-      'RecordExpense:superseded',
-      'RecordExpense:pending',
-    ]);
-  });
-
-  it('a yes retried after the correction books nothing; the corrected expense is booked once', async () => {
-    const { business } = await seedOwner();
-    await send('fuel 5k cash', 'wamid.K8-EXP', expense(5_000));
-    await queueOnly('wamid.K8-YES', 'yes');
-    await failOnceAndBackOff(business.id);
-
-    await send('no, 6k not 5k', 'wamid.K8-FIX', expense(6_000));
-    expect(await drafts(business.id)).toEqual([
-      'RecordExpense:superseded',
-      'RecordExpense:pending',
-    ]);
-    await bringDue(business.id);
-    await run();
-    expect((await books(business.id)).expenses).toEqual([]);
-
-    await send('yes', 'wamid.K8-YES2');
-    expect((await books(business.id)).expenses).toEqual([600_000]);
-  });
-});
-
-describe("CG5: a nameless correction of a customer's sale while a yes retries", () => {
-  it('withdraws the sale and asks; the retried yes books nothing', async () => {
-    const { business } = await seedOwner();
-    await send('Ada bought 3 wigs for 150k', 'wamid.K13-SALE', SALE);
-    await queueOnly('wamid.K13-YES', 'yes');
-    await failOnceAndBackOff(business.id);
-
-    await send('No, 4 not 3', 'wamid.K13-FIX', {
-      ...SALE,
-      customer: { kind: 'none' },
-      items: [{ name: 'wig', quantity: 4, unitPrice: 50_000 }],
-      statedTotal: 200_000,
-    });
-    expect(stubSender.lastText).toBe(replies.correctionWithdrawn().text);
-    expect(await drafts(business.id)).toEqual(['RecordSale:superseded']);
-    await bringDue(business.id);
-    await run();
-    expect(await books(business.id)).toEqual({ invoices: [], expenses: [] });
-  });
-});
-
 describe('CG5: an ineligible correction while a yes retries', () => {
   it('leaves the preview, so the yes the merchant sent first books it once', async () => {
     const { business, ada } = await seedOwner();

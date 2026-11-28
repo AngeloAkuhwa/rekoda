@@ -175,6 +175,8 @@ describe('a contact under an empty buyer label is evidence of a buyer', () => {
              AND state = 'pending' AND previewed`),
     );
     expect([...drafts]).toEqual([]);
+    /* Asked about the buyer, not stopped early (CodeRabbit on #437 at 156621f). */
+    expect(stubSender.lastText).toContain('could not tell which customer');
   });
 });
 
@@ -353,6 +355,7 @@ describe('a caption that names an issued customer, read with no customer (OD-72)
     const business = await photographed(`${'1 '.repeat(4000)}08099998888`);
     expect(Date.now() - started).toBeLessThan(15_000);
     expect(await previewedSales(business.id)).toEqual([]);
+    expect(stubSender.lastText).toContain('could not tell which customer');
   }, 60_000);
 
   it('books the sale to the buyer once the merchant says who it is for', async () => {

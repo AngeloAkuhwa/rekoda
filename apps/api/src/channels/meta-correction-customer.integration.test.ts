@@ -222,7 +222,7 @@ describe('CG5: a correction keeps the customer of the draft it corrects', () => 
   });
 
   it('after the preview expired, a correction is a new request and inherits nobody', async () => {
-    const { business, ada } = await seedOwner();
+    const { business } = await seedOwner();
     stubTransport.replyWith(SALE);
     await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.C6-SALE');
     await withBusiness(db, business.id, (tx) =>
@@ -237,9 +237,9 @@ describe('CG5: a correction keeps the customer of the draft it corrects', () => 
     expect(rows.map((r) => r.state)).toEqual(['expired', 'pending']);
     expect(rows[1]?.customer).toEqual(NAMELESS);
     await send('yes', 'wamid.C6-YES');
-    const issued = await invoiceCustomers(business.id);
-    expect(issued).toHaveLength(1);
-    expect(issued[0]?.customer_id).not.toBe(ada.id);
+    expect(await invoiceCustomers(business.id)).toEqual([
+      { customer_id: null, total_k: '20000000' },
+    ]);
   });
 
   it('after a cancellation, a correction never revives the old draft or its customer', async () => {
