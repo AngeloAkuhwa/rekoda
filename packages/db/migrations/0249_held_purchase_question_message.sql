@@ -1,0 +1,14 @@
+-- A held purchase records the inbound message its LATEST accepted identity question answered
+-- (OD-70 Option B, OWN-104(1), issue #439).
+--
+-- "Is this the same purchase?" can be asked again (after a "no", after doubt, or after a
+-- "separate" that found another match). A WhatsApp `failed` receipt that arrives late names the
+-- reply it is about, and `markPreviewUndelivered` decided which hold that withdraws by the
+-- drafting message alone: an earlier question's late failure withdrew a hold whose re-ask was
+-- live, and the live re-ask's failure left the hold waiting. Only the question the member is now
+-- answering should withdraw it.
+--
+-- A message id only: nothing personal, nothing the model wrote. Nullable and NULL for every
+-- existing row, which keeps the earlier rule (the drafting message, while the hold was never
+-- re-asked). Additive: the running release neither reads nor writes it.
+ALTER TABLE command_drafts ADD COLUMN IF NOT EXISTS held_question_message_id uuid;

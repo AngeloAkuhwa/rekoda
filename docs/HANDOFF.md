@@ -6,11 +6,17 @@
 > where it names a document, that document may since have been archived
 > (see `REKODA_REFERENCE_MANIFEST.md`).
 
-## OD-57 PR, 28 Nov 2026 (read first)
+## #439 PR, 28 Nov 2026 (read first)
+
+- **main:** `061d4d1` (#445, OD-57, merged by the owner 28 Nov 2026 10:20 UTC; not deployed, OWN-104(2) hold; STAGING ACCEPTANCE PENDING). A post-merge independent review of its last delta (`d988944..bf11cf3`) found 0 BLOCKING / 0 IMPORTANT; its MINOR that `paymentPreviewOutOfDate` also answers a draft with no recorded invoice, where nothing "moved", is cosmetic and left as it is.
+- **Active PR:** #439 (a held purchase follows its latest identity question), branch `angelo/magical-bell-nsp27i`, base `061d4d1`. CODE COMPLETE, PR OPEN, not merged, not deployed. Migration `0249_held_purchase_question_message` (additive). OD-80 (issue #439 item 5) is an OPEN OWNER DECISION, recommendation A. Details: the OD-70 row of `REKODA_LAUNCH_READINESS.md`.
+- **Next after #439 (OWN-101, OWN-104):** OD-79 (recommendation B); then G-59 and the playbook queue. #438 (erasure flag, deployment hold) and OD-59 stay owner-sequenced; draft #435 (G-13) is held by the owner.
+
+## OD-57 PR, 28 Nov 2026 (history)
 
 - **main:** `21c92df` (#437 merged by the owner; deployment hold OWN-104(2) until #438 still applies to real merchants). **Active PR:** OD-57 (payment preview bound to the invoice it showed), branch `angelo/magical-bell-nsp27i`, base `21c92df`. CODE COMPLETE, PR OPEN, not merged, not deployed, STAGING ACCEPTANCE PENDING. The owner merges (OWN-99 to OWN-107 repeat it; the 19 Nov staging acceptance freeze on #435 also suspended the autopilot's OWN-26 merge authority, and no later ruling restores it).
 - **What changed:** migrations `0247_payment_preview_invoice` and `0248_validate_payment_preview_invoice` (a second `confirmation_context` kind, additive); preview stores the invoice shown; `confirmPayment` reads it back by id and refuses rather than redirects; the balance shown is checked again under the row lock. Details and evidence: the OD-57 row of `REKODA_LAUNCH_READINESS.md`.
-- **Migration numbers:** this PR takes 0247 (constraint added NOT VALID) and 0248 (validated); #439 (held-question message id, OD-70) now takes 0249.
+- **Migration numbers:** this PR took 0247 (constraint added NOT VALID) and 0248 (validated); #439 (held-question message id, OD-70) takes 0249.
 - **Still open, in order (OWN-101, OWN-104, OWN-107):** #439 after OD-57; OD-79 (recommendation B, after OD-57); #438 (WhatsApp erasure flag; deployment hold); OD-59 paid-launch item; deferred #440, #441, #442. Draft #435 (G-13) is engineering-complete and held by the owner's freeze.
 
 ## PR #437 closeout, 28 Nov 2026 (read first)
