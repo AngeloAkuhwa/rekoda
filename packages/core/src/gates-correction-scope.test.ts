@@ -169,6 +169,35 @@ describe('correctionHoldsOtherFigures: a correction mixed with another record', 
     ).toBe(true);
   });
 
+  /* Independent review of #437 at b51fc0c: a reading that folds the other sale in holds its 2 and
+   * its 10k, so they were taken as accounted for and the two sales merged into one preview. */
+  const merged = {
+    ...sale,
+    items: [
+      { name: 'wig', quantity: 4, unitPrice: 50_000 },
+      { name: 'bag', quantity: 2, unitPrice: 10_000 },
+    ],
+    statedTotal: 220_000,
+  };
+  it.each([
+    'No, 4 not 3. Sold 2 bags at 10k to someone else',
+    'No, 4 not 3. I sold 2 bags at 10k too',
+    'No, 4 not 3! And bought 2 bags at 10k',
+  ])('%j with a reading that took the other record in is still asked about', (text) => {
+    expect(correctionHoldsOtherFigures(text, sale, merged)).toBe(true);
+  });
+
+  it.each(['No, 4 not 3 and add 2 bags at 10k', 'No, I sold 4 not 3, plus 2 bags at 10k'])(
+    '%j adds a line inside the correction itself, which is no other record',
+    (text) => {
+      expect(correctionHoldsOtherFigures(text, sale, merged)).toBe(false);
+    },
+  );
+
+  it('a later record sentence without an added line is no other record', () => {
+    expect(correctionHoldsOtherFigures('No, 4 not 3. Sold them yesterday', sale, four)).toBe(false);
+  });
+
   it.each(['No, 4 not 3', 'No, 4 not 3, 50k each', 'No, 4 not 3. Total 200k', 'make it 4'])(
     '%j holds only the correction and figures the preview showed',
     (text) => {

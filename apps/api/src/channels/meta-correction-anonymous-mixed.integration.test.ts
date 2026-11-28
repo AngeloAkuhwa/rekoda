@@ -90,6 +90,30 @@ describe('CG5: an anonymous waiting sale and a correction mixed with another sal
     expect(await invoiceCount(business.id)).toBe(0);
   });
 
+  /* Independent review of #437 at b51fc0c: a reading that folds the other sale into this one holds
+   * every figure of the message, so the figure check passed and the sales merged into one preview. */
+  it('asks when the reading takes the other sale into this one', async () => {
+    const business = await seedOwner();
+    stubTransport.replyWith(SALE);
+    await send('Sold 3 wigs for 150k', 'wamid.AMM-SALE');
+    const before = await sales(business.id);
+    expect(before.map((r) => r.state)).toEqual(['pending']);
+
+    stubTransport.replyWith({
+      ...SALE,
+      items: [
+        { name: 'wig', quantity: 4, unitPrice: 50_000 },
+        { name: 'bag', quantity: 2, unitPrice: 10_000 },
+      ],
+      statedTotal: 220_000,
+    });
+    const sent = stubSender.sent.length;
+    await send('No, 4 not 3. Sold 2 bags at 10k to someone else', 'wamid.AMM-FIX');
+    expect(stubSender.sent.length).toBe(sent + 1);
+    expect(await sales(business.id)).toEqual(before);
+    expect(await invoiceCount(business.id)).toBe(0);
+  });
+
   it('still lets a plain correction supersede it', async () => {
     const business = await seedOwner();
     stubTransport.replyWith(SALE);
